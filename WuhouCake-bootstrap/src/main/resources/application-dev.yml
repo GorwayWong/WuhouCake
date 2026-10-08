@@ -16,5 +16,7 @@ springdoc:
     enabled: true
 
 wuhoucake:
+  identity:
+    secure-cookie: false
   security:
     permit-api-docs: true

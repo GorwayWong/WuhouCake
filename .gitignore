@@ -4,6 +4,10 @@
 ._*
 Thumbs.db
 Desktop.ini
+.Spotlight-V100/
+.Trashes/
+$RECYCLE.BIN/
+ehthumbs.db
 
 # IDE metadata
 .idea/
@@ -14,6 +18,11 @@ Desktop.ini
 .classpath
 .project
 .settings/
+.factorypath
+.metadata/
+.vs/
+.history/
+nbproject/private/
 
 # Maven and Java build output
 **/target/
@@ -21,6 +30,8 @@ Desktop.ini
 **/out/
 **/dist/
 .gradle/
+.kotlin/
+.m2/
 *.class
 *.jar
 *.jar.original
@@ -36,10 +47,21 @@ replay_pid*.log
 **/failsafe-reports/
 **/site/
 .mvn/timing.properties
+.scannerwork/
+.sonar/
+
+# Runtime output and diagnostics
+logs/
+*.log.*
+*.pid
+*.pid.lock
+*.jfr
 
 # Test and coverage output
 **/coverage/
 .coverage
+.coverage.*
+htmlcov/
 .nyc_output/
 *.exec
 *.lcov
@@ -59,14 +81,30 @@ graphify-out/
 .mcp-output/
 .serena/
 plans/
+.cursor/
+.windsurf/
+.continue/
+.cline/
+.roo/
+.copilot/
+.taskmaster/
+.worktrees/
 
 # Local configuration and secrets
 docs/dev-ops/env/*.env
 .env
 .env.*
 !.env.example
+!.env.*.example
+!.env.template
+!.env.*.template
+!.env.sample
+!.env.*.sample
 *.local
 *.local.yml
+*.local.yaml
+*.local.properties
+*.local.json
 secrets/
 credentials/
 
@@ -83,6 +121,8 @@ backups/
 tmp/
 temp/
 *.tmp
+*.temp
+*.swn
 *.swp
 *.swo
 *~
@@ -91,7 +131,28 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+__pypackages__/
 
 # JavaScript tooling used by auxiliary scripts or skills
 node_modules/
 .npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+.parcel-cache/
+.turbo/
+.vite/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo

@@ -12,6 +12,10 @@ services:
       DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-10}
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:-}
       TZ: Asia/Shanghai
+      IDENTITY_PRIVATE_KEY: /run/identity/private.pem
+      IDENTITY_PUBLIC_KEY: /run/identity/public.pem
+    volumes:
+      - ${IDENTITY_KEY_DIR:?IDENTITY_KEY_DIR is required}:/run/identity:ro
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
     restart: unless-stopped

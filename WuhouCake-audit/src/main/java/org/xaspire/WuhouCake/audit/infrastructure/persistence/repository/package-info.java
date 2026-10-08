@@ -1,0 +1,2 @@
+/** Implementations of domain repository interfaces using persistence adapters. */
+package org.xaspire.WuhouCake.audit.infrastructure.persistence.repository;

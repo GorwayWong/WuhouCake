@@ -48,7 +48,7 @@ docker compose --env-file docs/dev-ops/env/dev.env \
 
 ## 3. 生产运行
 
-复制 `prod.env.example` 为 `prod.env`，填写 `APP_IMAGE`、`POSTGRES_PASSWORD`、`REDIS_PASSWORD` 及部署参数。镜像使用明确的版本标签或 digest。
+复制 `prod.env.example` 为 `prod.env`，填写 `APP_IMAGE`、`POSTGRES_PASSWORD`、`REDIS_PASSWORD`、`IDENTITY_KEY_DIR` 及部署参数。镜像使用明确的版本标签或 digest。密钥和首次管理员初始化见[账号运行说明](../identity.md)。
 
 ```bash
 docker compose --env-file docs/dev-ops/env/prod.env \
@@ -84,6 +84,8 @@ docker compose --env-file docs/dev-ops/env/prod.env \
 | `APP_PORT`、`APP_BIND_ADDRESS` | 宿主机监听端口与地址；容器端口为 8080 |
 | `DB_POOL_MAX_SIZE` | Hikari 最大连接数，默认 10 |
 | `JAVA_TOOL_OPTIONS` | JVM 参数，含空格的 dotenv 值须加引号 |
+| `IDENTITY_KEY_DIR` | 应用 Compose 只读挂载的宿主机密钥目录，应用用户须可读 |
+| `IDENTITY_PRIVATE_KEY`、`IDENTITY_PUBLIC_KEY` | 直接运行 JVM 时的持久 RSA 密钥绝对路径 |
 
 app Compose 根据 `POSTGRES_*`、`REDIS_PASSWORD` 和服务名生成容器的 `SPRING_*` 连接配置。仅修改 env 文件中的 `SPRING_*` 值不会覆盖此映射；使用托管数据库或 Redis 时，应同步调整 app Compose。
 

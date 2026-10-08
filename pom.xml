@@ -17,6 +17,8 @@
     <modules>
         <module>WuhouCake-shared</module>
         <module>WuhouCake-sample</module>
+        <module>WuhouCake-audit</module>
+        <module>WuhouCake-identity</module>
         <module>WuhouCake-bootstrap</module>
     </modules>
     <properties>

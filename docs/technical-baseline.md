@@ -16,6 +16,8 @@
 | ArchUnit | 1.5.0 | 包分层及模块边界检查 |
 | springdoc | 2.8.17 | 开发环境接口文档 |
 | Maven | 3.9.16 | Wrapper 构建版本 |
+| Spring Security / Nimbus JOSE | Spring Boot BOM 管理 | JWT 签发、Resource Server 验证与 CSRF |
+| Bouncy Castle | 1.83 | Argon2id 密码哈希所需实现 |
 
 ## 2. 工程约定
 
@@ -29,7 +31,7 @@
 | Redis 使用 | 通用技术封装归 shared，业务缓存归领域 infrastructure |
 | 镜像运行 | Java 21，非 root 用户，使用预先构建的 JAR |
 
-镜像标签限定主版本，补丁随标签更新。生产部署可固定到经过验证的镜像 digest。pgvector、AI SDK、对象存储及业务认证按实际领域需求引入。
+镜像标签限定主版本，补丁随标签更新。生产部署可固定到经过验证的镜像 digest。账号认证采用 Spring Security/Nimbus JWT、Redis 在线会话和 Argon2id。pgvector、AI SDK、对象存储按实际领域需求引入。
 
 ## 3. 升级验证
 

@@ -11,6 +11,8 @@
 | `WuhouCake-bootstrap` | 应用入口、组合根、全局配置及运行镜像 |
 | `WuhouCake-shared` | 通用契约与技术能力 |
 | `WuhouCake-sample` | 可复制的空白领域模块模板 |
+| `WuhouCake-identity` | 员工账号、凭证、岗位与登录状态 |
+| `WuhouCake-audit` | 操作审计及超级管理员查询 |
 | `docs` | 架构规约、技术基线、部署说明及验收记录 |
 
 领域模块内部采用 `api / adapter / application / domain / infrastructure` 五层结构。`WuhouCake-sample` 的生产源码仅定义包职责，不包含业务接口、模型或数据库迁移。
@@ -21,6 +23,15 @@
 
 ```bash
 ./mvnw clean verify
+
+umask 077
+mkdir -p secrets/identity
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out secrets/identity/private.pem
+openssl pkey -in secrets/identity/private.pem -pubout -out secrets/identity/public.pem
+chmod 700 secrets/identity
+chmod 600 secrets/identity/private.pem
+export IDENTITY_PRIVATE_KEY="$PWD/secrets/identity/private.pem"
+export IDENTITY_PUBLIC_KEY="$PWD/secrets/identity/public.pem"
 
 cp docs/dev-ops/env/dev.env.example docs/dev-ops/env/dev.env
 docker compose --env-file docs/dev-ops/env/dev.env \
@@ -40,7 +51,7 @@ java -jar WuhouCake-bootstrap/target/WuhouCake-bootstrap-0.1.0-SNAPSHOT.jar \
 | `http://localhost:8080/actuator/health/readiness` | 就绪探针，包含数据库检查 |
 | `http://localhost:8080/swagger-ui/index.html` | 开发环境接口文档 |
 
-启动须显式选择 `dev` 或 `prod`。健康端点允许匿名访问；业务请求默认拒绝，需在 bootstrap 配置授权。生产环境关闭接口文档。
+启动须显式选择 `dev` 或 `prod`，并配置持久保存的 RSA 密钥。健康端点允许匿名访问；业务使用 Bearer JWT，员工管理和日志查询仅限超级管理员。生产环境关闭接口文档。首次部署须按[账号运行说明](docs/identity.md)初始化管理员，普通启动不会创建或重置账号。
 
 ## 3. 测试
 
@@ -50,7 +61,7 @@ java -jar WuhouCake-bootstrap/target/WuhouCake-bootstrap-0.1.0-SNAPSHOT.jar \
 | 领域模板及其依赖 | `./mvnw -pl WuhouCake-sample -am clean verify` | 无 |
 | 基础设施集成验证 | `./mvnw -Pintegration verify` | PostgreSQL、Redis |
 
-集成测试使用测试 Mapper、事务内临时表和独立 Flyway schema，覆盖健康端点、持久化、回滚、JSON、Redis TTL 与锁所有权。仅连接开发或专用测试数据库。
+集成测试使用测试 Mapper、事务内临时表、独立 Flyway schema 和 Redis 键前缀，覆盖基础设施、真实 HTTP 账号生命周期、并发管理员操作、凭证撤销、CSRF 与审计故障。仅连接开发或专用测试数据库。
 
 ## 4. 扩展与部署
 
@@ -72,6 +83,8 @@ docker build -t wuhoucake-bootstrap:local WuhouCake-bootstrap
 | [领域模块模板](WuhouCake-sample/README.md) | 包职责、复制步骤与模块测试 |
 | [开发与部署](docs/dev-ops/README.md) | Compose、环境变量与运行步骤 |
 | [技术基线](docs/technical-baseline.md) | 组件版本及管理位置 |
+| [账号运行与 API](docs/identity.md) | 密钥、初始化、管理员恢复、认证和接口契约 |
+| [领域词汇](CONTEXT.md) | 员工身份、工号、岗位和归档的含义 |
 | [模板验收记录](docs/sample-module-implementation-report.md) | 当前模板的验证范围与结果 |
 | [骨架演进记录](docs/implementation-report.md) | 初期业务样例的归档记录 |
 | [开发规约](AGENTS.md) | 仓库维护与验证要求 |

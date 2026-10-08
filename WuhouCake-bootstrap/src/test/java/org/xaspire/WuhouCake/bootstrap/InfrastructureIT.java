@@ -14,6 +14,9 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.xaspire.WuhouCake.bootstrap.integration.JwtTestKeys;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
@@ -35,6 +38,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @ActiveProfiles("integration")
 @Import(TestPersistenceConfiguration.class)
 class InfrastructureIT {
+    @DynamicPropertySource static void keys(DynamicPropertyRegistry registry) { JwtTestKeys.properties(registry); }
     @Autowired TestRestTemplate http;
     @Autowired @Qualifier("requestMappingHandlerMapping") RequestMappingHandlerMapping mappings;
     @Autowired ProbeMapper mapper;

@@ -1,4 +1,7 @@
 spring:
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
   application:
     name: wuhoucake
   autoconfigure:
@@ -48,5 +51,11 @@ springdoc:
     enabled: false
 
 wuhoucake:
+  identity:
+    private-key: ${IDENTITY_PRIVATE_KEY:}
+    public-key: ${IDENTITY_PUBLIC_KEY:}
+    secure-cookie: true
+    access-lifetime: 15m
+    session-lifetime: 7d
   security:
     permit-api-docs: false
