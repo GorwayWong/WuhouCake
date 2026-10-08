@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: wuhoucake
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+  datasource:
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      connection-timeout: 5000
+  flyway:
+    enabled: true
+    default-schema: public
+    locations: classpath:db/migration
+    clean-disabled: true
+  data:
+    redis:
+      timeout: 2s
+      connect-timeout: 2s
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+wuhoucake:
+  security:
+    permit-api-docs: false

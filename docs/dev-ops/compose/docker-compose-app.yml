@@ -1,0 +1,26 @@
+services:
+  app:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?POSTGRES_USER is required}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-10}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:-}
+      TZ: Asia/Shanghai
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  default:
+    name: ${COMPOSE_PROJECT_NAME:-wuhoucake}-network
+    external: true

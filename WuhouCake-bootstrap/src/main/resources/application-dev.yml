@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/wuhoucake}
+    username: ${SPRING_DATASOURCE_USERNAME:wuhoucake}
+    password: ${SPRING_DATASOURCE_PASSWORD:wuhoucake_dev_password}
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:wuhoucake_dev_redis_password}
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+
+wuhoucake:
+  security:
+    permit-api-docs: true

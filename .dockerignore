@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.idea
+*.iml
+.DS_Store
+target
+backups
+README.md
+ARCHITECTURE.md
+docs
+

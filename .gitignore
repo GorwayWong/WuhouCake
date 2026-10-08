@@ -1,0 +1,97 @@
+# Operating-system files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Desktop.ini
+
+# IDE metadata
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+
+# Maven and Java build output
+**/target/
+**/build/
+**/out/
+**/dist/
+.gradle/
+*.class
+*.jar
+*.jar.original
+*.war
+*.ear
+# The Maven Wrapper bootstrap JAR is part of reproducible build tooling.
+!.mvn/wrapper/maven-wrapper.jar
+*.log
+hs_err_pid*.log
+replay_pid*.log
+*.hprof
+**/surefire-reports/
+**/failsafe-reports/
+**/site/
+.mvn/timing.properties
+
+# Test and coverage output
+**/coverage/
+.coverage
+.nyc_output/
+*.exec
+*.lcov
+
+# Agent, MCP, and skill working data
+graphify-out/
+.graphify/
+.graphify-cache/
+.memsearch/
+.agents/
+.codex/
+.claude/
+.opencode/
+.aider*
+.context-mode/
+.mcp-cache/
+.mcp-output/
+.serena/
+plans/
+
+# Local configuration and secrets
+docs/dev-ops/env/*.env
+.env
+.env.*
+!.env.example
+*.local
+*.local.yml
+secrets/
+credentials/
+
+# Archives, backups, and generated exports
+backups/
+*.bak
+*.backup
+*.dump
+*.orig
+
+# Temporary files and local virtual environments
+.cache/
+.tmp/
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+*~
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# JavaScript tooling used by auxiliary scripts or skills
+node_modules/
+.npm/
