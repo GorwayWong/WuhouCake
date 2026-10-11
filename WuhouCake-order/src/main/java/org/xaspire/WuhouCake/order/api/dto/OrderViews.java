@@ -1,0 +1,23 @@
+package org.xaspire.WuhouCake.order.api.dto;
+
+import java.time.Instant;
+import java.util.*;
+import org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer;
+import org.xaspire.WuhouCake.order.api.command.OrderCommands.Fulfillment;
+
+public final class OrderViews {
+    private OrderViews() { }
+
+    public record Detail(UUID orderId, String orderNo, long version, String status, String paymentStatus,
+            Customer customer, Fulfillment fulfillment, Long totalAmountCents, UUID createdBy,
+            Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items) {
+        public Detail { items = List.copyOf(items); }
+    }
+    public record Item(UUID itemId, String name, String productType, int quantity, Long unitPriceCents, Long memberPriceCents,
+            Map<String, Object> attributes, String productionStatus, String currentStageCode,
+            Instant createdAt, Instant updatedAt, List<Activity> recentNotes) {
+        public Item { recentNotes = List.copyOf(recentNotes); }
+    }
+    public record Activity(long id, UUID orderId, UUID itemId, String type, String content, Map<String, Object> details,
+            UUID actorId, String actorNameSnapshot, Instant createdAt) { }
+}

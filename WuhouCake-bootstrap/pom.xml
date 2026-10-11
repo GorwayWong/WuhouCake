@@ -14,6 +14,11 @@
     <dependencies>
         <dependency>
             <groupId>org.xaspire</groupId>
+            <artifactId>WuhouCake-order</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.xaspire</groupId>
             <artifactId>WuhouCake-identity</artifactId>
             <version>${project.version}</version>
         </dependency>

@@ -1,0 +1,51 @@
+package org.xaspire.WuhouCake.order.infrastructure.persistence.repository;
+
+import java.util.*;
+import org.xaspire.WuhouCake.order.domain.model.aggregate.Order;
+import org.xaspire.WuhouCake.order.domain.model.entity.OrderItem;
+import org.xaspire.WuhouCake.order.domain.model.valobj.*;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
+import org.xaspire.WuhouCake.order.domain.repository.Orders;
+import org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderMapper;
+import org.xaspire.WuhouCake.shared.json.JsonCodec;
+
+public final class PostgresOrders implements Orders {
+    private final OrderMapper mapper;
+    private final JsonCodec json;
+    public PostgresOrders(OrderMapper mapper, JsonCodec json) { this.mapper = mapper; this.json = json; }
+
+    @Override public String nextNumber() { return String.format(Locale.ROOT, "%07d", mapper.nextNumber()); }
+    @Override public void create(Order order) {
+        mapper.insert(row(order));
+        for (var item : order.activeItems()) mapper.insertItem(row(order.id(), item));
+    }
+    @Override public Optional<Order> find(UUID id) {
+        var row = mapper.find(id.toString());
+        if (row == null) return Optional.empty();
+        var items = mapper.items(id.toString()).stream().map(this::item).toList();
+        return Optional.of(new Order(id, row.orderNo(), row.version(), row.status(), row.paymentStatus(),
+                new CustomerContact(row.customerName(), row.customerPhone(), row.memberPhone(), row.buyerName()),
+                new FulfillmentPlan(FulfillmentType.valueOf(row.fulfillmentType()), row.deliveryAddress(), row.requestedReceiveDate(), row.plannedHandoffAt(), row.plannedFinishAt()),
+                row.totalAmountCents(), UUID.fromString(row.createdBy()), row.createdAt(), row.confirmedAt(), row.updatedAt(), items));
+    }
+    @Override public void reviseItem(Order order, long expectedVersion, UUID itemId) {
+        if (mapper.advanceVersion(order.id().toString(), expectedVersion, order.updatedAt()) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (mapper.updateItem(row(order.id(), order.requireActiveItem(itemId))) != 1) throw new OrderFailure("ORDER_NOT_FOUND");
+    }
+    private static OrderMapper.Row row(Order order) {
+        var customer = order.customer(); var fulfillment = order.fulfillment();
+        return new OrderMapper.Row(order.id().toString(), order.orderNo(), order.version(), order.status(), order.paymentStatus(),
+                customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName(), fulfillment.type().name(), fulfillment.address(),
+                fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), order.totalAmountCents(),
+                order.createdBy().toString(), order.createdAt(), order.confirmedAt(), order.updatedAt());
+    }
+    private OrderMapper.ItemRow row(UUID orderId, OrderItem item) {
+        return new OrderMapper.ItemRow(item.itemId().toString(), orderId.toString(), item.name(), item.productType(), item.quantity(),
+                item.unitPriceCents(), item.memberPriceCents(), json.write(item.attributes()), item.productionStatus(), item.currentStageCode(),
+                item.removed(), item.createdAt(), item.updatedAt());
+    }
+    private OrderItem item(OrderMapper.ItemRow row) {
+        return new OrderItem(UUID.fromString(row.id()), row.name(), row.productType(), row.quantity(), row.unitPriceCents(), row.memberPriceCents(),
+                JsonSnapshot.object(json.read(row.attributes(), Map.class)), row.productionStatus(), row.currentStageCode(), row.removed(), row.createdAt(), row.updatedAt());
+    }
+}

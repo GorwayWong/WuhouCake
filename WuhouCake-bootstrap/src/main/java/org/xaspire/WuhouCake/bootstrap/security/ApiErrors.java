@@ -12,11 +12,21 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.xaspire.WuhouCake.identity.domain.model.valobj.IdentityFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.shared.response.ApiResponse;
 
 @RestControllerAdvice
 public class ApiErrors {
     private static final Logger LOG = LoggerFactory.getLogger(ApiErrors.class);
+    @ExceptionHandler(OrderFailure.class)
+    ResponseEntity<ApiResponse<Void>> order(OrderFailure failure) {
+        int status = switch (failure.code()) {
+            case "ORDER_NOT_FOUND" -> 404;
+            case "CONCURRENT_MODIFICATION" -> 409;
+            default -> 400;
+        };
+        return response(status, failure.code());
+    }
     @ExceptionHandler(IdentityFailure.class)
     ResponseEntity<ApiResponse<Void>> domain(IdentityFailure failure) {
         int status = switch (failure.code()) {
