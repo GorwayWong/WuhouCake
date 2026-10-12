@@ -46,6 +46,10 @@ public final class PostgresOrders implements Orders {
     @Override public void verifyVersion(UUID id, long expectedVersion) {
         if (mapper.lockedVersion(id.toString(), expectedVersion) == null) throw new OrderFailure("CONCURRENT_MODIFICATION");
     }
+    @Override public void changeStatus(Order order, long expectedVersion) {
+        if (mapper.updateStatus(order.id().toString(), expectedVersion, order.status(), order.updatedAt()) != 1)
+            throw new OrderFailure("CONCURRENT_MODIFICATION");
+    }
     private static OrderMapper.Row row(Order order) {
         var customer = order.customer(); var fulfillment = order.fulfillment();
         return new OrderMapper.Row(order.id().toString(), order.orderNo(), order.version(), order.status(), order.paymentStatus(), order.currentStageCode(),

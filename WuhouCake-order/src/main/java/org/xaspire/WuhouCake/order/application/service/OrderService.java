@@ -100,6 +100,28 @@ public class OrderService {
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
+    public OrderViews.Detail fulfillmentAction(UUID id, OrderCommands.FulfillmentAction command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now(); var changed = order.applyFulfillmentAction(command.action(), now);
+        orders.changeStatus(order, expected);
+        activities.append(OrderActivity.append(id, null, "ORDER_FULFILLMENT_CHANGED", "修改整单交接状态", changed, actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_FULFILLMENT_CHANGED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail cancel(UUID id, OrderCommands.Cancel command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now(); var changed = order.cancel(command.reason(), now);
+        orders.changeStatus(order, expected);
+        activities.append(OrderActivity.append(id, null, "ORDER_CANCELLED", command.reason(), changed, actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_CANCELLED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
     public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator) {
         var actor = actor(operator); var order = requireOrder(id);
         if (command.itemId() != null) order.requireActiveItem(command.itemId());

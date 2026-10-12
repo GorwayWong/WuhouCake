@@ -9,6 +9,8 @@ import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.Order;
 import org.xaspire.WuhouCake.order.domain.model.entity.OrderItem;
+import org.xaspire.WuhouCake.order.domain.model.entity.OrderActivity;
+import org.mockito.ArgumentCaptor;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 import org.xaspire.WuhouCake.order.domain.repository.*;
@@ -100,6 +102,79 @@ class OrderServiceTest {
     }
     private Order loaded() {
         var order = order(); when(orders.find(order.id())).thenReturn(Optional.of(order)); return order;
+    }
+    @Test void fulfillmentPersistsStatusAndRecordsActorActionAndNotification() {
+        var order = loaded(); order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        var items = order.activeItems();
+        var result = service.fulfillmentAction(order.id(), new OrderCommands.FulfillmentAction(2, "CONFIRM_PICKUP"), operator);
+        assertEquals("COMPLETED", result.status()); assertEquals(3, result.version()); assertEquals(NOW.plusSeconds(1), result.updatedAt());
+        assertEquals(items, order.activeItems()); verify(orders).changeStatus(order, 2);
+        var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());
+        var activity = logged.getValue(); assertEquals("ORDER_FULFILLMENT_CHANGED", activity.type()); assertNull(activity.itemId());
+        assertEquals("CONFIRM_PICKUP", activity.details().get("action")); assertEquals(Map.of("status", "WAITING_PICKUP"), activity.details().get("before"));
+        assertEquals(Map.of("status", "COMPLETED"), activity.details().get("after")); assertEquals(operator.accountId(), activity.actorId());
+        assertEquals(operator.nickname(), activity.actorNameSnapshot()); assertEquals(NOW.plusSeconds(1), activity.createdAt());
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_FULFILLMENT_CHANGED, 3));
+    }
+    @Test void cancellationRecordsTrimmedReasonAndPreservesPaymentStageAndNotes() {
+        var order = loaded(); order.changePaymentStatus("PAID", NOW); order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
+        var itemId = order.activeItems().getFirst().itemId(); var items = order.activeItems();
+        when(activities.recentItemNotes(order.id())).thenReturn(List.of(OrderActivity.append(order.id(), itemId, "NOTE", "已有备注", Map.of(),
+                new Actor(operator.accountId(), operator.nickname()), NOW)));
+        var result = service.cancel(order.id(), new OrderCommands.Cancel(3, " 客户确认取消 "), operator);
+        assertEquals("CANCELLED", result.status()); assertEquals("PAID", result.paymentStatus()); assertEquals("LAYER_DONE", result.currentStageCode());
+        assertEquals(items, order.activeItems()); assertEquals("已有备注", result.items().getFirst().recentNotes().getFirst().content());
+        assertEquals(4, result.version()); assertEquals(NOW.plusSeconds(1), result.updatedAt()); verify(orders).changeStatus(order, 3);
+        var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture()); var activity = logged.getValue();
+        assertEquals("ORDER_CANCELLED", activity.type()); assertEquals("客户确认取消", activity.content()); assertNull(activity.itemId());
+        assertEquals(Map.of("status", "PROCESSING"), activity.details().get("before")); assertEquals(Map.of("status", "CANCELLED"), activity.details().get("after"));
+        assertEquals(operator.accountId(), activity.actorId()); assertEquals(operator.nickname(), activity.actorNameSnapshot());
+        assertEquals(NOW.plusSeconds(1), activity.createdAt()); verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_CANCELLED, 4));
+    }
+    @Test void terminalOrdersStillAllowNotesAndPaymentCorrection() {
+        for (boolean completed : List.of(false, true)) {
+            var order = loaded();
+            if (completed) {
+                order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW); order.applyFulfillmentAction("CONFIRM_PICKUP", NOW);
+            } else order.cancel("取消", NOW);
+            long version = order.version(); String status = order.status(); var itemId = order.activeItems().getFirst().itemId();
+            when(activities.append(any())).thenAnswer(invocation -> invocation.getArgument(0));
+            service.note(order.id(), new OrderCommands.Note(itemId, "人工处理备注"), operator);
+            assertEquals(version, order.version()); assertEquals(status, order.status());
+            verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.NOTE, version));
+            service.changePaymentStatus(order.id(), new OrderCommands.PaymentStatus(version, "PAID"), operator);
+            assertEquals(version + 1, order.version()); assertEquals(status, order.status());
+            verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.PAYMENT_STATUS_CHANGED, version + 1));
+        }
+    }
+    @Test void invalidFulfillmentCancellationAndStaleVersionsNeverPublishOrPersist() {
+        var order = loaded();
+        assertThrows(OrderFailure.class, () -> service.fulfillmentAction(order.id(), new OrderCommands.FulfillmentAction(0, "CONFIRM_PICKUP"), operator));
+        assertThrows(OrderFailure.class, () -> service.fulfillmentAction(order.id(), new OrderCommands.FulfillmentAction(0, "UNKNOWN"), operator));
+        assertThrows(OrderFailure.class, () -> service.cancel(order.id(), new OrderCommands.Cancel(0, " "), operator));
+        assertThrows(OrderFailure.class, () -> service.cancel(order.id(), new OrderCommands.Cancel(1, "取消"), operator));
+        assertThrows(OrderFailure.class, () -> service.fulfillmentAction(order.id(), new OrderCommands.FulfillmentAction(1, "CONFIRM_PICKUP"), operator));
+        assertThrows(OrderFailure.class, () -> service.cancel(order.id(), new OrderCommands.Cancel(0.5, "取消"), operator));
+        assertThrows(OrderFailure.class, () -> service.fulfillmentAction(order.id(), new OrderCommands.FulfillmentAction(-1, "CONFIRM_PICKUP"), operator));
+        assertEquals("WAITING_PRODUCTION", order.status()); assertEquals(0, order.version());
+        verify(orders, never()).changeStatus(any(), anyLong()); verifyNoInteractions(activities, events);
+    }
+    @Test void databaseStatusConflictsPreventActivitiesAndNotifications() {
+        var ready = loaded(); ready.applyProductionAction("START_PRODUCTION", NOW); ready.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        doThrow(new OrderFailure("CONCURRENT_MODIFICATION")).when(orders).changeStatus(any(), anyLong());
+        assertThrows(OrderFailure.class, () -> service.fulfillmentAction(ready.id(), new OrderCommands.FulfillmentAction(2, "CONFIRM_PICKUP"), operator));
+        verifyNoInteractions(activities, events);
+        var order = loaded();
+        assertThrows(OrderFailure.class, () -> service.cancel(order.id(), new OrderCommands.Cancel(0, "取消"), operator));
+        verifyNoInteractions(activities, events);
+    }
+    @Test void activityFailureAfterStatusUpdateDoesNotPublish() {
+        var order = loaded(); doThrow(new IllegalStateException("unavailable")).when(activities).append(any());
+        assertThrows(IllegalStateException.class, () -> service.cancel(order.id(), new OrderCommands.Cancel(0, "取消"), operator));
+        verify(orders).changeStatus(order, 0); verifyNoInteractions(events);
+        var ready = loaded(); ready.applyProductionAction("START_PRODUCTION", NOW); ready.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        assertThrows(IllegalStateException.class, () -> service.fulfillmentAction(ready.id(), new OrderCommands.FulfillmentAction(2, "CONFIRM_PICKUP"), operator));
+        verify(orders).changeStatus(ready, 2); verifyNoInteractions(events);
     }
     private Order order() {
         return Order.create(UUID.randomUUID(), "0000001", new CustomerContact(null, "13800000000", null, null),

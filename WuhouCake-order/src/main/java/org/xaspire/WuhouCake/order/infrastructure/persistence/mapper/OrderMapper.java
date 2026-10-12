@@ -48,6 +48,9 @@ public interface OrderMapper {
             + " WHERE id=CAST(#{id} AS uuid) AND version=#{expected}")
     int updateProduction(@Param("id") String id, @Param("expected") long expected, @Param("status") String status,
             @Param("currentStageCode") String currentStageCode, @Param("updatedAt") Instant updatedAt);
+    @Update("UPDATE cake_order SET status=#{status}, version=version+1, updated_at=#{updatedAt}"
+            + " WHERE id=CAST(#{id} AS uuid) AND version=#{expected}")
+    int updateStatus(@Param("id") String id, @Param("expected") long expected, @Param("status") String status, @Param("updatedAt") Instant updatedAt);
     @Update("UPDATE cake_order_item SET production_status=#{productionStatus}, updated_at=#{updatedAt}"
             + " WHERE id=CAST(#{id} AS uuid) AND order_id=CAST(#{orderId} AS uuid) AND NOT is_removed")
     int updateItemProduction(ItemRow row);

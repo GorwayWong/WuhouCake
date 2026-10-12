@@ -22,7 +22,8 @@ public class ApiErrors {
     ResponseEntity<ApiResponse<Void>> order(OrderFailure failure) {
         int status = switch (failure.code()) {
             case "ORDER_NOT_FOUND" -> 404;
-            case "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE" -> 409;
+            case "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
+                    "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE" -> 409;
             default -> 400;
         };
         return response(status, failure.code());

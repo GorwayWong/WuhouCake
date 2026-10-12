@@ -9,7 +9,8 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 public record OrderActivity(long id, UUID orderId, UUID itemId, String type, String content,
         Map<String, Object> details, UUID actorId, String actorNameSnapshot, Instant createdAt) {
-    public static final Set<String> TYPES = Set.of("CREATED", "ITEM_CHANGED", "NOTE", "PAYMENT_STATUS_CHANGED", "ORDER_PRODUCTION_CHANGED");
+    public static final Set<String> TYPES = Set.of("CREATED", "ITEM_CHANGED", "NOTE", "PAYMENT_STATUS_CHANGED", "ORDER_PRODUCTION_CHANGED",
+            "ORDER_FULFILLMENT_CHANGED", "ORDER_CANCELLED");
     public OrderActivity {
         Objects.requireNonNull(orderId); Objects.requireNonNull(actorId); Objects.requireNonNull(createdAt);
         if (type == null || !TYPES.contains(type)) throw invalid();

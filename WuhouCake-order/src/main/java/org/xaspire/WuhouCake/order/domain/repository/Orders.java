@@ -12,5 +12,6 @@ public interface Orders {
     void reviseItem(Order order, long expectedVersion, UUID itemId);
     void changePaymentStatus(Order order, long expectedVersion);
     void changeProduction(Order order, long expectedVersion, List<UUID> changedItemIds);
+    void changeStatus(Order order, long expectedVersion);
     void verifyVersion(UUID id, long expectedVersion);
 }

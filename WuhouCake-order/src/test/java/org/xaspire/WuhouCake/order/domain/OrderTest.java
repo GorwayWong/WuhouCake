@@ -164,6 +164,92 @@ class OrderTest {
     private static OrderItem item(String name, Map<String, Object> attributes) {
         return OrderItem.create(UUID.randomUUID(), name, null, 1, 10000, 8000, attributes, NOW);
     }
+    @Test void deliveryMustStartBeforeCompletionAndPreservesProductionData() {
+        var order = order(FulfillmentType.DELIVERY, item("蛋糕", Map.of()), item("纸杯", Map.of()));
+        order.applyProductionAction("START_PRODUCTION", NOW.plusSeconds(1));
+        order.applyProductionAction("COMPLETE_LAYER", NOW.plusSeconds(2));
+        order.applyProductionAction("COMPLETE_PRODUCTION", NOW.plusSeconds(3));
+        var items = order.activeItems();
+        assertEquals("INVALID_FULFILLMENT_TRANSITION", assertThrows(OrderFailure.class,
+                () -> order.applyFulfillmentAction("COMPLETE_DELIVERY", NOW.plusSeconds(4))).code());
+        assertEquals("WAITING_DELIVERY", order.status()); assertEquals(3, order.version());
+        var started = order.applyFulfillmentAction("START_DELIVERY", NOW.plusSeconds(4));
+        assertEquals("START_DELIVERY", started.get("action")); assertEquals(Map.of("status", "WAITING_DELIVERY"), started.get("before"));
+        assertEquals(Map.of("status", "DELIVERING"), started.get("after")); assertEquals(4, order.version());
+        order.applyFulfillmentAction("COMPLETE_DELIVERY", NOW.plusSeconds(5));
+        assertEquals("COMPLETED", order.status()); assertEquals(5, order.version()); assertEquals(NOW.plusSeconds(5), order.updatedAt());
+        assertEquals("LAYER_DONE", order.currentStageCode()); assertEquals(items, order.activeItems()); assertEquals("UNPAID", order.paymentStatus());
+        for (var action : List.of("START_DELIVERY", "COMPLETE_DELIVERY", "CONFIRM_PICKUP"))
+            assertEquals("INVALID_FULFILLMENT_TRANSITION", assertThrows(OrderFailure.class, () -> order.applyFulfillmentAction(action, NOW)).code());
+        assertEquals(5, order.version()); assertEquals(NOW.plusSeconds(5), order.updatedAt());
+    }
+    @Test void pickupCompletesDirectlyAndFulfillmentTypesCannotBeMixed() {
+        for (var type : FulfillmentType.values()) {
+            var order = order(type, item("蛋糕", Map.of()));
+            order.applyProductionAction("START_PRODUCTION", NOW.plusSeconds(1));
+            order.applyProductionAction("COMPLETE_PRODUCTION", NOW.plusSeconds(2));
+            var items = order.activeItems();
+            var wrongActions = type == FulfillmentType.PICKUP ? List.of("START_DELIVERY", "COMPLETE_DELIVERY") : List.of("CONFIRM_PICKUP");
+            for (var action : wrongActions)
+                assertEquals("INVALID_FULFILLMENT_TRANSITION", assertThrows(OrderFailure.class, () -> order.applyFulfillmentAction(action, NOW)).code());
+            assertEquals(2, order.version()); assertEquals(NOW.plusSeconds(2), order.updatedAt());
+            if (type == FulfillmentType.PICKUP) {
+                order.applyFulfillmentAction("CONFIRM_PICKUP", NOW.plusSeconds(3));
+                assertEquals("COMPLETED", order.status()); assertEquals(3, order.version()); assertEquals(items, order.activeItems());
+            }
+        }
+    }
+    @Test void fulfillmentBeforeProductionCompletionAndUnknownActionsDoNotMutate() {
+        var order = order(FulfillmentType.DELIVERY, item("蛋糕", Map.of()));
+        for (int stage = 0; stage < 2; stage++) {
+            var version = order.version(); var updatedAt = order.updatedAt(); var status = order.status();
+            for (var action : List.of("START_DELIVERY", "COMPLETE_DELIVERY", "CONFIRM_PICKUP"))
+                assertEquals("INVALID_FULFILLMENT_TRANSITION", assertThrows(OrderFailure.class, () -> order.applyFulfillmentAction(action, NOW)).code());
+            for (var action : Arrays.asList(null, "", "DELIVER"))
+                assertEquals("VALIDATION_FAILED", assertThrows(OrderFailure.class, () -> order.applyFulfillmentAction(action, NOW)).code());
+            assertEquals(version, order.version()); assertEquals(updatedAt, order.updatedAt()); assertEquals(status, order.status());
+            if (stage == 0) order.applyProductionAction("START_PRODUCTION", NOW.plusSeconds(1));
+        }
+    }
+    @Test void everyNonterminalStateCanCancelWithoutChangingPaymentItemsOrStage() {
+        for (var state : List.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING")) {
+            var order = order(state.equals("WAITING_PICKUP") ? FulfillmentType.PICKUP : FulfillmentType.DELIVERY, item("蛋糕", Map.of()));
+            order.changePaymentStatus("PAID", NOW);
+            if (!state.equals("WAITING_PRODUCTION")) {
+                order.applyProductionAction("START_PRODUCTION", NOW.plusSeconds(1));
+                order.applyProductionAction("COMPLETE_LAYER", NOW.plusSeconds(2));
+            }
+            if (Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(state))
+                order.applyProductionAction("COMPLETE_PRODUCTION", NOW.plusSeconds(3));
+            if (state.equals("DELIVERING")) order.applyFulfillmentAction("START_DELIVERY", NOW.plusSeconds(4));
+            assertEquals(state, order.status()); var version = order.version(); var items = order.activeItems(); var stage = order.currentStageCode();
+            var changed = order.cancel(" 客户确认取消 ", NOW.plusSeconds(5));
+            assertEquals(Map.of("status", state), changed.get("before")); assertEquals(Map.of("status", "CANCELLED"), changed.get("after"));
+            assertEquals("CANCELLED", order.status()); assertEquals(version + 1, order.version()); assertEquals(NOW.plusSeconds(5), order.updatedAt());
+            assertEquals("PAID", order.paymentStatus()); assertEquals(items, order.activeItems()); assertEquals(stage, order.currentStageCode());
+            assertEquals("ORDER_NOT_CANCELLABLE", assertThrows(OrderFailure.class, () -> order.cancel("重复取消", NOW)).code());
+            assertEquals("ORDER_NOT_EDITABLE", assertThrows(OrderFailure.class,
+                    () -> order.reviseItem(items.getFirst().itemId(), Map.of("quantity", 2), NOW)).code());
+            for (var action : List.of("START_PRODUCTION", "COMPLETE_LAYER", "COMPLETE_FROSTING", "COMPLETE_PRODUCTION", "REOPEN_PRODUCTION"))
+                assertEquals("INVALID_PRODUCTION_TRANSITION", assertThrows(OrderFailure.class, () -> order.applyProductionAction(action, NOW)).code());
+            for (var action : List.of("START_DELIVERY", "COMPLETE_DELIVERY", "CONFIRM_PICKUP"))
+                assertEquals("INVALID_FULFILLMENT_TRANSITION", assertThrows(OrderFailure.class, () -> order.applyFulfillmentAction(action, NOW)).code());
+            assertEquals(version + 1, order.version());
+            order.changePaymentStatus("UNPAID", NOW.plusSeconds(6));
+            assertEquals("CANCELLED", order.status()); assertEquals(version + 2, order.version()); assertEquals(items, order.activeItems());
+        }
+    }
+    @Test void cancellationRequiresAReasonAndCompletedOrdersCannotCancel() {
+        var order = order(item("蛋糕", Map.of()));
+        for (var reason : Arrays.asList(null, "", " \t "))
+            assertEquals("VALIDATION_FAILED", assertThrows(OrderFailure.class, () -> order.cancel(reason, NOW.plusSeconds(1))).code());
+        assertEquals("WAITING_PRODUCTION", order.status()); assertEquals(0, order.version()); assertEquals(NOW, order.updatedAt());
+        order.applyProductionAction("START_PRODUCTION", NOW.plusSeconds(1)); order.applyProductionAction("COMPLETE_PRODUCTION", NOW.plusSeconds(2));
+        order.applyFulfillmentAction("CONFIRM_PICKUP", NOW.plusSeconds(3));
+        assertEquals("ORDER_NOT_CANCELLABLE", assertThrows(OrderFailure.class, () -> order.cancel("客户取消", NOW)).code());
+        assertEquals("COMPLETED", order.status()); assertEquals(3, order.version()); assertEquals(NOW.plusSeconds(3), order.updatedAt());
+        order.changePaymentStatus("PAID", NOW.plusSeconds(4)); assertEquals("COMPLETED", order.status()); assertEquals(4, order.version());
+    }
     private static Order order(OrderItem... items) {
         return order(FulfillmentType.PICKUP, items);
     }

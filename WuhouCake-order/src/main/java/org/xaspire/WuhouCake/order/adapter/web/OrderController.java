@@ -47,6 +47,15 @@ public class OrderController {
             @RequestParam(required = false) String type, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.success(orders.activities(id, itemId, type, page, size));
     }
+    @PostMapping("/{id}/fulfillment-actions")
+    public ApiResponse<OrderViews.Detail> fulfillmentAction(@PathVariable UUID id, @Valid @RequestBody OrderCommands.FulfillmentAction command,
+            Authentication authentication) {
+        return ApiResponse.success(orders.fulfillmentAction(id, command, operator(authentication)));
+    }
+    @PostMapping("/{id}/cancel")
+    public ApiResponse<OrderViews.Detail> cancel(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Cancel command, Authentication authentication) {
+        return ApiResponse.success(orders.cancel(id, command, operator(authentication)));
+    }
     private static OrderCommands.Operator operator(Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
         return new OrderCommands.Operator(account.accountId(), account.nickname());

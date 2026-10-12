@@ -16,6 +16,8 @@ import org.xaspire.WuhouCake.bootstrap.configuration.*;
 import org.xaspire.WuhouCake.bootstrap.security.*;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 import org.xaspire.WuhouCake.order.adapter.web.*;
+import org.xaspire.WuhouCake.order.api.command.OrderCommands;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 
@@ -88,5 +90,35 @@ class OrderStreamWebTest {
         when(decoder.decode("valid")).thenReturn(Jwt.withTokenValue("valid").header("alg", "RS256").subject(accountId.toString())
                 .claim("sid", sessionId.toString()).claim("ver", 0L).issuedAt(now.minusSeconds(60)).expiresAt(now.minusSeconds(1)).build());
         mvc.perform(get("/api/orders/stream").header("Authorization", "Bearer valid")).andExpect(status().isUnauthorized()).andExpect(request().asyncNotStarted());
+    }
+    @Test void statusEndpointsAuthenticateValidateAndUseServerOperator() throws Exception {
+        var id = UUID.randomUUID(); String fulfillment = "/api/orders/" + id + "/fulfillment-actions", cancel = "/api/orders/" + id + "/cancel";
+        mvc.perform(post(fulfillment).contentType("application/json").content("{\"expectedVersion\":5,\"action\":\"START_DELIVERY\"}")).andExpect(status().isUnauthorized());
+        mvc.perform(post(cancel).contentType("application/json").content("{\"expectedVersion\":5,\"reason\":\"取消\"}")).andExpect(status().isUnauthorized());
+        mvc.perform(post(fulfillment).header("Authorization", "Bearer valid").contentType("application/json")
+                .content("{\"expectedVersion\":5,\"action\":\"START_DELIVERY\"}")).andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true));
+        mvc.perform(post(cancel).header("Authorization", "Bearer valid").contentType("application/json")
+                .content("{\"expectedVersion\":5,\"reason\":\"取消\"}")).andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true));
+        var operator = new OrderCommands.Operator(accountId, "员工");
+        verify(orders).fulfillmentAction(eq(id), eq(new OrderCommands.FulfillmentAction(5, "START_DELIVERY")), eq(operator));
+        verify(orders).cancel(eq(id), eq(new OrderCommands.Cancel(5, "取消")), eq(operator));
+        for (var body : List.of("{\"expectedVersion\":5}", "{\"expectedVersion\":5,\"reason\":\" \"}", "{\"reason\":\"取消\"}"))
+            mvc.perform(post(cancel).header("Authorization", "Bearer valid").contentType("application/json").content(body)).andExpect(status().isBadRequest());
+        mvc.perform(post(fulfillment).header("Authorization", "Bearer valid").contentType("application/json")
+                .content("{\"expectedVersion\":5,\"action\":\" \"}")).andExpect(status().isBadRequest());
+        verifyNoMoreInteractions(orders);
+    }
+    @Test void newBusinessFailuresUseExistingErrorEnvelopeAndHttpStatus() throws Exception {
+        var id = UUID.randomUUID(); String fulfillment = "/api/orders/" + id + "/fulfillment-actions", cancel = "/api/orders/" + id + "/cancel";
+        for (var code : List.of("INVALID_FULFILLMENT_TRANSITION", "CONCURRENT_MODIFICATION", "ORDER_NOT_FOUND", "VALIDATION_FAILED")) {
+            doThrow(new OrderFailure(code)).when(orders).fulfillmentAction(eq(id), any(), any());
+            int status = code.equals("ORDER_NOT_FOUND") ? 404 : code.equals("VALIDATION_FAILED") ? 400 : 409;
+            mvc.perform(post(fulfillment).header("Authorization", "Bearer valid").contentType("application/json")
+                    .content("{\"expectedVersion\":5,\"action\":\"START_DELIVERY\"}"))
+                    .andExpect(status().is(status)).andExpect(jsonPath("$.code").value(code));
+        }
+        doThrow(new OrderFailure("ORDER_NOT_CANCELLABLE")).when(orders).cancel(eq(id), any(), any());
+        mvc.perform(post(cancel).header("Authorization", "Bearer valid").contentType("application/json").content("{\"expectedVersion\":5,\"reason\":\"取消\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_NOT_CANCELLABLE"));
     }
 }

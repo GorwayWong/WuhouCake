@@ -7,6 +7,9 @@ import java.util.*;
 import java.util.concurrent.*;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.*;
@@ -14,6 +17,7 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands;
+import org.xaspire.WuhouCake.order.api.dto.OrderViews;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.Order;
@@ -95,5 +99,39 @@ class OrderStreamTransactionsTest {
         doThrow(new IOException("disconnected")).when(emitter).send(any(SseEmitter.SseEventBuilder.class));
         var result = assertDoesNotThrow(() -> context.getBean(OrderService.class).note(order.id(), new OrderCommands.Note(null, "少糖"), operator));
         assertEquals("少糖", result.content()); verify(connection).commit(); verify(connection, never()).rollback();
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void statusChangesNotifyWithTheirNewTypeOnlyAfterCommit(boolean fulfillment) throws Exception {
+        long expected = prepare(fulfillment);
+        var result = change(fulfillment, expected);
+        assertEquals(fulfillment ? "COMPLETED" : "CANCELLED", result.status()); assertEquals(expected + 1, result.version());
+        var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        var sequence = inOrder(emitter, connection);
+        sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class)); sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
+        var event = sent.getValue().build().stream().map(value -> value.getData()).filter(OrderChanged.class::isInstance).map(OrderChanged.class::cast).findFirst().orElseThrow();
+        assertEquals(new OrderChanged(order.id(), null, fulfillment ? OrderChanged.Type.ORDER_FULFILLMENT_CHANGED : OrderChanged.Type.ORDER_CANCELLED, expected + 1), event);
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void outerRollbackSuppressesStatusChangeNotifications(boolean fulfillment) throws Exception {
+        long expected = prepare(fulfillment);
+        new TransactionTemplate(manager).executeWithoutResult(status -> { change(fulfillment, expected); status.setRollbackOnly(); });
+        verify(orders).changeStatus(order, expected); verify(activities).append(any());
+        verify(connection).rollback(); verify(connection, never()).commit(); verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void activityFailureRollsBackStatusChangeWithoutNotifying(boolean fulfillment) throws Exception {
+        long expected = prepare(fulfillment); doThrow(new IllegalStateException("activity unavailable")).when(activities).append(any());
+        assertThrows(IllegalStateException.class, () -> change(fulfillment, expected));
+        verify(orders).changeStatus(order, expected); verify(connection).rollback(); verify(connection, never()).commit();
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    private long prepare(boolean fulfillment) {
+        if (fulfillment) { order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW); }
+        return order.version();
+    }
+    private OrderViews.Detail change(boolean fulfillment, long expected) {
+        var service = context.getBean(OrderService.class);
+        return fulfillment ? service.fulfillmentAction(order.id(), new OrderCommands.FulfillmentAction(expected, "CONFIRM_PICKUP"), operator)
+                : service.cancel(order.id(), new OrderCommands.Cancel(expected, "取消"), operator);
     }
 }

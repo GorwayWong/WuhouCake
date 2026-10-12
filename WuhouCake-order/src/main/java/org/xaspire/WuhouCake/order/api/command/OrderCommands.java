@@ -19,6 +19,8 @@ public final class OrderCommands {
     public record Revise(@NotNull Number expectedVersion, @NotNull UUID itemId, @NotEmpty Map<String, Object> changes) { }
     public record PaymentStatus(@NotNull Number expectedVersion, @NotBlank String paymentStatus) { }
     public record ProductionAction(@NotNull Number expectedVersion, @NotBlank String action) { }
+    public record FulfillmentAction(@NotNull Number expectedVersion, @NotBlank String action) { }
+    public record Cancel(@NotNull Number expectedVersion, @NotBlank String reason) { }
     public record Note(UUID itemId, @NotBlank String content) { }
     public record Operator(UUID accountId, String nickname) { }
 }

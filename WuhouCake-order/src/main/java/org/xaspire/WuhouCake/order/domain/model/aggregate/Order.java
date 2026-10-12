@@ -113,6 +113,36 @@ public final class Order {
         status = nextStatus; currentStageCode = nextStage; version++; updatedAt = now;
         return JsonSnapshot.object(Map.of("action", action, "before", before, "after", productionValues(), "itemChanges", itemChanges));
     }
+    public Map<String, Object> applyFulfillmentAction(String action, Instant now) {
+        if (action == null) throw invalid();
+        String nextStatus;
+        switch (action) {
+            case "START_DELIVERY" -> {
+                requireFulfillmentState(fulfillment.type() == FulfillmentType.DELIVERY && status.equals("WAITING_DELIVERY"));
+                nextStatus = "DELIVERING";
+            }
+            case "COMPLETE_DELIVERY" -> {
+                requireFulfillmentState(fulfillment.type() == FulfillmentType.DELIVERY && status.equals("DELIVERING"));
+                nextStatus = "COMPLETED";
+            }
+            case "CONFIRM_PICKUP" -> {
+                requireFulfillmentState(fulfillment.type() == FulfillmentType.PICKUP && status.equals("WAITING_PICKUP"));
+                nextStatus = "COMPLETED";
+            }
+            default -> throw invalid();
+        }
+        requireNextVersion();
+        var before = status; status = nextStatus; version++; updatedAt = now;
+        return JsonSnapshot.object(Map.of("action", action, "before", Map.of("status", before), "after", Map.of("status", status)));
+    }
+    public Map<String, Object> cancel(String reason, Instant now) {
+        requiredText(reason, Integer.MAX_VALUE);
+        if (!Set.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(status))
+            throw new OrderFailure("ORDER_NOT_CANCELLABLE");
+        requireNextVersion();
+        var before = status; status = "CANCELLED"; version++; updatedAt = now;
+        return JsonSnapshot.object(Map.of("before", Map.of("status", before), "after", Map.of("status", status)));
+    }
     private Map<String, Object> productionValues() {
         var values = new LinkedHashMap<String, Object>();
         values.put("status", status); values.put("currentStageCode", currentStageCode);
@@ -123,6 +153,9 @@ public final class Order {
     }
     private static void requireProductionState(boolean allowed) {
         if (!allowed) throw new OrderFailure("INVALID_PRODUCTION_TRANSITION");
+    }
+    private static void requireFulfillmentState(boolean allowed) {
+        if (!allowed) throw new OrderFailure("INVALID_FULFILLMENT_TRANSITION");
     }
     public UUID id() { return id; }
     public String orderNo() { return orderNo; }
