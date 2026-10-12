@@ -1,10 +1,10 @@
-# Order · Slice A / B1
+# Order · Slice A / B1 / B2
 
-订单模块提供多商品正式订单、商品修改、整单手工制作进度、付款状态纠正、独立备注和业务历史。Bootstrap 显式装配；业务写入事务由 `OrderService` 管理。员工使用现有登录流程取得 Bearer token，且须先完成初始密码修改。
+订单模块提供多商品正式订单、商品修改、整单手工制作进度、付款状态纠正、独立备注、业务历史和提交后的 SSE 通知。Bootstrap 显式装配；业务写入事务由 `OrderService` 管理。员工使用现有登录流程取得 Bearer token，且须先完成初始密码修改。
 
 ## HTTP 接口
 
-所有响应使用 `ApiResponse`。创建订单和追加备注返回 201，查询和修改返回 200。
+REST 响应使用 `ApiResponse`。创建订单和追加备注返回 201，查询和修改返回 200。SSE 直接返回 `text/event-stream`，不套用 `ApiResponse`。
 
 | 方法和路径 | 行为 |
 | --- | --- |
@@ -15,6 +15,7 @@
 | `POST /api/orders/{orderId}/production-actions` | 携带 expectedVersion、action 手工确认整单制作进度 |
 | `POST /api/orders/{orderId}/notes` | 追加备注；itemId 可空，空值代表订单级备注 |
 | `GET /api/orders/{orderId}/activities` | 独立分页查询，支持 itemId、type、page、size |
+| `GET /api/orders/stream` | 带 Bearer header 订阅本进程中的订单变化；匿名或过期 JWT 返回 401 |
 
 创建请求示例：
 
@@ -98,19 +99,54 @@ changes 只接受 name、productType、quantity、unitPriceCents、memberPriceCe
 
 V4 为 cake_order 添加可空 current_stage_code，已有订单默认 null；V3 保持不变，Flyway 沿用现有初始化方式。
 
+## SSE 与前端接入
+
+使用能携带 Bearer 请求头的 Fetch SSE 客户端，按 SSE 帧解析响应并处理断线重连。请求示例：
+
+```js
+const response = await fetch("/api/orders/stream", {
+  headers: { Authorization: `Bearer ${accessToken}`, Accept: "text/event-stream" },
+  signal: abortController.signal
+});
+```
+
+建立连接后先收到 `ready`，data 为 `{}`。数据库事务提交成功后，所有已连接员工（包括发起修改的员工）收到 `order.changed`：
+
+```text
+event: order.changed
+data: {"orderId":"<UUID>","itemId":null,"changeType":"ORDER_PRODUCTION_CHANGED","version":5}
+
+```
+
+| changeType | 触发条件 | itemId / version |
+| --- | --- | --- |
+| CREATED | 创建订单 | null / 0 |
+| ITEM_CHANGED | 商品发生实际修改 | 目标商品 ID / 修改后版本 |
+| NOTE | 成功追加备注 | 商品 ID 或 null / 当前订单版本 |
+| PAYMENT_STATUS_CHANGED | 付款状态实际改变 | null / 修改后版本 |
+| ORDER_PRODUCTION_CHANGED | 整单制作动作成功 | null / 修改后版本 |
+
+夹层、抹面仍是整单节点，通知的 itemId 为 null。通知仅含四个定位字段，不含客户资料、备注正文、付款详情或凭证。校验失败、409 冲突、事务回滚及提交失败均不通知；同值商品 PATCH 和付款修改不通知。发送失败只清理相应连接，不影响订单提交或其他客户端。
+
+前端收到 `order.changed` 后，自动使对应订单详情及列表、日历缓存失效，并通过 REST 重取数据。详情使用 `GET /api/orders/{orderId}`，备注可使用现有 activities 查询。`NOTE` 即使 version 未变化也必须重取备注，不能按版本相同忽略通知。更新查询缓存时保留员工正在编辑且尚未保存的表单，使用最新版本提示或处理已有 409 冲突。
+
+首次连接收到 ready、连接断开、重连成功和页面重新聚焦时，主动获取最新 REST 数据。每 15 秒发送一条 `:heartbeat` 注释，客户端忽略即可。每条连接最长 5 分钟，且不超过本次 JWT 剩余有效期；连接到期后重新连接，JWT 过期则先使用现有 `/api/auth/refresh` 流程取得新 token。
+
+通知使用单实例进程内连接管理和提交后监听，不持久化、不重放，也不支持 Last-Event-ID 恢复。断线期间的变化靠 REST 重取补齐。当前仓库没有前端项目，本模块仅提供订阅协议与接入契约。
+
 ## 验证
 
 在仓库根目录使用 Java 21：
 
 ```sh
 rtk proxy ./mvnw -pl WuhouCake-order,WuhouCake-bootstrap -am verify
-rtk proxy ./mvnw -pl WuhouCake-bootstrap -am -Pintegration -Dit.test=OrderIT -Dfailsafe.failIfNoSpecifiedTests=false verify
+rtk proxy ./mvnw -pl WuhouCake-bootstrap -am -Pintegration -Dit.test=OrderIT,InfrastructureIT -Dfailsafe.failIfNoSpecifiedTests=false verify
 ```
 
 OrderIT 复用现有 integration 配置、JWT 测试密钥、隔离 schema 和 Redis namespace，需要现有 PostgreSQL、Redis 可连接。连接配置见 Bootstrap 的 application-integration.yml；测试不会修改真实订单。
 
-OrderTest 和 OrderServiceTest 验证制作规则、付款纠正、商品独立修改及同值付款的版本检查。OrderIT 覆盖 Slice A 数据库验证、整单闭环、节点跳过、退回修改、并发版本冲突和活动写入失败回滚。
+OrderTest 和 OrderServiceTest 验证制作规则、付款纠正、商品独立修改、同值写入及事件生成。OrderStreamsTest 验证连接生命周期、JWT 到期、心跳、串行发送、队列上限和故障隔离；OrderStreamTransactionsTest 使用 Spring 事务管理器和 mock JDBC 验证提交后通知、回滚与提交失败不通知、备注通知及发送故障不影响提交。OrderStreamWebTest 复用现有安全链验证认证、SSE 协议和异步完成。OrderIT 覆盖 Slice A/B1 数据库验证及 A/B 订阅后读取最新夹层、备注、无变化写入不通知、断开隔离和回滚不通知。
 
-2026-10-12 验证：Java 21 下 Maven verify 和既有 ArchUnit 检查通过，订单模块 17 项检查全部通过。OrderIT 已尝试运行，但应用启动时 PostgreSQL localhost:5432 拒绝连接，尚未执行真实数据库用例，也未进入 Redis 验证；Slice A 和 B1 的真实数据库验证待环境恢复后执行上述集成命令。
+2026-10-12 Slice B2 验证：Java 21 下 Maven verify 和既有 ArchUnit 检查通过，订单模块 38 项、bootstrap 23 项检查全部通过，包含 ready 注册并发窗口和到期调度拒绝的回归测试。已尝试运行 OrderIT、InfrastructureIT，但应用初始化时 PostgreSQL localhost:5432 拒绝连接，尚未执行真实 HTTP/数据库用例，也未进入 Redis 验证；环境恢复后执行上述集成命令验证 Slice A/B1/B2 的数据库闭环。
 
-Slice B2 再实现成功提交后的 SSE 通知；后续配送、交付完成和取消不在本期范围。本模块没有 SSE 发布器、事件总线或订阅器；未来 NOTE_ADDED 通知须直接触发备注重查，不能只依赖订单 version。
+后续配送、交付完成和取消不在本期范围。

@@ -1,8 +1,10 @@
 package org.xaspire.WuhouCake.bootstrap;
 
 import com.fasterxml.jackson.databind.*;
+import java.io.*;
 import java.net.*;
 import java.net.http.*;
+import java.nio.charset.StandardCharsets;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -16,8 +18,12 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.*;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.xaspire.WuhouCake.bootstrap.integration.JwtTestKeys;
 import org.xaspire.WuhouCake.identity.application.service.IdentityService;
+import org.xaspire.WuhouCake.order.api.command.OrderCommands;
+import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.domain.repository.OrderActivities;
 import org.xaspire.WuhouCake.order.domain.repository.Orders;
 
@@ -44,6 +50,8 @@ class OrderIT {
     @Autowired JdbcTemplate jdbc;
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
+    @Autowired OrderService orderService;
+    @Autowired PlatformTransactionManager transactions;
     @MockitoSpyBean OrderActivities activities;
     @MockitoSpyBean Orders orders;
     @MockitoSpyBean Clock clock;
@@ -325,20 +333,71 @@ class OrderIT {
     }
     @Test void activityFailureRollsBackPaymentOrderStagesAndSynchronizedItems() throws Exception {
         var staff = staff(); var original = staff.request("POST", "/api/orders", create()).body.path("data"); String id = original.path("orderId").asText();
-        doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> activity.type().equals("PAYMENT_STATUS_CHANGED")));
-        assertEquals(503, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
-        reset(activities); assertEquals(original, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
-        for (var action : List.of("START_PRODUCTION", "COMPLETE_LAYER", "COMPLETE_PRODUCTION", "REOPEN_PRODUCTION")) {
-            var before = staff.request("GET", "/api/orders/" + id, null).body.path("data"); long version = before.path("version").asLong();
-            long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
-            doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> activity.type().equals("ORDER_PRODUCTION_CHANGED")));
-            assertEquals(503, staff.request("POST", "/api/orders/" + id + "/production-actions", action(version, action)).status);
-            reset(activities); assertEquals(before, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
-            assertEquals(version, jdbc.queryForObject("SELECT version FROM cake_order WHERE id=?::uuid", Long.class, id));
-            assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
-            production(staff, id, version, action);
+        try (var stream = staff.stream()) {
+            doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> activity.type().equals("PAYMENT_STATUS_CHANGED")));
+            assertEquals(503, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
+            stream.noChange();
+            reset(activities); assertEquals(original, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
+            for (var action : List.of("START_PRODUCTION", "COMPLETE_LAYER", "COMPLETE_PRODUCTION", "REOPEN_PRODUCTION")) {
+                var before = staff.request("GET", "/api/orders/" + id, null).body.path("data"); long version = before.path("version").asLong();
+                long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
+                doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> activity.type().equals("ORDER_PRODUCTION_CHANGED")));
+                assertEquals(503, staff.request("POST", "/api/orders/" + id + "/production-actions", action(version, action)).status);
+                stream.noChange();
+                reset(activities); assertEquals(before, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
+                assertEquals(version, jdbc.queryForObject("SELECT version FROM cake_order WHERE id=?::uuid", Long.class, id));
+                assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
+                production(staff, id, version, action);
+                stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", version + 1);
+            }
+            assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='PAYMENT_STATUS_CHANGED'", Long.class));
         }
-        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='PAYMENT_STATUS_CHANGED'", Long.class));
+    }
+    @Test void authenticatedStaffReceiveAllChangesAndRefetchProductionAndNotes() throws Exception {
+        var staff = staff(); var peer = new Client(); peer.login("0001", PASSWORD);
+        assertEquals(401, new Client().request("GET", "/api/orders/stream", null).status);
+        try (var a = staff.stream(); var b = peer.stream()) {
+            var created = staff.request("POST", "/api/orders", create()); assertEquals(201, created.status);
+            var original = created.body.path("data"); String id = original.path("orderId").asText(), itemId = idForName(original, "蛋糕");
+            for (var stream : List.of(a, b)) stream.changed(id, null, "CREATED", 0);
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id, patch(itemId, 0, Map.of("quantity", 2))).status);
+            for (var stream : List.of(a, b)) stream.changed(id, itemId, "ITEM_CHANGED", 1);
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID")).status);
+            for (var stream : List.of(a, b)) stream.changed(id, null, "PAYMENT_STATUS_CHANGED", 2);
+            production(staff, id, 2, "START_PRODUCTION");
+            for (var stream : List.of(a, b)) stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 3);
+            production(staff, id, 3, "COMPLETE_LAYER");
+            for (var stream : List.of(a, b)) stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 4);
+            var latest = peer.request("GET", "/api/orders/" + id, null).body.path("data");
+            assertEquals("LAYER_DONE", latest.path("currentStageCode").asText()); assertEquals(4, latest.path("version").asLong());
+            for (var item : latest.path("items")) assertTrue(item.path("currentStageCode").isNull());
+            assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", itemId, "content", "客户要求少糖")).status);
+            for (var stream : List.of(a, b)) stream.changed(id, itemId, "NOTE", 4);
+            latest = peer.request("GET", "/api/orders/" + id, null).body.path("data");
+            assertEquals(4, latest.path("version").asLong()); assertEquals(List.of("客户要求少糖"), contents(item(latest, itemId).path("recentNotes")));
+            var notes = peer.request("GET", "/api/orders/" + id + "/activities?itemId=" + itemId + "&type=NOTE", null);
+            assertEquals("客户要求少糖", notes.body.at("/data/items/0/content").asText());
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id, patch(itemId, 4, Map.of("quantity", 2))).status);
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 4, "paymentStatus", "PAID")).status);
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(3, "COMPLETE_FROSTING")).status);
+            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", itemId, "content", " ")).status);
+            a.noChange(); b.noChange(); a.close();
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 4, "paymentStatus", "UNPAID")).status);
+            b.changed(id, null, "PAYMENT_STATUS_CHANGED", 5);
+            assertEquals("UNPAID", peer.request("GET", "/api/orders/" + id, null).body.at("/data/paymentStatus").asText());
+        }
+    }
+    @Test void outerTransactionRollbackSuppressesAnAlreadyPublishedNoteEvent() throws Exception {
+        var staff = staff(); var original = staff.request("POST", "/api/orders", create()).body.path("data"); String id = original.path("orderId").asText();
+        try (var stream = staff.stream()) {
+            new TransactionTemplate(transactions).executeWithoutResult(status -> {
+                orderService.note(UUID.fromString(id), new OrderCommands.Note(null, "应回滚备注"), new OrderCommands.Operator(UUID.fromString(staff.accountId), "前台员工"));
+                status.setRollbackOnly();
+            });
+            stream.noChange();
+            assertEquals(0, staff.request("GET", "/api/orders/" + id + "/activities?type=NOTE", null).body.at("/data/total").asLong());
+            assertEquals(original, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
+        }
     }
     private static Map<String, Object> action(Number version, String action) { return Map.of("expectedVersion", version, "action", action); }
     private JsonNode production(Client staff, String id, Number version, String action) throws Exception {
@@ -377,11 +436,52 @@ class OrderIT {
     }
     private static List<String> contents(JsonNode notes) { var result = new ArrayList<String>(); notes.forEach(note -> result.add(note.path("content").asText())); return result; }
     record Result(int status, JsonNode body) { }
+    record Message(String name, JsonNode data) { }
+    final class Stream implements AutoCloseable {
+        private final InputStream body;
+        private final ExecutorService reader = Executors.newVirtualThreadPerTaskExecutor();
+        private final BlockingQueue<Message> messages = new LinkedBlockingQueue<>();
+        private final Future<?> reading;
+        Stream(HttpResponse<InputStream> response) throws Exception {
+            assertEquals(200, response.statusCode());
+            assertTrue(response.headers().firstValue("Content-Type").orElse("").startsWith("text/event-stream"));
+            body = response.body();
+            reading = reader.submit(() -> {
+                try (var lines = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
+                    String name = null; var data = new StringBuilder(); String line;
+                    while ((line = lines.readLine()) != null) {
+                        if (line.isEmpty()) {
+                            if (name != null) messages.add(new Message(name, json.readTree(data.toString())));
+                            name = null; data.setLength(0);
+                        } else if (line.startsWith("event:")) name = line.substring(6).strip();
+                        else if (line.startsWith("data:")) data.append(line.substring(5).strip()).append('\n');
+                    }
+                    return null;
+                }
+            });
+            var ready = messages.poll(5, TimeUnit.SECONDS); assertNotNull(ready, "missing ready"); assertEquals("ready", ready.name);
+        }
+        void changed(String orderId, String itemId, String type, long version) throws Exception {
+            var message = messages.poll(5, TimeUnit.SECONDS); assertNotNull(message, "missing order.changed"); assertEquals("order.changed", message.name);
+            var data = message.data;
+            assertEquals(Set.of("orderId", "itemId", "changeType", "version"), json.convertValue(data, Map.class).keySet());
+            assertEquals(orderId, data.path("orderId").asText());
+            if (itemId == null) assertTrue(data.path("itemId").isNull()); else assertEquals(itemId, data.path("itemId").asText());
+            assertEquals(type, data.path("changeType").asText()); assertEquals(version, data.path("version").asLong());
+        }
+        void noChange() throws Exception { assertNull(messages.poll(250, TimeUnit.MILLISECONDS)); assertFalse(reading.isDone(), "stream unexpectedly ended"); }
+        @Override public void close() throws IOException { body.close(); reading.cancel(true); reader.shutdownNow(); }
+    }
     final class Client {
         private final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         private final HttpClient client = HttpClient.newBuilder().cookieHandler(cookies).build();
         private String token;
         private String accountId;
+        Stream stream() throws Exception {
+            var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/orders/stream"))
+                    .timeout(Duration.ofSeconds(10)).header("Authorization", "Bearer " + token).header("Accept", "text/event-stream").GET().build();
+            return new Stream(client.send(request, HttpResponse.BodyHandlers.ofInputStream()));
+        }
         void login(String number, String password) throws Exception {
             var result = request("POST", "/api/auth/login", Map.of("employeeNumber", number, "password", password));
             assertEquals(200, result.status, result.body.toString()); token = result.body.at("/data/accessToken").asText();

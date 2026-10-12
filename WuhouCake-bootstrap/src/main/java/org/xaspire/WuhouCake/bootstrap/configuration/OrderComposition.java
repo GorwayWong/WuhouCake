@@ -3,6 +3,7 @@ package org.xaspire.WuhouCake.bootstrap.configuration;
 import java.time.Clock;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.context.annotation.*;
+import org.springframework.context.ApplicationEventPublisher;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.domain.repository.*;
 import org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderMapper;
@@ -18,7 +19,7 @@ public class OrderComposition {
     @Bean OrderActivities orderActivities(OrderActivityMapper mapper, JsonCodec json) {
         return new PostgresOrderActivities(mapper, json);
     }
-    @Bean OrderService orderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock) {
-        return new OrderService(orders, activities, ids, clock);
+    @Bean OrderService orderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events) {
+        return new OrderService(orders, activities, ids, clock, events);
     }
 }

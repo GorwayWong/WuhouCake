@@ -4,11 +4,13 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands.Operator;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
+import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.Order;
 import org.xaspire.WuhouCake.order.domain.model.entity.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
@@ -24,9 +26,11 @@ public class OrderService {
     private final OrderActivities activities;
     private final IdGenerator ids;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
-    public OrderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock) {
+    public OrderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events) {
         this.orders = orders; this.activities = activities; this.ids = ids; this.clock = clock;
+        this.events = events;
     }
     @Transactional
     public OrderViews.Detail create(OrderCommands.Create command, Operator operator) {
@@ -45,6 +49,7 @@ public class OrderService {
         var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now);
         orders.create(order);
         activities.append(OrderActivity.append(order.id(), null, "CREATED", "创建订单", Map.of("status", order.status(), "paymentStatus", order.paymentStatus()), actor, now));
+        changed(order, null, OrderChanged.Type.CREATED);
         return detail(order, List.of());
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -60,6 +65,7 @@ public class OrderService {
         if (!changed.isEmpty()) {
             orders.reviseItem(order, expected, command.itemId());
             activities.append(OrderActivity.append(id, command.itemId(), "ITEM_CHANGED", "修改商品", changed, actor, now));
+            changed(order, command.itemId(), OrderChanged.Type.ITEM_CHANGED);
         }
         return detail(order, activities.recentItemNotes(id));
     }
@@ -74,6 +80,7 @@ public class OrderService {
         else {
             orders.changePaymentStatus(order, expected);
             activities.append(OrderActivity.append(id, null, "PAYMENT_STATUS_CHANGED", "修改付款状态", changed, actor, now));
+            changed(order, null, OrderChanged.Type.PAYMENT_STATUS_CHANGED);
         }
         return detail(order, activities.recentItemNotes(id));
     }
@@ -89,13 +96,16 @@ public class OrderService {
                 .map(OrderItem::itemId).toList();
         orders.changeProduction(order, expected, changedItemIds);
         activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "修改整单制作进度", changed, actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
     public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator) {
         var actor = actor(operator); var order = requireOrder(id);
         if (command.itemId() != null) order.requireActiveItem(command.itemId());
-        return activity(activities.append(OrderActivity.append(id, command.itemId(), "NOTE", command.content(), Map.of(), actor, now())));
+        var note = activities.append(OrderActivity.append(id, command.itemId(), "NOTE", command.content(), Map.of(), actor, now()));
+        changed(order, command.itemId(), OrderChanged.Type.NOTE);
+        return activity(note);
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Page<OrderViews.Activity> activities(UUID id, UUID itemId, String type, int page, int size) {
@@ -106,6 +116,9 @@ public class OrderService {
                 activities.count(id, itemId, type), page, size);
     }
     private Order requireOrder(UUID id) { return orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND")); }
+    private void changed(Order order, UUID itemId, OrderChanged.Type type) {
+        events.publishEvent(new OrderChanged(order.id(), itemId, type, order.version()));
+    }
     private Instant now() { return clock.instant().truncatedTo(ChronoUnit.MICROS); }
     private static Actor actor(Operator operator) { return new Actor(operator.accountId(), operator.nickname()); }
     private static OrderViews.Activity activity(OrderActivity activity) {
