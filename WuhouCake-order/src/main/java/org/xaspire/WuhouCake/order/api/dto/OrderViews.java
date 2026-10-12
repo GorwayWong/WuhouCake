@@ -8,7 +8,7 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands.Fulfillment;
 public final class OrderViews {
     private OrderViews() { }
 
-    public record Detail(UUID orderId, String orderNo, long version, String status, String paymentStatus,
+    public record Detail(UUID orderId, String orderNo, long version, String status, String paymentStatus, String currentStageCode,
             Customer customer, Fulfillment fulfillment, Long totalAmountCents, UUID createdBy,
             Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items) {
         public Detail { items = List.copyOf(items); }

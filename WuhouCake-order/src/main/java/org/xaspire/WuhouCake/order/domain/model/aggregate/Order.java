@@ -12,8 +12,9 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 public final class Order {
     private final UUID id;
     private final String orderNo;
-    private final String status;
-    private final String paymentStatus;
+    private String status;
+    private String paymentStatus;
+    private String currentStageCode;
     private final CustomerContact customer;
     private final FulfillmentPlan fulfillment;
     private final Long totalAmountCents;
@@ -24,11 +25,13 @@ public final class Order {
     private long version;
     private Instant updatedAt;
 
-    public Order(UUID id, String orderNo, long version, String status, String paymentStatus, CustomerContact customer,
+    public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
             FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
             Instant updatedAt, List<OrderItem> items) {
         this.id = Objects.requireNonNull(id); this.orderNo = requiredText(orderNo, 32);
         this.version = nonNegativeInteger(version); this.status = Objects.requireNonNull(status); this.paymentStatus = Objects.requireNonNull(paymentStatus);
+        if (currentStageCode != null && !Set.of("LAYER_DONE", "FROSTING_DONE").contains(currentStageCode)) throw invalid();
+        this.currentStageCode = currentStageCode;
         this.customer = Objects.requireNonNull(customer); this.fulfillment = Objects.requireNonNull(fulfillment);
         this.totalAmountCents = money(totalAmountCents); this.createdBy = Objects.requireNonNull(createdBy);
         this.createdAt = Objects.requireNonNull(createdAt); this.confirmedAt = Objects.requireNonNull(confirmedAt); this.updatedAt = Objects.requireNonNull(updatedAt);
@@ -38,7 +41,7 @@ public final class Order {
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now) {
-        return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", customer, fulfillment, total, actorId, now, now, now, items);
+        return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items);
     }
     public OrderItem requireActiveItem(UUID itemId) {
         var item = items.get(itemId);
@@ -47,6 +50,7 @@ public final class Order {
     }
     public Map<String, Object> reviseItem(UUID itemId, Map<String, Object> changes, Instant now) {
         var previous = requireActiveItem(itemId);
+        if (!Set.of("WAITING_PRODUCTION", "PROCESSING").contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
         var revised = previous.revise(changes, now);
         var before = new LinkedHashMap<String, Object>();
         var after = new LinkedHashMap<String, Object>();
@@ -59,11 +63,73 @@ public final class Order {
         items.put(itemId, revised); version++; updatedAt = now;
         return JsonSnapshot.object(Map.of("before", before, "after", after));
     }
+    public Map<String, Object> changePaymentStatus(String paymentStatus, Instant now) {
+        if (paymentStatus == null || !Set.of("UNPAID", "PAID").contains(paymentStatus)) throw invalid();
+        if (this.paymentStatus.equals(paymentStatus)) return Map.of();
+        requireNextVersion();
+        var before = this.paymentStatus;
+        this.paymentStatus = paymentStatus; version++; updatedAt = now;
+        return JsonSnapshot.object(Map.of("before", Map.of("paymentStatus", before), "after", Map.of("paymentStatus", paymentStatus)));
+    }
+    public Map<String, Object> applyProductionAction(String action, Instant now) {
+        if (action == null) throw invalid();
+        String nextStatus = status, nextStage = currentStageCode, itemStatus = null;
+        switch (action) {
+            case "START_PRODUCTION" -> {
+                requireProductionState(status.equals("WAITING_PRODUCTION"));
+                nextStatus = "PROCESSING"; itemStatus = "IN_PROGRESS";
+            }
+            case "COMPLETE_LAYER" -> {
+                requireProductionState(status.equals("PROCESSING") && currentStageCode == null);
+                nextStage = "LAYER_DONE";
+            }
+            case "COMPLETE_FROSTING" -> {
+                requireProductionState(status.equals("PROCESSING") && "LAYER_DONE".equals(currentStageCode));
+                nextStage = "FROSTING_DONE";
+            }
+            case "COMPLETE_PRODUCTION" -> {
+                requireProductionState(status.equals("PROCESSING"));
+                nextStatus = fulfillment.type() == FulfillmentType.DELIVERY ? "WAITING_DELIVERY" : "WAITING_PICKUP";
+                itemStatus = "COMPLETED";
+            }
+            case "REOPEN_PRODUCTION" -> {
+                requireProductionState(Set.of("WAITING_DELIVERY", "WAITING_PICKUP").contains(status));
+                nextStatus = "PROCESSING"; nextStage = null; itemStatus = "IN_PROGRESS";
+            }
+            default -> throw invalid();
+        }
+        requireNextVersion();
+        var before = productionValues();
+        var itemChanges = new ArrayList<Map<String, Object>>();
+        if (itemStatus != null) {
+            for (var item : activeItems()) {
+                var changed = item.changeProductionStatus(itemStatus, now);
+                if (changed.equals(item)) continue;
+                items.put(item.itemId(), changed);
+                itemChanges.add(Map.of("itemId", item.itemId().toString(), "before", Map.of("productionStatus", item.productionStatus()),
+                        "after", Map.of("productionStatus", changed.productionStatus())));
+            }
+        }
+        status = nextStatus; currentStageCode = nextStage; version++; updatedAt = now;
+        return JsonSnapshot.object(Map.of("action", action, "before", before, "after", productionValues(), "itemChanges", itemChanges));
+    }
+    private Map<String, Object> productionValues() {
+        var values = new LinkedHashMap<String, Object>();
+        values.put("status", status); values.put("currentStageCode", currentStageCode);
+        return values;
+    }
+    private void requireNextVersion() {
+        if (version == Long.MAX_VALUE) throw new OrderFailure("CONCURRENT_MODIFICATION");
+    }
+    private static void requireProductionState(boolean allowed) {
+        if (!allowed) throw new OrderFailure("INVALID_PRODUCTION_TRANSITION");
+    }
     public UUID id() { return id; }
     public String orderNo() { return orderNo; }
     public long version() { return version; }
     public String status() { return status; }
     public String paymentStatus() { return paymentStatus; }
+    public String currentStageCode() { return currentStageCode; }
     public CustomerContact customer() { return customer; }
     public FulfillmentPlan fulfillment() { return fulfillment; }
     public Long totalAmountCents() { return totalAmountCents; }

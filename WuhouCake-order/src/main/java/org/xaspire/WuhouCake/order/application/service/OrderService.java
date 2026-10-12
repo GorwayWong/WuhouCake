@@ -64,6 +64,34 @@ public class OrderService {
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
+    public OrderViews.Detail changePaymentStatus(UUID id, OrderCommands.PaymentStatus command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now();
+        var changed = order.changePaymentStatus(command.paymentStatus(), now);
+        if (changed.isEmpty()) orders.verifyVersion(id, expected);
+        else {
+            orders.changePaymentStatus(order, expected);
+            activities.append(OrderActivity.append(id, null, "PAYMENT_STATUS_CHANGED", "修改付款状态", changed, actor, now));
+        }
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail productionAction(UUID id, OrderCommands.ProductionAction command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var previousItems = order.activeItems(); var now = now();
+        var changed = order.applyProductionAction(command.action(), now);
+        var changedItemIds = previousItems.stream()
+                .filter(item -> !Objects.equals(item.productionStatus(), order.requireActiveItem(item.itemId()).productionStatus()))
+                .map(OrderItem::itemId).toList();
+        orders.changeProduction(order, expected, changedItemIds);
+        activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "修改整单制作进度", changed, actor, now));
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
     public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator) {
         var actor = actor(operator); var order = requireOrder(id);
         if (command.itemId() != null) order.requireActiveItem(command.itemId());
@@ -91,7 +119,7 @@ public class OrderService {
                 item.unitPriceCents(), item.memberPriceCents(), item.attributes(), item.productionStatus(), item.currentStageCode(),
                 item.createdAt(), item.updatedAt(), byItem.getOrDefault(item.itemId(), List.of()))).toList();
         var customer = order.customer(); var fulfillment = order.fulfillment();
-        return new OrderViews.Detail(order.id(), order.orderNo(), order.version(), order.status(), order.paymentStatus(),
+        return new OrderViews.Detail(order.id(), order.orderNo(), order.version(), order.status(), order.paymentStatus(), order.currentStageCode(),
                 new OrderCommands.Customer(customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName()),
                 new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt()),
                 order.totalAmountCents(), order.createdBy(), order.createdAt(), order.confirmedAt(), order.updatedAt(), items);

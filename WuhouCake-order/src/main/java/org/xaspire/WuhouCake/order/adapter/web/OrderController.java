@@ -32,6 +32,16 @@ public class OrderController {
     public ApiResponse<OrderViews.Activity> note(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Note command, Authentication authentication) {
         return ApiResponse.success(orders.note(id, command, operator(authentication)));
     }
+    @PatchMapping("/{id}/payment-status")
+    public ApiResponse<OrderViews.Detail> changePaymentStatus(@PathVariable UUID id, @Valid @RequestBody OrderCommands.PaymentStatus command,
+            Authentication authentication) {
+        return ApiResponse.success(orders.changePaymentStatus(id, command, operator(authentication)));
+    }
+    @PostMapping("/{id}/production-actions")
+    public ApiResponse<OrderViews.Detail> productionAction(@PathVariable UUID id, @Valid @RequestBody OrderCommands.ProductionAction command,
+            Authentication authentication) {
+        return ApiResponse.success(orders.productionAction(id, command, operator(authentication)));
+    }
     @GetMapping("/{id}/activities")
     public ApiResponse<Page<OrderViews.Activity>> activities(@PathVariable UUID id, @RequestParam(required = false) UUID itemId,
             @RequestParam(required = false) String type, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {

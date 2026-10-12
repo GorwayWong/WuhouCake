@@ -23,7 +23,7 @@ public final class PostgresOrders implements Orders {
         var row = mapper.find(id.toString());
         if (row == null) return Optional.empty();
         var items = mapper.items(id.toString()).stream().map(this::item).toList();
-        return Optional.of(new Order(id, row.orderNo(), row.version(), row.status(), row.paymentStatus(),
+        return Optional.of(new Order(id, row.orderNo(), row.version(), row.status(), row.paymentStatus(), row.currentStageCode(),
                 new CustomerContact(row.customerName(), row.customerPhone(), row.memberPhone(), row.buyerName()),
                 new FulfillmentPlan(FulfillmentType.valueOf(row.fulfillmentType()), row.deliveryAddress(), row.requestedReceiveDate(), row.plannedHandoffAt(), row.plannedFinishAt()),
                 row.totalAmountCents(), UUID.fromString(row.createdBy()), row.createdAt(), row.confirmedAt(), row.updatedAt(), items));
@@ -32,9 +32,23 @@ public final class PostgresOrders implements Orders {
         if (mapper.advanceVersion(order.id().toString(), expectedVersion, order.updatedAt()) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
         if (mapper.updateItem(row(order.id(), order.requireActiveItem(itemId))) != 1) throw new OrderFailure("ORDER_NOT_FOUND");
     }
+    @Override public void changePaymentStatus(Order order, long expectedVersion) {
+        if (mapper.updatePaymentStatus(order.id().toString(), expectedVersion, order.paymentStatus(), order.updatedAt()) != 1)
+            throw new OrderFailure("CONCURRENT_MODIFICATION");
+    }
+    @Override public void changeProduction(Order order, long expectedVersion, List<UUID> changedItemIds) {
+        if (mapper.updateProduction(order.id().toString(), expectedVersion, order.status(), order.currentStageCode(), order.updatedAt()) != 1)
+            throw new OrderFailure("CONCURRENT_MODIFICATION");
+        for (var itemId : changedItemIds) {
+            if (mapper.updateItemProduction(row(order.id(), order.requireActiveItem(itemId))) != 1) throw new OrderFailure("ORDER_NOT_FOUND");
+        }
+    }
+    @Override public void verifyVersion(UUID id, long expectedVersion) {
+        if (mapper.lockedVersion(id.toString(), expectedVersion) == null) throw new OrderFailure("CONCURRENT_MODIFICATION");
+    }
     private static OrderMapper.Row row(Order order) {
         var customer = order.customer(); var fulfillment = order.fulfillment();
-        return new OrderMapper.Row(order.id().toString(), order.orderNo(), order.version(), order.status(), order.paymentStatus(),
+        return new OrderMapper.Row(order.id().toString(), order.orderNo(), order.version(), order.status(), order.paymentStatus(), order.currentStageCode(),
                 customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName(), fulfillment.type().name(), fulfillment.address(),
                 fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), order.totalAmountCents(),
                 order.createdBy().toString(), order.createdAt(), order.confirmedAt(), order.updatedAt());

@@ -17,6 +17,8 @@ public final class OrderCommands {
     public record Create(@NotNull @Valid Customer customer, @NotNull @Valid Fulfillment fulfillment,
             @NotEmpty List<@NotNull @Valid Item> items, Number totalAmountCents) { }
     public record Revise(@NotNull Number expectedVersion, @NotNull UUID itemId, @NotEmpty Map<String, Object> changes) { }
+    public record PaymentStatus(@NotNull Number expectedVersion, @NotBlank String paymentStatus) { }
+    public record ProductionAction(@NotNull Number expectedVersion, @NotBlank String action) { }
     public record Note(UUID itemId, @NotBlank String content) { }
     public record Operator(UUID accountId, String nickname) { }
 }
