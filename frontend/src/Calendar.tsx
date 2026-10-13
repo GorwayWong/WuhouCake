@@ -34,7 +34,7 @@ export function Calendar({ selected, setSelected, mode, setMode }: { selected: s
       <section className="metrics" aria-label="所选日期统计">{[
         { label: '总订单', value: workbench.data?.metrics.totalOrders, Icon: ClipboardText },
         { label: '当日新下单', value: workbench.data?.metrics.createdOnDate, Icon: ShoppingBag },
-        { label: '当日待配送', value: workbench.data?.metrics.deliveryDueOnDate, Icon: Truck },
+        { label: '当日需配送', value: workbench.data?.metrics.deliveryDueOnDate, Icon: Truck },
       ].map(({ label, value, Icon }) => <div className="metric" key={label}><span className="metric-icon"><Icon size={25} /></span><div><span>{label}</span><strong>{value ?? '—'}</strong></div></div>)}</section>
       <div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日待办 <span>{workbench.data?.pendingOrders.length ?? '—'}</span></h2><span className="muted">按交付时间排序</span></div>
       <ErrorNotice error={workbench.error} retry={() => void workbench.refetch()} />

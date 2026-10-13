@@ -16,18 +16,29 @@ function Login({ changePassword = false }: { changePassword?: boolean }) {
   const [newPassword, setNewPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const [message, setMessage] = useState('');
+  const profile = useQuery({ queryKey: ['me'], queryFn: ({ signal }) => api<Account>('/me', { signal }), enabled: changePassword });
   return <main className="login-layout"><section className="login-story"><img className="login-logo" src="/brand.jpg" alt="午逅 Story" /><p className="eyebrow">用心制作，温柔以待</p><h1>把每一份心意，<br />做成美好的日常。</h1><p>从第一层夹馅，到最后一次交付。<br />和同事一起，照顾好每一张订单。</p><span className="story-footer">午逅 · 员工工作台</span></section><section className="login-form-wrap"><form className="login-form" onSubmit={async event => {
-    event.preventDefault(); setBusy(true); setError(null);
+    event.preventDefault(); setBusy(true); setError(null); setMessage('');
     try {
-      if (changePassword) { await api('/me/password', { method: 'POST', body: { currentPassword: password, newPassword } }); forgetSession(); }
-      else await session.login(employee.trim(), password);
+      if (changePassword) {
+        await api('/me/password', { method: 'POST', body: { currentPassword: password, newPassword } });
+        setEmployee(profile.data?.employeeNumber || employee.trim());
+        setPassword(''); setNewPassword(''); setMessage('密码已更新，请使用新密码重新登录。'); forgetSession();
+      } else { await session.login(employee.trim(), password); setPassword(''); }
     } catch (error) { setError(error); } finally { setBusy(false); }
   }}><span className="form-icon"><LockKey size={26} /></span><p className="eyebrow">WU HOU · STORY</p><h2>{changePassword ? '设置你的新密码' : '欢迎回到午逅'}</h2><p className="muted">{changePassword ? '首次登录需要修改初始密码，完成后请重新登录。' : '登录，开始今天的甜蜜工作。'}</p>
+    {message && <div className="notice success" role="status">{message}</div>}
+    {changePassword && <p className="muted">当前工号：{profile.data?.employeeNumber || employee || '正在读取…'}</p>}
     {!changePassword && <label>员工工号<input name="employeeNumber" autoComplete="username" value={employee} onChange={event => setEmployee(event.target.value)} required maxLength={32} disabled={busy} placeholder="输入员工工号" /></label>}
     <label>{changePassword ? '当前密码' : '登录密码'}<input name="password" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required maxLength={256} disabled={busy} placeholder="输入密码" /></label>
     {changePassword && <label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} required maxLength={256} disabled={busy} placeholder="15–128 个字符，不能与当前密码相同" /><span className="muted">密码长度为 15–128 个字符。</span></label>}
     <ErrorNotice error={error} /><button className="primary" disabled={busy}>{busy ? '请稍候…' : changePassword ? '保存新密码' : '登录工作台'}<ArrowRight /></button>
-    {changePassword && <button type="button" className="text-button" disabled={busy} onClick={() => { void session.logout().catch(setError); }}>退出登录</button>}
+    {changePassword && <button type="button" className="text-button" disabled={busy} onClick={async () => {
+      setBusy(true);
+      try { await session.logout(); setEmployee(''); setPassword(''); setNewPassword(''); setMessage(''); }
+      catch (error) { setError(error); } finally { setBusy(false); }
+    }}>退出登录</button>}
     <p className="login-help">账号由门店管理员开通。无法登录时，请联系管理员。</p>
   </form></section></main>;
 }
@@ -53,7 +64,6 @@ export function App() {
   const client = useQueryClient();
   useEffect(() => { if (!state.token) client.clear(); }, [client, state.token]);
   if (state.loading) return <Loading />;
-  if (!state.token) return <>{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={() => void refresh().catch(() => {})} /></div>}<Login /></>;
-  if (state.token.passwordChangeRequired) return <Login key="change-password" changePassword />;
+  if (!state.token || state.token.passwordChangeRequired) return <>{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={() => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} /></>;
   return <Workspace token={state.token.accessToken} />;
 }
