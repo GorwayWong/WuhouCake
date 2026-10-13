@@ -1,0 +1,70 @@
+# 午逅 Story 工作台（Slice C2-A）
+
+独立 React + TypeScript + Vite 前端。服务端数据使用 TanStack Query；没有新增后端领域模块、逐商品制作状态机或权限引擎。
+
+## 本地运行
+
+需要 Node.js 22.18+，以及已启动的 WuhouCake 后端、PostgreSQL 和 Redis。后端按仓库现有方式配置 RSA 密钥和员工账号。
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+打开 `http://127.0.0.1:5173`。开发代理默认把 `/api` 原样转发到 `http://127.0.0.1:8080`；后端端口不同时：
+
+```sh
+API_PROXY_TARGET=http://127.0.0.1:18080 npm run dev
+```
+
+```sh
+npm test
+npm run build
+```
+
+`dist/` 为静态构建产物。生产应通过 HTTPS 在同一站点提供静态文件与 `/api` 反向代理；保留 Cookie、Authorization 和 SSE 流，不缓冲 `/api/orders/stream`，代理读超时应长于心跳间隔。`vite preview` 仅预览静态产物，不代替生产代理配置。本轮不部署。
+
+## 页面与边界
+
+- 登录、首次改密、会话恢复及退出。Access token 仅驻留内存，刷新凭证沿用服务端 HttpOnly Cookie。认证 POST 前读取 CSRF Cookie；并发 401 共用一次刷新。
+- 周历与月历共用日期块，显示全部商品名称、订单状态和付款状态。以 `calendarDate`（后端按 `requestedReceiveDate` 投影）归日，`plannedHandoffAt` 只用于显示和排序。星期一为周起点，月历最多 42 格；切换周/月保留选中日期。手机横向滑动日期区域。
+- 周历下方显示统计及所选日待办。统计直接使用服务端口径：总订单为全库数量，新下单按所选日创建时间统计，待配送为所选日尚未完成/取消的配送订单。待办不含已完成、已取消订单，但这些订单仍能从日历进入详情。每个商品展示接口返回的最近三条商品备注，订单级备注不混入。
+- `#/orders/{UUID}` 显示客户、全部有效商品、整单制作时间线、付款状态、分页备注与日志。动作按钮提交整单 API 和当前 `expectedVersion`，状态转换、金额与权限校验由后端决定。制作中可直接完成制作。
+- 备注与取消原因是独立本地输入状态，不从查询结果回填。后台刷新和 409 不覆盖输入；成功提交后才清空对应表单。离开页面的草稿不持久化。
+- 日历使用订单号，无手机号尾号扩展。采用附带午逅 logo 和参考图的黄色/浅色视觉语言；没有蛋糕照片字段时使用商品图标，不虚构商品照片。登录页为新增设计，不宣称参考图中存在登录页。
+
+## API 映射
+
+| 页面/操作 | API |
+| --- | --- |
+| CSRF、登录、恢复、退出 | `GET /api/auth/csrf`，`POST /api/auth/login`、`refresh`、`logout` |
+| 当前员工、首次改密 | `GET /api/me`，`POST /api/me/password` |
+| 周/月历 | `GET /api/orders/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD`，右边界不含 |
+| 所选日期统计与待办 | `GET /api/orders/workbench?date=YYYY-MM-DD` |
+| 订单详情 | `GET /api/orders/{id}` |
+| 备注、制作时间线、修改日志 | `GET /api/orders/{id}/activities?page=1&size=20&type=...`，独立分页 |
+| 整单制作 | `POST /api/orders/{id}/production-actions` |
+| 付款 | `PATCH /api/orders/{id}/payment-status` |
+| 配送、自提 | `POST /api/orders/{id}/fulfillment-actions` |
+| 取消 | `POST /api/orders/{id}/cancel` |
+| 添加整单/商品备注 | `POST /api/orders/{id}/notes` |
+| 实时通知 | `GET /api/orders/stream`，Bearer + Fetch |
+
+## 实时同步
+
+每个已登录应用实例只在 `Workspace` 顶层创建一条 SSE 连接；页面组件不单独订阅。Fetch 携带 Bearer，`eventsource-parser` 处理分块、UTF-8、CRLF 和心跳注释。退出、卸载和 JWT 更新均先清理旧连接。
+
+`order.changed` 使对应订单详情与活动查询、全部日历范围缓存和工作台缓存失效；当前挂载的查询立即重新获取，未挂载的查询在再次打开时读取新数据。所有通知都处理，不以 `version` 丢弃 NOTE。迁日时重新获取当前完整范围，避免旧日期残留。
+
+服务端没有消息重放：`ready`、JWT 更新、窗口恢复前台和网络恢复均重新同步 REST。连接失败指数退避至最多约 30 秒；45 秒未收到任何数据则主动断开并重连。数据请求透传 Query 的 AbortSignal，旧请求不会覆盖新结果。突发并发写入交给后端乐观锁；409 展示可操作的错误并重新获取，不自动重复业务动作。
+
+## 验证
+
+`npm test` 使用 Node 内置测试运行器，覆盖跨年/闰月的查询范围、同版本 NOTE、迁日后的范围失效、并发 401 单次刷新、SSE 分块解码、断线重连和单连接清理。真实浏览器验证过程与范围见 [verification.md](verification.md)。
+
+实现参考：通过 Context7 核对 [TanStack Query 查询失效](https://tanstack.com/query/latest/docs/framework/react/guides/query-invalidation)、[查询取消](https://tanstack.com/query/latest/docs/framework/react/guides/query-cancellation)、[Vite 同源代理](https://vite.dev/config/server-options.html#server-proxy) 和 [eventsource-parser](https://github.com/rexxars/eventsource-parser)。
+
+## C2-B 待办
+
+完整两步录单、订单资料编辑、添加/移除/修改商品、图片上传、商品模板及 AI 识别。本轮保留 OrderItem 的 `productionStatus/currentStageCode` 类型，不据此渲染独立制作流程。
