@@ -1,4 +1,4 @@
-# 午逅 Story 工作台（Slice C2-A）
+# 午逅 Story 工作台（Slice C2-A / C2-B1a）
 
 独立 React + TypeScript + Vite 前端。服务端数据使用 TanStack Query；没有新增后端领域模块、逐商品制作状态机或权限引擎。
 
@@ -27,6 +27,9 @@ npm run build
 
 ## 页面与边界
 
+- 工作台的「新建订单」进入 `#/orders/new`，默认带入选中收货日期和配送方式。客户电话、收货日期、计划交接时间、商品名称及配送地址必填；支持多个独立规格商品，至少保留一件。金额以元录入、整数分提交，空金额与零金额不同，订单总金额不按商品报价计算。计划出品对应 `plannedFinishAt`，时间按北京时间提交。
+- 录单草稿仅存当前标签页内存，后台数据刷新不回填表单。返回、后退、退出和正常刷新／关闭有未保存提醒；确认离开后丢弃。认证失效后，同一员工重新登录可继续草稿及原日历位置；换员工或成功退出清除草稿。浏览器刷新、关闭后的草稿无法恢复，移动系统强制结束浏览器不能保证提醒。
+- 创建成功后使用服务端返回的真实订单及商品标识，刷新相关缓存并进入详情，可继续现有付款、制作及交付操作。提交不自动重试；网络中断时保留输入，并提示先核对工作台以避免重复录单。
 - 登录、首次改密、会话恢复及退出。首次改密页显示当前工号，成功后清空密码、保留工号并提示使用新密码重新登录。Access token 仅驻留内存，刷新凭证沿用服务端 HttpOnly Cookie。认证 POST 前读取 CSRF Cookie；并发 401 共用一次刷新。
 - 周历与月历共用日期块，显示全部商品名称、订单状态和付款状态。以 `calendarDate`（后端按 `requestedReceiveDate` 投影）归日，`plannedHandoffAt` 只用于显示和排序。星期一为周起点，月历最多 42 格；切换周/月保留选中日期。手机横向滑动日期区域。
 - 周历下方显示统计及所选日待办。统计直接使用服务端口径：总订单为全库数量，新下单按所选日创建时间统计，“当日需配送”仍读取 `deliveryDueOnDate`，表示所选日尚未完成/取消的配送订单。待办不含已完成、已取消订单，但这些订单仍能从日历进入详情。每个商品展示接口返回的最近三条商品备注，订单级备注不混入。
@@ -42,6 +45,7 @@ npm run build
 | 当前员工、首次改密 | `GET /api/me`，`POST /api/me/password` |
 | 周/月历 | `GET /api/orders/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD`，右边界不含 |
 | 所选日期统计与待办 | `GET /api/orders/workbench?date=YYYY-MM-DD` |
+| 人工录单 | `POST /api/orders` |
 | 订单详情 | `GET /api/orders/{id}` |
 | 备注、制作时间线、修改日志 | `GET /api/orders/{id}/activities?page=1&size=20&type=...`，独立分页 |
 | 整单制作 | `POST /api/orders/{id}/production-actions` |
@@ -61,10 +65,10 @@ npm run build
 
 ## 验证
 
-`npm test` 使用 Node 内置测试运行器，覆盖跨年/闰月的查询范围、同版本 NOTE、迁日后的范围失效、并发 401 单次刷新、SSE 分块解码、断线重连和单连接清理。真实浏览器验证过程与范围见 [verification.md](verification.md)。
+`npm test` 使用 Node 内置测试运行器，覆盖跨年/闰月的查询范围、同版本 NOTE、迁日后的范围失效、并发 401 单次刷新、SSE 分块解码、断线重连和单连接清理，以及录单金额精度、门店时间转换和多商品请求结构。真实浏览器验证过程与范围见 [verification.md](verification.md)。
 
 实现参考：通过 Context7 核对 [TanStack Query 查询失效](https://tanstack.com/query/latest/docs/framework/react/guides/query-invalidation)、[查询取消](https://tanstack.com/query/latest/docs/framework/react/guides/query-cancellation)、[Vite 同源代理](https://vite.dev/config/server-options.html#server-proxy) 和 [eventsource-parser](https://github.com/rexxars/eventsource-parser)。
 
 ## C2-B 待办
 
-完整两步录单、订单资料编辑、添加/移除/修改商品、图片上传、商品模板及 AI 识别。本轮保留 OrderItem 的 `productionStatus/currentStageCode` 类型，不据此渲染独立制作流程。
+独立录单状态确认（C2-B1b）、完整订单资料及既有商品编辑（C2-B1c）、图片上传、商品模板及 AI 识别。本轮保留 OrderItem 的 `productionStatus/currentStageCode` 类型，不据此渲染独立制作流程。

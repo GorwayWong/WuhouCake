@@ -21,4 +21,10 @@ export interface Detail extends OrderStatus {
   orderId: string; orderNo: string; version: number; customer: Customer; fulfillment: Fulfillment;
   totalAmountCents: number | null; createdAt: string; updatedAt: string; items: Item[];
 }
+export interface CreateOrderRequest {
+  customer: Customer;
+  fulfillment: Omit<Fulfillment, 'type'> & { type: 'DELIVERY' | 'PICKUP' };
+  items: Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'>[];
+  totalAmountCents: number | null;
+}
 export interface Page<T> { items: T[]; total: number; page: number; size: number }
