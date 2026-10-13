@@ -21,7 +21,7 @@ public interface OrderMapper {
     Row find(String id);
     @Select("SELECT id::text, order_id::text, name, product_type, quantity, unit_price_cents, member_price_cents, attributes::text,"
             + " production_status, current_stage_code, is_removed AS removed, created_at, updated_at FROM cake_order_item"
-            + " WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed ORDER BY created_at, id")
+            + " WHERE order_id=CAST(#{id} AS uuid) ORDER BY created_at, id")
     List<ItemRow> items(String id);
     @Insert("INSERT INTO cake_order (id, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
@@ -40,6 +40,15 @@ public interface OrderMapper {
             + " member_price_cents=#{memberPriceCents}, attributes=CAST(#{attributes} AS jsonb), updated_at=#{updatedAt}"
             + " WHERE id=CAST(#{id} AS uuid) AND order_id=CAST(#{orderId} AS uuid) AND NOT is_removed")
     int updateItem(ItemRow row);
+    @Update("UPDATE cake_order SET customer_name=#{row.customerName}, customer_phone=#{row.customerPhone}, member_phone=#{row.memberPhone},"
+            + " buyer_name=#{row.buyerName}, fulfillment_type=#{row.fulfillmentType}, delivery_address=#{row.deliveryAddress},"
+            + " requested_receive_date=#{row.requestedReceiveDate}, planned_handoff_at=#{row.plannedHandoffAt}, planned_finish_at=#{row.plannedFinishAt},"
+            + " total_amount_cents=#{row.totalAmountCents}, status=#{row.status}, version=version+1, updated_at=#{row.updatedAt}"
+            + " WHERE id=CAST(#{row.id} AS uuid) AND version=#{expected}")
+    int updateInformation(@Param("row") Row row, @Param("expected") long expected);
+    @Update("UPDATE cake_order_item SET is_removed=true, updated_at=#{updatedAt}"
+            + " WHERE id=CAST(#{id} AS uuid) AND order_id=CAST(#{orderId} AS uuid) AND NOT is_removed")
+    int removeItem(@Param("orderId") String orderId, @Param("id") String id, @Param("updatedAt") Instant updatedAt);
     @Update("UPDATE cake_order SET payment_status=#{paymentStatus}, version=version+1, updated_at=#{updatedAt}"
             + " WHERE id=CAST(#{id} AS uuid) AND version=#{expected}")
     int updatePaymentStatus(@Param("id") String id, @Param("expected") long expected, @Param("paymentStatus") String paymentStatus,

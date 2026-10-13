@@ -54,4 +54,8 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
         return new OrderItem(itemId, name, productType, quantity, unitPriceCents, memberPriceCents, attributes,
                 status, currentStageCode, removed, createdAt, now);
     }
+    public OrderItem remove(Instant now) {
+        return new OrderItem(itemId, name, productType, quantity, unitPriceCents, memberPriceCents, attributes,
+                productionStatus, currentStageCode, true, createdAt, now);
+    }
 }

@@ -253,6 +253,157 @@ class OrderTest {
     private static Order order(OrderItem... items) {
         return order(FulfillmentType.PICKUP, items);
     }
+    @Test void removalPreservesOtherItemsProductionAndOriginalSnapshot() {
+        var first = item("蛋糕 A", Map.of("size", "8寸")); var second = item("蛋糕 B", Map.of("size", "6寸"));
+        var order = order(first, second);
+        order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
+        var untouched = order.requireActiveItem(first.itemId()); var original = order.requireActiveItem(second.itemId());
+        var changed = order.removeItem(second.itemId(), NOW.plusSeconds(1));
+        assertEquals(3, order.version()); assertEquals("LAYER_DONE", order.currentStageCode()); assertEquals("PROCESSING", order.status());
+        assertEquals(List.of(untouched), order.activeItems()); assertEquals(original.businessValues(), order.requireItem(second.itemId()).businessValues());
+        assertTrue(order.requireItem(second.itemId()).removed());
+        assertEquals(false, ((Map<?, ?>) changed.get("before")).get("isRemoved"));
+        assertEquals(true, ((Map<?, ?>) changed.get("after")).get("isRemoved"));
+        assertThrows(OrderFailure.class, () -> order.requireActiveItem(second.itemId()));
+        assertTrue(order.removeItem(second.itemId(), NOW.plusSeconds(2)).isEmpty()); assertEquals(3, order.version());
+        assertEquals("VALIDATION_FAILED", assertThrows(OrderFailure.class, () -> order.removeItem(first.itemId(), NOW)).code());
+        assertEquals(3, order.version()); assertEquals(List.of(untouched), order.activeItems());
+    }
+    @Test void additionsRequireManualReconfirmationForEveryProductTypeAndPreserveExistingItemsAndAmount() {
+        for (var stage : List.of("WAITING_PRODUCTION", "PROCESSING", "LAYER_DONE", "FROSTING_DONE")) {
+            var first = item("A", Map.of()); var second = item("B", Map.of()); var order = order(first, second);
+            if (!stage.equals("WAITING_PRODUCTION")) order.applyProductionAction("START_PRODUCTION", NOW);
+            if (Set.of("LAYER_DONE", "FROSTING_DONE").contains(stage)) order.applyProductionAction("COMPLETE_LAYER", NOW);
+            if (stage.equals("FROSTING_DONE")) order.applyProductionAction("COMPLETE_FROSTING", NOW);
+            var originalItems = order.activeItems(); long version = order.version(); String status = order.status();
+            var added = OrderItem.create(UUID.randomUUID(), "其他商品 C", "OTHER", 1, 500, null, Map.of(), NOW.plusSeconds(1));
+            var change = order.addItem(added, NOW.plusSeconds(1));
+            assertEquals(status, order.status()); assertEquals(version + 1, order.version()); assertNull(order.currentStageCode());
+            assertEquals(stage.equals("WAITING_PRODUCTION") ? "NOT_STARTED" : "IN_PROGRESS", order.requireActiveItem(added.itemId()).productionStatus());
+            assertNull(order.requireActiveItem(added.itemId()).currentStageCode()); assertNull(order.totalAmountCents());
+            for (var item : originalItems) assertEquals(item, order.requireActiveItem(item.itemId()));
+            assertNull(((Map<?, ?>) change.get("before")).get("item"));
+            assertEquals(added.itemId().toString(), ((Map<?, ?>) ((Map<?, ?>) change.get("after")).get("item")).get("itemId"));
+            if (Set.of("LAYER_DONE", "FROSTING_DONE").contains(stage)) {
+                assertEquals(stage, ((Map<?, ?>) change.get("before")).get("currentStageCode"));
+                assertNull(((Map<?, ?>) change.get("after")).get("currentStageCode"));
+                assertThrows(OrderFailure.class, () -> order.applyProductionAction("COMPLETE_FROSTING", NOW));
+                order.applyProductionAction("COMPLETE_LAYER", NOW.plusSeconds(2));
+                assertEquals("LAYER_DONE", order.currentStageCode());
+            }
+        }
+    }
+    @Test void informationCorrectionsPreserveProductionItemsAndOmittedFieldsAndRecordActualValues() {
+        var order = order(FulfillmentType.DELIVERY, item("A", Map.of()), item("B", Map.of()));
+        order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
+        var items = order.activeItems(); var originalCustomer = order.customer();
+        var changed = order.reviseInformation(Map.of("phone", " 13900000000 ", "address", "新地址", "plannedHandoffAt", "2026-10-17T12:00:00+08:00",
+                "plannedFinishAt", "2026-10-17T11:00:00+08:00", "totalAmountCents", 18000), NOW.plusSeconds(1));
+        assertEquals(3, order.version()); assertEquals("PROCESSING", order.status()); assertEquals("LAYER_DONE", order.currentStageCode());
+        assertEquals(items, order.activeItems()); assertEquals(originalCustomer.customerName(), order.customer().customerName());
+        assertEquals("13900000000", order.customer().phone()); assertEquals("新地址", order.fulfillment().address());
+        assertEquals(LocalDate.of(2026, 10, 16), order.fulfillment().requestedReceiveDate());
+        assertEquals(Instant.parse("2026-10-17T04:00:00Z"), order.fulfillment().plannedHandoffAt()); assertEquals(18000L, order.totalAmountCents());
+        assertEquals("13800000000", ((Map<?, ?>) changed.get("before")).get("phone"));
+        assertEquals("13900000000", ((Map<?, ?>) changed.get("after")).get("phone"));
+        assertFalse(((Map<?, ?>) changed.get("before")).containsKey("customerName"));
+        var clear = new LinkedHashMap<String, Object>(); clear.put("customerName", null); clear.put("plannedFinishAt", null); clear.put("totalAmountCents", null);
+        order.reviseInformation(clear, NOW.plusSeconds(2)); assertNull(order.customer().customerName()); assertNull(order.fulfillment().plannedFinishAt());
+        assertNull(order.totalAmountCents()); assertEquals(items, order.activeItems()); assertEquals("LAYER_DONE", order.currentStageCode());
+        assertTrue(order.reviseInformation(clear, NOW.plusSeconds(3)).isEmpty()); assertEquals(4, order.version()); assertEquals(NOW.plusSeconds(2), order.updatedAt());
+    }
+    @Test void everyStateAllowsOrdinaryInformationAndAmountCorrectionsWithoutProductionChanges() {
+        for (var state : List.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "DELIVERING", "COMPLETED", "CANCELLED")) {
+            var order = order(FulfillmentType.DELIVERY, item("A", Map.of()));
+            if (!state.equals("WAITING_PRODUCTION")) { order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW); }
+            if (Set.of("WAITING_DELIVERY", "DELIVERING", "COMPLETED").contains(state)) order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+            if (Set.of("DELIVERING", "COMPLETED").contains(state)) order.applyFulfillmentAction("START_DELIVERY", NOW);
+            if (state.equals("COMPLETED")) order.applyFulfillmentAction("COMPLETE_DELIVERY", NOW);
+            if (state.equals("CANCELLED")) order.cancel("取消", NOW);
+            var items = order.activeItems(); var stage = order.currentStageCode(); var version = order.version();
+            order.reviseInformation(Map.of("phone", "13900000000", "address", "更正地址", "requestedReceiveDate", "2026-10-18", "totalAmountCents", 0), NOW.plusSeconds(1));
+            assertEquals(state, order.status()); assertEquals(stage, order.currentStageCode()); assertEquals(items, order.activeItems());
+            assertEquals(version + 1, order.version()); assertEquals(0L, order.totalAmountCents());
+        }
+    }
+    @Test void invalidInformationIsRejectedWithoutPartialMutationAndEquivalentTimesAreNoops() {
+        var order = order(FulfillmentType.DELIVERY, item("A", Map.of())); var customer = order.customer(); var plan = order.fulfillment();
+        var clearPhone = new LinkedHashMap<String, Object>(); clearPhone.put("phone", null);
+        var clearAddress = new LinkedHashMap<String, Object>(); clearAddress.put("address", null);
+        var clearDate = new LinkedHashMap<String, Object>(); clearDate.put("requestedReceiveDate", null);
+        var clearHandoff = new LinkedHashMap<String, Object>(); clearHandoff.put("plannedHandoffAt", null);
+        for (var patch : List.of(Map.<String, Object>of(), Map.<String, Object>of("status", "COMPLETED"), Map.<String, Object>of("phone", 123),
+                Map.<String, Object>of("phone", "13900000000", "plannedHandoffAt", "invalid"), Map.<String, Object>of("requestedReceiveDate", "2026-02-30"),
+                Map.<String, Object>of("totalAmountCents", 1.5), Map.<String, Object>of("totalAmountCents", -1), clearPhone, clearAddress, clearDate, clearHandoff))
+            assertEquals("VALIDATION_FAILED", assertThrows(OrderFailure.class, () -> order.reviseInformation(patch, NOW)).code());
+        assertEquals(customer, order.customer()); assertEquals(plan, order.fulfillment()); assertEquals(0, order.version()); assertEquals(NOW, order.updatedAt());
+        assertTrue(order.reviseInformation(Map.of("plannedHandoffAt", "2026-10-12T10:00:00+08:00", "phone", " 13800000000 "), NOW.plusSeconds(1)).isEmpty());
+        assertEquals(0, order.version()); assertEquals(NOW, order.updatedAt());
+    }
+    @Test void fulfillmentTypeCorrectionsAuditActualStatusAndPreserveProductionInEveryState() {
+        for (var state : List.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING", "COMPLETED", "CANCELLED")) {
+            var initialType = state.equals("WAITING_PICKUP") ? FulfillmentType.PICKUP : FulfillmentType.DELIVERY;
+            var order = order(initialType, item("A", Map.of()), item("B", Map.of()));
+            if (!state.equals("WAITING_PRODUCTION")) { order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW); }
+            if (Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING", "COMPLETED", "CANCELLED").contains(state)) order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+            if (Set.of("DELIVERING", "COMPLETED", "CANCELLED").contains(state)) order.applyFulfillmentAction("START_DELIVERY", NOW);
+            if (state.equals("COMPLETED")) order.applyFulfillmentAction("COMPLETE_DELIVERY", NOW);
+            if (state.equals("CANCELLED")) order.cancel("配送中误操作后更正类型", NOW);
+            assertEquals(state, order.status()); var items = order.activeItems(); var stage = order.currentStageCode(); var version = order.version();
+            var targetType = initialType == FulfillmentType.DELIVERY ? "PICKUP" : "DELIVERY";
+            var change = order.reviseInformation(Map.of("fulfillmentType", targetType, "address", "更正地址"), NOW.plusSeconds(1));
+            String expectedStatus = Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(state)
+                    ? targetType.equals("DELIVERY") ? "WAITING_DELIVERY" : "WAITING_PICKUP" : state;
+            assertEquals(expectedStatus, order.status()); assertEquals(targetType, order.fulfillment().type().name());
+            assertEquals(stage, order.currentStageCode()); assertEquals(items, order.activeItems()); assertEquals(version + 1, order.version());
+            assertEquals(initialType.name(), ((Map<?, ?>) change.get("before")).get("fulfillmentType"));
+            assertEquals(targetType, ((Map<?, ?>) change.get("after")).get("fulfillmentType"));
+            if (!expectedStatus.equals(state)) {
+                assertEquals(state, ((Map<?, ?>) change.get("before")).get("status"));
+                assertEquals(expectedStatus, ((Map<?, ?>) change.get("after")).get("status"));
+            } else assertFalse(((Map<?, ?>) change.get("after")).containsKey("status"));
+            assertTrue(order.reviseInformation(Map.of("fulfillmentType", targetType), NOW.plusSeconds(2)).isEmpty());
+            assertEquals(version + 1, order.version());
+        }
+    }
+    @Test void typeSwitchRequiresDeliveryAddressAndCompletedPickupCanCorrectToDelivery() {
+        var order = order(item("A", Map.of()));
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("fulfillmentType", "DELIVERY"), NOW));
+        for (var value : Arrays.asList(null, "SHIP", 123)) {
+            var changes = new LinkedHashMap<String, Object>(); changes.put("fulfillmentType", value);
+            assertEquals("VALIDATION_FAILED", assertThrows(OrderFailure.class, () -> order.reviseInformation(changes, NOW)).code());
+        }
+        assertEquals(0, order.version()); assertEquals(FulfillmentType.PICKUP, order.fulfillment().type());
+        order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        order.applyFulfillmentAction("CONFIRM_PICKUP", NOW); var items = order.activeItems();
+        order.reviseInformation(Map.of("fulfillmentType", "DELIVERY", "address", "更正地址"), NOW.plusSeconds(1));
+        assertEquals("COMPLETED", order.status()); assertEquals(items, order.activeItems());
+        var changes = new LinkedHashMap<String, Object>(); changes.put("fulfillmentType", "PICKUP"); changes.put("address", null);
+        order.reviseInformation(changes, NOW.plusSeconds(2)); assertNull(order.fulfillment().address()); assertEquals("COMPLETED", order.status());
+        assertEquals(5, order.version());
+    }
+    @Test void additionRejectsReadyTerminalDuplicateAndAlreadyProducedItemsWithoutMutation() {
+        var existing = item("A", Map.of()); var order = order(existing);
+        assertThrows(OrderFailure.class, () -> order.addItem(existing, NOW));
+        assertThrows(OrderFailure.class, () -> order.addItem(item("B", Map.of()).changeProductionStatus("COMPLETED", NOW), NOW));
+        assertEquals(0, order.version()); assertEquals(List.of(existing), order.activeItems());
+        order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        assertEquals("ORDER_NOT_EDITABLE", assertThrows(OrderFailure.class, () -> order.addItem(item("C", Map.of()), NOW)).code());
+        order.applyProductionAction("REOPEN_PRODUCTION", NOW); order.addItem(item("C", Map.of()), NOW);
+        assertEquals(2, order.activeItems().size()); assertTrue(order.activeItems().stream().allMatch(i -> i.productionStatus().equals("IN_PROGRESS")));
+        order.cancel("取消", NOW); assertThrows(OrderFailure.class, () -> order.addItem(item("D", Map.of()), NOW));
+    }
+    @Test void productionContentRemovalRequiresReopeningAndRejectsForeignItems() {
+        var first = item("A", Map.of()); var second = item("B", Map.of()); var order = order(first, second);
+        assertEquals("ORDER_NOT_FOUND", assertThrows(OrderFailure.class, () -> order.removeItem(UUID.randomUUID(), NOW)).code());
+        order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        assertEquals("ORDER_NOT_EDITABLE", assertThrows(OrderFailure.class, () -> order.removeItem(second.itemId(), NOW)).code());
+        assertEquals(2, order.version()); assertEquals(2, order.activeItems().size());
+        order.applyProductionAction("REOPEN_PRODUCTION", NOW); order.removeItem(second.itemId(), NOW);
+        order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        assertEquals("COMPLETED", order.requireActiveItem(first.itemId()).productionStatus());
+        assertEquals("IN_PROGRESS", order.requireItem(second.itemId()).productionStatus());
+    }
     private static Order order(FulfillmentType type, OrderItem... items) {
         return Order.create(UUID.randomUUID(), "0000001", new CustomerContact("客户", "13800000000", null, null),
                 new FulfillmentPlan(type, type == FulfillmentType.DELIVERY ? "示例地址" : null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),

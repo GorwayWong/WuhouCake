@@ -83,6 +83,26 @@ class OrderServiceTest {
         service.revise(order.id(), new OrderCommands.Revise(0, itemId, Map.of("quantity", 1)), operator);
         verifyNoInteractions(events); verify(activities, never()).append(any());
         verify(orders, never()).reviseItem(any(), anyLong(), any());
+        verify(orders).verifyVersion(order.id(), 0);
+    }
+    @Test void removalRecordsSnapshotAndHistoryRemainsQueryableWithVersionCheckedNoop() {
+        var order = loaded();
+        var item = OrderItem.create(UUID.randomUUID(), "商品 B", null, 1, null, null, Map.of("size", "6寸"), NOW);
+        order = new Order(order.id(), order.orderNo(), 0, order.status(), order.paymentStatus(), null, order.customer(), order.fulfillment(),
+                order.totalAmountCents(), order.createdBy(), NOW, NOW, NOW, List.of(order.activeItems().getFirst(), item));
+        when(orders.find(order.id())).thenReturn(Optional.of(order));
+        var result = service.removeItem(order.id(), item.itemId(), new OrderCommands.RemoveItem(0), operator);
+        assertEquals(1, result.version()); assertEquals(1, result.items().size()); verify(orders).removeItem(order, 0, item.itemId());
+        var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());
+        assertEquals("ITEM_REMOVED", logged.getValue().type()); assertEquals(item.itemId(), logged.getValue().itemId());
+        assertEquals(operator.accountId(), logged.getValue().actorId()); assertEquals(NOW.plusSeconds(1), logged.getValue().createdAt());
+        verify(events).publishEvent(new OrderChanged(order.id(), item.itemId(), OrderChanged.Type.ITEM_REMOVED, 1));
+        assertDoesNotThrow(() -> service.activities(result.orderId(), item.itemId(), null, 1, 20));
+        service.removeItem(order.id(), item.itemId(), new OrderCommands.RemoveItem(1), operator);
+        verify(orders).verifyVersion(order.id(), 1); verify(activities, times(1)).append(any());
+        verify(events, times(1)).publishEvent(any(Object.class));
+        doThrow(new OrderFailure("CONCURRENT_MODIFICATION")).when(orders).verifyVersion(order.id(), 1);
+        assertThrows(OrderFailure.class, () -> service.removeItem(result.orderId(), item.itemId(), new OrderCommands.RemoveItem(1), operator));
     }
     @Test void invalidChangesAndConflictsDoNotPublish() {
         var order = loaded(); var itemId = order.activeItems().getFirst().itemId();
@@ -93,6 +113,73 @@ class OrderServiceTest {
         doThrow(new OrderFailure("CONCURRENT_MODIFICATION")).when(orders).reviseItem(any(), eq(0L), eq(itemId));
         assertThrows(OrderFailure.class, () -> service.revise(order.id(), new OrderCommands.Revise(0, itemId, Map.of("quantity", 2)), operator));
         verifyNoInteractions(events);
+    }
+    @Test void additionUsesServerIdPersistsStageResetAndLogsActorAndSnapshot() {
+        var order = loaded(); order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
+        var original = order.activeItems().getFirst(); var itemId = UUID.randomUUID(); when(ids.nextId()).thenReturn(itemId);
+        var input = new OrderCommands.Item("蛋糕 C", null, 1, 12000, null, Map.of("size", "6寸"));
+        var result = service.addItem(order.id(), new OrderCommands.AddItem(2, input), operator);
+        assertEquals(3, result.version()); assertNull(result.currentStageCode()); assertNull(result.totalAmountCents());
+        assertEquals(original, order.requireActiveItem(original.itemId())); assertEquals("IN_PROGRESS", order.requireActiveItem(itemId).productionStatus());
+        verify(orders).addItem(order, 2, itemId);
+        var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture()); var activity = logged.getValue();
+        assertEquals("ITEM_ADDED", activity.type()); assertEquals(itemId, activity.itemId()); assertEquals(operator.accountId(), activity.actorId());
+        assertEquals(NOW.plusSeconds(1), activity.createdAt()); assertEquals("LAYER_DONE", ((Map<?, ?>) activity.details().get("before")).get("currentStageCode"));
+        verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_ADDED, 3));
+    }
+    @Test void additionRejectsStaleAndDatabaseConflictingVersionsBeforeActivityOrPublication() {
+        var order = loaded(); var input = new OrderCommands.Item("C", null, 1, null, null, Map.of());
+        assertThrows(OrderFailure.class, () -> service.addItem(order.id(), new OrderCommands.AddItem(1, input), operator));
+        verifyNoInteractions(ids, activities, events);
+        when(ids.nextId()).thenReturn(UUID.randomUUID());
+        doThrow(new OrderFailure("CONCURRENT_MODIFICATION")).when(orders).addItem(any(), eq(0L), any());
+        assertThrows(OrderFailure.class, () -> service.addItem(order.id(), new OrderCommands.AddItem(0, input), operator));
+        verifyNoInteractions(activities, events);
+    }
+    @Test void informationCorrectionLogsRealValuesAndActorAndPublishesNewVersion() {
+        var order = loaded(); order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
+        var items = order.activeItems();
+        var result = service.reviseInformation(order.id(), new OrderCommands.Information(2, Map.of("phone", "13900000000", "totalAmountCents", 20000)), operator);
+        assertEquals(3, result.version()); assertEquals("LAYER_DONE", result.currentStageCode()); assertEquals(items, order.activeItems());
+        verify(orders).reviseInformation(order, 2); var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());
+        var activity = logged.getValue(); assertEquals("ORDER_INFORMATION_CHANGED", activity.type()); assertNull(activity.itemId());
+        assertEquals("13800000000", ((Map<?, ?>) activity.details().get("before")).get("phone"));
+        assertEquals("13900000000", ((Map<?, ?>) activity.details().get("after")).get("phone"));
+        assertEquals(operator.accountId(), activity.actorId()); assertEquals(operator.nickname(), activity.actorNameSnapshot());
+        assertEquals(NOW.plusSeconds(1), activity.createdAt());
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_INFORMATION_CHANGED, 3));
+    }
+    @Test void informationNoopChecksCurrentDatabaseVersionAndRejectsRacesWithoutWriting() {
+        var order = loaded(); var command = new OrderCommands.Information(0, Map.of("phone", "13800000000"));
+        var result = service.reviseInformation(order.id(), command, operator); assertEquals(0, result.version()); assertEquals(NOW, result.updatedAt());
+        verify(orders).verifyVersion(order.id(), 0); verify(orders, never()).reviseInformation(any(), anyLong()); verify(activities, never()).append(any()); verifyNoInteractions(events);
+        doThrow(new OrderFailure("CONCURRENT_MODIFICATION")).when(orders).verifyVersion(order.id(), 0);
+        assertThrows(OrderFailure.class, () -> service.reviseInformation(order.id(), command, operator)); verify(activities, never()).append(any()); verifyNoInteractions(events);
+    }
+    @Test void invalidAndConflictingInformationNeverWritesActivityOrPublishes() {
+        var order = loaded();
+        assertThrows(OrderFailure.class, () -> service.reviseInformation(order.id(), new OrderCommands.Information(1, Map.of("phone", "13900000000")), operator));
+        assertThrows(OrderFailure.class, () -> service.reviseInformation(order.id(), new OrderCommands.Information(0, Map.of("totalAmountCents", -1)), operator));
+        verify(orders, never()).reviseInformation(any(), anyLong());
+        doThrow(new OrderFailure("CONCURRENT_MODIFICATION")).when(orders).reviseInformation(any(), eq(0L));
+        assertThrows(OrderFailure.class, () -> service.reviseInformation(order.id(), new OrderCommands.Information(0, Map.of("phone", "13900000000")), operator));
+        verifyNoInteractions(activities, events);
+    }
+    @Test void newMutationActivityFailuresPreventPublication() {
+        doThrow(new IllegalStateException("activity unavailable")).when(activities).append(any());
+        var order = loaded();
+        assertThrows(IllegalStateException.class, () -> service.reviseInformation(order.id(), new OrderCommands.Information(0, Map.of("phone", "13900000000")), operator));
+        var other = loaded(); when(ids.nextId()).thenReturn(UUID.randomUUID());
+        assertThrows(IllegalStateException.class, () -> service.addItem(other.id(), new OrderCommands.AddItem(0,
+                new OrderCommands.Item("C", null, 1, null, null, Map.of())), operator));
+        verifyNoInteractions(events);
+    }
+    @Test void identicalItemPatchRejectsDatabaseVersionAdvancedAfterLoading() {
+        var order = loaded(); var itemId = order.activeItems().getFirst().itemId();
+        doThrow(new OrderFailure("CONCURRENT_MODIFICATION")).when(orders).verifyVersion(order.id(), 0);
+        assertEquals("CONCURRENT_MODIFICATION", assertThrows(OrderFailure.class,
+                () -> service.revise(order.id(), new OrderCommands.Revise(0, itemId, Map.of("quantity", 1)), operator)).code());
+        verify(orders, never()).reviseItem(any(), anyLong(), any()); verifyNoInteractions(activities, events);
     }
     @Test void activityFailurePreventsPublication() {
         var order = loaded(); doThrow(new IllegalStateException("unavailable")).when(activities).append(any());

@@ -32,6 +32,21 @@ public class OrderController {
     public ApiResponse<OrderViews.Activity> note(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Note command, Authentication authentication) {
         return ApiResponse.success(orders.note(id, command, operator(authentication)));
     }
+    @PostMapping("/{id}/items/{itemId}/remove")
+    public ApiResponse<OrderViews.Detail> removeItem(@PathVariable UUID id, @PathVariable UUID itemId,
+            @Valid @RequestBody OrderCommands.RemoveItem command, Authentication authentication) {
+        return ApiResponse.success(orders.removeItem(id, itemId, command, operator(authentication)));
+    }
+    @PostMapping("/{id}/items") @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<OrderViews.Detail> addItem(@PathVariable UUID id, @Valid @RequestBody OrderCommands.AddItem command,
+            Authentication authentication) {
+        return ApiResponse.success(orders.addItem(id, command, operator(authentication)));
+    }
+    @PatchMapping("/{id}/information")
+    public ApiResponse<OrderViews.Detail> reviseInformation(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Information command,
+            Authentication authentication) {
+        return ApiResponse.success(orders.reviseInformation(id, command, operator(authentication)));
+    }
     @PatchMapping("/{id}/payment-status")
     public ApiResponse<OrderViews.Detail> changePaymentStatus(@PathVariable UUID id, @Valid @RequestBody OrderCommands.PaymentStatus command,
             Authentication authentication) {

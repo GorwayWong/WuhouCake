@@ -1,6 +1,9 @@
 package org.xaspire.WuhouCake.order.domain.model.aggregate;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.DateTimeException;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.entity.OrderItem;
 import org.xaspire.WuhouCake.order.domain.model.valobj.JsonSnapshot;
@@ -15,9 +18,9 @@ public final class Order {
     private String status;
     private String paymentStatus;
     private String currentStageCode;
-    private final CustomerContact customer;
-    private final FulfillmentPlan fulfillment;
-    private final Long totalAmountCents;
+    private CustomerContact customer;
+    private FulfillmentPlan fulfillment;
+    private Long totalAmountCents;
     private final UUID createdBy;
     private final Instant createdAt;
     private final Instant confirmedAt;
@@ -44,9 +47,46 @@ public final class Order {
         return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items);
     }
     public OrderItem requireActiveItem(UUID itemId) {
-        var item = items.get(itemId);
-        if (item == null || item.removed()) throw new OrderFailure("ORDER_NOT_FOUND");
+        var item = requireItem(itemId);
+        if (item.removed()) throw new OrderFailure("ORDER_NOT_FOUND");
         return item;
+    }
+    public OrderItem requireItem(UUID itemId) {
+        var item = items.get(itemId);
+        if (item == null) throw new OrderFailure("ORDER_NOT_FOUND");
+        return item;
+    }
+    public Map<String, Object> removeItem(UUID itemId, Instant now) {
+        var previous = requireItem(itemId);
+        if (previous.removed()) return Map.of();
+        if (!Set.of("WAITING_PRODUCTION", "PROCESSING").contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        if (activeItems().size() == 1) throw invalid();
+        requireNextVersion();
+        var removed = previous.remove(now);
+        var details = JsonSnapshot.object(Map.of("before", itemValues(previous), "after", itemValues(removed)));
+        items.put(itemId, removed); version++; updatedAt = now;
+        return details;
+    }
+    public Map<String, Object> addItem(OrderItem item, Instant now) {
+        if (!Set.of("WAITING_PRODUCTION", "PROCESSING").contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        if (item == null || items.containsKey(item.itemId()) || item.removed() || !"NOT_STARTED".equals(item.productionStatus())
+                || item.currentStageCode() != null) throw invalid();
+        requireNextVersion();
+        var added = status.equals("PROCESSING") ? item.changeProductionStatus("IN_PROGRESS", now) : item;
+        var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
+        before.put("item", null); after.put("item", itemValues(added));
+        if (currentStageCode != null) {
+            before.put("currentStageCode", currentStageCode); after.put("currentStageCode", null);
+        }
+        var details = JsonSnapshot.object(Map.of("before", before, "after", after));
+        items.put(added.itemId(), added); currentStageCode = null; version++; updatedAt = now;
+        return details;
+    }
+    private static Map<String, Object> itemValues(OrderItem item) {
+        var values = new LinkedHashMap<>(item.businessValues());
+        values.put("itemId", item.itemId().toString()); values.put("productionStatus", item.productionStatus());
+        values.put("currentStageCode", item.currentStageCode()); values.put("isRemoved", item.removed());
+        return values;
     }
     public Map<String, Object> reviseItem(UUID itemId, Map<String, Object> changes, Instant now) {
         var previous = requireActiveItem(itemId);
@@ -62,6 +102,60 @@ public final class Order {
         if (version == Long.MAX_VALUE) throw new OrderFailure("CONCURRENT_MODIFICATION");
         items.put(itemId, revised); version++; updatedAt = now;
         return JsonSnapshot.object(Map.of("before", before, "after", after));
+    }
+    public Map<String, Object> reviseInformation(Map<String, Object> changes, Instant now) {
+        var fields = Set.of("customerName", "phone", "memberPhone", "buyerName", "fulfillmentType", "address", "requestedReceiveDate",
+                "plannedHandoffAt", "plannedFinishAt", "totalAmountCents");
+        if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !fields.contains(key))) throw invalid();
+        var previous = informationValues(customer, fulfillment, totalAmountCents);
+        var merged = new LinkedHashMap<>(previous); merged.putAll(changes);
+        var contact = new CustomerContact(text(merged.get("customerName")), text(merged.get("phone")), text(merged.get("memberPhone")), text(merged.get("buyerName")));
+        FulfillmentType type;
+        try { type = FulfillmentType.valueOf(text(merged.get("fulfillmentType"))); }
+        catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
+        var plan = new FulfillmentPlan(type, text(merged.get("address")), date(merged.get("requestedReceiveDate")),
+                changes.containsKey("plannedHandoffAt") ? instant(changes.get("plannedHandoffAt")) : fulfillment.plannedHandoffAt(),
+                changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt());
+        var total = money(merged.get("totalAmountCents"));
+        var nextStatus = status;
+        if (type != fulfillment.type() && Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(status))
+            nextStatus = type == FulfillmentType.DELIVERY ? "WAITING_DELIVERY" : "WAITING_PICKUP";
+        var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
+        informationValues(contact, plan, total).forEach((field, value) -> {
+            if (!Objects.equals(previous.get(field), value)) { before.put(field, previous.get(field)); after.put(field, value); }
+        });
+        if (!status.equals(nextStatus)) { before.put("status", status); after.put("status", nextStatus); }
+        if (before.isEmpty()) return Map.of();
+        requireNextVersion();
+        var details = JsonSnapshot.object(Map.of("before", before, "after", after));
+        customer = contact; fulfillment = plan; totalAmountCents = total; status = nextStatus; version++; updatedAt = now;
+        return details;
+    }
+    private static Map<String, Object> informationValues(CustomerContact customer, FulfillmentPlan fulfillment, Long total) {
+        var values = new LinkedHashMap<String, Object>();
+        values.put("customerName", customer.customerName()); values.put("phone", customer.phone());
+        values.put("memberPhone", customer.memberPhone()); values.put("buyerName", customer.buyerName());
+        values.put("fulfillmentType", fulfillment.type().name());
+        values.put("address", fulfillment.address()); values.put("requestedReceiveDate", fulfillment.requestedReceiveDate().toString());
+        values.put("plannedHandoffAt", fulfillment.plannedHandoffAt().toString());
+        values.put("plannedFinishAt", fulfillment.plannedFinishAt() == null ? null : fulfillment.plannedFinishAt().toString());
+        values.put("totalAmountCents", total);
+        return values;
+    }
+    private static String text(Object value) {
+        if (value == null) return null;
+        if (!(value instanceof String text)) throw invalid();
+        return text;
+    }
+    private static LocalDate date(Object value) {
+        if (value == null) return null;
+        try { return LocalDate.parse(text(value)); }
+        catch (DateTimeException failure) { throw invalid(); }
+    }
+    private static Instant instant(Object value) {
+        if (value == null) return null;
+        try { return Instant.parse(text(value)).truncatedTo(ChronoUnit.MICROS); }
+        catch (DateTimeException failure) { throw invalid(); }
     }
     public Map<String, Object> changePaymentStatus(String paymentStatus, Instant now) {
         if (paymentStatus == null || !Set.of("UNPAID", "PAID").contains(paymentStatus)) throw invalid();

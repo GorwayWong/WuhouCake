@@ -62,10 +62,54 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now();
         var changed = order.reviseItem(command.itemId(), command.changes(), now);
-        if (!changed.isEmpty()) {
+        if (changed.isEmpty()) orders.verifyVersion(id, expected);
+        else {
             orders.reviseItem(order, expected, command.itemId());
             activities.append(OrderActivity.append(id, command.itemId(), "ITEM_CHANGED", "修改商品", changed, actor, now));
             changed(order, command.itemId(), OrderChanged.Type.ITEM_CHANGED);
+        }
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail removeItem(UUID id, UUID itemId, OrderCommands.RemoveItem command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now(); var changed = order.removeItem(itemId, now);
+        if (changed.isEmpty()) orders.verifyVersion(id, expected);
+        else {
+            orders.removeItem(order, expected, itemId);
+            activities.append(OrderActivity.append(id, itemId, "ITEM_REMOVED", "移除商品", changed, actor, now));
+            changed(order, itemId, OrderChanged.Type.ITEM_REMOVED);
+        }
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail addItem(UUID id, OrderCommands.AddItem command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now(); var input = command.item();
+        if (input == null) throw invalid();
+        var item = OrderItem.create(ids.nextId(), input.name(), input.productType(), input.quantity(), input.unitPriceCents(),
+                input.memberPriceCents(), input.attributes(), now);
+        var changed = order.addItem(item, now);
+        orders.addItem(order, expected, item.itemId());
+        activities.append(OrderActivity.append(id, item.itemId(), "ITEM_ADDED", "追加商品", changed, actor, now));
+        changed(order, item.itemId(), OrderChanged.Type.ITEM_ADDED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail reviseInformation(UUID id, OrderCommands.Information command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now(); var changed = order.reviseInformation(command.changes(), now);
+        if (changed.isEmpty()) orders.verifyVersion(id, expected);
+        else {
+            orders.reviseInformation(order, expected);
+            activities.append(OrderActivity.append(id, null, "ORDER_INFORMATION_CHANGED", "更正订单资料", changed, actor, now));
+            changed(order, null, OrderChanged.Type.ORDER_INFORMATION_CHANGED);
         }
         return detail(order, activities.recentItemNotes(id));
     }
@@ -133,7 +177,7 @@ public class OrderService {
     public Page<OrderViews.Activity> activities(UUID id, UUID itemId, String type, int page, int size) {
         if (page < 1 || size < 1 || size > 100 || (type != null && !OrderActivity.TYPES.contains(type))) throw invalid();
         var order = requireOrder(id);
-        if (itemId != null) order.requireActiveItem(itemId);
+        if (itemId != null) order.requireItem(itemId);
         return new Page<>(activities.search(id, itemId, type, size, (long) (page - 1) * size).stream().map(OrderService::activity).toList(),
                 activities.count(id, itemId, type), page, size);
     }
