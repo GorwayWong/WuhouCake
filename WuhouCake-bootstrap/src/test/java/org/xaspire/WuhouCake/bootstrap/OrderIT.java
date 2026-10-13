@@ -26,6 +26,7 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.domain.repository.OrderActivities;
 import org.xaspire.WuhouCake.order.domain.repository.Orders;
+import org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderQueryMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -55,13 +56,14 @@ class OrderIT {
     @MockitoSpyBean OrderActivities activities;
     @MockitoSpyBean Orders orders;
     @MockitoSpyBean Clock clock;
+    @MockitoSpyBean OrderQueryMapper queryMapper;
     @BeforeEach void clean() {
-        reset(activities, orders, clock);
+        reset(activities, orders, clock, queryMapper);
         jdbc.execute("TRUNCATE cake_order_activity, cake_order_item, cake_order, audit_operation, identity_account_role, identity_account CASCADE");
         clearSessions();
     }
     @AfterAll void removeTestData() {
-        reset(activities, orders, clock); clearSessions();
+        reset(activities, orders, clock, queryMapper); clearSessions();
         jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE");
     }
     private void clearSessions() {
@@ -167,6 +169,8 @@ class OrderIT {
         var anonymous = new Client();
         assertEquals(401, anonymous.request("POST", "/api/orders", create()).status);
         assertEquals(401, anonymous.request("GET", "/api/orders/" + id, null).status);
+        assertEquals(401, anonymous.request("GET", "/api/orders/calendar?from=2026-09-28&to=2026-11-09", null).status);
+        assertEquals(401, anonymous.request("GET", "/api/orders/workbench?date=2026-09-30", null).status);
         assertEquals(401, anonymous.request("PATCH", "/api/orders/" + id, patch(itemId, 0, Map.of("quantity", 2))).status);
         assertEquals(401, anonymous.request("POST", "/api/orders/" + id + "/notes", Map.of("content", "备注")).status);
         assertEquals(401, anonymous.request("GET", "/api/orders/" + id + "/activities", null).status);
@@ -790,6 +794,181 @@ class OrderIT {
             assertEquals(corrected.body.path("data"), peer.request("GET", "/api/orders/" + cancelledId, null).body.path("data"));
         }
     }
+    @Test void calendarSharesWeekAndMonthDataWithStableOrderBoundariesAndDateMoves() throws Exception {
+        var staff = staff();
+        createOn(staff, "2026-09-27", "18:00", "DELIVERY");
+        var first = createOn(staff, "2026-09-28", "18:00", "DELIVERY");
+        var late = createOn(staff, "2026-09-30", "18:00", "DELIVERY");
+        var early = createOn(staff, "2026-09-30", "10:00", "DELIVERY");
+        var tied = createOn(staff, "2026-09-30", "10:00", "PICKUP");
+        var october = createOn(staff, "2026-10-01", "10:00", "DELIVERY");
+        var last = createOn(staff, "2026-11-08", "10:00", "DELIVERY");
+        createOn(staff, "2026-11-09", "10:00", "DELIVERY");
+        var week = query(staff, "/api/orders/calendar?from=2026-09-28&to=2026-10-05");
+        var month = query(staff, "/api/orders/calendar?from=2026-09-28&to=2026-11-09");
+        assertEquals(List.of(first.path("orderId").asText(), early.path("orderId").asText(), tied.path("orderId").asText(),
+                late.path("orderId").asText(), october.path("orderId").asText()), orderIds(week));
+        assertEquals(6, month.size()); assertEquals(last.path("orderId"), month.get(5).path("orderId"));
+        for (int i = 0; i < week.size(); i++) assertEquals(week.get(i), month.get(i));
+        assertEquals(2, week.get(0).path("items").size());
+        assertEquals(Set.of("orderId", "orderNo", "calendarDate", "status", "currentStageCode", "paymentStatus", "fulfillmentType", "plannedHandoffAt", "items"),
+                json.convertValue(week.get(0), Map.class).keySet());
+        assertEquals(Set.of("itemId", "name", "quantity"), json.convertValue(week.get(0).at("/items/0"), Map.class).keySet());
+        assertTrue(query(staff, "/api/orders/calendar?from=2026-12-01&to=2026-12-02").isEmpty());
+
+        String id = early.path("orderId").asText();
+        var handoff = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0,
+                "changes", Map.of("plannedHandoffAt", "2026-10-02T12:00:00+08:00")));
+        assertEquals(200, handoff.status);
+        assertTrue(orderIds(query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01")).contains(id));
+        assertFalse(orderIds(query(staff, "/api/orders/calendar?from=2026-10-02&to=2026-10-03")).contains(id));
+        var moved = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1,
+                "changes", Map.of("requestedReceiveDate", "2026-10-02")));
+        assertEquals(200, moved.status);
+        assertFalse(orderIds(query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01")).contains(id));
+        assertEquals(List.of(id), orderIds(query(staff, "/api/orders/calendar?from=2026-10-02&to=2026-10-03")));
+        assertFalse(orderIds(query(staff, "/api/orders/workbench?date=2026-09-30").path("pendingOrders")).contains(id));
+        assertEquals(List.of(id), orderIds(query(staff, "/api/orders/workbench?date=2026-10-02").path("pendingOrders")));
+
+        for (var path : List.of("calendar", "calendar?from=2026-09-28", "calendar?to=2026-11-09",
+                "calendar?from=2026-09-28&to=2026-09-28", "calendar?from=2026-09-29&to=2026-09-28",
+                "calendar?from=2026-09-28&to=2026-11-10", "calendar?from=2026-02-30&to=2026-03-02",
+                "workbench", "workbench?date=invalid", "workbench?date=2026-02-30")) {
+            var invalid = staff.request("GET", "/api/orders/" + path, null);
+            assertEquals(400, invalid.status, path + ": " + invalid.body);
+            assertEquals("VALIDATION_FAILED", invalid.body.path("code").asText());
+        }
+    }
+
+    @Test void workbenchReturnsIndependentItemNotesAndQueriesHaveNoSideEffects() throws Exception {
+        var staff = staff();
+        var firstOrder = createOn(staff, "2026-09-30", "10:00", "DELIVERY");
+        var otherOrder = createOn(staff, "2026-09-30", "11:00", "PICKUP");
+        String id = firstOrder.path("orderId").asText(), otherId = otherOrder.path("orderId").asText();
+        String a = idForName(firstOrder, "蛋糕"), b = idForName(firstOrder, "纸杯"), c = idForName(otherOrder, "蛋糕");
+        var noteTime = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        for (int i = 1; i <= 4; i++) {
+            doReturn(noteTime.plusSeconds(i == 4 ? -1 : 0)).when(clock).instant();
+            for (var target : List.of(Map.entry(id, a), Map.entry(id, b), Map.entry(otherId, c))) {
+                var note = staff.request("POST", "/api/orders/" + target.getKey() + "/notes",
+                        Map.of("itemId", target.getValue(), "content", target.getValue() + ":" + i));
+                assertEquals(201, note.status);
+            }
+        }
+        assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("content", "订单级备注")).status);
+        var before = staff.request("GET", "/api/orders/" + id, null).body.path("data");
+        long activityCount = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
+        try (var stream = staff.stream()) {
+            clearInvocations(queryMapper, orders, activities);
+            var workbench = query(staff, "/api/orders/workbench?date=2026-09-30");
+            verify(queryMapper).metrics(any(), any(), any()); verify(queryMapper).pending(any());
+            verify(queryMapper).items(any()); verify(queryMapper).recentNotes(any(), any());
+            verifyNoMoreInteractions(queryMapper); verifyNoInteractions(orders, activities);
+            assertEquals("2026-09-30", workbench.path("date").asText());
+            var pending = workbench.path("pendingOrders"); assertEquals(2, pending.size());
+            var order = pending.get(0);
+            assertEquals("13800000000", order.at("/customer/phone").asText()); assertEquals("示例地址", order.path("address").asText());
+            assertEquals("2026-09-30T02:00:00Z", order.path("plannedHandoffAt").asText());
+            assertEquals("UNPAID", order.path("paymentStatus").asText());
+            for (var entry : List.of(Map.entry(order, a), Map.entry(order, b), Map.entry(pending.get(1), c))) {
+                var notes = item(entry.getKey(), entry.getValue()).path("recentNotes");
+                assertEquals(List.of(entry.getValue() + ":3", entry.getValue() + ":2", entry.getValue() + ":1"), contents(notes));
+                long previous = Long.MAX_VALUE;
+                for (var note : notes) {
+                    assertEquals(entry.getValue(), note.path("itemId").asText());
+                    assertEquals(staff.accountId, note.path("actorId").asText());
+                    assertEquals("前台员工", note.path("actorNameSnapshot").asText());
+                    assertEquals(noteTime, Instant.parse(note.path("createdAt").asText()));
+                    assertTrue(note.path("id").asLong() < previous); previous = note.path("id").asLong();
+                }
+            }
+            var cake = item(order, a);
+            assertEquals("CAKE", cake.path("productType").asText()); assertEquals(10000, cake.path("unitPriceCents").asLong());
+            assertEquals(8000, cake.path("memberPriceCents").asLong()); assertEquals(item(firstOrder, a).path("attributes"), cake.path("attributes"));
+            clearInvocations(queryMapper);
+            query(staff, "/api/orders/calendar?from=2026-09-28&to=2026-11-09");
+            verify(queryMapper).calendar(any(), any()); verify(queryMapper).calendarItems(any());
+            verifyNoMoreInteractions(queryMapper); verifyNoInteractions(orders, activities);
+            stream.noChange();
+        }
+        assertEquals(before, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
+        assertEquals(activityCount, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
+        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/items/" + b + "/remove", Map.of("expectedVersion", 0)).status);
+        var remaining = query(staff, "/api/orders/workbench?date=2026-09-30").at("/pendingOrders/0/items");
+        assertEquals(1, remaining.size()); assertEquals(a, remaining.get(0).path("itemId").asText());
+        assertEquals(1, query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01").at("/0/items").size());
+        assertEquals(true, jdbc.queryForObject("SELECT is_removed FROM cake_order_item WHERE id=?::uuid", Boolean.class, b));
+    }
+
+    @Test void workbenchMetricsCountOrdersAcrossStatesAndShanghaiCreationBoundaries() throws Exception {
+        var staff = staff();
+        var empty = query(staff, "/api/orders/workbench?date=2026-09-30");
+        assertEquals(0, empty.at("/metrics/totalOrders").asLong()); assertTrue(empty.path("pendingOrders").isEmpty());
+        var waiting = createOn(staff, "2026-09-30", "09:00", "DELIVERY");
+        var processing = createOn(staff, "2026-09-30", "10:00", "DELIVERY");
+        var ready = createOn(staff, "2026-09-30", "11:00", "DELIVERY");
+        var delivering = createOn(staff, "2026-09-30", "12:00", "DELIVERY");
+        var completed = createOn(staff, "2026-09-30", "13:00", "DELIVERY");
+        var cancelled = createOn(staff, "2026-09-30", "14:00", "DELIVERY");
+        createOn(staff, "2026-09-30", "15:00", "PICKUP");
+        var other = createOn(staff, "2026-10-01", "10:00", "DELIVERY");
+        String processingId = processing.path("orderId").asText(), readyId = ready.path("orderId").asText();
+        String deliveringId = delivering.path("orderId").asText(), completedId = completed.path("orderId").asText();
+        production(staff, processingId, 0, "START_PRODUCTION"); production(staff, processingId, 1, "COMPLETE_LAYER");
+        assertEquals(200, staff.request("PATCH", "/api/orders/" + processingId + "/payment-status",
+                Map.of("expectedVersion", 2, "paymentStatus", "PAID")).status);
+        for (var id : List.of(readyId, deliveringId, completedId)) {
+            production(staff, id, 0, "START_PRODUCTION"); production(staff, id, 1, "COMPLETE_PRODUCTION");
+        }
+        fulfillment(staff, deliveringId, 2, "START_DELIVERY");
+        fulfillment(staff, completedId, 2, "START_DELIVERY"); fulfillment(staff, completedId, 3, "COMPLETE_DELIVERY");
+        assertEquals(200, staff.request("POST", "/api/orders/" + cancelled.path("orderId").asText() + "/cancel",
+                Map.of("expectedVersion", 0, "reason", "客户取消")).status);
+        jdbc.update("UPDATE cake_order SET created_at='2026-09-29T15:59:59.999999Z'::timestamptz");
+        jdbc.update("UPDATE cake_order SET created_at='2026-09-29T16:00:00Z'::timestamptz WHERE id=?::uuid", processingId);
+        jdbc.update("UPDATE cake_order SET created_at='2026-09-30T15:59:59.999999Z'::timestamptz WHERE id=?::uuid", other.path("orderId").asText());
+        jdbc.update("UPDATE cake_order SET created_at='2026-09-30T16:00:00Z'::timestamptz WHERE id=?::uuid", deliveringId);
+        var workbench = query(staff, "/api/orders/workbench?date=2026-09-30");
+        assertEquals(8, workbench.at("/metrics/totalOrders").asLong());
+        assertEquals(2, workbench.at("/metrics/createdOnDate").asLong());
+        assertEquals(4, workbench.at("/metrics/deliveryDueOnDate").asLong());
+        var pending = workbench.path("pendingOrders"); assertEquals(5, pending.size());
+        assertEquals(waiting.path("orderId"), pending.get(0).path("orderId"));
+        assertEquals("PROCESSING", pending.get(1).path("status").asText());
+        assertEquals("PAID", pending.get(1).path("paymentStatus").asText());
+        assertEquals("LAYER_DONE", pending.get(1).path("currentStageCode").asText());
+        assertEquals("WAITING_DELIVERY", pending.get(2).path("status").asText());
+        assertEquals("DELIVERING", pending.get(3).path("status").asText());
+        for (var order : pending) for (var item : order.path("items")) assertTrue(item.path("recentNotes").isEmpty());
+        var calendar = query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01"); assertEquals(7, calendar.size());
+        assertEquals("COMPLETED", calendar.get(4).path("status").asText()); assertEquals("CANCELLED", calendar.get(5).path("status").asText());
+        for (int i = 0; i < 4; i++) {
+            assertEquals(pending.get(i).path("orderId"), calendar.get(i).path("orderId"));
+            assertEquals(pending.get(i).path("status"), calendar.get(i).path("status"));
+            assertEquals(pending.get(i).path("paymentStatus"), calendar.get(i).path("paymentStatus"));
+            assertEquals(pending.get(i).path("currentStageCode"), calendar.get(i).path("currentStageCode"));
+        }
+        var noDueOrders = query(staff, "/api/orders/workbench?date=2026-12-01");
+        assertEquals(8, noDueOrders.at("/metrics/totalOrders").asLong());
+        assertEquals(0, noDueOrders.at("/metrics/createdOnDate").asLong());
+        assertEquals(0, noDueOrders.at("/metrics/deliveryDueOnDate").asLong()); assertTrue(noDueOrders.path("pendingOrders").isEmpty());
+    }
+
+    private JsonNode createOn(Client staff, String date, String time, String type) throws Exception {
+        var command = new LinkedHashMap<>(create());
+        command.put("fulfillment", Map.of("type", type, "address", "示例地址", "requestedReceiveDate", date,
+                "plannedHandoffAt", date + "T" + time + ":00+08:00"));
+        var response = staff.request("POST", "/api/orders", command);
+        assertEquals(201, response.status, response.body.toString()); return response.body.path("data");
+    }
+    private JsonNode query(Client staff, String path) throws Exception {
+        var response = staff.request("GET", path, null);
+        assertEquals(200, response.status, response.body.toString()); return response.body.path("data");
+    }
+    private static List<String> orderIds(JsonNode orders) {
+        var result = new ArrayList<String>(); orders.forEach(order -> result.add(order.path("orderId").asText())); return result;
+    }
+
     private JsonNode production(Client staff, String id, Number version, String action) throws Exception {
         var result = staff.request("POST", "/api/orders/" + id + "/production-actions", action(version, action));
         assertEquals(200, result.status, result.body.toString()); return result.body.path("data");

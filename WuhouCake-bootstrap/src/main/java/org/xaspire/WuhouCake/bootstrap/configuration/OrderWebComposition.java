@@ -7,11 +7,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplicat
 import org.springframework.context.annotation.*;
 import org.xaspire.WuhouCake.order.adapter.web.*;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
+import org.xaspire.WuhouCake.order.application.service.OrderQueryService;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class OrderWebComposition {
     @Bean OrderController orderController(OrderService orders) { return new OrderController(orders); }
+    @Bean OrderQueryController orderQueryController(OrderQueryService queries) { return new OrderQueryController(queries); }
     @Bean(destroyMethod = "shutdownNow") ScheduledExecutorService orderStreamScheduler() {
         var scheduler = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("order-stream-timer-", 0).factory());
         scheduler.setRemoveOnCancelPolicy(true);

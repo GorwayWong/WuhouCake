@@ -1,6 +1,6 @@
-# Order · Slice A / B1 / B2 / C0 / C0.5
+# Order · Slice A / B1 / B2 / C0 / C0.5 / C1
 
-订单模块提供多商品正式订单、资料更正、商品增减与修改、整单制作、配送或自提交接、完成、人工取消、付款状态纠正、独立备注、业务历史和提交后的 SSE 通知。Bootstrap 显式装配；业务写入事务由 `OrderService` 管理。员工使用现有登录流程取得 Bearer token，且须先完成初始密码修改。
+订单模块提供多商品正式订单、资料更正、商品增减与修改、整单制作、配送或自提交接、完成、人工取消、付款状态纠正、独立备注、业务历史、日历与当日工作台查询和提交后的 SSE 通知。Bootstrap 显式装配；业务写入事务由 `OrderService` 管理，只读查询事务由 `OrderQueryService` 管理。员工使用现有登录流程取得 Bearer token，且须先完成初始密码修改。
 
 ## HTTP 接口
 
@@ -10,6 +10,8 @@ REST 响应使用 `ApiResponse`。创建订单、追加商品和追加备注返�
 | --- | --- |
 | `POST /api/orders` | 创建正式订单，返回详情和服务端生成的 orderId、itemId |
 | `GET /api/orders/{orderId}` | 订单基础信息、有效商品、每个商品最近三条 NOTE |
+| `GET /api/orders/calendar?from=2026-09-28&to=2026-11-09` | 周历、月历共用的订单列表，按客户期望收货日期分组 |
+| `GET /api/orders/workbench?date=2026-09-30` | 指定日期的订单统计与未完成、未取消订单，附商品规格和独立最近三条备注 |
 | `PATCH /api/orders/{orderId}` | 携带 expectedVersion、itemId、changes 修改单个商品 |
 | `PATCH /api/orders/{orderId}/information` | 携带 expectedVersion、changes 局部更正客户、交接计划和约定总金额 |
 | `POST /api/orders/{orderId}/items` | 携带 expectedVersion、item 追加商品，服务端生成 itemId，返回最新订单详情 |
@@ -169,6 +171,56 @@ reason 必填且不能仅含空白，按现有文本规则去除首尾空白。W
 
 非法交接返回 `409 INVALID_FULFILLMENT_TRANSITION`，终态取消返回 `409 ORDER_NOT_CANCELLABLE`；旧版本返回 `409 CONCURRENT_MODIFICATION`。未知动作、空原因及非法版本返回 400，订单不存在返回 404，未认证返回 401。订单状态条件更新、活动与事件生成在同一事务内；回滚或版本冲突不提交状态或日志，也不发送 SSE。C0/C0.5 沿用现有表结构，没有新增表或迁移。
 
+## 日历与当日工作台
+
+两个查询沿用现有 Bearer JWT、员工权限与 `ApiResponse`，成功返回 200；未认证返回 401。日期参数必填，格式为 `yyyy-MM-dd`。缺少参数、无效日期、空区间、反向区间或超过 42 天的日历范围返回 `400 VALIDATION_FAILED`。
+
+### 日历
+
+`GET /api/orders/calendar?from=2026-09-28&to=2026-11-09` 查询半开区间 `[from,to)`，包含 9 月 28 日，不包含 11 月 9 日，共 42 天。周历例如使用 `from=2026-09-28&to=2026-10-05`；周历与月历使用相同接口及 DTO，只改变范围。不要求请求从周一开始。
+
+`data` 是订单数组，空结果为 `[]`。每笔订单仅出现一次，包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `orderId`、`orderNo` | 订单标识与订单号 |
+| `calendarDate` | 客户期望收货日期 `requestedReceiveDate` |
+| `status`、`currentStageCode`、`paymentStatus` | 整单状态、最近确认的制作节点、付款状态 |
+| `fulfillmentType`、`plannedHandoffAt` | DELIVERY/PICKUP、计划交接时刻（UTC ISO 8601） |
+| `items` | 有效商品数组，每项包含 `itemId`、`name`、`quantity` |
+
+按 `calendarDate`、`plannedHandoffAt`、`orderNo` 升序稳定排列，商品按创建时间、商品 ID 排序。历史日历包含 COMPLETED 和 CANCELLED；不返回客户资料、商品备注或完整活动历史。多个商品及数量不会将一笔订单重复计算。计划交接时间用于显示和排序，不能代替收货日期归日；只修改计划交接时间不会迁移日历日期，修改 `requestedReceiveDate` 才会将订单移到新日期。
+
+### 工作台
+
+`GET /api/orders/workbench?date=2026-09-30` 的 `data` 结构：
+
+```json
+{
+  "date": "2026-09-30",
+  "metrics": { "totalOrders": 8, "createdOnDate": 2, "deliveryDueOnDate": 4 },
+  "pendingOrders": []
+}
+```
+
+`pendingOrders` 仅包含所选收货日期中非 COMPLETED、非 CANCELLED 的订单，包含制作中、待制作、待交接和配送中的订单，也包含自提订单。排序与日历一致。每项保留日历的订单字段，另有 `customer`（customerName、phone、memberPhone、buyerName）、`address`、`plannedFinishAt`；`items` 改为包含以下内容的完整工作台商品视图：
+
+- `itemId`、`name`、`productType`、`quantity`、`unitPriceCents`、`memberPriceCents`。
+- `attributes`：完整规格快照，包含现有尺寸、口味、祝福语等键；未设置的报价仍为 null。
+- `recentNotes`：该商品独立的最近三条 NOTE；每条包含 `id`、`itemId`、`actorId`、`actorNameSnapshot`、`createdAt`、`content`。按 `createdAt DESC, id DESC` 排序，备注人是创建备注时的昵称快照，不混入其他商品或订单级备注。没有备注时为 `[]`。
+
+有效商品均排除 `is_removed=true`。制作进度仍以订单的 `status/currentStageCode` 为准，员工确认所有商品完成相应工序后再推进整单；查询不扩展商品制作字段或商品状态机。
+
+| 指标 | 订单计数口径 |
+| --- | --- |
+| `totalOrders` | 系统全部订单，包含已完成、已取消，不受所选收货日期限制 |
+| `createdOnDate` | 创建时刻处于门店当天 `[00:00,次日00:00)` 的订单，不受收货日期或状态限制 |
+| `deliveryDueOnDate` | 当天收货、DELIVERY 且非 COMPLETED/CANCELLED 的订单，含待制作、制作中、待配送和配送中 |
+
+门店日期使用 `Asia/Shanghai`；例如 9 月 30 日的创建统计区间为 UTC `2026-09-29T16:00:00Z` 至 `2026-09-30T16:00:00Z`，包含前者、不包含后者。指标按订单计算，商品数量不影响统计。空工作台仍返回三个统计值与空 `pendingOrders`。
+
+Application 通过 Domain 纯 Java 只读端口访问 Infrastructure 的 MyBatis 查询。日历最多两次 SQL；工作台最多四次 SQL（统计、订单、商品、按 itemId 分组的备注），空集合跳过后续商品或备注查询。只读 `REPEATABLE_READ` 事务保证各次查询来自同一数据库快照；不加载订单聚合、不修改版本、不产生业务活动、不发送 SSE。
+
 ## SSE 与前端接入
 
 使用能携带 Bearer 请求头的 Fetch SSE 客户端，按 SSE 帧解析响应并处理断线重连。请求示例：
@@ -203,7 +255,7 @@ data: {"orderId":"<UUID>","itemId":null,"changeType":"ORDER_PRODUCTION_CHANGED",
 
 夹层、抹面仍是整单节点，通知的 itemId 为 null。通知仅含四个定位字段，不含客户资料、备注正文、取消原因、付款详情或凭证。校验失败、409 冲突、事务回滚及提交失败均不通知；同值资料、商品或付款 PATCH，以及重复移除均不通知，但仍校验数据库当前版本。发送失败只清理相应连接，不影响订单提交或其他客户端。
 
-前端收到 `order.changed` 后，自动使对应订单详情及列表、日历缓存失效，并通过 REST 重取数据。详情使用 `GET /api/orders/{orderId}`，备注可使用现有 activities 查询。`NOTE` 即使 version 未变化也必须重取备注，不能按版本相同忽略通知。更新查询缓存时保留员工正在编辑且尚未保存的表单，使用最新版本提示或处理已有 409 冲突。
+前端收到 `order.changed` 后，自动使对应订单详情及列表、日历缓存失效，并通过 REST 重取数据。日历重新请求当前可见的 `calendar?from=...&to=...`，工作台重新请求所选日期的 `workbench?date=...`；事件不携带旧、新收货日期，不能只在当前列表已有该订单时才刷新。详情使用 `GET /api/orders/{orderId}`，备注可使用现有 activities 查询。`NOTE` 即使 version 未变化也必须重取工作台备注，不能按版本相同忽略通知。更新查询缓存时保留员工正在编辑且尚未保存的表单，使用最新版本提示或处理已有 409 冲突。
 
 首次连接收到 ready、连接断开、重连成功和页面重新聚焦时，主动获取最新 REST 数据。每 15 秒发送一条 `:heartbeat` 注释，客户端忽略即可。每条连接最长 5 分钟，且不超过本次 JWT 剩余有效期；连接到期后重新连接，JWT 过期则先使用现有 `/api/auth/refresh` 流程取得新 token。
 
@@ -230,4 +282,8 @@ OrderIT 包含两商品创建→更正资料→追加 C→移除 B→查询 B �
 
 技术行为参考：[Spring 事务绑定事件](https://docs.spring.io/spring-framework/reference/data-access/transaction/event.html)与 [MyBatis 更新行数及命名参数契约](https://github.com/mybatis/mybatis-3/blob/master/src/site/markdown/java-api.md)。
 
-本期止于 C0.5 订单变更，不开发 Slice C1、日历、前端、AI 识别、服务端草稿、自动计价或商品级工序。
+2026-10-13 Slice C1 验证：Java 21 下常规 Maven verify 通过，订单模块 84 项、bootstrap 25 项检查全部通过，包含 ArchUnit。真实 PostgreSQL/Redis 集成运行中 InfrastructureIT 5 项通过，OrderIT 26 项中 25 项首次通过；一项新增用例因按数组下标比较商品规格失败，改为按 itemId 定位后单独重跑通过。C1 覆盖半开日期边界、42 天及跨月范围、稳定排序、多商品只计一单、收货日期迁移、交接时间不改变归日、终态历史、门店午夜创建统计、每件商品备注时间与 ID 倒序、软删除、未认证拒绝，以及查询不写版本/活动、不发 SSE。集成断言同时确认日历只调用两次查询、工作台只调用四次查询，不调用聚合仓储。
+
+只读查询技术参考：[MyBatis 动态 SQL 与批量参数](https://mybatis.org/mybatis-3/dynamic-sql.html)、[PostgreSQL 17 窗口函数](https://www.postgresql.org/docs/17/functions-window.html)。
+
+本期止于 Slice C1 后端日历与工作台查询，不开发前端 Slice C2、AI 识别、服务端草稿、自动计价或商品级工序。
