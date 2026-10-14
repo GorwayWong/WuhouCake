@@ -1533,6 +1533,19 @@ to{
 .create-result .text-button{
   margin-left:0;
 }
+.information-form{
+  margin-top:22px;
+}
+.information-group{
+  margin-bottom:24px;
+}
+.information-group h3,.information-review h3{
+  margin:0 0 16px;
+  font-size:15px;
+}
+.information-review{
+  margin-bottom:24px;
+}
 @media(max-width:760px){
   .create-top-groups{
     display:block;

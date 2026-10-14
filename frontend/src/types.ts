@@ -27,4 +27,8 @@ export interface CreateOrderRequest {
   items: Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'>[];
   totalAmountCents: number | null;
 }
+export type InformationChanges = Partial<Customer & Omit<Fulfillment, 'type'> & {
+  fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null;
+}>;
+export interface InformationRequest { expectedVersion: number; changes: InformationChanges }
 export interface Page<T> { items: T[]; total: number; page: number; size: number }

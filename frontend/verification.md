@@ -98,3 +98,25 @@
 `npm run build`、`npm test`（9 项，新增创建异常分类与核对日期两项回归）、`git diff --check` 通过。只修改 `frontend/`；没有后端、依赖或持久化变更。Context7 核对 TanStack Query v5.90.3 的服务端响应更新缓存、查询取消与等待失效查询完成的用法。
 
 临时截图位于 `/private/tmp/wuhou-c2b1b-detail-desktop.png`、`/private/tmp/wuhou-c2b1b-detail-mobile.png`，仅用于本次布局复核，没有截图基线。未提交、推送或部署；C2-B1c 订单资料与商品编辑未提前实现。
+
+## C2-B1c.1 订单资料与金额编辑
+
+验证日期：2026-10-14。本地 main 与 HTTPS fetch 后的最新 origin/main 均为 `9bad4ee297c6c27850d775657cb291ccf9367948`，前端起始无未提交修改。保留原有 README、docs 修改和删除；本次仅修改 frontend/。
+
+复用隔离数据库 `wuhou_c2a_verify`、Redis namespace `c2a-verify`、后端 18080 和前端 5173；`agent-browser` 使用两个不同员工的独立会话。新增客户、员工及订单 #0000011 均为合成数据，没有注入写入故障或增加测试探针。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 初始化与未修改保存 | #0000011 初始为待配送、已付款、已夹层、version 4。资料表单将 UTC 08:30:27.123456Z 显示为北京时间 16:30，出品显示 13:00，总金额 168.00 元。直接保存关闭编辑，没有 PATCH、版本或资料历史变更。 |
+| 资料与金额保存 | 在浏览器更正电话、收货日期到 11 月 5 日、计划交接到北京时间 11 月 6 日 00:15、金额到 280 元。HAR 只有一个资料 PATCH，expectedVersion 4，只含这四个变化字段。服务端返回 version 5；详情显示新资料与金额，付款和制作节点不变。未改的出品时间仍为 `2026-11-03T05:00:30.654321Z`。 |
+| 日历实时迁日 | 另一员工已打开的 11 月 3 日工作台通过 SSE 更新，订单只在 11 月 5 日日期块出现，旧日期没有残留。没有手动刷新或新增轮询。收货日期与 11 月 6 日交接时间分别保存。 |
+| 配送改自提与清空 | 浏览器切换为自提并清空地址、会员手机，同一请求保存。服务端返回 WAITING_PICKUP、address=null、memberPhone=null、version 6，保留 PAID 和 LAYER_DONE。另一员工已打开的详情自动显示待自提、已付款与最新资料。 |
+| 编辑中的并发修改 | 员工 B 在 version 6 编辑电话；员工 A 更正下单人到 version 7。B 收到实时更新后，电话草稿及原表单内容保持，没有被查询回填。B 保存发出一次 expectedVersion 6 的 PATCH，真实后端返回 409 CONCURRENT_MODIFICATION，没有自动重试。 |
+| 冲突复核与再次保存 | 409 后 B 的电话草稿保留，表单下方显示最新下单人及其他资料。B 核对后再次保存，HAR 显示 expectedVersion 7、changes 仅为电话，返回 version 8；A 改过的下单人仍保留。A 的只读详情通过 SSE 自动显示 B 保存的电话。 |
+| 历史记录 | 查询得到四条 ORDER_INFORMATION_CHANGED，分别对应四次实际保存，包含两名员工、真实 before/after 及时间。未修改保存和失败的 409 没有新增记录。付款仍为 PAID，制作节点仍为 LAYER_DONE，商品未修改。 |
+| 取消与离开提醒 | 打开编辑后取消恢复只读。修改未保存时点击返回工作台，出现真实 confirm 提醒；取消离开后仍在同一订单，电话草稿保持。刷新／关闭提醒复用 App 的 beforeunload；本轮未实际刷新或关闭资料编辑页。 |
+| 桌面与手机 | 1280×800 桌面、390×844 手机检查，客户、交接和金额分组清晰，保存／取消可用；手机 scrollWidth=innerWidth=390px，输入字体 16px。没有新增路由或重复金额、付款入口。 |
+
+`npm run build`、`npm test`（13 项，包括四项资料编辑回归）、`git diff --check` 通过。代码未变化后没有重复执行构建或测试。Context7 核对 React 独立编辑状态、按组件挂载初始化，以及 TanStack Query v5.90.3 的响应更新缓存与等待失效查询完成。
+
+本次变更：App.tsx、OrderDetail.tsx、orderForm.ts、types.ts、styles.css，新增 InformationEdit.tsx 与 information.test.ts，并更新现有 README、verification。没有后端、依赖、基础设施或商品编辑变更。临时截图在 `/private/tmp/wuhou-c2b1c1-edit-desktop.png`、`/private/tmp/wuhou-c2b1c1-edit-mobile.png` 和 `/private/tmp/wuhou-c2b1c1-conflict-mobile.png`，没有截图基线。未提交、推送或部署。

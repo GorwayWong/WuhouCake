@@ -1,4 +1,4 @@
-import type { CreateOrderRequest } from './types';
+import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest } from './types';
 
 export const specificationFields = [
   ['size', '尺寸'], ['flavor', '口味'], ['filling', '夹馅'],
@@ -92,4 +92,57 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
     totalAmountCents: amount(draft.totalAmount, 'totalAmount'),
   };
   return { request: Object.keys(errors).length ? null : request, errors };
+}
+
+export type InformationDraft = Omit<OrderDraft, 'items'>;
+function localStoreTime(value: string | null): string {
+  if (!value) return '';
+  const parts = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value));
+  const part = (type: string) => parts.find(part => part.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`;
+}
+export function informationDraft(order: Detail): InformationDraft {
+  const cents = order.totalAmountCents == null ? null : BigInt(order.totalAmountCents);
+  return { customerName: order.customer.customerName || '', phone: order.customer.phone, memberPhone: order.customer.memberPhone || '', buyerName: order.customer.buyerName || '',
+    fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: order.fulfillment.requestedReceiveDate,
+    plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt),
+    totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}` };
+}
+export function informationRequest(original: Detail, draft: InformationDraft, baseline = original): { request: InformationRequest | null; errors: Record<string, string> } {
+  const initial = informationDraft(original), current = informationDraft(baseline);
+  const changes: InformationChanges = {}, errors: Record<string, string> = {};
+  for (const [field, label, maximum] of [['customerName', '客户姓名', 80], ['phone', '联系电话', 32], ['memberPhone', '会员手机', 32], ['buyerName', '下单人', 80], ['address', '地址', 2147483647]] as const) {
+    const value = draft[field].trim() || null;
+    if (draft[field].length > maximum) errors[field] = `${label}最多填写 ${maximum} 个字符。`;
+    if (field === 'phone' && !value) errors.phone = '请填写联系电话。';
+    if (value !== (initial[field] || null) && value !== (current[field] || null)) {
+      if (field === 'phone') changes.phone = value || '';
+      else changes[field] = value;
+    }
+  }
+  if (!['DELIVERY', 'PICKUP'].includes(draft.fulfillmentType)) errors.fulfillmentType = '请选择配送或自提。';
+  else if (draft.fulfillmentType !== initial.fulfillmentType && draft.fulfillmentType !== current.fulfillmentType) changes.fulfillmentType = draft.fulfillmentType;
+  if (draft.requestedReceiveDate !== initial.requestedReceiveDate && draft.requestedReceiveDate !== current.requestedReceiveDate) {
+    if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的收货日期。';
+    else changes.requestedReceiveDate = draft.requestedReceiveDate;
+  }
+  for (const field of ['plannedHandoffAt', 'plannedFinishAt'] as const) {
+    // 未改动的分钟输入不回写，保留服务端秒与微秒精度。
+    if (draft[field] === initial[field] || draft[field] === current[field]) continue;
+    if (field === 'plannedFinishAt' && !draft[field]) changes.plannedFinishAt = null;
+    else {
+      try { changes[field] = storeTime(draft[field]); }
+      catch (error) { errors[field] = (error as Error).message; }
+    }
+  }
+  if (draft.totalAmount !== initial.totalAmount) {
+    try {
+      const cents = moneyToCents(draft.totalAmount);
+      if (cents !== original.totalAmountCents && cents !== baseline.totalAmountCents) changes.totalAmountCents = cents;
+    } catch (error) { errors.totalAmount = (error as Error).message; }
+  }
+  const type = changes.fulfillmentType ?? baseline.fulfillment.type;
+  const address = 'address' in changes ? changes.address : baseline.fulfillment.address;
+  if (type === 'DELIVERY' && !address) errors.address = '请填写配送地址。';
+  return { request: !Object.keys(errors).length && Object.keys(changes).length ? { expectedVersion: baseline.version, changes } : null, errors };
 }

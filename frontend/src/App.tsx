@@ -49,11 +49,12 @@ function Login({ changePassword = false, onAccount, onLogout }: { changePassword
     <p className="login-help">账号由门店管理员开通。无法登录时，请联系管理员。</p>
   </form></section></main>;
 }
-function Workspace({ token, hash, selected, setSelected, mode, setMode, draft, onAccount, onDraftChange, onSubmit, creating, createError, submitted, notice, dismissNotice, onLogout }: {
+function Workspace({ token, hash, selected, setSelected, mode, setMode, draft, onAccount, onDraftChange, onSubmit, creating, createError, submitted, notice, dismissNotice, onLogout, onEditDirtyChange }: {
   token: string; hash: string; draft: DraftRecord | null; onAccount: (accountId: string, date?: string) => void;
   selected: string; setSelected: (date: string) => void; mode: 'week' | 'month'; setMode: (mode: 'week' | 'month') => void;
   onDraftChange: (draft: OrderDraft) => void; onSubmit: (request: CreateOrderRequest) => void;
   creating: boolean; createError: unknown; submitted?: CreateOrderRequest; notice: string; dismissNotice: () => void; onLogout: () => Promise<boolean>;
+  onEditDirtyChange: (dirty: boolean) => void;
 }) {
   const client = useQueryClient();
   const [connection, setConnection] = useState<Connection>('connecting');
@@ -66,7 +67,7 @@ function Workspace({ token, hash, selected, setSelected, mode, setMode, draft, o
   }, [client, token]);
   useEffect(() => { if (me.data) onAccount(me.data.accountId, hash === '#/orders/new' ? selected : undefined); }, [me.data, hash, selected, onAccount]);
   const id = /^#\/orders\/([a-f\d-]{36})$/i.exec(hash)?.[1];
-  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><span className={`connection ${connection}`} role="status">{connection === 'live' ? <WifiHigh /> : <WifiSlash />}<span>{connection === 'live' ? '协作已连接' : connection === 'connecting' ? '正在连接' : '正在重连'}</span></span><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><main className="workspace"><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{connection === 'reconnecting' && <div className="notice">实时连接暂时中断，正在自动重连；恢复后会重新获取最新订单。</div>}{hash === '#/orders/new' ? draft && draft.accountId === me.data?.accountId ? <OrderCreate draft={draft.value} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} /> : <Loading /> : id ? <OrderDetail key={id} id={id} /> : <Calendar selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span><span>把心意，准时送达。</span></footer></>;
+  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><span className={`connection ${connection}`} role="status">{connection === 'live' ? <WifiHigh /> : <WifiSlash />}<span>{connection === 'live' ? '协作已连接' : connection === 'connecting' ? '正在连接' : '正在重连'}</span></span><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><main className="workspace"><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{connection === 'reconnecting' && <div className="notice">实时连接暂时中断，正在自动重连；恢复后会重新获取最新订单。</div>}{hash === '#/orders/new' ? draft && draft.accountId === me.data?.accountId ? <OrderCreate draft={draft.value} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} /> : <Loading /> : id ? <OrderDetail key={id} id={id} onEditDirtyChange={onEditDirtyChange} /> : <Calendar selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span><span>把心意，准时送达。</span></footer></>;
 }
 export function App() {
   const state = useSyncExternalStore(session.subscribe, session.snapshot);
@@ -81,6 +82,9 @@ export function App() {
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
   const [notice, setNotice] = useState('');
+  const [editDirty, setEditDirty] = useState(false);
+  const editDirtyRef = useRef(false);
+  const onEditDirtyChange = useCallback((dirty: boolean) => { editDirtyRef.current = dirty; setEditDirty(dirty); }, []);
   const saveDraft = useCallback((next: DraftRecord | null) => { draftRef.current = next; setDraft(next); }, []);
   const creation = useMutation({
     mutationFn: (request: CreateOrderRequest) => api<Detail>('/orders', { method: 'POST', body: request }),
@@ -99,7 +103,8 @@ export function App() {
   });
   const allowLeave = useCallback(() => {
     if (creatingRef.current) { setNotice('订单正在创建，请稍候再离开。'); return false; }
-    return !changed(draftRef.current) || window.confirm('录单内容尚未保存，离开将丢弃输入。确定离开吗？');
+    if (changed(draftRef.current)) return window.confirm('录单内容尚未保存，离开将丢弃输入。确定离开吗？');
+    return !editDirtyRef.current || window.confirm('订单资料修改尚未保存，离开将丢弃输入。确定离开吗？');
   }, []);
   const onAccount = useCallback((accountId: string, date?: string) => {
     let current = draftRef.current;
@@ -120,7 +125,7 @@ export function App() {
       const next = window.location.hash;
       const position: unknown = window.history.state?.wuhouRoutePosition;
       if (next === hashRef.current) return;
-      if (hashRef.current === '#/orders/new' && draftRef.current) {
+      if ((hashRef.current === '#/orders/new' && draftRef.current) || editDirtyRef.current) {
         if (!allowLeave()) {
           // 回到原历史项，保留被取消后退的工作台入口。
           if (typeof position === 'number' && position !== historyPosition.current) window.history.go(historyPosition.current - position);
@@ -130,7 +135,7 @@ export function App() {
           }
           return;
         }
-        saveDraft(null); creation.reset();
+        if (hashRef.current === '#/orders/new') { saveDraft(null); creation.reset(); }
       }
       historyPosition.current = typeof position === 'number' && position !== historyPosition.current ? position : historyPosition.current + 1;
       window.history.replaceState({ ...window.history.state, wuhouRoutePosition: historyPosition.current }, '');
@@ -143,11 +148,11 @@ export function App() {
   }, [allowLeave, saveDraft, creation.reset]);
   const dirty = changed(draft);
   useEffect(() => {
-    if (!dirty && !creating) return;
+    if (!dirty && !editDirty && !creating) return;
     const listener = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', listener);
     return () => window.removeEventListener('beforeunload', listener);
-  }, [dirty, creating]);
+  }, [dirty, editDirty, creating]);
   useEffect(() => { if (!state.token) client.clear(); }, [client, state.token]);
   const logout = async () => {
     if (!allowLeave()) return false;
@@ -158,7 +163,7 @@ export function App() {
   };
   if (state.loading) return <Loading />;
   if (!state.token || state.token.passwordChangeRequired) return <>{dirty && <div className="draft-session-notice notice" role="status">登录已失效，录单草稿暂时保留在当前标签页。同一员工重新登录后可继续；刷新或关闭后无法恢复。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={() => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
-  return <Workspace token={state.token.accessToken} hash={hash} selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} draft={draft} onAccount={onAccount} creating={creating} createError={creation.error} submitted={creation.variables} notice={notice} dismissNotice={() => setNotice('')} onDraftChange={value => {
+  return <Workspace token={state.token.accessToken} hash={hash} selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} draft={draft} onAccount={onAccount} creating={creating} createError={creation.error} submitted={creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onDraftChange={value => {
     if (draftRef.current) saveDraft({ ...draftRef.current, value });
     if (!creationResultUnknown(creation.error)) creation.reset();
   }} onSubmit={request => {

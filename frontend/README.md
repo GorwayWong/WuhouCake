@@ -1,4 +1,4 @@
-# 午逅 Story 工作台（Slice C2-A / C2-B1b）
+# 午逅 Story 工作台（Slice C2-A / C2-B1c.1）
 
 独立 React + TypeScript + Vite 前端。服务端数据使用 TanStack Query；没有新增后端领域模块、逐商品制作状态机或权限引擎。
 
@@ -35,6 +35,9 @@ npm run build
 - 周历下方显示统计及所选日待办。统计直接使用服务端口径：总订单为全库数量，新下单按所选日创建时间统计，“当日需配送”仍读取 `deliveryDueOnDate`，表示所选日尚未完成/取消的配送订单。待办不含已完成、已取消订单，但这些订单仍能从日历进入详情。每个商品展示接口返回的最近三条商品备注，订单级备注不混入。
 - `#/orders/{UUID}` 顶部并列呈现整单制作与交付、金额与付款，手机端先显示付款；每项业务操作只有一个入口，操作反馈显示在顶部。客户、全部有效商品、分页备注与日志依次在下方。进度只读取订单级 `status/currentStageCode`，区分配送与自提；跳过夹层/抹面时标为“未记录”，取消时显示流程终止。制作活动历史默认收起，可展开读取原有记录。动作按钮提交整单 API 和当前 `expectedVersion`，状态转换、金额与权限校验由后端决定。制作中可直接完成制作。
 - 付款、制作、交付和取消成功后，用服务端返回的最新详情更新缓存，并等待相关查询刷新后恢复操作；旧版本响应不覆盖缓存中更高版本的详情。各动作独立提交，失败不撤销其他成功动作。409 重新获取状态并提示人工核对，不自动重试。
+- 「客户与交付」的「编辑资料」在原区域编辑客户、交接安排及约定总金额；仅提供保存修改、取消，顶部付款入口保持唯一。所有订单状态均可更正资料；配送须有地址，自提可保留或清空地址。约定金额不按商品报价计算，也不改变付款状态。交接类型对应的订单状态由服务端返回结果决定，不自动触发制作或交付动作。
+- 资料编辑从打开时的详情初始化独立草稿与版本，SSE 和查询刷新不回填输入。一次保存只 PATCH 实际修改字段；可选字段清空为 null，未改动不发送请求。金额复用整数分转换，空金额与零不同；UTC 时间显示为北京时间，未改的分钟输入不回写秒／微秒。收货日期和计划交接时间分别修改，保存沿用原有缓存刷新、日历迁日和修改日志。
+- 资料修改发生 409 时保留草稿，刷新后在表单下方显示最新资料供核对；再次点击保存使用该次读取的版本，仅提交员工改过的字段，保留同事修改的其他资料。尚未获取新版本时保存禁用；再次出现并发修改仍返回 409，不自动重试。取消编辑恢复最新只读详情。返回、后退、退出及正常刷新／关闭对未保存资料给予离开提醒；草稿只在当前详情页面内存中保存。
 - 备注与取消原因是独立本地输入状态，不从查询结果回填。后台刷新和 409 不覆盖输入；成功提交后才清空对应表单。成功提示可关闭，离开页面的草稿不持久化。
 - 日历使用订单号，无手机号尾号扩展。采用附带午逅 logo 和参考图的黄色/浅色视觉语言；没有蛋糕照片字段时使用商品图标，不虚构商品照片。登录页为新增设计，不宣称参考图中存在登录页。
 
@@ -48,6 +51,7 @@ npm run build
 | 所选日期统计与待办 | `GET /api/orders/workbench?date=YYYY-MM-DD` |
 | 人工录单 | `POST /api/orders` |
 | 订单详情 | `GET /api/orders/{id}` |
+| 客户、交接、约定金额修改 | `PATCH /api/orders/{id}/information`，`expectedVersion` + `changes` |
 | 备注、制作时间线、修改日志 | `GET /api/orders/{id}/activities?page=1&size=20&type=...`，独立分页 |
 | 整单制作 | `POST /api/orders/{id}/production-actions` |
 | 付款 | `PATCH /api/orders/{id}/payment-status` |
@@ -66,10 +70,10 @@ npm run build
 
 ## 验证
 
-`npm test` 使用 Node 内置测试运行器，覆盖跨年/闰月的查询范围、同版本 NOTE、迁日后的范围失效、并发 401 单次刷新、SSE 分块解码、断线重连和单连接清理，以及录单金额精度、门店时间转换、多商品请求结构、创建异常分类和核对入口日期。真实浏览器验证过程与范围见 [verification.md](verification.md)。
+`npm test` 使用 Node 内置测试运行器，覆盖跨年/闰月的查询范围、同版本 NOTE、迁日后的范围失效、并发 401 单次刷新、SSE 分块解码、断线重连和单连接清理，以及录单金额精度、门店时间转换、多商品请求结构、创建异常分类和核对入口日期。资料编辑增加差异字段、可选值清空、UTC 初始化与时间精度保留、冲突复核后提交的回归。真实浏览器验证过程与范围见 [verification.md](verification.md)。
 
 实现参考：通过 Context7 核对 [TanStack Query 查询失效](https://tanstack.com/query/latest/docs/framework/react/guides/query-invalidation)、[查询取消](https://tanstack.com/query/latest/docs/framework/react/guides/query-cancellation)、[业务响应更新缓存](https://tanstack.com/query/latest/docs/framework/react/guides/updates-from-mutation-responses)、[等待业务操作后的查询刷新](https://tanstack.com/query/latest/docs/framework/react/guides/invalidations-from-mutations)、[Vite 同源代理](https://vite.dev/config/server-options.html#server-proxy) 和 [eventsource-parser](https://github.com/rexxars/eventsource-parser)。
 
 ## C2-B 待办
 
-完整订单资料及既有商品编辑（C2-B1c）、图片上传、商品模板及 AI 识别。录单状态确认复用现有详情操作；本轮保留 OrderItem 的 `productionStatus/currentStageCode` 类型，不据此渲染独立制作流程。
+商品添加、修改、移除（C2-B1c.2）、图片上传、商品模板及 AI 识别。录单状态确认复用现有详情操作；本轮保留 OrderItem 的 `productionStatus/currentStageCode` 类型，不据此渲染独立制作流程。
