@@ -120,3 +120,27 @@
 `npm run build`、`npm test`（13 项，包括四项资料编辑回归）、`git diff --check` 通过。代码未变化后没有重复执行构建或测试。Context7 核对 React 独立编辑状态、按组件挂载初始化，以及 TanStack Query v5.90.3 的响应更新缓存与等待失效查询完成。
 
 本次变更：App.tsx、OrderDetail.tsx、orderForm.ts、types.ts、styles.css，新增 InformationEdit.tsx 与 information.test.ts，并更新现有 README、verification。没有后端、依赖、基础设施或商品编辑变更。临时截图在 `/private/tmp/wuhou-c2b1c1-edit-desktop.png`、`/private/tmp/wuhou-c2b1c1-edit-mobile.png` 和 `/private/tmp/wuhou-c2b1c1-conflict-mobile.png`，没有截图基线。未提交、推送或部署。
+
+## C2-B1c.2 订单商品编辑与变更协作
+
+验证日期：2026-10-14。本地 HEAD、HTTPS fetch 后的最新 origin/main 与指定基线均为 `958479305e536c51d3255368de09cb34acf75153`；SSH fetch 连接关闭，改用 HTTPS 成功。开始时 frontend/ 无未提交修改，保留既有 README、docs 修改、删除与未跟踪文档。
+
+确认后端进程使用隔离数据库 `wuhou_c2a_verify` 和 Redis namespace `c2a-verify`，端口 18080；前端 5173。通过现有 API 准备合成订单 #0000012（两件蛋糕、独立备注、数组／对象及未知 JSONB 规格）和两个不同岗位的合成员工；商品增删改均由 `agent-browser` 在详情表单实际提交。延迟与丢失响应仅由临时浏览器 fetch 包装注入，没有仓库测试探针或新增测试框架。
+
+| 验证项 | 实际结果 |
+| --- | --- |
+| 未变化与单商品修改 | 未修改直接保存关闭表单，写入次数为 0。修改芒果蛋糕尺寸和单价，仅 PATCH 该 itemId 的 size 与 unitPriceCents=28001；另一蛋糕全部字段不变。数组口味、嵌套夹馅、未知装饰和两件商品各自备注均保留。 |
+| 删除规格 | 在真实表单清空已有特殊要求，请求仅含 attributes.requirements=null；服务端删除该键，其他规格保持。单价 280.01 元转换为 28001 分，会员价 0 元保留。 |
+| SSE 与真实 409 | 制作员工在 version 4 打开尺寸草稿；前台把同一蛋糕数量改为 2 到 version 5。SSE 更新商品只读标题，草稿仍为尺寸 12 寸、原数量 1。制作员工保存仅发一次 expectedVersion=4，后端返回 409；尺寸草稿保留，复核区显示最新数量 2。人工再次保存使用 version 5，仅修改 size，成功到 version 6，前台经 SSE 看到 12 寸。 |
+| 制作中追加 | 页面开始制作并确认夹层到 version 8，然后追加草莓蛋糕。POST 使用 expectedVersion=8，无客户端 itemId；服务端 201 返回真实 itemId、3 件有效商品、PROCESSING/currentStageCode=null、version 9。提示整单节点已清空并请制作同事复核；另一员工经 SSE 显示 3 件商品与制作中。总额始终 32050 分，付款仍 UNPAID。 |
+| 移除与草稿保护 | 再次确认整单夹层后，通过一次原生 confirm 移除巧克力蛋糕；有效列表变为 2 件，LAYER_DONE 保留，历史记录含完整 before/after 与 isRemoved=true，芒果独立备注不变。另一员工正在编辑被移除商品时，原名称草稿仍保留，保存禁用并提示核对；取消后恢复有效列表。再移除追加商品剩 1 件，最后一件的移除按钮禁用。 |
+| 状态限制 | 待自提时商品编辑、移除、追加入口均隐藏，提示先执行上方已有「重新制作」；该动作执行后回到制作中，商品入口恢复。非法状态和最后一件限制另由针对性单元测试覆盖。 |
+| 编辑中被推进到待交接 | 前台保留尺寸 16 寸草稿时，制作员工将订单推进到待自提。草稿保持、保存禁用，原「重新制作」按钮仍可点击；执行后草稿不丢。首次保存以打开表单时版本提交被真实后端返回 409，显示最新商品供人工复核；再次保存只提交 size=16 寸，成功且没有自动重试。 |
+| 非法数量与修改节点 | 数量 0 被表单阻止并定位数量输入。修改尺寸后真实详情仍为 LAYER_DONE，约定金额和商品备注不变。 |
+| 保存期间导航 | 临时延迟资料 PATCH 的真实响应，保存、取消、退出及返回均不可操作；点击页头工作台或执行浏览器后退被现有 hash 守卫恢复到原详情，电话草稿保留。释放响应后关闭表单、恢复退出并清除等待提示。商品 PATCH 延迟时同样禁用取消、退出和返回，草稿保留；完成后恢复。 |
+| 未保存离开与追加结果未知 | 追加草稿返回工作台触发真实 confirm，取消离开后草稿保持。另实际追加一件商品但在浏览器丢弃成功响应：有效列表经 SSE／REST 显示新商品，追加草稿仍在，提示结果未知并先核对列表及日志；继续修改草稿不隐藏提示，没有自动重试或成功提示。 |
+| 桌面与手机布局 | 1280×800 和 390×844 视口实际检查，页面 scrollWidth 与 innerWidth 一致，手机输入字体 16px；内联编辑仅保留一个活动表单，结构化规格只读。临时截图 `/private/tmp/wuhou-c2b1c2-edit-desktop.png`、`/private/tmp/wuhou-c2b1c2-edit-mobile.png`、`/private/tmp/wuhou-c2b1c2-conflict-mobile.png`。 |
+
+`npm run build`、`npm test`（17 项，新增 4 项商品高风险回归）、`git diff --check` 通过。仅修改 frontend/，没有新增依赖、后端、数据库、路由框架或商品级状态机；没有运行全量后端测试。Context7 核对 TanStack Query v5.90.3 的服务端响应缓存更新、异步 onSuccess 等待查询刷新与 isPending 生命周期。
+
+站内保存保护与未保存 confirm 已实际验收；刷新／关闭沿用 beforeunload，本轮未在请求进行中真正关闭标签页。浏览器允许员工确认卸载，系统强制结束无法保证请求完成。既有录单金额、表单及实时逻辑由现有前端回归覆盖；未重复完整付款、配送浏览器流程，完整跨流程验收留给 C2-B1d。未提交、推送或部署。

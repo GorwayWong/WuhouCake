@@ -31,4 +31,7 @@ export type InformationChanges = Partial<Customer & Omit<Fulfillment, 'type'> & 
   fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null;
 }>;
 export interface InformationRequest { expectedVersion: number; changes: InformationChanges }
+export type ItemInput = CreateOrderRequest['items'][number];
+export interface ItemChangeRequest { expectedVersion: number; itemId: string; changes: Partial<ItemInput> }
+export interface ItemAddRequest { expectedVersion: number; item: ItemInput }
 export interface Page<T> { items: T[]; total: number; page: number; size: number }

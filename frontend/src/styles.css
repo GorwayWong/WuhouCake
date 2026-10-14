@@ -1536,6 +1536,36 @@ to{
 .information-form{
   margin-top:22px;
 }
+.product-actions,.item-heading-actions{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:12px;
+}
+.product-actions{
+  margin-bottom:16px;
+}
+.product-actions button{
+  min-height:44px;
+}
+.item-form{
+  margin:16px 0;
+}
+.item-add{
+  margin-top:20px;
+  padding-top:20px;
+  border-top:1px solid var(--line);
+}
+.preserved-specification{
+  display:block;
+  overflow-wrap:anywhere;
+  padding:12px 0;
+}
+.preserved-specification small{
+  display:block;
+  color:var(--muted);
+  margin-top:6px;
+}
 .information-group{
   margin-bottom:24px;
 }

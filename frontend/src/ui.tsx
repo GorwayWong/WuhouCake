@@ -37,12 +37,13 @@ export function valueText(value: unknown): string {
   return String(value);
 }
 export function money(cents: number | null) { return cents == null ? '未填写' : `¥${(cents / 100).toFixed(2)}`; }
-export function Product({ item, prices = false }: { item: Item; prices?: boolean }) {
+export function Product({ item, prices = false, children, actions }: { item: Item; prices?: boolean; children?: ReactNode; actions?: ReactNode }) {
   return <section className="product" aria-label={`商品 ${item.name}`}>
     <div className="product-heading"><span className="product-mark"><Cake size={24} /></span><div><h3>{item.name}</h3><span className="muted">{!item.productType || item.productType === 'CAKE' ? '定制蛋糕' : item.productType} · 数量 {item.quantity}</span></div></div>
-    <dl className="attributes">{Object.entries(item.attributes || {}).map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd>{valueText(value)}</dd></div>)}
+    {actions}
+    {children || <dl className="attributes">{Object.entries(item.attributes || {}).map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd>{valueText(value)}</dd></div>)}
       {prices && <><div><dt>单价</dt><dd>{money(item.unitPriceCents)}</dd></div><div><dt>会员单价</dt><dd>{money(item.memberPriceCents)}</dd></div></>}
-    </dl>
+    </dl>}
     <div className="recent-notes"><h4>最近备注 <span>{item.recentNotes.length}</span></h4>
       {item.recentNotes.length === 0 ? <p className="muted">还没有商品备注</p> : <ul>{item.recentNotes.map(note => <li key={note.id}><div className="note-meta"><strong>{note.actorNameSnapshot}</strong><time dateTime={note.createdAt}>{time(note.createdAt, true)}</time></div><p>{note.content}</p></li>)}</ul>}
     </div>

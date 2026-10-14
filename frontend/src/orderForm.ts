@@ -1,4 +1,4 @@
-import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest } from './types';
+import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
 
 export const specificationFields = [
   ['size', '尺寸'], ['flavor', '口味'], ['filling', '夹馅'],
@@ -30,6 +30,53 @@ export function moneyToCents(input: string): number | null {
   const cents = BigInt(yuan) * 100n + BigInt(fraction.padEnd(2, '0'));
   if (cents > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('金额过大，请核对后重新填写。');
   return Number(cents);
+}
+export function itemInput(draft: ItemDraft): { item: ItemInput | null; errors: Record<string, string> } {
+  const errors: Record<string, string> = {};
+  if (!draft.name.trim()) errors.name = '请填写商品名称。';
+  else if (draft.name.length > 128) errors.name = '商品名称最多填写 128 个字符。';
+  if (draft.productType.length > 32) errors.productType = '商品类型最多填写 32 个字符。';
+  const quantity = Number(draft.quantity);
+  if (!/^\d+$/.test(draft.quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) errors.quantity = '数量须为 1–2147483647 之间的整数。';
+  const amount = (field: 'unitPrice' | 'memberPrice') => {
+    try { return moneyToCents(draft[field]); }
+    catch (error) { errors[field] = (error as Error).message; return null; }
+  };
+  const item: ItemInput = { name: draft.name.trim(), productType: draft.productType.trim() || 'CAKE', quantity,
+    unitPriceCents: amount('unitPrice'), memberPriceCents: amount('memberPrice'),
+    attributes: Object.fromEntries(specificationFields.flatMap(([key]) => draft.attributes[key].trim() ? [[key, draft.attributes[key].trim()]] : [])) };
+  return { item: Object.keys(errors).length ? null : item, errors };
+}
+export function textSpecification(value: unknown): boolean { return value == null || typeof value === 'string'; }
+export function itemDraft(item: Item): ItemDraft {
+  const amount = (value: number | null) => value == null ? '' : `${BigInt(value) / 100n}.${String(BigInt(value) % 100n).padStart(2, '0')}`;
+  return { key: item.itemId, name: item.name, productType: item.productType || '', quantity: String(item.quantity),
+    unitPrice: amount(item.unitPriceCents), memberPrice: amount(item.memberPriceCents),
+    attributes: Object.fromEntries(specificationFields.map(([key]) => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
+}
+export function canEditItems(order: Pick<Detail, 'status'>): boolean { return ['WAITING_PRODUCTION', 'PROCESSING'].includes(order.status); }
+export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
+export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original): { request: ItemChangeRequest | null; errors: Record<string, string> } {
+  const before = original.items.find(item => item.itemId === itemId), current = baseline.items.find(item => item.itemId === itemId);
+  if (!before || !current) return { request: null, errors: { item: '此商品已被移除，输入已保留，请取消编辑并核对订单。' } };
+  const result = itemInput(draft);
+  if (!result.item) return { request: null, errors: result.errors };
+  const initial = itemDraft(before), changes: Partial<ItemInput> = {};
+  for (const field of ['name', 'productType', 'quantity'] as const) {
+    if (draft[field] !== initial[field] && result.item[field] !== before[field] && result.item[field] !== current[field]) Object.assign(changes, { [field]: result.item[field] });
+  }
+  for (const [field, key] of [['unitPrice', 'unitPriceCents'], ['memberPrice', 'memberPriceCents']] as const) {
+    if (draft[field] !== initial[field] && result.item[key] !== before[key] && result.item[key] !== current[key]) changes[key] = result.item[key];
+  }
+  const attributes: Record<string, unknown> = {};
+  for (const [key] of specificationFields) {
+    // 文本框只修改文本规格；未知字段和结构化规格交由服务端保留。
+    if (!textSpecification(before.attributes[key]) || !textSpecification(current.attributes[key]) || draft.attributes[key] === initial.attributes[key]) continue;
+    const value = draft.attributes[key].trim() || null;
+    if (value !== (before.attributes[key] ?? null) && value !== (current.attributes[key] ?? null)) attributes[key] = value;
+  }
+  if (Object.keys(attributes).length) changes.attributes = attributes;
+  return { request: Object.keys(changes).length ? { expectedVersion: baseline.version, itemId, changes } : null, errors: {} };
 }
 export function validDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000')) return false;
@@ -76,18 +123,9 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       plannedFinishAt: dateTime(draft.plannedFinishAt, 'plannedFinishAt'),
     },
     items: draft.items.map((item, index) => {
-      const path = `items.${index}`;
-      const quantity = Number(item.quantity);
-      if (!/^\d+$/.test(item.quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) {
-        errors[`${path}.quantity`] = '数量须为 1–2147483647 之间的整数。';
-      }
-      return {
-        name: text(item.name, `${path}.name`, '商品名称', 128, true) || '',
-        productType: text(item.productType, `${path}.productType`, '商品类型', 32) || 'CAKE', quantity,
-        unitPriceCents: amount(item.unitPrice, `${path}.unitPrice`),
-        memberPriceCents: amount(item.memberPrice, `${path}.memberPrice`),
-        attributes: Object.fromEntries(specificationFields.flatMap(([key]) => item.attributes[key].trim() ? [[key, item.attributes[key].trim()]] : [])),
-      };
+      const result = itemInput(item);
+      for (const [field, error] of Object.entries(result.errors)) errors[`items.${index}.${field}`] = error;
+      return result.item!;
     }),
     totalAmountCents: amount(draft.totalAmount, 'totalAmount'),
   };
