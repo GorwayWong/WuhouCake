@@ -1,4 +1,4 @@
-# 午逅 Story 工作台（Slice C2-A / C2-B1c.2）
+# 午逅 Story 工作台（Slice C2-A / C2-B1d）
 
 独立 React + TypeScript + Vite 前端。服务端数据使用 TanStack Query；没有新增后端领域模块、逐商品制作状态机或权限引擎。
 
@@ -39,8 +39,8 @@ npm run build
 - 资料编辑从打开时的详情初始化独立草稿与版本，SSE 和查询刷新不回填输入。一次保存只 PATCH 实际修改字段；可选字段清空为 null，未改动不发送请求。金额复用整数分转换，空金额与零不同；UTC 时间显示为北京时间，未改的分钟输入不回写秒／微秒。收货日期和计划交接时间分别修改，保存沿用原有缓存刷新、日历迁日和修改日志。
 - 资料修改发生 409 时保留草稿，刷新后在表单下方显示最新资料供核对；再次点击保存使用该次读取的版本，仅提交员工改过的字段，保留同事修改的其他资料。尚未获取新版本时保存禁用；再次出现并发修改仍返回 409，不自动重试。取消编辑恢复最新只读详情。返回、后退、退出及正常刷新／关闭对未保存资料给予离开提醒；草稿只在当前详情页面内存中保存。
 - 「全部商品」在待制作、制作中提供单商品内联编辑、追加及一次确认的软移除；至少保留一件有效商品。待配送／待自提须先执行已有「重新制作」，配送中、已完成、已取消不提供商品修改入口。商品增减和报价修改不改变约定总金额或付款状态。
-- 商品编辑仅 PATCH 稳定 itemId 的实际差异；常用文本规格按 attributes 顶层键提交，清空已有规格使用 null。未修改、未知、数组、对象和其他非文本规格保留原值；结构化规格只读展示。追加复用录单校验与元转整数分逻辑，商品标识取服务端响应。制作中追加按服务端结果清空整单节点；修改和移除不主动清除节点。最新商品变更在原商品区提醒制作同事复核，历史和独立最近备注沿用原接口。
-- 同一详情仅保留一个资料或商品表单，后台更新不回填草稿，其他写入入口在编辑期间禁用。若编辑期间同事将订单推进到待交接，草稿保留，可执行已有「重新制作」，随后核对最新订单再保存。商品 409 保留输入并展示最新商品，员工再次保存才使用复核版本；不自动重试或覆盖其他字段。编辑中的商品被同事移除时仍保留草稿，禁止继续保存。追加网络失败、5xx 或无法解码的成功响应按结果未知处理，保留输入，先核对最新有效商品及日志，再决定是否重新保存。
+- 商品编辑仅 PATCH 稳定 itemId 的实际差异；常用文本规格按 attributes 顶层键提交，清空已有规格使用 null。未修改、未知、数组、对象和其他非文本规格保留原值；结构化规格只读展示。追加复用录单校验与元转整数分逻辑，商品标识取服务端响应。制作中追加按服务端结果清空整单节点；只有此前确有已确认节点且被清空时，成功文案才提示节点清空。修改和移除不主动清除节点。商品区变更提醒和商品操作成功提示只在待制作、制作中显示，进入交接或终止状态后停止显示；历史和独立最近备注完整保留。
+- 同一详情仅保留一个资料或商品表单，后台更新不回填草稿，其他写入入口在编辑期间禁用。若编辑期间同事将订单推进到待交接，草稿保留，可执行已有「重新制作」；成功响应成为商品表单的保存基线，并显示最新商品供人工核对，员工点击保存后才提交原草稿。一般 SSE 刷新不提升保存版本。商品 409 保留输入并展示最新商品，员工再次保存才使用复核版本；保存前同事再次修改仍正常返回 409，不自动重试或覆盖其他字段。编辑中的商品被同事移除时仍保留草稿，禁止继续保存。追加网络失败、5xx 或无法解码的成功响应按结果未知处理，保留输入，先核对最新有效商品及日志，再决定是否重新保存。
 - 详情写入期间阻止站内返回、后退、切换订单和退出，保存／取消及其他写入操作禁用；服务端响应写入缓存并等待必要查询刷新后恢复导航。资料和商品草稿沿用未保存离开确认；正常刷新／关闭由浏览器原生 beforeunload 提醒，浏览器允许用户确认离开，系统强制关闭无法保证请求完成。
 - 备注与取消原因是独立本地输入状态，不从查询结果回填。后台刷新和 409 不覆盖输入；成功提交后才清空对应表单。成功提示可关闭，离开页面的草稿不持久化。
 - 日历使用订单号，无手机号尾号扩展。采用附带午逅 logo 和参考图的黄色/浅色视觉语言；没有蛋糕照片字段时使用商品图标，不虚构商品照片。登录页为新增设计，不宣称参考图中存在登录页。
@@ -79,8 +79,8 @@ npm run build
 
 `npm test` 使用 Node 内置测试运行器，覆盖跨年/闰月的查询范围、同版本 NOTE、迁日后的范围失效、并发 401 单次刷新、SSE 分块解码、断线重连和单连接清理，以及录单金额精度、门店时间转换、多商品请求结构、创建异常分类和核对入口日期。资料编辑覆盖差异字段、可选值清空、UTC 初始化与时间精度保留、冲突复核后提交；商品编辑覆盖单商品差异、JSONB 保留、null 删除、金额转换、数量与最后一件限制和冲突草稿。真实浏览器验证过程与范围见 [verification.md](verification.md)。
 
-实现参考：通过 Context7 核对 [TanStack Query 查询失效](https://tanstack.com/query/latest/docs/framework/react/guides/query-invalidation)、[查询取消](https://tanstack.com/query/latest/docs/framework/react/guides/query-cancellation)、[业务响应更新缓存](https://tanstack.com/query/latest/docs/framework/react/guides/updates-from-mutation-responses)、[等待业务操作后的查询刷新](https://tanstack.com/query/latest/docs/framework/react/guides/invalidations-from-mutations)、[Vite 同源代理](https://vite.dev/config/server-options.html#server-proxy) 和 [eventsource-parser](https://github.com/rexxars/eventsource-parser)。
+实现参考：通过 Context7 核对 [React 状态保留](https://react.dev/learn/preserving-and-resetting-state)、[TanStack Query 查询失效](https://tanstack.com/query/latest/docs/framework/react/guides/query-invalidation)、[查询取消](https://tanstack.com/query/latest/docs/framework/react/guides/query-cancellation)、[业务响应更新缓存](https://tanstack.com/query/latest/docs/framework/react/guides/updates-from-mutation-responses)、[等待业务操作后的查询刷新](https://tanstack.com/query/latest/docs/framework/react/guides/invalidations-from-mutations)、[Vite 同源代理](https://vite.dev/config/server-options.html#server-proxy) 和 [eventsource-parser](https://github.com/rexxars/eventsource-parser)。
 
 ## C2-B 待办
 
-下一阶段 C2-B1d 为完整订单协作业务验收。图片上传、商品模板及 AI 识别未实现。录单状态确认复用现有详情操作；本轮保留 OrderItem 的 `productionStatus/currentStageCode` 类型，不据此渲染独立制作流程。
+C2-B1d 完整订单协作业务验收见 [verification.md](verification.md)。图片上传、商品模板及 AI 识别未实现。录单状态确认复用现有详情操作；本轮保留 OrderItem 的 `productionStatus/currentStageCode` 类型，不据此渲染独立制作流程。

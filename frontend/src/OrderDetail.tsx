@@ -70,7 +70,7 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
   const [reason, setReason] = useState('');
   const [showCancel, setShowCancel] = useState(false);
   const [message, setMessage] = useState('');
-  const [editing, setEditing] = useState<{ kind: 'information' | 'item'; order: Detail; itemId?: string } | null>(null);
+  const [editing, setEditing] = useState<{ kind: 'information' | 'item'; order: Detail; itemId?: string; reopened?: Detail } | null>(null);
   const activities = useActivities(id);
   useEffect(() => () => onWritingChange(false), [onWritingChange]);
   const mutation = useMutation({
@@ -79,13 +79,17 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
       if (path === 'notes') { await api(`/orders/${id}/${path}`, { method, body }); return null; }
       return api<Detail>(`/orders/${id}${path ? `/${path}` : ''}`, { method, body });
     },
-    onMutate: () => { onWritingChange(true); setMessage(''); },
-    onSuccess: async (updated, variables) => {
+    onMutate: () => { onWritingChange(true); setMessage(''); return client.getQueryData<Detail>(['order', id, 'detail']); },
+    onSuccess: async (updated, variables, previous) => {
       if (updated) {
         await client.cancelQueries({ queryKey: ['order', id, 'detail'], exact: true });
         client.setQueryData<Detail>(['order', id, 'detail'], current => current && current.version > updated.version ? current : updated);
       }
-      setMessage(variables.path === '' ? '商品已保存，请制作同事复核最新规格与数量。' : variables.path === 'items' ? `商品已添加，请制作同事复核。${updated?.status === 'PROCESSING' ? '整单已确认制作节点已清空，请重新核对制作进度。' : ''}` : variables.path.endsWith('/remove') ? '商品已移除，历史记录已保留，请制作同事复核有效商品。' : variables.path === 'notes' ? '备注已发布' : variables.path === 'information' ? '订单资料已保存' : variables.path === 'payment-status' ? `付款状态已更新为${updated?.paymentStatus === 'PAID' ? '已付款' : '未付款'}` : variables.path === 'cancel' ? '订单已取消' : `${actionNames[(variables.body as { action: string }).action]}已确认`);
+      const clearedStages = previous?.version === (variables.body as { expectedVersion?: number }).expectedVersion && ['LAYER_DONE', 'FROSTING_DONE'].includes(previous?.currentStageCode || '') && updated?.status === 'PROCESSING' && !updated.currentStageCode;
+      setMessage(variables.path === '' ? '商品已保存，请制作同事复核最新规格与数量。' : variables.path === 'items' ? `商品已添加，请制作同事复核。${clearedStages ? '整单已确认制作节点已清空，请重新核对制作进度。' : ''}` : variables.path.endsWith('/remove') ? '商品已移除，历史记录已保留，请制作同事复核有效商品。' : variables.path === 'notes' ? '备注已发布' : variables.path === 'information' ? '订单资料已保存' : variables.path === 'payment-status' ? `付款状态已更新为${updated?.paymentStatus === 'PAID' ? '已付款' : '未付款'}` : variables.path === 'cancel' ? '订单已取消' : `${actionNames[(variables.body as { action: string }).action]}已确认`);
+      if (updated && variables.path === 'production-actions' && (variables.body as { action: string }).action === 'REOPEN_PRODUCTION') {
+        setEditing(current => current?.kind === 'item' ? { ...current, reopened: updated } : current);
+      }
       if (['information', '', 'items'].includes(variables.path)) setEditing(null);
       if (variables.path === 'notes') { setNote(''); }
       if (variables.path === 'cancel') { setReason(''); setShowCancel(false); }
@@ -101,8 +105,9 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
   const visibleItems = removedDraft ? [...order.items, removedDraft] : order.items;
   const blocked = mutation.isPending || Boolean(editing);
   const itemChange = activities.data?.pages.flatMap(page => page.items).find(activity => ['ITEM_CHANGED', 'ITEM_ADDED', 'ITEM_REMOVED'].includes(activity.type));
+  const itemMutation = mutation.variables?.path === '' || mutation.variables?.path === 'items' || mutation.variables?.path.endsWith('/remove');
   const cancelEdit = () => { if (!mutation.isPending) { setEditing(null); mutation.reset(); } };
-  const itemEditor = editing?.kind === 'item' ? <ItemEdit initial={editing.order} itemId={editing.itemId} latest={order} busy={mutation.isPending} error={mutation.error} onDirtyChange={onEditDirtyChange} onSave={request => mutation.mutateAsync({ path: 'item' in request ? 'items' : '', method: 'item' in request ? 'POST' : 'PATCH', body: request })} onCancel={cancelEdit} /> : null;
+  const itemEditor = editing?.kind === 'item' ? <ItemEdit initial={editing.order} itemId={editing.itemId} latest={order} reopened={editing.reopened} busy={mutation.isPending} error={mutation.error} onDirtyChange={onEditDirtyChange} onSave={request => mutation.mutateAsync({ path: 'item' in request ? 'items' : '', method: 'item' in request ? 'POST' : 'PATCH', body: request })} onCancel={cancelEdit} /> : null;
   const production = order.status === 'WAITING_PRODUCTION' ? ['START_PRODUCTION'] : order.status === 'PROCESSING'
     ? [...(!order.currentStageCode ? ['COMPLETE_LAYER'] : order.currentStageCode === 'LAYER_DONE' ? ['COMPLETE_FROSTING'] : []), 'COMPLETE_PRODUCTION']
     : ['WAITING_DELIVERY', 'WAITING_PICKUP'].includes(order.status) ? ['REOPEN_PRODUCTION'] : [];
@@ -112,7 +117,7 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
     <a className="back-link" href="#" aria-disabled={mutation.isPending} onClick={event => { if (mutation.isPending) event.preventDefault(); }}><ArrowLeft />返回工作台</a>
     <div className="page-heading"><div><p className="eyebrow">订单 #{order.orderNo}</p><h1>订单详情</h1></div><div className="badges"><Status order={order} /><Payment status={order.paymentStatus} /></div></div>
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
-    <div className="feedback" aria-live="polite">{message && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={editing ? null : mutation.error} /></div>
+    <div className="feedback" aria-live="polite">{message && (!itemMutation || canEditItems(order)) && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={editing ? null : mutation.error} /></div>
     <div className="detail-columns detail-summary">
     <section className="panel detail-status"><div className="section-heading"><h2><Clock />整单制作与交付</h2><span className="muted">{order.items.length} 件商品，统一确认</span></div>
       <OrderProgress order={order} />
@@ -126,7 +131,7 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
       {editing?.kind === 'information' ? <InformationEdit initial={editing.order} latest={order} busy={mutation.isPending} error={mutation.variables?.path === 'information' ? mutation.error : null} onDirtyChange={onEditDirtyChange} onSave={request => mutation.mutateAsync({ path: 'information', method: 'PATCH', body: request })} onCancel={cancelEdit} /> : <InformationSummary order={order} />}
     </section>
     <section className="panel"><div className="section-heading"><h2>全部商品</h2><div className="item-heading-actions"><span className="muted">共 {order.items.length} 件</span>{canEditItems(order) && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'item', order }); }}><Plus />添加商品</button>}</div></div>
-      {itemChange && <p className="form-help" role="status">最近商品变更：{activityNames[itemChange.type]} · {time(itemChange.createdAt, true)}。制作同事请复核最新规格与数量，按整单进度继续制作。</p>}
+      {itemChange && canEditItems(order) && <p className="form-help" role="status">最近商品变更：{activityNames[itemChange.type]} · {time(itemChange.createdAt, true)}。制作同事请复核最新规格与数量，按整单进度继续制作。</p>}
       {['WAITING_DELIVERY', 'WAITING_PICKUP'].includes(order.status) && <p className="form-help">需要修改商品时，请先在上方执行「重新制作」。</p>}
       <div className="products detail-products">{visibleItems.map(item => <Product key={item.itemId} item={item} prices actions={canEditItems(order) && editing?.itemId !== item.itemId && <div className="product-actions"><button className="text-button" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'item', order, itemId: item.itemId }); }}>编辑</button><button className="text-button danger" disabled={blocked || !canRemoveItem(order, item.itemId)} title={order.items.length === 1 ? '至少保留一件有效商品' : undefined} onClick={() => { if (canRemoveItem(order, item.itemId) && window.confirm(`移除「${item.name}」？历史记录会保留，订单约定金额不变。`)) mutation.mutate({ path: `items/${item.itemId}/remove`, body: { expectedVersion: order.version } }); }}><Trash />移除</button></div>}>{editing?.kind === 'item' && editing.itemId === item.itemId ? itemEditor : null}</Product>)}</div>
       {editing?.kind === 'item' && !editing.itemId && <div className="item-add"><h3>添加商品</h3>{itemEditor}</div>}

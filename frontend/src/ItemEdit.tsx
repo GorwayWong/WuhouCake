@@ -8,8 +8,8 @@ import { ErrorNotice, Product, valueText } from './ui';
 function Field({ name, label, error, children, wide = false }: { name: string; label: string; error?: string; children: ReactNode; wide?: boolean }) {
   return <label htmlFor={`item-${name}`} className={wide ? 'form-wide' : undefined}>{label}{children}{error && <span className="field-error" id={`item-${name}-error`}>{error}</span>}</label>;
 }
-export function ItemEdit({ initial, itemId, latest, busy, error, onSave, onCancel, onDirtyChange }: {
-  initial: Detail; itemId?: string; latest: Detail; busy: boolean; error: unknown;
+export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSave, onCancel, onDirtyChange }: {
+  initial: Detail; itemId?: string; latest: Detail; reopened?: Detail; busy: boolean; error: unknown;
   onSave: (request: ItemChangeRequest | ItemAddRequest) => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
 }) {
   const original = initial.items.find(item => item.itemId === itemId);
@@ -23,6 +23,9 @@ export function ItemEdit({ initial, itemId, latest, busy, error, onSave, onCance
   const dirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+  useEffect(() => {
+    if (reopened) { setBaseline(reopened); setConflict(true); }
+  }, [reopened]);
   useEffect(() => {
     if (conflict && !baseline && latest.version > attemptedVersion.current) setBaseline(latest);
   }, [conflict, baseline, latest]);

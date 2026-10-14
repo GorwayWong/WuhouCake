@@ -64,3 +64,14 @@ test('409 复核基线保留草稿，仅提交员工改动，不回写同事规�
   assert.ok(itemChangeRequest(order, 'first', draft, latest).errors.item);
   assert.deepEqual(draft, snapshot);
 });
+
+test('重新制作复核后使用响应版本，只提交原草稿差异并保留同事字段', () => {
+  const draft = itemDraft(order.items[0]); draft.attributes.size = '10 寸';
+  const snapshot = structuredClone(draft);
+  const reopened = structuredClone(order); reopened.version = 5; reopened.currentStageCode = null;
+  reopened.items[0].quantity = 3; reopened.items[1].attributes.size = '12 寸';
+  const newer = structuredClone(reopened); newer.version = 6; newer.items[0].attributes.requirements = '同事补充少糖';
+  assert.deepEqual(itemChangeRequest(order, 'first', draft, reopened).request, { expectedVersion: 5, itemId: 'first', changes: { attributes: { size: '10 寸' } } });
+  assert.deepEqual(itemChangeRequest(order, 'first', draft, newer).request, { expectedVersion: 6, itemId: 'first', changes: { attributes: { size: '10 寸' } } });
+  assert.deepEqual(draft, snapshot);
+});
