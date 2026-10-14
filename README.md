@@ -84,6 +84,7 @@ docker build -t wuhoucake-bootstrap:local WuhouCake-bootstrap
 | [开发与部署](docs/dev-ops/README.md) | Compose、环境变量与运行步骤 |
 | [技术基线](docs/technical-baseline.md) | 组件版本及管理位置 |
 | [账号运行与 API](docs/identity.md) | 密钥、初始化、管理员恢复、认证和接口契约 |
+| [Prod 管理员运维](docs/dev-ops/admin-prod.md) | 首位管理员初始化、忘记密码恢复及服务器命令 |
 | [领域词汇](CONTEXT.md) | 员工身份、工号、岗位和归档的含义 |
 | [模板验收记录](docs/sample-module-implementation-report.md) | 当前模板的验证范围与结果 |
 | [骨架演进记录](docs/implementation-report.md) | 初期业务样例的归档记录 |

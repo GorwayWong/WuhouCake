@@ -11,6 +11,7 @@
 | [docker-compose-app.yml](compose/docker-compose-app.yml) | 运行已有镜像，加入环境网络，默认使用 prod |
 | [dev.env.example](env/dev.env.example) | 开发配置示例 |
 | [prod.env.example](env/prod.env.example) | 生产配置清单 |
+| [Prod 管理员运维](admin-prod.md) | 管理员初始化、密码恢复、权限和失败处理 |
 
 以下命令均从仓库根目录执行，Shell 示例使用 Bash。实际 `dev.env`、`prod.env` 仅保留本地，不提交仓库。
 
@@ -48,7 +49,7 @@ docker compose --env-file docs/dev-ops/env/dev.env \
 
 ## 3. 生产运行
 
-复制 `prod.env.example` 为 `prod.env`，填写 `APP_IMAGE`、`POSTGRES_PASSWORD`、`REDIS_PASSWORD`、`IDENTITY_KEY_DIR` 及部署参数。镜像使用明确的版本标签或 digest。密钥和首次管理员初始化见[账号运行说明](../identity.md)。
+复制 `prod.env.example` 为 `prod.env`，填写 `APP_IMAGE`、`POSTGRES_PASSWORD`、`REDIS_PASSWORD`、`IDENTITY_KEY_DIR` 及部署参数。镜像使用明确的版本标签或 digest。密钥见[账号运行说明](../identity.md)，管理员初始化和密码恢复见[Prod 管理员运维](admin-prod.md)。
 
 ```bash
 docker compose --env-file docs/dev-ops/env/prod.env \
@@ -66,7 +67,7 @@ docker compose --env-file docs/dev-ops/env/prod.env \
 - 环境与应用使用同一 `COMPOSE_PROJECT_NAME`，共享对应网络；先启动环境，再启动应用。
 - 两组 Compose 分别管理服务，禁止使用 `--remove-orphans` 清理另一组服务。
 - 应用端口默认绑定宿主机 `127.0.0.1`。外部访问通过反向代理，或显式调整 `APP_BIND_ADDRESS`。
-- prod 关闭接口文档，业务请求默认拒绝；接入业务前配置认证授权。
+- prod 关闭接口文档；业务使用 Bearer JWT，员工管理和审计查询仅限超级管理员，其他未开放路径默认拒绝。
 - 数据备份、资源限制、TLS、账号权限及密钥管理由部署环境配置。
 
 ## 4. 环境变量
