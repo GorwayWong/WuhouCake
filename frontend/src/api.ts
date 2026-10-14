@@ -5,6 +5,9 @@ export class ApiError extends Error {
   code: string;
   constructor(status: number, code: string) { super(code); this.status = status; this.code = code; }
 }
+export function creationResultUnknown(error: unknown): boolean {
+  return Boolean(error) && !(error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408);
+}
 export function errorText(error: unknown): string {
   if (!(error instanceof ApiError)) return '网络连接失败，请检查连接后重试。';
   return ({

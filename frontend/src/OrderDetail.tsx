@@ -68,14 +68,22 @@ export function OrderDetail({ id }: { id: string }) {
   const [showCancel, setShowCancel] = useState(false);
   const [message, setMessage] = useState('');
   const mutation = useMutation({
-    mutationFn: ({ path, body, method = 'POST' }: { path: string; body: unknown; method?: string }) => api(`/orders/${id}/${path}`, { method, body }),
-    onSuccess: (_, variables) => {
-      setMessage(variables.path === 'notes' ? '备注已发布' : '订单已更新');
+    mutationFn: async ({ path, body, method = 'POST' }: { path: string; body: unknown; method?: string }) => {
+      if (path === 'notes') { await api(`/orders/${id}/${path}`, { method, body }); return null; }
+      return api<Detail>(`/orders/${id}/${path}`, { method, body });
+    },
+    onMutate: () => { setMessage(''); },
+    onSuccess: async (updated, variables) => {
+      if (updated) {
+        await client.cancelQueries({ queryKey: ['order', id, 'detail'], exact: true });
+        client.setQueryData<Detail>(['order', id, 'detail'], current => current && current.version > updated.version ? current : updated);
+      }
+      setMessage(variables.path === 'notes' ? '备注已发布' : variables.path === 'payment-status' ? `付款状态已更新为${updated?.paymentStatus === 'PAID' ? '已付款' : '未付款'}` : variables.path === 'cancel' ? '订单已取消' : `${actionNames[(variables.body as { action: string }).action]}已确认`);
       if (variables.path === 'notes') { setNote(''); }
       if (variables.path === 'cancel') { setReason(''); setShowCancel(false); }
-      synchronize(client, id);
+      await synchronize(client, id);
     },
-    onError: () => { setMessage(''); synchronize(client, id); },
+    onError: async () => { setMessage(''); await synchronize(client, id); },
   });
   if (detail.isPending) return <Loading />;
   if (!detail.data) return <><a className="back-link" href="#"><ArrowLeft />返回工作台</a><ErrorNotice error={detail.error} retry={() => void detail.refetch()} /></>;
@@ -89,19 +97,23 @@ export function OrderDetail({ id }: { id: string }) {
     <a className="back-link" href="#"><ArrowLeft />返回工作台</a>
     <div className="page-heading"><div><p className="eyebrow">订单 #{order.orderNo}</p><h1>订单详情</h1></div><div className="badges"><Status order={order} /><Payment status={order.paymentStatus} /></div></div>
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
+    <div className="feedback" aria-live="polite">{message && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={mutation.error} /></div>
+    <div className="detail-columns detail-summary">
     <section className="panel detail-status"><div className="section-heading"><h2><Clock />整单制作与交付</h2><span className="muted">{order.items.length} 件商品，统一确认</span></div>
       <OrderProgress order={order} />
       <div className="current-status"><Status order={order} /><span>{order.fulfillment.type === 'PICKUP' ? '门店自提' : '配送上门'} · {order.fulfillment.requestedReceiveDate} {time(order.fulfillment.plannedHandoffAt)}</span></div>
-      <div className="actions">{production.map(action => <button key={action} className={action === 'REOPEN_PRODUCTION' ? 'secondary' : 'primary'} disabled={mutation.isPending} onClick={() => mutateAction(action, 'production-actions')}>{actionNames[action]}<ArrowRight /></button>)}{fulfillment && <button className="primary" disabled={mutation.isPending} onClick={() => mutateAction(fulfillment, 'fulfillment-actions')}>{actionNames[fulfillment]}<ArrowRight /></button>}</div>
+      <div className="actions">{production.map(action => <button key={action} className={['REOPEN_PRODUCTION', 'COMPLETE_LAYER', 'COMPLETE_FROSTING'].includes(action) ? 'secondary' : 'primary'} disabled={mutation.isPending} onClick={() => mutateAction(action, 'production-actions')}>{actionNames[action]}<ArrowRight /></button>)}{fulfillment && <button className="primary" disabled={mutation.isPending} onClick={() => mutateAction(fulfillment, 'fulfillment-actions')}>{actionNames[fulfillment]}<ArrowRight /></button>}</div>
+      {order.status === 'PROCESSING' && <p className="form-help">夹层、抹面可按需记录；所有商品备齐后，可直接确认整单制作完成。</p>}
       <details className="timeline"><summary>制作活动历史</summary><ActivityFeed id={id} type="ORDER_PRODUCTION_CHANGED" items={order.items} /></details>
     </section>
-    <div className="detail-columns"><section className="panel"><h2>客户与交付</h2><dl className="info-grid">
+    <section className="panel payment-panel"><h2>金额与付款</h2><div><p className="muted">订单金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong></div><Payment status={order.paymentStatus} /><button className="secondary" disabled={mutation.isPending} onClick={() => mutation.mutate({ path: 'payment-status', method: 'PATCH', body: { expectedVersion: order.version, paymentStatus: order.paymentStatus === 'PAID' ? 'UNPAID' : 'PAID' } })}>{order.paymentStatus === 'PAID' ? '改为未付款' : '确认已付款'}</button></section></div>
+    <section className="panel"><h2>客户与交付</h2><dl className="info-grid">
       <div><dt>客户姓名</dt><dd>{order.customer.customerName || '未填写'}</dd></div><div><dt>联系电话</dt><dd><a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a></dd></div>
       <div><dt>会员手机</dt><dd>{order.customer.memberPhone || '未填写'}</dd></div><div><dt>下单人</dt><dd>{order.customer.buyerName || '未填写'}</dd></div>
       <div><dt>收货日期</dt><dd>{order.fulfillment.requestedReceiveDate}</dd></div><div><dt>计划交付</dt><dd>{time(order.fulfillment.plannedHandoffAt, true)}</dd></div>
       <div><dt>计划出品</dt><dd>{time(order.fulfillment.plannedFinishAt, true)}</dd></div><div><dt>下单时间</dt><dd>{time(order.createdAt, true)}</dd></div>
       <div className="wide"><dt>{order.fulfillment.type === 'PICKUP' ? '交付方式' : '配送地址'}</dt><dd>{order.fulfillment.type === 'PICKUP' ? '门店自提' : order.fulfillment.address}</dd></div>
-    </dl></section><section className="panel payment-panel"><h2>金额与付款</h2><p className="muted">订单金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong><Payment status={order.paymentStatus} /><button className="secondary" disabled={mutation.isPending} onClick={() => mutation.mutate({ path: 'payment-status', method: 'PATCH', body: { expectedVersion: order.version, paymentStatus: order.paymentStatus === 'PAID' ? 'UNPAID' : 'PAID' } })}>{order.paymentStatus === 'PAID' ? '改为未付款' : '确认已付款'}</button></section></div>
+    </dl></section>
     <section className="panel"><div className="section-heading"><h2>全部商品</h2><span className="muted">共 {order.items.length} 件</span></div><div className="products detail-products">{order.items.map(item => <Product key={item.itemId} item={item} prices />)}</div></section>
     <section className="panel"><h2><NotePencil />备注</h2><form className="note-form" onSubmit={event => { event.preventDefault(); if (note.trim()) mutation.mutate({ path: 'notes', body: { itemId: itemId || null, content: note.trim() } }); }}>
       <label>备注对象<select value={itemId} onChange={event => setItemId(event.target.value)} disabled={mutation.isPending}><option value="">整张订单</option>{order.items.map(item => <option key={item.itemId} value={item.itemId}>{item.name}</option>)}{itemId && !order.items.some(item => item.itemId === itemId) && <option value={itemId}>已移除的商品，请重新选择</option>}</select></label>
@@ -109,7 +121,6 @@ export function OrderDetail({ id }: { id: string }) {
       <button className="primary" disabled={mutation.isPending || !note.trim() || Boolean(itemId && !order.items.some(item => item.itemId === itemId))}>发布备注<ArrowRight /></button>
     </form><ActivityFeed id={id} type="NOTE" items={order.items} /></section>
     <section className="panel"><h2><ListBullets />修改日志</h2><ActivityFeed id={id} items={order.items} /></section>
-    <div className="feedback" aria-live="polite">{message && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={mutation.error} /></div>
     {!['COMPLETED', 'CANCELLED'].includes(order.status) && <section className="cancel-section"><button className="text-button danger" onClick={() => setShowCancel(!showCancel)} aria-expanded={showCancel}>取消订单</button>{showCancel && <form onSubmit={event => { event.preventDefault(); mutation.mutate({ path: 'cancel', body: { expectedVersion: order.version, reason: reason.trim() } }); }}><label>取消原因<input value={reason} onChange={event => setReason(event.target.value)} required disabled={mutation.isPending} /></label><button className="danger-button" disabled={mutation.isPending || !reason.trim()}>确认取消订单</button></form>}</section>}
     {order.status === 'CANCELLED' && <Empty>订单已取消，仍可查看历史记录和记录备注。</Empty>}
   </div>;

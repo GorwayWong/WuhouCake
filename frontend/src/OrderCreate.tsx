@@ -1,8 +1,7 @@
 import { useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Cake, Plus, Trash, UserCircle, Truck, CurrencyCny } from '@phosphor-icons/react';
-import { ApiError } from './api';
-import { ErrorNotice } from './ui';
+import { creationResultUnknown, errorText } from './api';
 import { createOrderRequest, newItem, specificationFields } from './orderForm';
 import type { ItemDraft, OrderDraft } from './orderForm';
 import type { CreateOrderRequest } from './types';
@@ -10,8 +9,8 @@ import type { CreateOrderRequest } from './types';
 function Field({ label, name, error, children, wide = false }: { label: string; name: string; error?: string; children: ReactNode; wide?: boolean }) {
   return <label className={wide ? 'form-wide' : undefined} htmlFor={name}>{label}{children}{error && <span className="field-error" id={`${name}-error`}>{error}</span>}</label>;
 }
-export function OrderCreate({ draft, onChange, onSubmit, busy, error }: {
-  draft: OrderDraft; onChange: (draft: OrderDraft) => void; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown;
+export function OrderCreate({ draft, onChange, onSubmit, busy, error, submitted }: {
+  draft: OrderDraft; onChange: (draft: OrderDraft) => void; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
 }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const form = useRef<HTMLFormElement>(null);
@@ -19,6 +18,8 @@ export function OrderCreate({ draft, onChange, onSubmit, busy, error }: {
   const updateItem = (key: string, changes: Partial<ItemDraft>) => change({ ...draft, items: draft.items.map(item => item.key === key ? { ...item, ...changes } : item) });
   const inputProps = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': errors[name] ? `${name}-error` : undefined });
   const customerFields = [['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '下单人', 80]] as const;
+  const submittedDate = submitted?.fulfillment.requestedReceiveDate || draft.requestedReceiveDate;
+  const submittedPhone = submitted?.customer.phone || draft.phone;
   return <div className="create-page">
     <a className="back-link" href="#" aria-disabled={busy}><ArrowLeft />返回工作台</a>
     <div className="page-heading"><div><p className="eyebrow">把客户的心意，交给下一位同事</p><h1>新建订单</h1></div></div>
@@ -64,7 +65,7 @@ export function OrderCreate({ draft, onChange, onSubmit, busy, error }: {
         <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid"><Field label="订单约定总金额（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field></div><p className="form-help">按与客户约定的金额填写；不会根据商品报价自动计算。留空与 0 元不同。</p></section>
       </fieldset>
       {Object.keys(errors).length > 0 && <div className="notice error" role="alert">请检查标出的内容后再创建订单。</div>}
-      {error instanceof ApiError ? <ErrorNotice error={error} /> : error ? <div className="notice error" role="alert">网络连接中断，创建结果暂时无法确认，输入内容已保留。请先<a className="text-button" href="#" target="_blank" rel="noreferrer">打开工作台核对</a>，避免重复录单。</div> : null}
+      {error ? creationResultUnknown(error) ? <div className="notice error create-result" role="alert"><p>创建结果暂时无法确认，可能已成功写入，录单内容已保留。请先核对收货日期 <strong>{submittedDate}</strong>、联系电话 <strong>{submittedPhone}</strong> 及对应订单，再决定是否重新提交。</p><a className="text-button" href={`#/?date=${submittedDate}`} target="_blank" rel="noreferrer">打开 {submittedDate} 工作台核对（新标签页）</a></div> : <div className="notice error" role="alert">创建请求已被拒绝，订单未创建。{errorText(error)}</div> : null}
       <div className="create-submit"><span className="form-help">创建后为待制作、未付款。</span><button className="primary" disabled={busy}>{busy ? '正在创建订单…' : '创建订单'}<ArrowRight /></button></div>
     </form>
   </div>;

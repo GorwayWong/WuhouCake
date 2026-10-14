@@ -6,6 +6,10 @@ export function shiftDate(date: string, days: number): string {
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
 }
+export function workbenchDate(hash: string): string | null {
+  const date = /^#\/\?date=(\d{4}-\d{2}-\d{2})$/.exec(hash)?.[1];
+  return date && Number.isFinite(Date.parse(`${date}T12:00:00Z`)) && shiftDate(date, 0) === date ? date : null;
+}
 export function weekStart(date: string): string {
   const day = new Date(`${date}T12:00:00Z`).getUTCDay();
   return shiftDate(date, -((day + 6) % 7));

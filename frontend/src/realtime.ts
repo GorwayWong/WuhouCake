@@ -4,9 +4,11 @@ import { authenticatedFetch } from './api.ts';
 
 export function synchronize(client: QueryClient, orderId?: string) {
   // 日历范围整体失效：通知不带原日期，迁日必须同时清除旧日期投影。
-  void client.invalidateQueries({ queryKey: ['calendar'] });
-  void client.invalidateQueries({ queryKey: ['workbench'] });
-  void client.invalidateQueries({ queryKey: orderId ? ['order', orderId] : ['order'] });
+  return Promise.all([
+    client.invalidateQueries({ queryKey: ['calendar'] }),
+    client.invalidateQueries({ queryKey: ['workbench'] }),
+    client.invalidateQueries({ queryKey: orderId ? ['order', orderId] : ['order'] }),
+  ]);
 }
 export function receiveEvent(client: QueryClient, event: { event?: string; data: string }) {
   if (event.event === 'ready') synchronize(client);
