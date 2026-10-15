@@ -13,6 +13,7 @@ REST 响应使用 `ApiResponse`。创建订单、追加商品、追加备注和�
 | `POST /api/orders/{orderId}/images` | multipart：必填 file，可选 itemId，返回图片元数据 |
 | `GET /api/orders/{orderId}/images` | 查询图片元数据，包括已移除商品的保留图片 |
 | `GET /api/orders/{orderId}/images/{imageId}` | 认证后读取属于该订单的图片二进制 |
+| `DELETE /api/orders/{orderId}/images/{imageId}` | 软移除本订单图片，返回 200 和 data=null；重复移除不重复记录 |
 | `POST /api/orders/{orderId}/exports/xlsx` | 生成单订单 XLSX、记录活动并发起下载 |
 | `POST /api/orders/exports/zip` | 按日期及业务条件生成每单一个 XLSX 的 ZIP |
 | `GET /api/orders/calendar?from=2026-09-28&to=2026-11-09` | 周历、月历共用的订单列表，按客户期望收货日期分组 |
@@ -104,7 +105,7 @@ changes 只接受 name、productType、quantity、unitPriceCents、memberPriceCe
 
 新订单状态为 WAITING_PRODUCTION，付款为 UNPAID，version 从 0 开始。有效商品修改成功后，订单版本加一，订单及目标商品的 updatedAt 由服务端更新；其他商品不变。版本冲突返回 `409 CONCURRENT_MODIFICATION`；订单或所属有效商品不存在返回 `404 ORDER_NOT_FOUND`。修改与 ITEM_CHANGED 记录同事务提交，details.before / details.after 保存实际变化字段的旧值与新值。
 
-备注请求为 `{"itemId":"<商品 UUID>","content":"客户要求少糖"}`。订单级备注只提交 content。备注不修改订单版本或商品更新时间；按商品查询备注可使用 `activities?itemId=<商品 UUID>&type=NOTE`。活动类型为 CREATED、ITEM_CHANGED、NOTE、PAYMENT_STATUS_CHANGED、ORDER_PRODUCTION_CHANGED、ORDER_FULFILLMENT_CHANGED、ORDER_CANCELLED、ORDER_INFORMATION_CHANGED、ITEM_ADDED、ITEM_REMOVED；page 从 1 开始，size 默认 20、最大 100。商品最近备注按 createdAt、活动 id 倒序取三条，订单级备注不混入商品备注。
+备注请求为 `{"itemId":"<商品 UUID>","content":"客户要求少糖"}`。订单级备注只提交 content。备注不修改订单版本或商品更新时间；按商品查询备注可使用 `activities?itemId=<商品 UUID>&type=NOTE`。活动类型为 CREATED、ITEM_CHANGED、NOTE、PAYMENT_STATUS_CHANGED、ORDER_PRODUCTION_CHANGED、ORDER_FULFILLMENT_CHANGED、ORDER_CANCELLED、ORDER_INFORMATION_CHANGED、ITEM_ADDED、ITEM_REMOVED、IMAGE_ADDED、IMAGE_REMOVED、ORDER_EXPORTED；page 从 1 开始，size 默认 20、最大 100。商品最近备注按 createdAt、活动 id 倒序取三条，订单级备注不混入商品备注。
 
 资料修改、增减商品分别追加 ORDER_INFORMATION_CHANGED、ITEM_ADDED、ITEM_REMOVED，同事务推进一次订单版本并写入真实前后值、服务端操作人及时间。追加记录 details.before.item=null、details.after.item=新增快照，节点清空时同时记录 currentStageCode 的旧值和 null。移除记录完整商品快照及 isRemoved 的 false→true，不物理删除原商品。
 
@@ -253,24 +254,28 @@ data: {"orderId":"<UUID>","itemId":null,"changeType":"ORDER_PRODUCTION_CHANGED",
 | ITEM_ADDED | 追加商品成功，包含可能的整单节点清空 | 新商品 ID / 修改后版本 |
 | ITEM_REMOVED | 商品软删除成功 | 原商品 ID / 修改后版本 |
 | NOTE | 成功追加备注 | 商品 ID 或 null / 当前订单版本 |
+| IMAGE_ADDED | 参考图片上传成功 | 商品 ID 或 null / 当前订单版本 |
+| IMAGE_REMOVED | 参考图片首次软移除成功 | 原商品 ID 或 null / 当前订单版本 |
 | PAYMENT_STATUS_CHANGED | 付款状态实际改变 | null / 修改后版本 |
 | ORDER_PRODUCTION_CHANGED | 整单制作动作成功 | null / 修改后版本 |
 | ORDER_FULFILLMENT_CHANGED | 整单交接动作成功 | null / 修改后版本 |
 | ORDER_CANCELLED | 人工取消成功 | null / 修改后版本 |
 
-夹层、抹面仍是整单节点，通知的 itemId 为 null。通知仅含四个定位字段，不含客户资料、备注正文、取消原因、付款详情或凭证。校验失败、409 冲突、事务回滚及提交失败均不通知；同值资料、商品或付款 PATCH，以及重复移除均不通知，但仍校验数据库当前版本。发送失败只清理相应连接，不影响订单提交或其他客户端。
+夹层、抹面仍是整单节点，通知的 itemId 为 null。通知仅含四个定位字段，不含客户资料、备注正文、取消原因、付款详情或凭证。校验失败、409 冲突、事务回滚及提交失败均不通知；同值资料、商品或付款 PATCH，以及重复移除商品均不通知，但仍校验数据库当前版本。图片写入不要求 expectedVersion，重复移除图片也不通知。发送失败只清理相应连接，不影响订单提交或其他客户端。
 
 前端收到 `order.changed` 后，自动使对应订单详情及列表、日历缓存失效，并通过 REST 重取数据。日历重新请求当前可见的 `calendar?from=...&to=...`，工作台重新请求所选日期的 `workbench?date=...`；事件不携带旧、新收货日期，不能只在当前列表已有该订单时才刷新。详情使用 `GET /api/orders/{orderId}`，备注可使用现有 activities 查询。`NOTE` 即使 version 未变化也必须重取工作台备注，不能按版本相同忽略通知。更新查询缓存时保留员工正在编辑且尚未保存的表单，使用最新版本提示或处理已有 409 冲突。
 
 首次连接收到 ready、连接断开、重连成功和页面重新聚焦时，主动获取最新 REST 数据。每 15 秒发送一条 `:heartbeat` 注释，客户端忽略即可。每条连接最长 5 分钟，且不超过本次 JWT 剩余有效期；连接到期后重新连接，JWT 过期则先使用现有 `/api/auth/refresh` 流程取得新 token。
 
-通知使用单实例进程内连接管理和提交后监听，不持久化、不重放，也不支持 Last-Event-ID 恢复。断线期间的变化靠 REST 重取补齐。当前仓库没有前端项目，本模块仅提供订阅协议与接入契约。
+通知使用单实例进程内连接管理和提交后监听，不持久化、不重放，也不支持 Last-Event-ID 恢复。断线期间的变化靠 REST 重取补齐。前端接入说明见 [frontend/README.md](../frontend/README.md)。
 
 ## 图片与 Excel 导出
 
-图片仅能上传到已创建订单，可关联整单或当前有效商品；已完成、已取消订单同样允许上传。员工 ID、昵称与上传时间均取自服务端。`V5__add_order_images.sql` 创建 `cake_order_image`，以 PostgreSQL BYTEA 保存图片；复合外键约束商品归属。上传校验和数量检查通过后，在锁定订单行的短事务内插入，不修改订单版本、更新时间或制作状态，也不发送 SSE。
+图片仅能上传到已创建订单，可关联整单或当前有效商品；已完成、已取消订单同样允许上传。员工 ID、昵称与上传时间均取自服务端。`V5__add_order_images.sql` 创建 `cake_order_image`，以 PostgreSQL BYTEA 保存图片；复合外键约束商品归属。上传校验和数量检查通过后，在锁定订单行的短事务内插入图片及 IMAGE_ADDED 活动，并发布 OrderChanged；原有 AFTER_COMMIT 监听器仅在提交成功后发送 SSE。不修改订单版本、更新时间、付款、制作或交付状态。
 
-上传不使用客户端 MIME 判断格式，而是检测实际 JPEG/PNG 内容、校验尺寸并完整解码。展示名去除目录和控制字符，仅作展示，不参与服务器路径读取。元数据字段为 `imageId/orderId/itemId/contentType/filename/size/width/height/uploadedBy/uploaderNameSnapshot/uploadedAt`；列表不读取二进制。图片内容响应设置检测所得 MIME、inline 文件名、`no-store` 和 `nosniff`。本轮不提供图片删除或覆盖；商品被移除后图片仍可查询和读取，但后续导出排除其图片。
+上传不使用客户端 MIME 判断格式，而是检测实际 JPEG/PNG 内容、校验尺寸并完整解码。展示名去除目录和控制字符，仅作展示，不参与服务器路径读取。元数据字段为 `imageId/orderId/itemId/contentType/filename/size/width/height/uploadedBy/uploaderNameSnapshot/uploadedAt`；列表不读取二进制。图片内容响应设置检测所得 MIME、inline 文件名、`no-store` 和 `nosniff`。商品被移除后图片仍可查询和读取，前端标明历史商品图片，但后续导出排除其图片。
+
+`V6__soft_remove_order_images.sql` 添加 `is_removed BOOLEAN NOT NULL DEFAULT FALSE`。DELETE 在锁定订单行的同一事务中软移除并追加 IMAGE_REMOVED 活动，提交后发送原有 order.changed；活动保留 imageId、filename、itemId、服务端员工与时间，不含二进制。已移除图片不出现在普通列表、认证公开读取、有效图片计数或新导出快照中；重复移除返回 200，不重复写活动或发送通知。订单不存在返回 ORDER_NOT_FOUND，图片不存在或不属于目标订单返回 IMAGE_NOT_FOUND。原始内容保留给已取得元数据的导出快照，不物理删除或覆盖图片。
 
 批量请求示例：
 
@@ -289,7 +294,7 @@ data: {"orderId":"<UUID>","itemId":null,"changeType":"ORDER_PRODUCTION_CHANGED",
 | 资源 | 上限 |
 | --- | --- |
 | 单图 | 5 MiB；宽、高分别不超过 8192；总像素不超过 2400 万 |
-| 每单图片 | 8 张，包含关联已移除商品的保留图片 |
+| 每单图片 | 8 张未移除图片，包含关联已移除商品的保留图片；移除图片后释放额度 |
 | multipart | 单文件 5 MiB、单请求 6 MiB |
 | 批量 | 42 天、100 单，最多涉及 800 张图片 |
 | 输出 | 每份 XLSX 64 MiB、最终 ZIP 256 MiB |
@@ -299,7 +304,7 @@ data: {"orderId":"<UUID>","itemId":null,"changeType":"ORDER_PRODUCTION_CHANGED",
 
 空或损坏图片返回 400 `INVALID_IMAGE`，不支持格式返回 415 `UNSUPPORTED_IMAGE_FORMAT`，尺寸超限返回 400 `IMAGE_DIMENSIONS_EXCEEDED`，单图超限返回 413 `IMAGE_TOO_LARGE`，单单数量超限返回 409 `ORDER_IMAGE_LIMIT_EXCEEDED`。不存在订单、无效商品归属沿用 404 `ORDER_NOT_FOUND`；路径中的订单与图片不匹配返回 404 `IMAGE_NOT_FOUND`。导出文件大小在写入中检查，超过上限返回 413 `EXPORT_FILE_TOO_LARGE`。
 
-导出先在短 `REPEATABLE_READ` 事务中固定订单、备注、版本及图片元数据，再于事务外逐单加载固定图片 ID 并生成文件；同一时间只保留一份 Workbook。图片仅追加且不覆盖，后续上传不会进入已有快照。生成并关闭完整文件后，独立短事务为每张实际包含的订单追加一条 `ORDER_EXPORTED`，批量全部活动原子提交；日志成功提交后才发送文件。生成失败不写成功日志，日志失败不返回文件；正常结束、异常和客户端断开均清理临时文件。
+导出先在短 `REPEATABLE_READ` 事务中固定订单、备注、版本及未移除图片元数据，再于事务外逐单加载固定图片 ID 的原始内容并生成文件；同一时间只保留一份 Workbook。后续上传不会进入已有快照，后续软移除不破坏正在生成的快照。生成并关闭完整文件后，独立短事务为每张实际包含的订单追加一条 `ORDER_EXPORTED`，批量全部活动原子提交；日志成功提交后才发送文件。生成失败不写成功日志，日志失败不返回文件；正常结束、异常和客户端断开均清理临时文件。
 
 活动可通过原 `GET /api/orders/{orderId}/activities?type=ORDER_EXPORTED` 查询，包含操作员工、时间、`mode=SINGLE/BATCH`、`format=XLSX`、`snapshotVersion`、`imageIds`；批量还包含共同 `batchId` 和 `filters`，不保存完整电话或图片内容。语义是“文件成功生成并已发起下载”，不表示客户端已收到或保存。导出不推进版本、不修改状态或更新时间、不发送 SSE；生成期间发生后续业务修改不影响已固定快照，日志记录实际导出版本。
 
@@ -334,4 +339,10 @@ OrderIT 包含两商品创建→更正资料→追加 C→移除 B→查询 B �
 
 只读查询技术参考：[MyBatis 动态 SQL 与批量参数](https://mybatis.org/mybatis-3/dynamic-sql.html)、[PostgreSQL 17 窗口函数](https://www.postgresql.org/docs/17/functions-window.html)。
 
-当前后端包含日历、工作台、订单图片与 Excel/ZIP 导出，不包含前端、AI 识别、服务端草稿、自动计价或商品级工序。
+2026-10-15 C2-C1a：使用 JDK 25.0.4（构建目标 Java 21），受影响模块及依赖的 177 项常规检查通过，包含 ArchUnit；独立 PostgreSQL 数据库中的 OrderExportIT 13 项通过，无失败或跳过。新增验证包括图片归属与认证、幂等软移除、额度释放、活动失败回滚、图片事务提交失败不发送 SSE，以及生成中的导出保留快照图片而后续导出排除已移除图片。未重复执行 OrderIT 的完整制作、交付与付款集成链路；双员工真实浏览器验收见 [验证记录](../frontend/verification.md#c2-c1a-参考图片协作)。
+
+2026-10-15 C2-C1b 前端接入现有单订单 XLSX、筛选 ZIP 和 ORDER_EXPORTED 查询。批量界面的结束日期包含当天，前端转换为本接口的右开区间；认证下载复用 Bearer 和会话刷新。活动展示单单／批量方式、筛选、快照版本及图片数，不将下载已发起解释为客户端已保存。导出后仍不发送 SSE，当前员工刷新活动查询，其他员工通过已有查询刷新读取；没有新增后端接口、行为或迁移。实际浏览器下载文件及验收记录见 [C2-C1b 验证](../frontend/verification.md#c2-c1b-订单文件下载与导出日志)。
+
+当前后端包含日历、工作台、订单图片与 Excel/ZIP 导出；前端已接入图片协作和订单文件下载。不包含 AI 识别、服务端草稿、自动计价或商品级工序。
+
+2026-10-15 C2-C1a/C2-C1b 整体审查：177 项常规检查及 OrderExportIT 15 项通过，包含 ArchUnit。新增 PostgreSQL 延迟约束触发器验证图片新增／软移除在提交阶段失败时，图片状态与活动日志同时回滚，AFTER_COMMIT 监听器不收到通知；既有导出日志提交失败、文件清理及并发软移除后的快照读取检查继续通过。后端业务实现和 V6 迁移保持原有行为。前端会话与生命周期修正及浏览器复核见 [整体审查记录](../frontend/verification.md#c2-c1ac2-c1b-整体审查与修复)。

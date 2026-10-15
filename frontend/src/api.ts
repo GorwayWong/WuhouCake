@@ -1,4 +1,4 @@
-import type { Token } from './types';
+import type { OrderImage, Token } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -17,6 +17,17 @@ export function errorText(error: unknown): string {
     INVALID_FULFILLMENT_TRANSITION: '当前订单不能执行此交付操作，请核对最新状态。',
     ORDER_NOT_CANCELLABLE: '此订单当前不能取消。',
     ORDER_NOT_FOUND: '订单或商品不存在。',
+    IMAGE_NOT_FOUND: '图片已移除或不存在，请刷新图片列表核对。',
+    IMAGE_TOO_LARGE: '单张图片不能超过 5 MiB。',
+    UNSUPPORTED_IMAGE_FORMAT: '仅支持 JPG/PNG 图片，暂不支持 HEIC/WebP。',
+    INVALID_IMAGE: '图片为空或已损坏，请重新选择。',
+    IMAGE_DIMENSIONS_EXCEEDED: '图片尺寸过大，请选择较小的 JPG/PNG 图片。',
+    ORDER_IMAGE_LIMIT_EXCEEDED: '每张订单最多保留 8 张图片，请先移除误传图片。',
+    EXPORT_EMPTY: '这些条件下没有订单，请调整日期或筛选条件。',
+    EXPORT_LIMIT_EXCEEDED: '导出超过 42 天或 100 张订单，请缩小日期范围或增加筛选条件。',
+    EXPORT_FILE_TOO_LARGE: '导出文件过大，请缩小筛选范围；单张订单请联系管理员核对。',
+    EXPORT_CONTENT_TOO_LARGE: '订单内容或记录过多，请缩小筛选范围；单张订单请联系管理员核对。',
+    INVALID_EXPORT_RESPONSE: '未收到完整的导出文件，请核对下载记录及导出日志后重试。',
     VALIDATION_FAILED: '填写内容不符合要求，请检查后重试。',
     FORBIDDEN: '当前账号不能执行此操作。',
     PASSWORD_CHANGE_REQUIRED: '请先修改初始密码。',
@@ -93,6 +104,8 @@ export const session = {
   },
 };
 export async function authenticatedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const started = generation;
+  const requireSession = () => { if (started !== generation) throw new ApiError(401, 'AUTHENTICATION_FAILED'); };
   const before = state.token?.accessToken;
   if (!before) throw new ApiError(401, 'AUTHENTICATION_FAILED');
   const send = (token: string) => fetch(`/api${path}`, {
@@ -100,10 +113,13 @@ export async function authenticatedFetch(path: string, init: RequestInit = {}): 
     headers: { ...init.headers, Authorization: `Bearer ${token}` },
   });
   let response = await send(before);
+  requireSession();
   if (response.status === 401 && !init.signal?.aborted) {
     const token = state.token?.accessToken !== before && state.token ? state.token : await refresh();
+    requireSession();
     if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     response = await send(token.accessToken);
+    requireSession();
     if (response.status === 401) forgetSession();
   }
   return response;
@@ -114,4 +130,15 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     headers: options.body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   }));
+}
+export async function uploadOrderImage(orderId: string, file: File, itemId: string, signal?: AbortSignal): Promise<OrderImage> {
+  const body = new FormData();
+  body.append('file', file);
+  if (itemId) body.append('itemId', itemId);
+  return decode<OrderImage>(await authenticatedFetch(`/orders/${orderId}/images`, { method: 'POST', body, signal }));
+}
+export async function fetchOrderImage(orderId: string, imageId: string, signal: AbortSignal): Promise<Blob> {
+  const response = await authenticatedFetch(`/orders/${orderId}/images/${imageId}`, { signal });
+  if (!response.ok) return decode<never>(response);
+  return response.blob();
 }

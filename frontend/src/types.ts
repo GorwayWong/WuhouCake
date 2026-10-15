@@ -4,6 +4,11 @@ export interface Customer { customerName: string | null; phone: string; memberPh
 export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; plannedHandoffAt: string; plannedFinishAt: string | null }
 export interface Note { id: number; itemId: string | null; actorNameSnapshot: string; createdAt: string; content: string }
 export interface Activity extends Note { orderId: string; type: string; details: Record<string, unknown> }
+export interface OrderImage {
+  imageId: string; orderId: string; itemId: string | null; contentType: string; filename: string; size: number;
+  width: number; height: number; uploadedBy: string; uploaderNameSnapshot: string; uploadedAt: string;
+}
+export interface ExportFilters { from: string; to: string; status?: string; fulfillmentType?: string; paymentStatus?: string }
 export interface Item {
   itemId: string; name: string; quantity: number; productType: string | null;
   unitPriceCents: number | null; memberPriceCents: number | null; attributes: Record<string, unknown>;

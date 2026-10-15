@@ -23,7 +23,7 @@ export function OrderCreate({ draft, onChange, onSubmit, busy, error, submitted 
   return <div className="create-page">
     <a className="back-link" href="#" aria-disabled={busy}><ArrowLeft />返回工作台</a>
     <div className="page-heading"><div><p className="eyebrow">把客户的心意，交给下一位同事</p><h1>新建订单</h1></div></div>
-    <p className="create-intro">标有 * 的内容必填。创建后可在订单详情确认付款和制作进度。</p>
+    <p className="create-intro">标有 * 的内容必填。创建后可在订单详情添加参考图片、确认付款和制作进度。</p>
     <form ref={form} noValidate onSubmit={event => {
       event.preventDefault();
       if (busy) return;

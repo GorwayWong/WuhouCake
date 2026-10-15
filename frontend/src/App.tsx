@@ -68,7 +68,7 @@ function Workspace({ token, hash, selected, setSelected, mode, setMode, draft, o
   }, [client, token]);
   useEffect(() => { if (me.data) onAccount(me.data.accountId, hash === '#/orders/new' ? selected : undefined); }, [me.data, hash, selected, onAccount]);
   const id = /^#\/orders\/([a-f\d-]{36})$/i.exec(hash)?.[1];
-  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><span className={`connection ${connection}`} role="status">{connection === 'live' ? <WifiHigh /> : <WifiSlash />}<span>{connection === 'live' ? '协作已连接' : connection === 'connecting' ? '正在连接' : '正在重连'}</span></span><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating || writing} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><main className="workspace"><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{connection === 'reconnecting' && <div className="notice">实时连接暂时中断，正在自动重连；恢复后会重新获取最新订单。</div>}{hash === '#/orders/new' ? draft && draft.accountId === me.data?.accountId ? <OrderCreate draft={draft.value} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} /> : <Loading /> : id ? <OrderDetail key={id} id={id} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : <Calendar selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span><span>把心意，准时送达。</span></footer></>;
+  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><span className={`connection ${connection}`} role="status">{connection === 'live' ? <WifiHigh /> : <WifiSlash />}<span>{connection === 'live' ? '协作已连接' : connection === 'connecting' ? '正在连接' : '正在重连'}</span></span><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating || writing} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><main className="workspace"><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{connection === 'reconnecting' && <div className="notice">实时连接暂时中断，正在自动重连；恢复后会重新获取最新订单。</div>}{hash === '#/orders/new' ? draft && draft.accountId === me.data?.accountId ? <OrderCreate draft={draft.value} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} /> : <Loading /> : id ? <OrderDetail key={id} id={id} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : <Calendar selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} onWritingChange={onWritingChange} />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span><span>把心意，准时送达。</span></footer></>;
 }
 export function App() {
   const state = useSyncExternalStore(session.subscribe, session.snapshot);
@@ -90,7 +90,7 @@ export function App() {
   const writingRef = useRef(false);
   const onWritingChange = useCallback((pending: boolean) => {
     writingRef.current = pending; setWriting(pending);
-    if (!pending) setNotice(current => current === '订单修改正在保存，请稍候再离开。' ? '' : current);
+    if (!pending) setNotice(current => current === '操作尚未完成，请稍候再离开。' ? '' : current);
   }, []);
   const saveDraft = useCallback((next: DraftRecord | null) => { draftRef.current = next; setDraft(next); }, []);
   const creation = useMutation({
@@ -110,7 +110,7 @@ export function App() {
   });
   const allowLeave = useCallback(() => {
     if (creatingRef.current) { setNotice('订单正在创建，请稍候再离开。'); return false; }
-    if (writingRef.current) { setNotice('订单修改正在保存，请稍候再离开。'); return false; }
+    if (writingRef.current) { setNotice('操作尚未完成，请稍候再离开。'); return false; }
     if (changed(draftRef.current)) return window.confirm('录单内容尚未保存，离开将丢弃输入。确定离开吗？');
     return !editDirtyRef.current || window.confirm('订单修改尚未保存，离开将丢弃输入。确定离开吗？');
   }, []);

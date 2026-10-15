@@ -4,6 +4,7 @@ import { api } from './api';
 import { calendarRange, shiftDate, shiftMonth, time, today } from './dates';
 import type { CalendarOrder, Workbench } from './types';
 import { Empty, ErrorNotice, Loading, Payment, Product, Status } from './ui';
+import { BatchOrderExport } from './OrderExports';
 
 type Mode = 'week' | 'month';
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
@@ -16,7 +17,7 @@ function DateBlock({ date, orders, selected, month, onSelect }: { date: string; 
     </a>)}{!orders.length && <span className="no-orders" aria-label="无订单">—</span>}</div>
   </div>;
 }
-export function Calendar({ selected, setSelected, mode, setMode }: { selected: string; setSelected: (date: string) => void; mode: Mode; setMode: (mode: Mode) => void }) {
+export function Calendar({ selected, setSelected, mode, setMode, onWritingChange }: { selected: string; setSelected: (date: string) => void; mode: Mode; setMode: (mode: Mode) => void; onWritingChange: (pending: boolean) => void }) {
   const range = calendarRange(selected, mode);
   const calendar = useQuery({ queryKey: ['calendar', range.from, range.to], queryFn: ({ signal }) => api<CalendarOrder[]>(`/orders/calendar?from=${range.from}&to=${range.to}`, { signal }) });
   const workbench = useQuery({ queryKey: ['workbench', selected], queryFn: ({ signal }) => api<Workbench>(`/orders/workbench?date=${selected}`, { signal }), enabled: mode === 'week' });
@@ -24,6 +25,7 @@ export function Calendar({ selected, setSelected, mode, setMode }: { selected: s
   const changePeriod = (delta: number) => setSelected(mode === 'week' ? shiftDate(selected, delta * 7) : shiftMonth(selected, delta));
   return <>
     <div className="page-heading workbench-heading"><div><p className="eyebrow">每一份心意，都准时抵达</p><h1>{mode === 'week' ? '日历工作台' : '月历工作台'}</h1></div><div className="workbench-heading-actions"><button className="secondary compact" onClick={() => setSelected(today())}>回到今天</button><a className="primary" href="#/orders/new"><Plus />新建订单</a></div></div>
+    <BatchOrderExport selected={selected} onPendingChange={onWritingChange} />
     <section className={`panel calendar-panel ${mode}`} aria-label={mode === 'week' ? '周历' : '月历'}>
       <div className="calendar-toolbar"><div className="period"><h2>{selected.slice(0, 4)} 年 {Number(selected.slice(5, 7))} 月</h2><label className="date-jump"><span className="sr-only">跳转日期</span><input type="date" value={selected} onChange={event => { if (event.target.value && /^\d{4}-\d{2}-\d{2}$/.test(event.target.value)) setSelected(event.target.value); }} /></label></div><div className="period-actions"><button className="icon-button" aria-label={mode === 'week' ? '上一周' : '上个月'} onClick={() => changePeriod(-1)}><ArrowLeft /></button><button className="icon-button" aria-label={mode === 'week' ? '下一周' : '下个月'} onClick={() => changePeriod(1)}><ArrowRight /></button></div></div>
       <ErrorNotice error={calendar.error} retry={() => void calendar.refetch()} />

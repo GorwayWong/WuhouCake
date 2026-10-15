@@ -25,10 +25,10 @@ public class OrderComposition {
     @Bean OrderImages orderImages(OrderImageMapper mapper) { return new PostgresOrderImages(mapper); }
     @Bean OrderImageValidator orderImageValidator() { return new JavaOrderImageValidator(); }
     @Bean OrderImageService orderImageService(Orders orders, OrderImages images, OrderImageValidator validator,
-            PlatformTransactionManager transactions, IdGenerator ids, Clock clock) {
+            PlatformTransactionManager transactions, IdGenerator ids, Clock clock, OrderActivities activities, ApplicationEventPublisher events) {
         var writes = new TransactionTemplate(transactions);
         writes.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
-        return new OrderImageService(orders, images, validator, writes, ids, clock);
+        return new OrderImageService(orders, images, validator, writes, ids, clock, activities, events);
     }
     @Bean OrderExportQueries orderExportQueries(OrderQueryMapper queries, OrderActivityMapper activities, JsonCodec json) {
         return new PostgresOrderExportQueries(queries, activities, json);

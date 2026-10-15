@@ -20,6 +20,10 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
+import org.xaspire.WuhouCake.order.application.service.OrderImageService;
+import org.xaspire.WuhouCake.order.domain.port.OrderImages;
+import org.xaspire.WuhouCake.order.domain.port.OrderImageValidator;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImage;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.Order;
 import org.xaspire.WuhouCake.order.domain.model.entity.OrderItem;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
@@ -93,6 +97,39 @@ class OrderStreamTransactionsTest {
         doThrow(new IllegalStateException("activity unavailable")).when(activities).append(any());
         assertThrows(IllegalStateException.class, () -> context.getBean(OrderService.class).note(order.id(), new OrderCommands.Note(null, "少糖"), operator));
         verify(connection).rollback(); verify(connection, never()).commit(); verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void imageChangesNotifyAfterCommitWithoutChangingOrder(boolean removal) throws Exception {
+        var action = imageAction(removal);
+        action.run();
+        var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        var sequence = inOrder(connection, emitter);
+        sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+        sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
+        var change = sent.getValue().build().stream().map(value -> value.getData()).filter(OrderChanged.class::isInstance)
+                .map(OrderChanged.class::cast).findFirst().orElseThrow();
+        assertEquals(removal ? OrderChanged.Type.IMAGE_REMOVED : OrderChanged.Type.IMAGE_ADDED, change.changeType());
+        assertEquals(0, change.version()); assertEquals(NOW, order.updatedAt());
+        verify(activities).append(argThat(log -> log.type().equals(change.changeType().name()) && log.details().containsKey("imageId")));
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void failedImageCommitNeverNotifies(boolean removal) throws Exception {
+        var action = imageAction(removal);
+        doThrow(new SQLException("commit failed")).when(connection).commit();
+        assertThrows(TransactionException.class, action::run);
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    private Runnable imageAction(boolean removal) {
+        var images = mock(OrderImages.class); var validator = mock(OrderImageValidator.class);
+        var image = new OrderImage(UUID.randomUUID(), order.id(), null, "image/png", "cake.png", 1, 1, 1,
+                operator.accountId(), operator.nickname(), NOW);
+        when(images.lockOrder(order.id())).thenReturn(true);
+        when(images.find(order.id(), image.imageId())).thenReturn(Optional.of(image));
+        when(validator.validate(any(), anyString())).thenReturn(new OrderImageValidator.Checked("image/png", "cake.png", 1, 1));
+        var service = new OrderImageService(orders, images, validator, new TransactionTemplate(manager), UUID::randomUUID,
+                Clock.fixed(NOW, ZoneOffset.UTC), activities, context);
+        return removal ? () -> service.remove(order.id(), image.imageId(), operator)
+                : () -> service.upload(order.id(), null, new byte[]{1}, "cake.png", operator);
     }
     @Test void sendFailureCannotFailTheCommittedServiceOperation() throws Exception {
         doThrow(new IOException("disconnected")).when(emitter).send(any(SseEmitter.SseEventBuilder.class));

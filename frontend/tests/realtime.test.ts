@@ -11,17 +11,18 @@ const waitFor = async (condition: () => boolean) => {
 test('相同版本 NOTE 仍刷新详情与商品备注，跨日通知重新获取整个可见范围', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const counts: Record<string, number> = {};
-  const keys = [['calendar', '2026-10-12', '2026-10-19'], ['workbench', '2026-10-13'], ['order', 'order-a', 'detail'], ['order', 'order-a', 'activities', 'NOTE']];
+  const keys = [['calendar', '2026-10-12', '2026-10-19'], ['workbench', '2026-10-13'], ['order', 'order-a', 'detail'], ['order', 'order-a', 'activities', 'NOTE'], ['order', 'order-a', 'images'], ['order', 'order-b', 'images']];
   const stops = keys.map(key => {
     const observer = new QueryObserver(client, { queryKey: key, queryFn: async () => { const name = key.join('/'); counts[name] = (counts[name] || 0) + 1; return counts[name]; } });
     return observer.subscribe(() => {});
   });
-  await waitFor(() => Object.values(counts).length === 4);
+  await waitFor(() => Object.values(counts).length === 6);
   await new Promise(resolve => setTimeout(resolve, 10));
-  for (const changeType of ['NOTE', 'NOTE', 'ORDER_INFORMATION_CHANGED']) {
+  for (const changeType of ['NOTE', 'NOTE', 'ORDER_INFORMATION_CHANGED', 'IMAGE_ADDED', 'IMAGE_REMOVED']) {
     const before = { ...counts };
     receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: 'order-a', changeType, version: 1 }) });
-    await waitFor(() => Object.keys(counts).every(key => counts[key] > before[key]));
+    await waitFor(() => Object.keys(counts).filter(key => key !== 'order/order-b/images').every(key => counts[key] > before[key]));
+    assert.equal(counts['order/order-b/images'], before['order/order-b/images']);
   }
   stops.forEach(stop => stop()); client.clear();
 });

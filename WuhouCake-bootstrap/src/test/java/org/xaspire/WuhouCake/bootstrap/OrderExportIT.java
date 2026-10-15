@@ -15,17 +15,19 @@ import java.util.zip.ZipInputStream;
 import javax.imageio.ImageIO;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.*;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.*;
-import org.springframework.context.event.EventListener;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.*;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.xaspire.WuhouCake.bootstrap.integration.JwtTestKeys;
 import org.xaspire.WuhouCake.identity.application.service.IdentityService;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
@@ -141,6 +143,69 @@ class OrderExportIT {
             assertTrue(book.getAllPictures().isEmpty()); assertEquals(2, book.getSheet("商品").getPhysicalNumberOfRows());
         }
     }
+    @Test void imageRemovalIsScopedIdempotentReleasesQuotaAndPreservesSnapshots() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
+        var png = picture("png"); var image = data(staff.upload(id, item, png, "cake.png"));
+        String imageId = image.path("imageId").asText(), path = "/api/orders/" + id + "/images/" + imageId;
+        for (int i = 0; i < 7; i++) assertEquals(201, staff.upload(id, null, png, "other.png").statusCode());
+        assertEquals(409, staff.upload(id, null, png, "full.png").statusCode());
+        var added = data(staff.request("GET", "/api/orders/" + id + "/activities?type=IMAGE_ADDED", null));
+        assertEquals(8, added.path("total").asInt());
+        String another = data(staff.request("POST", "/api/orders", create("2026-10-16"))).path("orderId").asText();
+        assertEquals(404, staff.request("DELETE", "/api/orders/" + another + "/images/" + imageId, null).statusCode());
+        assertEquals(401, new Client().request("DELETE", path, null).statusCode());
+        changes.events.clear();
+        assertEquals(200, staff.request("DELETE", path, null).statusCode());
+        assertEquals(200, staff.request("DELETE", path, null).statusCode());
+        assertEquals(1, changes.events.size());
+        assertEquals(new OrderChanged(UUID.fromString(id), UUID.fromString(item), OrderChanged.Type.IMAGE_REMOVED, 0), changes.events.peek());
+        assertEquals(404, staff.request("GET", path, null).statusCode());
+        assertEquals(7, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
+        assertTrue(jdbc.queryForObject("SELECT is_removed FROM cake_order_image WHERE id=?::uuid", Boolean.class, imageId));
+        assertArrayEquals(png, images.content(UUID.fromString(id), UUID.fromString(imageId)).orElseThrow());
+        var removed = data(staff.request("GET", "/api/orders/" + id + "/activities?type=IMAGE_REMOVED", null));
+        assertEquals(1, removed.path("total").asInt());
+        var log = removed.at("/items/0");
+        assertEquals(imageId, log.at("/details/imageId").asText()); assertEquals("cake.png", log.at("/details/filename").asText());
+        assertEquals(item, log.path("itemId").asText()); assertEquals(staff.accountId, log.path("actorId").asText());
+        assertFalse(log.path("createdAt").asText().isEmpty());
+        var exported = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(exported.body()))) { assertEquals(7, book.getAllPictures().size()); }
+        assertEquals(201, staff.upload(id, null, png, "replacement.png").statusCode());
+        assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
+        assertEquals(9, jdbc.queryForObject("SELECT count(*) FROM cake_order_image WHERE order_id=?::uuid", Integer.class, id));
+    }
+    @Test void imageDataAndActivityRollBackTogether() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        changes.events.clear();
+        doThrow(new DataAccessResourceFailureException("test log unavailable")).when(activities).append(argThat(log -> log.type().equals("IMAGE_ADDED")));
+        assertEquals(503, staff.upload(id, null, picture("png"), "failed.png").statusCode());
+        assertEquals(0, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
+        assertTrue(changes.events.isEmpty()); reset(activities);
+        var image = data(staff.upload(id, null, picture("png"), "kept.png")); changes.events.clear();
+        doThrow(new DataAccessResourceFailureException("test log unavailable")).when(activities).append(argThat(log -> log.type().equals("IMAGE_REMOVED")));
+        assertEquals(503, staff.request("DELETE", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
+        assertEquals(1, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
+        assertEquals(0, data(staff.request("GET", "/api/orders/" + id + "/activities?type=IMAGE_REMOVED", null)).path("total").asInt());
+        assertTrue(changes.events.isEmpty());
+        assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
+    }
+    @Test void exportSnapshotKeepsItsImageWhenRemovedDuringGeneration() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        var image = data(staff.upload(id, null, picture("png"), "snapshot.png"));
+        doAnswer(invocation -> {
+            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+            assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
+            return invocation.callRealMethod();
+        }).when(files).generate(any(), anyString(), eq(false));
+        var response = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        assertEquals(200, response.statusCode(), text(response));
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) { assertEquals(1, book.getAllPictures().size()); }
+        reset(files);
+        var next = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(next.body()))) { assertTrue(book.getAllPictures().isEmpty()); }
+    }
     @Test void batchFiltersDatesAndBusinessConditionsAndLogsEveryIncludedOrder() throws Exception {
         var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));
         var b = data(staff.request("POST", "/api/orders", create("2026-10-02")));
@@ -255,6 +320,27 @@ class OrderExportIT {
             assertEquals(b, data(staff.request("GET", "/api/orders/" + b.path("orderId").asText(), null)));
         } finally { jdbc.execute("DROP FUNCTION reject_export_commit() CASCADE"); }
     }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void deferredImageCommitFailureRollsBackDataActivityAndNotification(boolean removal) throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        var image = removal ? data(staff.upload(id, null, picture("png"), "kept.png")) : null;
+        changes.events.clear();
+        jdbc.execute("CREATE FUNCTION reject_image_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN"
+                + " IF NEW.type IN ('IMAGE_ADDED','IMAGE_REMOVED') THEN RAISE EXCEPTION 'test deferred commit failure' USING ERRCODE='23514'; END IF; RETURN NULL; END; $$");
+        jdbc.execute("CREATE CONSTRAINT TRIGGER reject_image_commit AFTER INSERT ON cake_order_activity DEFERRABLE INITIALLY DEFERRED"
+                + " FOR EACH ROW EXECUTE FUNCTION reject_image_commit()");
+        try {
+            var response = removal ? staff.request("DELETE", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null)
+                    : staff.upload(id, null, picture("png"), "rejected.png");
+            assertEquals(503, response.statusCode(), text(response));
+            assertEquals(removal ? 1 : 0, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
+            assertEquals(removal ? 1 : 0, jdbc.queryForObject("SELECT count(*) FROM cake_order_image WHERE order_id=?::uuid AND NOT is_removed", Integer.class, id));
+            assertEquals(removal ? 1 : 0, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='IMAGE_ADDED'", Integer.class, id));
+            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='IMAGE_REMOVED'", Integer.class, id));
+            assertTrue(changes.events.isEmpty());
+            assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
+        } finally { jdbc.execute("DROP FUNCTION reject_image_commit() CASCADE"); }
+    }
     private int exportCount() { return jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_EXPORTED'", Integer.class); }
     private List<String> entries(HttpResponse<byte[]> response) throws Exception {
         assertEquals(200, response.statusCode(), text(response)); var result = new ArrayList<String>();
@@ -297,7 +383,7 @@ class OrderExportIT {
     @TestConfiguration(proxyBeanMethods = false) static class EventsConfiguration { @Bean Changes changes() { return new Changes(); } }
     static class Changes {
         final Queue<OrderChanged> events = new ConcurrentLinkedQueue<>();
-        @EventListener public void changed(OrderChanged event) { events.add(event); }
+        @TransactionalEventListener public void changed(OrderChanged event) { events.add(event); }
     }
     final class Client {
         final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);

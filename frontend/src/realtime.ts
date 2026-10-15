@@ -15,7 +15,7 @@ export function receiveEvent(client: QueryClient, event: { event?: string; data:
   if (event.event !== 'order.changed') return;
   try {
     const change = JSON.parse(event.data);
-    // NOTE 不递增订单版本；所有合法通知都触发重新获取。
+    // 备注和图片变化不递增订单版本；所有合法通知都触发重新获取。
     synchronize(client, typeof change.orderId === 'string' ? change.orderId : undefined);
   } catch { synchronize(client); }
 }
