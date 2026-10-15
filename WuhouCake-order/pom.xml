@@ -13,6 +13,11 @@
     <description>Multi-item order core</description>
     <dependencies>
         <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.5.1</version>
+        </dependency>
+        <dependency>
             <groupId>org.xaspire</groupId>
             <artifactId>WuhouCake-shared</artifactId>
             <version>${project.version}</version>

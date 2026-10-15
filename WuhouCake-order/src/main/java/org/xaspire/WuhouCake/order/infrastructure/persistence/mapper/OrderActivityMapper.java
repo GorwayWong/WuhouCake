@@ -20,6 +20,9 @@ public interface OrderActivityMapper {
             + " FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid) AND item_id IS NOT NULL AND type='NOTE') AS notes"
             + " WHERE note_rank <= 3 ORDER BY created_at DESC, id DESC")
     List<Row> recentItemNotes(String orderId);
+    @Select("SELECT " + COLUMNS + " FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid) AND item_id IS NULL"
+            + " AND type='NOTE' ORDER BY created_at DESC, id DESC")
+    List<Row> orderNotes(String orderId);
     @Select("<script>SELECT " + COLUMNS + FILTER + " ORDER BY created_at DESC, id DESC LIMIT #{size} OFFSET #{offset}</script>")
     List<Row> search(@Param("orderId") String orderId, @Param("itemId") String itemId, @Param("type") String type,
             @Param("size") int size, @Param("offset") long offset);

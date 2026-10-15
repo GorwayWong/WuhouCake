@@ -16,6 +16,7 @@ public interface OrderQueryMapper {
             Long unitPriceCents, Long memberPriceCents, String attributes) { }
     record NoteRow(long id, String itemId, String actorId, String actorNameSnapshot, Instant createdAt, String content) { }
     record MetricsRow(long totalOrders, long createdOnDate, long deliveryDueOnDate) { }
+    record ContentSizeRow(long bytes, long rows) { }
 
     String ORDER_COLUMNS = "id::text AS order_id, order_no, requested_receive_date AS calendar_date, status,"
             + " current_stage_code, payment_status, fulfillment_type, planned_handoff_at";
@@ -25,6 +26,25 @@ public interface OrderQueryMapper {
 
     @Select("SELECT " + ORDER_COLUMNS + " FROM cake_order WHERE requested_receive_date >= #{from} AND requested_receive_date < #{to}" + ORDER_SORT)
     List<CalendarRow> calendar(@Param("from") LocalDate from, @Param("to") LocalDate to);
+
+    @Select("<script>SELECT id::text FROM cake_order WHERE requested_receive_date &gt;= #{from} AND requested_receive_date &lt; #{to}"
+            + "<if test='status != null'> AND status=#{status}</if>"
+            + "<if test='fulfillmentType != null'> AND fulfillment_type=#{fulfillmentType}</if>"
+            + "<if test='paymentStatus != null'> AND payment_status=#{paymentStatus}</if>" + ORDER_SORT + " LIMIT #{limit}</script>")
+    List<String> exportIds(@Param("from") LocalDate from, @Param("to") LocalDate to, @Param("status") String status,
+            @Param("fulfillmentType") String fulfillmentType, @Param("paymentStatus") String paymentStatus, @Param("limit") int limit);
+
+    @Select("<script>WITH selected_orders AS (SELECT * FROM cake_order WHERE id IN " + ORDER_IDS + "),"
+            + " loaded_items AS (SELECT * FROM cake_order_item WHERE order_id IN " + ORDER_IDS + "),"
+            + " selected_notes AS (SELECT * FROM (SELECT a.*, row_number() OVER"
+            + " (PARTITION BY order_id, item_id ORDER BY created_at DESC, id DESC) AS note_rank"
+            + " FROM cake_order_activity a WHERE type='NOTE' AND order_id IN " + ORDER_IDS
+            + ") n WHERE item_id IS NULL OR note_rank &lt;= 3)"
+            + " SELECT (SELECT COALESCE(sum(octet_length(row_to_json(o)::text)),0) FROM selected_orders o)"
+            + " + (SELECT COALESCE(sum(octet_length(row_to_json(i)::text)),0) FROM loaded_items i)"
+            + " + (SELECT COALESCE(sum(octet_length(row_to_json(n)::text)),0) FROM selected_notes n) AS bytes,"
+            + " (SELECT count(*) FROM loaded_items) + (SELECT count(*) FROM selected_notes) AS rows</script>")
+    ContentSizeRow exportContentSize(@Param("orderIds") List<String> orderIds);
 
     @Select("SELECT " + ORDER_COLUMNS + ", customer_name, customer_phone AS phone, member_phone, buyer_name,"
             + " delivery_address AS address, planned_finish_at FROM cake_order WHERE requested_receive_date=#{date}"

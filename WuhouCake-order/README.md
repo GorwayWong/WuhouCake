@@ -1,15 +1,20 @@
-# Order · Slice A / B1 / B2 / C0 / C0.5 / C1
+# Order · Slice A / B1 / B2 / C0 / C0.5 / C1 · 图片与 Excel 导出
 
-订单模块提供多商品正式订单、资料更正、商品增减与修改、整单制作、配送或自提交接、完成、人工取消、付款状态纠正、独立备注、业务历史、日历与当日工作台查询和提交后的 SSE 通知。Bootstrap 显式装配；业务写入事务由 `OrderService` 管理，只读查询事务由 `OrderQueryService` 管理。员工使用现有登录流程取得 Bearer token，且须先完成初始密码修改。
+订单模块提供多商品正式订单、资料更正、商品增减与修改、整单制作、配送或自提交接、完成、人工取消、付款状态纠正、独立备注、业务历史、日历与当日工作台查询、提交后的 SSE 通知、参考图片及 Excel 导出。Bootstrap 显式装配，application 服务管理事务。员工使用现有登录流程取得 Bearer token，且须先完成初始密码修改。
 
 ## HTTP 接口
 
-REST 响应使用 `ApiResponse`。创建订单、追加商品和追加备注返回 201，其他查询和修改返回 200。SSE 直接返回 `text/event-stream`，不套用 `ApiResponse`。
+REST 响应使用 `ApiResponse`。创建订单、追加商品、追加备注和上传图片返回 201，其他查询和修改返回 200。SSE、图片内容与导出下载直接返回对应内容，不套用 `ApiResponse`；失败仍返回标准 JSON 错误。
 
 | 方法和路径 | 行为 |
 | --- | --- |
 | `POST /api/orders` | 创建正式订单，返回详情和服务端生成的 orderId、itemId |
 | `GET /api/orders/{orderId}` | 订单基础信息、有效商品、每个商品最近三条 NOTE |
+| `POST /api/orders/{orderId}/images` | multipart：必填 file，可选 itemId，返回图片元数据 |
+| `GET /api/orders/{orderId}/images` | 查询图片元数据，包括已移除商品的保留图片 |
+| `GET /api/orders/{orderId}/images/{imageId}` | 认证后读取属于该订单的图片二进制 |
+| `POST /api/orders/{orderId}/exports/xlsx` | 生成单订单 XLSX、记录活动并发起下载 |
+| `POST /api/orders/exports/zip` | 按日期及业务条件生成每单一个 XLSX 的 ZIP |
 | `GET /api/orders/calendar?from=2026-09-28&to=2026-11-09` | 周历、月历共用的订单列表，按客户期望收货日期分组 |
 | `GET /api/orders/workbench?date=2026-09-30` | 指定日期的订单统计与未完成、未取消订单，附商品规格和独立最近三条备注 |
 | `PATCH /api/orders/{orderId}` | 携带 expectedVersion、itemId、changes 修改单个商品 |
@@ -261,16 +266,59 @@ data: {"orderId":"<UUID>","itemId":null,"changeType":"ORDER_PRODUCTION_CHANGED",
 
 通知使用单实例进程内连接管理和提交后监听，不持久化、不重放，也不支持 Last-Event-ID 恢复。断线期间的变化靠 REST 重取补齐。当前仓库没有前端项目，本模块仅提供订阅协议与接入契约。
 
+## 图片与 Excel 导出
+
+图片仅能上传到已创建订单，可关联整单或当前有效商品；已完成、已取消订单同样允许上传。员工 ID、昵称与上传时间均取自服务端。`V5__add_order_images.sql` 创建 `cake_order_image`，以 PostgreSQL BYTEA 保存图片；复合外键约束商品归属。上传校验和数量检查通过后，在锁定订单行的短事务内插入，不修改订单版本、更新时间或制作状态，也不发送 SSE。
+
+上传不使用客户端 MIME 判断格式，而是检测实际 JPEG/PNG 内容、校验尺寸并完整解码。展示名去除目录和控制字符，仅作展示，不参与服务器路径读取。元数据字段为 `imageId/orderId/itemId/contentType/filename/size/width/height/uploadedBy/uploaderNameSnapshot/uploadedAt`；列表不读取二进制。图片内容响应设置检测所得 MIME、inline 文件名、`no-store` 和 `nosniff`。本轮不提供图片删除或覆盖；商品被移除后图片仍可查询和读取，但后续导出排除其图片。
+
+批量请求示例：
+
+```json
+{"from":"2026-10-01","to":"2026-11-01","status":"WAITING_PRODUCTION","fulfillmentType":"DELIVERY","paymentStatus":"UNPAID"}
+```
+
+`from/to` 必填，按 `requestedReceiveDate` 的 `[from,to)` 筛选；三个业务条件可选，值沿用现有状态契约。未指定条件时包含已完成和已取消订单。顺序沿用日期、交接时间、订单号。空结果返回 400 `EXPORT_EMPTY`；超过范围或数量返回 400 `EXPORT_LIMIT_EXCEEDED` 并提示缩小范围，不静默截断。
+
+单单使用 `订单-{orderNo}.xlsx`，批量使用 `orders-{from:yyyyMMdd}-{to前一天:yyyyMMdd}.zip`；ZIP 内使用唯一、安全的服务端订单号文件名，非数字订单号回退为订单 UUID。下载成功返回 200、attachment 文件名、正确 MIME 和 `Cache-Control: no-store`。
+
+每份 XLSX 使用相同的 POI 生成逻辑，含“订单、商品、备注、图片”工作表：订单完整业务信息、全部有效商品、完整规格 JSON、全部订单级 NOTE、每个有效商品最近三条 NOTE，以及订单级和有效商品图片。图片实际嵌入，按比例限定在 480×320 像素内，附关联对象、上传人及时间。金额从整数分精确转换为元字符串，空金额留空，不重算订单金额；时间按 `Asia/Shanghai` 展示。所有文本为普通字符串；超过 Excel 单元格长度的内容拆为连续行，按同一列顺序拼接即可恢复完整文本。无图订单正常导出。
+
+固定上限集中在 `OrderFileLimits`；multipart 的对应传输上限位于 bootstrap `application.yml`：
+
+| 资源 | 上限 |
+| --- | --- |
+| 单图 | 5 MiB；宽、高分别不超过 8192；总像素不超过 2400 万 |
+| 每单图片 | 8 张，包含关联已移除商品的保留图片 |
+| multipart | 单文件 5 MiB、单请求 6 MiB |
+| 批量 | 42 天、100 单，最多涉及 800 张图片 |
+| 输出 | 每份 XLSX 64 MiB、最终 ZIP 256 MiB |
+| 正文预检 | 一次导出最多读取 8 MiB 的订单、商品及备注文本，商品与所读取备注合计最多 10000 条；包含聚合内部读取的已移除商品及其最近备注 |
+
+读取正文前先在数据库中统计体积及条数，防止在 Workbook 序列化之前耗尽内存。体积按读取记录的 UTF-8 JSON 表示统计，包含备注正文、操作者、时间、活动 details 等元数据；商品最近备注的读取范围与预检一致。正文超限返回 413 `EXPORT_CONTENT_TOO_LARGE`；不会截断备注或规格。文件大小超限即使被 POI 包装也保留 413 `EXPORT_FILE_TOO_LARGE`，同时删除未完成文件。
+
+空或损坏图片返回 400 `INVALID_IMAGE`，不支持格式返回 415 `UNSUPPORTED_IMAGE_FORMAT`，尺寸超限返回 400 `IMAGE_DIMENSIONS_EXCEEDED`，单图超限返回 413 `IMAGE_TOO_LARGE`，单单数量超限返回 409 `ORDER_IMAGE_LIMIT_EXCEEDED`。不存在订单、无效商品归属沿用 404 `ORDER_NOT_FOUND`；路径中的订单与图片不匹配返回 404 `IMAGE_NOT_FOUND`。导出文件大小在写入中检查，超过上限返回 413 `EXPORT_FILE_TOO_LARGE`。
+
+导出先在短 `REPEATABLE_READ` 事务中固定订单、备注、版本及图片元数据，再于事务外逐单加载固定图片 ID 并生成文件；同一时间只保留一份 Workbook。图片仅追加且不覆盖，后续上传不会进入已有快照。生成并关闭完整文件后，独立短事务为每张实际包含的订单追加一条 `ORDER_EXPORTED`，批量全部活动原子提交；日志成功提交后才发送文件。生成失败不写成功日志，日志失败不返回文件；正常结束、异常和客户端断开均清理临时文件。
+
+活动可通过原 `GET /api/orders/{orderId}/activities?type=ORDER_EXPORTED` 查询，包含操作员工、时间、`mode=SINGLE/BATCH`、`format=XLSX`、`snapshotVersion`、`imageIds`；批量还包含共同 `batchId` 和 `filters`，不保存完整电话或图片内容。语义是“文件成功生成并已发起下载”，不表示客户端已收到或保存。导出不推进版本、不修改状态或更新时间、不发送 SSE；生成期间发生后续业务修改不影响已固定快照，日志记录实际导出版本。
+
 ## 验证
 
 在仓库根目录使用 Java 21：
 
 ```sh
 rtk proxy ./mvnw -pl WuhouCake-order,WuhouCake-bootstrap -am verify
-rtk proxy ./mvnw -pl WuhouCake-bootstrap -am -Pintegration -Dit.test=OrderIT,InfrastructureIT -Dfailsafe.failIfNoSpecifiedTests=false verify
+rtk proxy ./mvnw -pl WuhouCake-bootstrap -am -Pintegration -Dit.test=OrderIT,OrderExportIT,InfrastructureIT -Dfailsafe.failIfNoSpecifiedTests=false verify
 ```
 
 OrderIT 复用现有 integration 配置、JWT 测试密钥、隔离 schema 和 Redis namespace，需要现有 PostgreSQL、Redis 可连接。连接配置见 Bootstrap 的 application-integration.yml；测试不会修改真实订单。
+
+OrderFilesTest 使用 POI 重读 XLSX、图片与 ZIP，验证完整 JSON、长文本续行、金额及时区、普通字符串、安全文件名、校验及输出上限；OrderExportServiceTest 验证快照过滤和生成/日志失败顺序。OrderExportIT 在独立 PostgreSQL schema 中运行 V5，覆盖真实 BYTEA、复合外键、并发上传、认证、已移除商品图片保留、单单及批量下载、筛选、逐单活动、事务回滚和临时文件清理；同时验证导出不修改订单或发出 SSE，文件生成不占用数据库事务。
+
+2026-10-15 图片与导出验证：Java 21 下上述两条 Maven verify 均通过。常规检查共 169 项（订单模块 93 项、bootstrap 25 项，包含 ArchUnit）；真实 PostgreSQL/Redis 集成共 39 项（OrderIT 26 项、OrderExportIT 8 项、InfrastructureIT 5 项），无失败、错误或跳过。正文体积与记录数预检在真实数据库中验证超限拒绝，不截断内容。
+
+2026-10-15 导出复核：Java 21 下常规检查共 173 项（订单模块 97 项、bootstrap 25 项，包含 ArchUnit）及 OrderExportIT 10 项通过，无失败、错误或跳过。补充真实 Workbook、ZIP 条目及 ZIP 收尾的大小超限与文件清理测试；HTTP 复制失败仍删除文件，清理同时失败时将其附加到原始异常；正文预算覆盖备注元数据和 details。使用 PostgreSQL 延迟约束触发器验证提交阶段失败：已插入的批量导出日志全部回滚，不返回 ZIP，完整生成的临时文件也被删除。
 
 OrderTest 和 OrderServiceTest 验证制作、付款、商品修改，以及交接顺序、方式区分、取消原因、数据保留和事件生成；C0.5 覆盖所有状态资料与类型更正、字段清空与无变化版本检查、追加后的整单节点清空、至少一件有效商品及软删除后的历史归属。OrderStreamsTest 验证连接生命周期、JWT 到期、心跳、串行发送、队列上限和故障隔离；OrderStreamTransactionsTest 使用 Spring 事务管理器和 mock JDBC 验证提交后通知、回滚与提交失败不通知，覆盖三个新入口。OrderStreamWebTest 复用现有安全链验证认证、参数校验、错误包络及 SSE 协议。
 
@@ -286,4 +334,4 @@ OrderIT 包含两商品创建→更正资料→追加 C→移除 B→查询 B �
 
 只读查询技术参考：[MyBatis 动态 SQL 与批量参数](https://mybatis.org/mybatis-3/dynamic-sql.html)、[PostgreSQL 17 窗口函数](https://www.postgresql.org/docs/17/functions-window.html)。
 
-本期止于 Slice C1 后端日历与工作台查询，不开发前端 Slice C2、AI 识别、服务端草稿、自动计价或商品级工序。
+当前后端包含日历、工作台、订单图片与 Excel/ZIP 导出，不包含前端、AI 识别、服务端草稿、自动计价或商品级工序。

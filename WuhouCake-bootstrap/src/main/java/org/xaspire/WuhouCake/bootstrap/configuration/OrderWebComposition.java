@@ -8,10 +8,13 @@ import org.springframework.context.annotation.*;
 import org.xaspire.WuhouCake.order.adapter.web.*;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.application.service.OrderQueryService;
+import org.xaspire.WuhouCake.order.application.service.OrderImageService;
+import org.xaspire.WuhouCake.order.application.service.OrderExportService;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class OrderWebComposition {
+    @Bean OrderFileController orderFileController(OrderImageService images, OrderExportService exports) { return new OrderFileController(images, exports); }
     @Bean OrderController orderController(OrderService orders) { return new OrderController(orders); }
     @Bean OrderQueryController orderQueryController(OrderQueryService queries) { return new OrderQueryController(queries); }
     @Bean(destroyMethod = "shutdownNow") ScheduledExecutorService orderStreamScheduler() {

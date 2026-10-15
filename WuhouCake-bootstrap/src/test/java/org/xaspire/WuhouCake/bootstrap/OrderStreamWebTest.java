@@ -21,6 +21,8 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.application.service.OrderQueryService;
+import org.xaspire.WuhouCake.order.application.service.OrderImageService;
+import org.xaspire.WuhouCake.order.application.service.OrderExportService;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -42,6 +44,8 @@ class OrderStreamWebTest {
     @MockitoBean IdentityFacade identity;
     @MockitoBean OrderService orders;
     @MockitoBean OrderQueryService queries;
+    @MockitoBean OrderImageService images;
+    @MockitoBean OrderExportService exports;
     private final UUID accountId = UUID.randomUUID(), sessionId = UUID.randomUUID();
 
     @BeforeEach void token() {
