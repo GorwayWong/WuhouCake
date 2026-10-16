@@ -2,7 +2,7 @@
 
 ## 1. 配置文件
 
-本目录维护运行环境、Compose 编排及配置契约。应用镜像由外部构建流程提供，通过 `APP_IMAGE` 运行。
+本目录维护运行环境、Compose 编排及配置契约。镜像使用预先构建的 bootstrap JAR：在仓库根执行 `./mvnw clean verify` 后，用 `docker build -t wuhoucake-bootstrap:local WuhouCake-bootstrap` 构建。生产通过 `APP_IMAGE` 引用明确版本的已有镜像，不绑定具体 CI/CD 平台。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -65,10 +65,13 @@ docker compose --env-file docs/dev-ops/env/prod.env \
 运行约束：
 
 - 环境与应用使用同一 `COMPOSE_PROJECT_NAME`，共享对应网络；先启动环境，再启动应用。
+- 业务后端目前按单实例运行；SSE 是进程内连接和通知，没有跨实例广播或持久化重放。
 - 两组 Compose 分别管理服务，禁止使用 `--remove-orphans` 清理另一组服务。
 - 应用端口默认绑定宿主机 `127.0.0.1`。外部访问通过反向代理，或显式调整 `APP_BIND_ADDRESS`。
 - prod 关闭接口文档；业务使用 Bearer JWT，员工管理和审计查询仅限超级管理员，其他未开放路径默认拒绝。
 - 数据备份、资源限制、TLS、账号权限及密钥管理由部署环境配置。
+
+这些 Compose 文件只运行后端和依赖，不构建或发布前端。前端先执行 npm ci / npm run build，再由 HTTPS 站点提供 dist 并代理 /api；SSE 不缓冲，代理读超时须长于心跳间隔。具体交互和同步边界见[前端说明](../../frontend/README.md)。可选百炼默认关闭，当前 app Compose 未显式透传识别环境变量；启用方式和数据授权见[订单识别配置](../../WuhouCake-order/README.md#百炼配置)。
 
 ## 4. 环境变量
 
