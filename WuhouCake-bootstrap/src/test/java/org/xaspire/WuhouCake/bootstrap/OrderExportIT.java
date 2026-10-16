@@ -341,6 +341,84 @@ class OrderExportIT {
             assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
         } finally { jdbc.execute("DROP FUNCTION reject_image_commit() CASCADE"); }
     }
+    @Test void exactDateAndOrderLimitsExportEveryOrderWithoutTruncation() throws Exception {
+        var staff = staff(); var expected = new ArrayList<String>();
+        expected.add(filename(data(staff.request("POST", "/api/orders", create("2026-10-01")))));
+        for (int i = 1; i < 100; i++) expected.add(filename(data(staff.request("POST", "/api/orders", create("2026-11-11")))));
+        staff.request("POST", "/api/orders", create("2026-11-12"));
+        changes.events.clear(); var before = temporaryFiles();
+        var exact = Map.of("from", "2026-10-01", "to", "2026-11-12");
+        var names = entries(staff.request("POST", "/api/orders/exports/zip", exact));
+        assertEquals(100, names.size()); assertEquals(new HashSet<>(expected), new HashSet<>(names));
+        assertEquals(100, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
+        var longRange = staff.request("POST", "/api/orders/exports/zip", Map.of("from", "2026-10-01", "to", "2026-11-13"));
+        assertEquals(400, longRange.statusCode()); assertEquals("EXPORT_LIMIT_EXCEEDED", body(longRange).path("code").asText());
+        staff.request("POST", "/api/orders", create("2026-11-11")); changes.events.clear();
+        var tooMany = staff.request("POST", "/api/orders/exports/zip", exact);
+        assertEquals(400, tooMany.statusCode()); assertEquals("EXPORT_LIMIT_EXCEEDED", body(tooMany).path("code").asText());
+        assertEquals(100, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
+    }
+    @Test void malformedExportFiltersReturnValidationErrorsWithoutFilesOrHistory() throws Exception {
+        var staff = staff(); var before = temporaryFiles();
+        for (var filters : List.of(Map.of("from", "2026-02-30", "to", "2026-03-01"),
+                Map.of("from", "not-a-date", "to", "2026-11-01"),
+                Map.of("from", "2026-11-01", "to", "2026-10-01"),
+                Map.of("from", "2026-10-01", "to", "2026-10-01"),
+                Map.of("from", "2026-10-01", "to", "2026-11-01", "status", "UNKNOWN"),
+                Map.of("from", "2026-10-01", "to", "2026-11-01", "fulfillmentType", "UNKNOWN"),
+                Map.of("from", "2026-10-01", "to", "2026-11-01", "paymentStatus", "UNKNOWN"))) {
+            var response = staff.request("POST", "/api/orders/exports/zip", filters);
+            assertEquals(400, response.statusCode(), filters + ": " + text(response));
+            assertEquals("VALIDATION_FAILED", body(response).path("code").asText());
+        }
+        assertEquals(0, exportCount()); assertEquals(before, temporaryFiles());
+    }
+    @Test void deferredProductionCommitFailureRollsBackOrderItemsHistoryAndNotification() throws Exception {
+        var staff = staff(); var original = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String id = original.path("orderId").asText(); changes.events.clear();
+        jdbc.execute("CREATE FUNCTION reject_production_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN"
+                + " IF NEW.type='ORDER_PRODUCTION_CHANGED' THEN RAISE EXCEPTION 'test deferred commit failure' USING ERRCODE='23514'; END IF; RETURN NULL; END; $$");
+        jdbc.execute("CREATE CONSTRAINT TRIGGER reject_production_commit AFTER INSERT ON cake_order_activity DEFERRABLE INITIALLY DEFERRED"
+                + " FOR EACH ROW EXECUTE FUNCTION reject_production_commit()");
+        try {
+            var response = staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "START_PRODUCTION"));
+            assertEquals(503, response.statusCode(), text(response));
+            assertEquals(original, data(staff.request("GET", "/api/orders/" + id, null)));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Integer.class, id));
+            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND production_status<>'NOT_STARTED'", Integer.class, id));
+            assertTrue(changes.events.isEmpty());
+        } finally { jdbc.execute("DROP FUNCTION reject_production_commit() CASCADE"); }
+        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "START_PRODUCTION")).statusCode());
+        assertEquals(1, changes.events.size());
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void revokedEmployeeStreamMustStopReceivingOrderEvents(boolean archive) throws Exception {
+        var staff = staff(); var admin = new Client(); admin.login("0001", PASSWORD);
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var response = staff.client.send(staff.builder("/api/orders/stream", false).GET().build(), HttpResponse.BodyHandlers.ofInputStream());
+        assertEquals(200, response.statusCode());
+        try (var input = response.body(); var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            assertTrue(streamFrame(reader).contains("event:ready"));
+            var revoked = admin.request("POST", "/api/admin/employees/" + staff.accountId + (archive ? "/archive" : "/reset-password"), null);
+            assertEquals(200, revoked.statusCode(), text(revoked));
+            assertEquals(401, staff.request("GET", "/api/me", null).statusCode());
+            assertEquals(401, staff.request("POST", "/api/auth/refresh", null).statusCode());
+            assertEquals(201, admin.request("POST", "/api/orders/" + order.path("orderId").asText() + "/notes", Map.of("content", "撤销后事件")).statusCode());
+            var next = CompletableFuture.supplyAsync(() -> {
+                try { return streamFrame(reader); } catch (IOException failure) { return null; }
+            });
+            try { assertNull(next.get(5, TimeUnit.SECONDS), "Revoked employee must not receive order events from an existing SSE connection"); }
+            finally { next.cancel(true); }
+        }
+    }
+    private static String streamFrame(BufferedReader reader) throws IOException {
+        var frame = new StringBuilder();
+        for (String line; (line = reader.readLine()) != null;) {
+            if (line.isEmpty()) { if (!frame.isEmpty()) return frame.toString(); }
+            else frame.append(line).append('\n');
+        }
+        return frame.isEmpty() ? null : frame.toString();
+    }
     private int exportCount() { return jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_EXPORTED'", Integer.class); }
     private List<String> entries(HttpResponse<byte[]> response) throws Exception {
         assertEquals(200, response.statusCode(), text(response)); var result = new ArrayList<String>();
