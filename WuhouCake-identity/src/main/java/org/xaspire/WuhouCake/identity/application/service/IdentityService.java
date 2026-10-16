@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -39,15 +40,17 @@ public class IdentityService implements IdentityFacade {
     private final Clock clock;
     private final Duration accessLifetime;
     private final Duration sessionLifetime;
+    private final ApplicationEventPublisher events;
     private final String dummyHash;
     private final AtomicLong auditFailures = new AtomicLong();
 
     public IdentityService(Accounts accounts, Credentials credentials, Sessions sessions, Attempts attempts,
             AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock,
-            Duration accessLifetime, Duration sessionLifetime) {
+            Duration accessLifetime, Duration sessionLifetime, ApplicationEventPublisher events) {
         this.accounts = accounts; this.credentials = credentials; this.sessions = sessions; this.attempts = attempts;
         this.tokens = tokens; this.actors = actors; this.audit = audit; this.ids = ids; this.clock = clock;
         this.accessLifetime = accessLifetime; this.sessionLifetime = sessionLifetime;
+        this.events = events;
         this.dummyHash = credentials.encode(credentials.temporaryPassword());
     }
     @Override public Login login(String number, String password, String requestId) {
@@ -121,7 +124,9 @@ public class IdentityService implements IdentityFacade {
                 || currentPassword.codePointCount(0, currentPassword.length()) > 128
                 || !credentials.matches(currentPassword, account.passwordHash())) throw new IdentityFailure("AUTHENTICATION_FAILED");
         if (credentials.matches(newPassword, account.passwordHash())) throw new IdentityFailure("PASSWORD_REUSE_FORBIDDEN");
-        accounts.update(account.replacePassword(credentials.encode(newPassword), false, clock.instant()));
+        var changed = account.replacePassword(credentials.encode(newPassword), false, clock.instant());
+        accounts.update(changed);
+        events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
         afterCommit("identity.password_changed", account, account.id());
     }
     @Override @Transactional
@@ -157,6 +162,7 @@ public class IdentityService implements IdentityFacade {
         String password = credentials.temporaryPassword();
         var changed = account.replacePassword(credentials.encode(password), true, clock.instant());
         accounts.update(changed);
+        events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
         afterCommit("identity.password_reset", actor, id);
         return new Provisioned(view(changed), password);
     }
@@ -168,6 +174,7 @@ public class IdentityService implements IdentityFacade {
         var changed = account.archive(actor.id(), accounts.activeAdministrators(), clock.instant());
         if (changed != account) {
             accounts.update(changed);
+            events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
             afterCommit("identity.account_archived", actor, id);
         }
         return view(changed);
@@ -192,6 +199,7 @@ public class IdentityService implements IdentityFacade {
         String password = credentials.temporaryPassword();
         var changed = account.replacePassword(credentials.encode(password), true, clock.instant());
         accounts.update(changed);
+        events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
         afterCommit("identity.admin_recovered", null, account.id());
         return new Provisioned(view(changed), password);
     }

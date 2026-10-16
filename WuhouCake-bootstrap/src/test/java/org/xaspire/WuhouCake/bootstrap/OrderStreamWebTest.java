@@ -97,6 +97,11 @@ class OrderStreamWebTest {
                 .claim("sid", sessionId.toString()).claim("ver", 0L).issuedAt(now.minusSeconds(60)).expiresAt(now.minusSeconds(1)).build());
         mvc.perform(get("/api/orders/stream").header("Authorization", "Bearer valid")).andExpect(status().isUnauthorized()).andExpect(request().asyncNotStarted());
     }
+    @Test void sessionRevokedAfterTheSecurityFilterCannotOpenAStream() throws Exception {
+        when(identity.authenticate(accountId, sessionId, 0)).thenReturn(account(false)).thenThrow(new IllegalStateException("revoked session"));
+        mvc.perform(get("/api/orders/stream").header("Authorization", "Bearer valid"))
+                .andExpect(status().isUnauthorized()).andExpect(request().asyncNotStarted());
+    }
     @Test void statusEndpointsAuthenticateValidateAndUseServerOperator() throws Exception {
         var id = UUID.randomUUID(); String fulfillment = "/api/orders/" + id + "/fulfillment-actions", cancel = "/api/orders/" + id + "/cancel";
         mvc.perform(post(fulfillment).contentType("application/json").content("{\"expectedVersion\":5,\"action\":\"START_DELIVERY\"}")).andExpect(status().isUnauthorized());

@@ -11,6 +11,8 @@ public interface IdentityFacade {
             Instant createdAt, Instant archivedAt) { }
     record Create(String employeeNumber, String nickname, Set<String> jobRoles, String systemRole) { }
     record Search(String employeeNumber, String nickname, String status, String jobRole, int page, int size) { }
+    /** Invalidates older credential versions only after the publishing transaction commits. */
+    record CredentialsRevoked(UUID accountId, long credentialVersion) { }
     record Provisioned(AccountView account, String temporaryPassword) {
         @Override public String toString() { return "Provisioned[accountId=" + account.accountId() + "]"; }
     }

@@ -394,22 +394,54 @@ class OrderExportIT {
     @ParameterizedTest @ValueSource(booleans = {false, true})
     void revokedEmployeeStreamMustStopReceivingOrderEvents(boolean archive) throws Exception {
         var staff = staff(); var admin = new Client(); admin.login("0001", PASSWORD);
+        var second = new Client(); second.login("0002", PASSWORD);
         var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
-        var response = staff.client.send(staff.builder("/api/orders/stream", false).GET().build(), HttpResponse.BodyHandlers.ofInputStream());
-        assertEquals(200, response.statusCode());
-        try (var input = response.body(); var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-            assertTrue(streamFrame(reader).contains("event:ready"));
+        try (var input = stream(staff); var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
+                var peerInput = stream(second); var peer = new BufferedReader(new InputStreamReader(peerInput, StandardCharsets.UTF_8));
+                var adminInput = stream(admin); var healthy = new BufferedReader(new InputStreamReader(adminInput, StandardCharsets.UTF_8))) {
+            for (var connection : List.of(reader, peer, healthy)) assertTrue(nextStreamFrame(connection).contains("event:ready"));
             var revoked = admin.request("POST", "/api/admin/employees/" + staff.accountId + (archive ? "/archive" : "/reset-password"), null);
             assertEquals(200, revoked.statusCode(), text(revoked));
             assertEquals(401, staff.request("GET", "/api/me", null).statusCode());
             assertEquals(401, staff.request("POST", "/api/auth/refresh", null).statusCode());
+            assertNull(nextStreamFrame(reader), "Revoked stream must close without waiting for another order event");
+            assertNull(nextStreamFrame(peer), "Every old session for the revoked employee must close");
             assertEquals(201, admin.request("POST", "/api/orders/" + order.path("orderId").asText() + "/notes", Map.of("content", "撤销后事件")).statusCode());
-            var next = CompletableFuture.supplyAsync(() -> {
-                try { return streamFrame(reader); } catch (IOException failure) { return null; }
-            });
-            try { assertNull(next.get(5, TimeUnit.SECONDS), "Revoked employee must not receive order events from an existing SSE connection"); }
-            finally { next.cancel(true); }
+            var event = nextStreamFrame(healthy); assertNotNull(event);
+            assertTrue(event.contains("event:order.changed") && event.contains(order.path("orderId").asText()), event);
         }
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void failedRevocationCommitKeepsTheOriginalSessionAndStream(boolean archive) throws Exception {
+        var staff = staff(); var admin = new Client(); admin.login("0001", PASSWORD);
+        var original = data(staff.request("GET", "/api/me", null));
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var auditCount = jdbc.queryForObject("SELECT count(*) FROM audit_operation", Long.class);
+        jdbc.execute("CREATE FUNCTION reject_credentials_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN"
+                + " IF NEW.credential_version<>OLD.credential_version THEN RAISE EXCEPTION 'test credential commit failure' USING ERRCODE='23514'; END IF; RETURN NULL; END; $$");
+        jdbc.execute("CREATE CONSTRAINT TRIGGER reject_credentials_commit AFTER UPDATE ON identity_account DEFERRABLE INITIALLY DEFERRED"
+                + " FOR EACH ROW EXECUTE FUNCTION reject_credentials_commit()");
+        try (var input = stream(staff); var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            assertTrue(nextStreamFrame(reader).contains("event:ready"));
+            var rejected = admin.request("POST", "/api/admin/employees/" + staff.accountId + (archive ? "/archive" : "/reset-password"), null);
+            assertEquals(503, rejected.statusCode(), text(rejected));
+            assertEquals(original, data(staff.request("GET", "/api/me", null)));
+            assertEquals(auditCount, jdbc.queryForObject("SELECT count(*) FROM audit_operation", Long.class));
+            assertEquals(201, admin.request("POST", "/api/orders/" + order.path("orderId").asText() + "/notes", Map.of("content", "撤销回滚后事件")).statusCode());
+            var event = nextStreamFrame(reader); assertNotNull(event); assertTrue(event.contains("event:order.changed"), event);
+            assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Integer.class));
+        } finally { jdbc.execute("DROP FUNCTION reject_credentials_commit() CASCADE"); }
+    }
+    private InputStream stream(Client client) throws Exception {
+        var response = client.client.send(client.builder("/api/orders/stream", false).GET().build(), HttpResponse.BodyHandlers.ofInputStream());
+        assertEquals(200, response.statusCode()); return response.body();
+    }
+    private static String nextStreamFrame(BufferedReader reader) throws Exception {
+        var next = CompletableFuture.supplyAsync(() -> {
+            try { return streamFrame(reader); } catch (IOException failure) { return null; }
+        });
+        try { return next.get(5, TimeUnit.SECONDS); }
+        finally { next.cancel(true); }
     }
     private static String streamFrame(BufferedReader reader) throws IOException {
         var frame = new StringBuilder();

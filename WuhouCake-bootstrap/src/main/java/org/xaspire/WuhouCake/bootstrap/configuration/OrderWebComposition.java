@@ -10,6 +10,7 @@ import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.application.service.OrderQueryService;
 import org.xaspire.WuhouCake.order.application.service.OrderImageService;
 import org.xaspire.WuhouCake.order.application.service.OrderExportService;
+import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -30,5 +31,5 @@ public class OrderWebComposition {
             @Qualifier("orderStreamSender") ExecutorService sender) {
         return new OrderStreams(clock, scheduler, sender);
     }
-    @Bean OrderStreamController orderStreamController(OrderStreams streams) { return new OrderStreamController(streams); }
+    @Bean OrderStreamController orderStreamController(OrderStreams streams, IdentityFacade identity) { return new OrderStreamController(streams, identity); }
 }

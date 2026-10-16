@@ -28,6 +28,7 @@ import org.xaspire.WuhouCake.order.domain.model.aggregate.Order;
 import org.xaspire.WuhouCake.order.domain.model.entity.OrderItem;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 import org.xaspire.WuhouCake.order.domain.repository.*;
+import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.CredentialsRevoked;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -42,6 +43,7 @@ class OrderStreamTransactionsTest {
     private final OrderCommands.Operator operator = new OrderCommands.Operator(UUID.randomUUID(), "员工");
     private DataSourceTransactionManager manager;
     private Order order;
+    private final UUID subscriber = UUID.randomUUID();
 
     @Configuration(proxyBeanMethods = false) @EnableTransactionManagement
     static class Transactions { }
@@ -58,7 +60,7 @@ class OrderStreamTransactionsTest {
         context.registerBean(PlatformTransactionManager.class, () -> manager);
         context.registerBean(OrderStreams.class, () -> streams);
         context.registerBean(OrderService.class, () -> new OrderService(orders, activities, UUID::randomUUID, clock, context));
-        context.refresh(); streams.subscribe(NOW.plusSeconds(60));
+        context.refresh(); streams.subscribe(subscriber, 0, NOW.plusSeconds(60), () -> true);
         order = Order.create(UUID.randomUUID(), "0000001", new CustomerContact(null, "13800000000", null, null),
                 new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
                 null, List.of(OrderItem.create(UUID.randomUUID(), "蛋糕", null, 1, null, null, Map.of(), NOW)), operator.accountId(), NOW);
@@ -86,6 +88,24 @@ class OrderStreamTransactionsTest {
         doThrow(new SQLException("commit failed")).when(connection).commit();
         assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event())));
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @Test void credentialRevocationClosesOnlyAfterCommit() throws Exception {
+        context.publishEvent(new CredentialsRevoked(subscriber, 1)); verify(emitter, never()).complete();
+        new TransactionTemplate(manager).executeWithoutResult(status -> {
+            context.publishEvent(new CredentialsRevoked(subscriber, 1)); verify(emitter, never()).complete();
+        });
+        verify(connection).commit(); verify(emitter).complete();
+        new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event()));
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @Test void credentialRevocationRollbackAndCommitFailureKeepTheConnectionOpen() throws Exception {
+        new TransactionTemplate(manager).executeWithoutResult(status -> { context.publishEvent(new CredentialsRevoked(subscriber, 1)); status.setRollbackOnly(); });
+        doThrow(new SQLException("commit failed")).when(connection).commit();
+        assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(new CredentialsRevoked(subscriber, 1))));
+        verify(emitter, never()).complete();
+        doNothing().when(connection).commit();
+        new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event()));
+        verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
     }
     @Test void serviceNoteCommitsAndNotifiesDespiteUnchangedVersion() throws Exception {
         var itemId = order.activeItems().getFirst().itemId();
