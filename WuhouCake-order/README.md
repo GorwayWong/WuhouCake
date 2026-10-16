@@ -2,6 +2,46 @@
 
 订单模块提供多商品正式订单、资料更正、商品增减与修改、整单制作、配送或自提交接、完成、人工取消、付款状态纠正、独立备注、业务历史、日历与当日工作台查询、提交后的 SSE 通知、参考图片及 Excel 导出。Bootstrap 显式装配，application 服务管理事务。员工使用现有登录流程取得 Bearer token，且须先完成初始密码修改。
 
+## 可选文本识别
+
+识别是非持久化辅助查询，保留现有 Order 聚合和正式创建接口。规则解析使用 Java 标准库；语义补充使用现有 Spring RestClient、JDK HTTP 客户端和 Jackson，无新增 Maven/npm 依赖、数据库表或基础服务。候选字段独立失败，不要求整单完整。
+
+| 接口 | 请求与返回 |
+| --- | --- |
+| POST /api/orders/recognition/parse | 请求 text；返回字段、商品候选、问题、未映射文字、允许补充的片段及 assistAvailable，绝不调用模型 |
+| POST /api/orders/recognition/assist | 请求 text、allowExternalProcessing=true；服务端重新解析，仅发送符合白名单的片段，返回 status、suggestions、issues |
+
+两接口沿用员工认证和首次改密限制，响应 Cache-Control: no-store；不创建订单、不写活动、不修改版本、不持久化原文，也不广播 SSE。空白、超 12,000 字符返回 400。外部服务降级以 200 内的明确 status 和 issues 表达；不隐藏程序缺陷。
+
+RecognitionDraft.fields 为客户、交付和约定总额的扁平映射；items 含稳定的本次候选 id 和规格映射。每个 Field 包含 value（字符串或 null）、source（RULE/MODEL/DEFAULT，缺失为 null）、evidence、needsReview 和 issues。规范化日期、电话、尺寸和金额仍属于 RULE，原文证据保留；金额候选使用整数分的十进制文本，前端按原金额方法转换为正式请求整数，不把空值转为零。正式订单的完整业务约束仍由原接口执行。
+
+RULE 支持明确年份日期、明确时刻、手机号/座机、正整数数量、尺寸和两位小数金额；明确总额、单价和会员价分别映射。电话不会推断会员，微信下单不会推断配送，支付方式不会确认付款；通用「价格」不猜归属。仅有日期不产生时刻。重复矛盾值留空待核对，单字段错误不影响其他字段。编号商品分别归属；最多 20 个商品块，超限告知且不将额外块混入最后一个商品。明确须知边界之后的内容不参与取值；无法可靠分段的自由文字人工处理。
+
+CAKE 默认内胚原味、夹馅芒果，统一读取 order/cake-defaults.json，前端直接导入同一资源；修改此资源须重新构建前后端。DEFAULT 与原文明示分开，显式选择优先；含未理解商品语义时默认值也要求核对。旧模板「口味（默认原味夹芒果）」的明确选项作为夹馅，只有明确奶油描述才写 attributes.flavor，base 与 filling 独立。
+
+### 百炼配置与故障隔离
+
+默认关闭，默认模型 qwen3.7-flash。按已选的华北2（北京）工作空间控制台取得 API Host 和该地域密钥；各地域密钥不通用。以下仅为服务器环境变量示例，不是自动启用授权：
+
+~~~sh
+RECOGNITION_ASSIST_ENABLED=false
+RECOGNITION_ASSIST_BASE_URL=https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+RECOGNITION_ASSIST_MODEL=qwen3.7-flash
+RECOGNITION_ASSIST_TIMEOUT_MILLIS=8000
+RECOGNITION_ASSIST_MAX_CONCURRENT=2
+# DASHSCOPE_API_KEY 通过服务端密钥管理注入，不放前端、仓库或命令历史
+~~~
+
+缺密钥、入口或非法配置会禁用补充，规则解析和手工创建继续工作。生产入口要求 HTTPS，HTTP 仅允许本机故障测试。连接最长 2 秒、总请求超时默认 8 秒（配置范围 1–60,000 毫秒），并发默认 2（1–8），满额立即降级；不排队、不自动重试、不跟随重定向。片段每条最多 2,000 字符、合计最多 4,000；响应最多 64 KiB、模型输出最多 2,048 token。
+
+固定结构见 order/recognition-assist-schema.json。请求使用 strict json_schema；现有 Jackson 按固定 Schema 的 object/array/string、required、additionalProperties、enum 和长度/数量约束校验。仅支持该小型 Schema 子集，启动时拒绝未实现的关键字；不支持远程引用，不是通用 JSON Schema 引擎。错误建议逐条丢弃，正确建议可保留；重复冲突、错误商品归属、非片段原文证据、未获准字段和规则冲突均不接受。MODEL 总为待确认，不能覆盖已确认 RULE。429、网络超时、非法/重复键 JSON、截断输出及无效结构均有明确降级结果。
+
+仅发送员工看到并同意的商品片段、候选 itemId 和固定约束；不重复发送已解析姓名、电话、地址。片段仍可能含个人信息，须人工核对。原文、模型正文和密钥不写生产调试日志或业务数据库。真实客户信息外发须先取得明确授权并核对供应商协议。供应商说明不用于模型训练，但仍可能按法律和服务协议存储调用数据；不承诺零保留，也不套用其他供应商的 store:false。
+
+2026-10-16 文档核对：北京 qwen3.7-flash 在不超过 32K 输入档，输入约 ¥0.2/百万 token、输出约 ¥0.8/百万 token；2,000 输入 + 1,000 输出约 ¥0.0012/次，实际账单取决于 token、价格和工作空间。后续已使用合成数据完成 5 次真实北京调用，确认地域入口、权限及固定结构可用；收紧字段映射提示词和空泛建议校验后，一次三个商品综合复测通过。具体结果及局限见[真实接口报告](../docs/verification/2026-10-16-bailian-live.md)，实际 token 与账单未核查。标准店内预定单直接由规则识别，模型保持默认关闭。
+
+参考：通过 Context7 核对 [Spring RestClient](https://docs.spring.io/spring-framework/reference/6.2/integration/rest-clients.html) 和 React 迟到响应清理；百炼以官方 [结构化输出](https://help.aliyun.com/zh/model-studio/qwen-structured-output)、[北京接入](https://help.aliyun.com/zh/model-studio/beijing-access-information)、[价格](https://help.aliyun.com/zh/model-studio/model-pricing)、[数据保留说明](https://help.aliyun.com/zh/model-studio/faq-about-alibaba-cloud-model-studio) 为准。代表性回归和实际证据见 [前端验证记录](../frontend/verification.md#客户订单信息识别与稳健性验证)。
+
 ## HTTP 接口
 
 REST 响应使用 `ApiResponse`。创建订单、追加商品、追加备注和上传图片返回 201，其他查询和修改返回 200。SSE、图片内容与导出下载直接返回对应内容，不套用 `ApiResponse`；失败仍返回标准 JSON 错误。

@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["suggestions"],
+  "properties": {
+    "suggestions": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["itemId", "field", "value", "evidence"],
+        "properties": {
+          "itemId": {"type": "string", "minLength": 1, "maxLength": 32},
+          "field": {"type": "string", "enum": ["name", "flavor", "base", "filling", "requirements", "message"]},
+          "value": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "evidence": {"type": "string", "minLength": 1, "maxLength": 2000}
+        }
+      }
+    }
+  }
+}

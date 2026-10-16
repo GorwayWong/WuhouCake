@@ -1,5 +1,79 @@
 # C2-A 验证记录
 
+## 客户订单信息识别与稳健性验证
+
+验证日期：2026-10-16；Git HEAD：5702a1aaa940f4a4ad87911dbc631ffdd594dad3，分支 codex/c2-c1a-order-images。以下为未提交工作区实现；先前核心 UAT 的测试及报告保留，未合并、推送或部署。
+
+### 环境与证据
+
+使用专用 PostgreSQL 17（127.0.0.1:15433，wuhou_recognition_20261016）、Redis 7（16380，recognition-20261016 命名空间）、后端 18087、Vite 5187。原有开发数据库与 Redis 未写入。Maven 3.9.16、JDK 25.0.4（编译目标 Java 21）、Node 24.19.0、独立 Chrome 会话 A/B；合成管理员 RECD001，员工 RECA001、RECB001。没有发送用户提供的真实电话、地址或聊天内容；模板回归使用 13800000012 和合成地址。
+
+临时证据位于 /private/tmp/wuhou-recognition-20261016：browser-basic.json、browser-faults.json、browser-final.json、model-stage.json、recognition-mobile-final.png、测试 XML 和运行日志；synthetic-final.dump 已通过 pg_restore --list 可读性检查。此目录不是长期 CI 制品。验收后已关闭专用服务、容器及 Chrome，删除临时密钥、凭证和浏览器配置；原有开发 PostgreSQL/Redis 仍运行。证据不提交仓库。持久可复现的合成样例与回归位于：
+
+- [27 个脱敏样例](../WuhouCake-order/src/test/resources/recognition-cases.json)，含 154 项预期字段值断言，另检查来源、核对标记和商品数量。主验收包含店内完整多行预定单及一行复制格式，使用常见夹馅；异常文字用于故障隔离。
+- [规则回归](../WuhouCake-order/src/test/java/org/xaspire/WuhouCake/order/domain/service/OrderRecognitionTest.java)、[应用服务回归](../WuhouCake-order/src/test/java/org/xaspire/WuhouCake/order/application/service/OrderRecognitionServiceTest.java)、[本地 HTTP 模型故障回归](../WuhouCake-order/src/test/java/org/xaspire/WuhouCake/order/infrastructure/client/BailianRecognitionAssistantTest.java)。
+- [真实 HTTP/数据库集成](../WuhouCake-bootstrap/src/test/java/org/xaspire/WuhouCake/bootstrap/OrderIT.java) 的 recognitionIsPartialAuthenticatedAndHasNoOrderSideEffects，以及 [前端规则、草稿与生命周期测试](tests/recognition.test.ts)。
+
+### 测试矩阵
+
+| ID | 预期 | 实际结果与证据 | 状态 |
+| --- | --- | --- | --- |
+| R01 | 标准、换序、内联模板识别明确字段 | 27 样例全部通过；提供模板的完整多行版本另外经真实本地 HTTP 核对全部 21 个字段，不需要模型。日期、电话、会员电话、地址、尺寸、夹馅准确；名称、数量、奶油、金额、交接时刻留空 | PASS |
+| R02 | 说明文字不污染本单 | 须知中的促销价格、配送门槛、电话号码、尺寸范围和可选口味不写入候选；订购需知和订购须知均覆盖 | PASS |
+| R03 | 奶油、内胚、夹馅独立 | 明确奶油才写 flavor；旧口味模板写夹馅；原味/芒果标 DEFAULT，显式夹馅优先，杯子蛋糕/甜甜圈无蛋糕默认 | PASS |
+| R04 | 多商品及字段独立失败 | 两蛋糕、蛋糕加杯子蛋糕各自保留规格；错误日期/金额/数量不丢弃其他有效字段；第 21 个商品不串入第 20 个 | PASS |
+| R05 | 缺失、冲突不补造 | 无年份、无时刻、多电话、重复矛盾值待核对；缺失日期清空未手改初始日期，手改日期保留；未知商品类型须手填 | PASS |
+| R06 | 识别无订单副作用 | 未认证 401、空白/超长 400；识别及禁用模型后订单、商品、活动计数不变，版本/付款不变，无 order.changed | PASS |
+| R07 | 一个按钮、人工补齐、正常创建 | 浏览器真实识别并填 8 个字段；补齐后实际 201，仅一张订单，UNPAID、version 0，数据库规格与表单一致 | PASS |
+| R08 | 不覆盖手工，支持撤销 | 浏览器重复识别保留手改电话且不增加商品；撤销保留后来手改值；回归覆盖显式清空、商品移除与既有商品归属 | PASS |
+| R09 | 模型超时/限流/错误结构降级 | 本地 JDK HTTP 服务确定性超时、并发满额、400/429/500、非法 JSON、错误结构和尾随内容；每次一次调用，正确规则结果保留 | PASS |
+| R10 | 模型不覆盖规则、建议逐条核验 | 错误归属、伪造证据、规则冲突、重复矛盾建议拒绝；一条非法结构不丢弃另一条有效建议；MODEL 始终待确认 | PASS |
+| R11 | 迟到响应隔离 | 浏览器拦住真实规则成功响应再倒序释放，两轮互不污染；A 退出后 B 登录，旧成功响应不填 B 草稿、不清登录；旧 401 另有既有 API 回归 | PASS |
+| R12 | 模型期间手工编辑保留 | 本地模型持有响应时修改主表单和候选，释放后均保留；发送仅为 item-1/奶油用动物的，不含已解析客户信息 | PASS |
+| R13 | 全部识别服务故障仍可录单 | 浏览器注入识别 503 后手工创建成功；创建 503 结果未知不自动重试，草稿及提示保留，员工明确再点才发送下一次 | PASS |
+| R14 | 正式业务校验不绕过 | 浏览器将实际创建请求的数量故障注入为 0，后端 400、数据库无订单，草稿保留；修正后仍由原创建接口成功 | PASS |
+| R15 | 现有付款、整单制作、SSE 不回归 | 两独立会话实际付款与开始制作，另一会话状态同步；最终第二单 PAID、PROCESSING、version 2，2 张订单/2 商品/4 活动 | PASS |
+| R16 | 手机、超长文本及日期最终版本 | 390×844 无横向溢出；12001 字符完整保留并禁用识别，手工创建入口可用；最终模板、日期和未知类型浏览器复核见 browser-final.json | PASS |
+| R17 | 北京百炼真实协议与模型效果 | 累计 5 次真实合成调用。初始奶油/内胚语义失败已收紧提示词与空泛建议校验，最后一次三个商品综合复测准确，规则冲突拦截通过；MODEL 均待确认。详见真实接口报告 | PASS：有限合成复测 |
+| R18 | JDK 21、生产 HTTPS/代理与真实手机下载环境 | 本次为 JDK 25.0.4、桌面 Chrome 移动视口；未重做真实设备及部署环境检查 | NOT RUN |
+
+规定样例的 154 项字段预期无静默误填；不据此宣称真实聊天文本误填率为零。此次未建立真实客户语料集或人工计时实验，遗漏率与人工修正耗时尚未量化。用户提供的完整模板以脱敏版本实测，仅使用规则解析；订购需知不参与本单取值，未发生真实客户信息外发。
+
+### 自动检查命令与结果
+
+在仓库根目录配置上述隔离 PostgreSQL/Redis 后执行：
+
+~~~sh
+rtk proxy ./mvnw -Pintegration -pl WuhouCake-bootstrap -am -Dit.test=OrderIT -Dfailsafe.failIfNoSpecifiedTests=false verify -q
+cd frontend
+rtk proxy npm test
+rtk proxy npm run build
+~~~
+
+最终后端常规测试 228 项通过（规则识别 31、应用服务 6、模型 HTTP/故障 14；包含现有 ArchUnit）；OrderIT 27 项通过；前端 39 项通过，TypeScript/Vite 构建通过。真实联调后的生产变更仅涉及模型提示词及候选值校验，已重跑相关后端检查；前端未再次修改。无新增测试框架或外部依赖。
+
+较早在同一变更上执行完整基础设施集成：
+
+~~~sh
+rtk proxy ./mvnw -Pintegration -pl WuhouCake-bootstrap -am -Dit.test=OrderIT,OrderExportIT,IdentityIT,InfrastructureIT -Dfailsafe.failIfNoSpecifiedTests=false verify -q
+~~~
+
+共 64 项，62 通过、2 失败。失败均是先前核心审计保留的 revokedEmployeeStreamMustStopReceivingOrderEvents：重置密码或归档后，已建立 SSE 流仍收消息直到连接过期。最后一轮只重跑相关 OrderIT，不能据此把整个集成套件描述为全绿。详见 [核心 UAT 报告](../docs/verification/2026-10-16-core-uat.md)。
+
+浏览器使用现有 agent-browser，经 CDP 19351/19352 连接两个独立临时 Chrome 配置；每一步等待字段、响应闩锁、页面或数据库状态，不以固定等待判定通过。临时驱动命令为 rtk proxy node /private/tmp/wuhou-recognition-20261016/browser-basic.mjs、browser-faults.mjs、browser-final.mjs；它们依赖本次合成环境，不作为新维护框架。
+
+### 缺陷、能力与剩余风险
+
+本轮浏览器发现并修复一项 P1：首次识别→撤销→再次识别时，对象键顺序不同被误判为员工修改，导致明确夹馅未覆盖系统默认。根因是 pristineItem 用 JSON 字符串比较规格；改为逐字段语义比较，并添加最小重复识别/撤销回归。修复后数据库实测夹馅为芒果、脆啵啵、奥利奥，无新增待修复识别阻塞缺陷。
+
+已实现：规则候选、独立字段问题、来源与证据、单按钮填充、逐项冲突确认、撤销、共享默认值、有限可选模型补充及故障隔离。未实现：OCR、地址智能地理校验、相对/无年份日期推断、任意聊天多商品归属推断、模型自动创建；这些为明确范围边界，不是已有功能回归失败。
+
+降级人工：格式错误、重复矛盾、数量/名称/时刻缺失、未知商品类型、无可靠标签或商品归属、疑似指令、模型不确定/服务不可用。保留原文与有效候选，继续现有创建校验。默认和规则来源见 [订单模块说明](../WuhouCake-order/README.md#可选文本识别)；模型建议不自动保存。
+
+维护成本：有限标签映射、27 个合成样例、共享默认 JSON、一个固定 Schema 子集及小型 RestClient 适配器；Schema 新关键字须补验证实现和测试。没有新依赖。第三方仍有费用、数据保留和文本中残余个人信息风险；默认关闭且逐次同意，未做真实客户外发。
+
+本次识别能力结论：CONDITIONAL GO，可在规则模式进行受控合成员工试用；标准店内模板不需要模型。后续北京真实联调已修正初次语义问题并通过一次综合复测，测试后模型继续关闭，效果边界见[真实接口报告](../docs/verification/2026-10-16-bailian-live.md)。系统整体员工试用仍沿用核心审计 NO-GO：SSE 会话撤销 P1 尚未修复；本次未改动该生产机制。部署环境、真实设备和真实语料评测继续列为未验证风险。
+
 验证日期：2026-10-13。基线：`63bed20ce7a3c3ffd1b01ec7aebb024bd15a86d8`。
 
 使用本机 PostgreSQL/Redis，创建独立数据库 `wuhou_c2a_verify` 和 Redis namespace `c2a-verify`，后端端口 18080，Vite 端口 5173。测试员工、客户和订单均为合成数据；测试密钥及凭证仅位于系统临时目录，不写入仓库。没有修改原有数据库中的订单。

@@ -974,6 +974,32 @@ class OrderIT {
         assertEquals(200, result.status, result.body.toString()); return result.body.path("data");
     }
 
+    @Test void recognitionIsPartialAuthenticatedAndHasNoOrderSideEffects() throws Exception {
+        var staff = staff(); var original = staff.request("POST", "/api/orders", create()).body.path("data");
+        String id = original.path("orderId").asText();
+        String text = "【蛋糕预定单】 收货时间：2026.9.30 尺寸：8寸 口味（默认原味夹芒果）：芒果，脆啵啵，奥利奥 电话：13800000012 地址：合成地址 价格（客服填）： 会员手机号：13800000012 【订购需知】：满58免运费，4寸-6寸配5人份，夹层可以换草莓";
+        try (var stream = staff.stream()) {
+            clearInvocations(orders, activities);
+            assertEquals(401, new Client().request("POST", "/api/orders/recognition/parse", Map.of("text", text)).status);
+            var result = staff.request("POST", "/api/orders/recognition/parse", Map.of("text", text));
+            assertEquals(200, result.status, result.body.toString());
+            assertEquals("2026-09-30", result.body.at("/data/fields/requestedReceiveDate/value").asText());
+            assertTrue(result.body.at("/data/fields/plannedHandoffAt/value").isNull());
+            assertEquals("芒果、脆啵啵、奥利奥", result.body.at("/data/items/0/fields/filling/value").asText());
+            assertTrue(result.body.at("/data/items/0/fields/name/value").isNull());
+            assertTrue(result.body.at("/data/items/0/fields/quantity/value").isNull());
+            assertEquals(400, staff.request("POST", "/api/orders/recognition/parse", Map.of("text", "字".repeat(12001))).status);
+            assertEquals(400, staff.request("POST", "/api/orders/recognition/parse", Map.of("text", " ")).status);
+            var assisted = staff.request("POST", "/api/orders/recognition/assist", Map.of("text", "【蛋糕预定单】\n奶油用动物的", "allowExternalProcessing", true));
+            assertEquals(200, assisted.status); assertEquals("DISABLED", assisted.body.at("/data/status").asText());
+            verifyNoInteractions(orders, activities);
+            assertEquals(original, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Integer.class));
+            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_image", Integer.class));
+            stream.noChange();
+        }
+    }
     private Client staff() throws Exception {
         identity.initializeAdministrator("0001", "店长", INITIAL);
         var admin = new Client(); admin.login("0001", INITIAL); admin.changePassword(INITIAL); admin.login("0001", PASSWORD);

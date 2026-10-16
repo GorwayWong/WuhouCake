@@ -1740,6 +1740,34 @@ to{
   margin:0;
   border-radius:0;
 }
+.recognition-panel{margin-bottom:24px;min-width:0;}
+.recognition-panel>summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;cursor:pointer;min-height:44px;}
+.recognition-panel>summary span{color:#596252;font-size:13px;}
+.recognition-content{padding-top:16px;min-width:0;}
+.recognition-content textarea,.recognition-content input,.recognition-content select{max-width:100%;min-width:0;font-size:16px;}
+.recognition-content .actions{flex-wrap:wrap;}
+.recognition-results{margin-top:24px;}
+.recognition-results>summary{cursor:pointer;min-height:44px;font-weight:600;}
+.recognition-group{border-top:1px solid var(--line);padding-top:14px;margin-top:16px;}
+.recognition-group>summary{font-weight:700;cursor:pointer;min-height:44px;}
+.recognition-field{padding:14px 0;min-width:0;border-bottom:1px solid var(--line);}
+.recognition-field-title{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:6px;}
+.recognition-field-title label{font-size:14px;font-weight:600;}
+.recognition-source{font-size:12px;color:#4d6044;}
+.recognition-source.default,.recognition-source.model{color:#775316;}
+.recognition-source.missing{color:#60675d;}
+.recognition-value{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start;}
+.recognition-value button{min-height:44px;white-space:nowrap;}
+.recognition-evidence{margin-top:8px;min-width:0;color:#596252;}
+.recognition-evidence summary{cursor:pointer;font-size:13px;min-height:32px;}
+.recognition-evidence p,.recognition-field p{overflow-wrap:anywhere;white-space:pre-wrap;}
+.recognition-field p{margin:6px 0 0;}
+.recognition-assist{margin:16px 0;padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
+.recognition-assist>summary{cursor:pointer;min-height:44px;font-weight:600;}
+.recognition-quote{overflow-wrap:anywhere;white-space:pre-wrap;background:#f1f4ee;padding:12px;border-radius:8px;}
+.recognition-consent{display:flex;align-items:start;gap:10px;margin:16px 0;}
+.recognition-consent input{width:20px;min-height:20px;flex:none;margin-top:2px;}
+@media(max-width:640px){.recognition-results .section-heading{align-items:stretch;flex-direction:column;gap:10px;}.recognition-value{grid-template-columns:minmax(0,1fr);}.recognition-value button{justify-self:start;}}
 .create-result{
   display:block;
 }

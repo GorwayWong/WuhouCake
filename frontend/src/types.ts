@@ -40,3 +40,15 @@ export type ItemInput = CreateOrderRequest['items'][number];
 export interface ItemChangeRequest { expectedVersion: number; itemId: string; changes: Partial<ItemInput> }
 export interface ItemAddRequest { expectedVersion: number; item: ItemInput }
 export interface Page<T> { items: T[]; total: number; page: number; size: number }
+export interface RecognitionField {
+  value: string | null; source: 'RULE' | 'MODEL' | 'DEFAULT' | null;
+  evidence: string[]; needsReview: boolean; issues: string[];
+}
+export interface RecognitionItem { id: string; fields: Record<string, RecognitionField> }
+export interface RecognitionDraft {
+  fields: Record<string, RecognitionField>; items: RecognitionItem[]; issues: string[];
+  fragments: { itemId: string | null; text: string }[]; unmappedText: string[]; assistAvailable: boolean;
+}
+export interface RecognitionAssist {
+  status: string; suggestions: { itemId: string; field: string; candidate: RecognitionField }[]; issues: string[];
+}

@@ -1,13 +1,16 @@
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
+import { cakeDefaults } from './productRules.ts';
 
 export const specificationFields = [
-  ['size', '尺寸'], ['flavor', '口味'], ['filling', '夹馅'],
+  ['size', '尺寸'], ['flavor', '奶油'], ['filling', '夹馅'],
   ['base', '内胚'], ['message', '祝福语'], ['requirements', '特殊要求'],
 ] as const;
 type Specification = typeof specificationFields[number][0];
 export interface ItemDraft {
   key: string; name: string; productType: string; quantity: string;
   unitPrice: string; memberPrice: string; attributes: Record<Specification, string>;
+  defaultSpecifications?: ('base' | 'filling')[];
+  requiresTypeConfirmation?: boolean;
 }
 export interface OrderDraft {
   customerName: string; phone: string; memberPhone: string; buyerName: string;
@@ -16,7 +19,23 @@ export interface OrderDraft {
 }
 export function newItem(): ItemDraft {
   return { key: crypto.randomUUID(), name: '', productType: 'CAKE', quantity: '1', unitPrice: '', memberPrice: '',
-    attributes: { size: '', flavor: '', filling: '', base: '', message: '', requirements: '' } };
+    attributes: { size: '', flavor: '', filling: cakeDefaults.filling, base: cakeDefaults.base, message: '', requirements: '' },
+    defaultSpecifications: ['base', 'filling'] };
+}
+export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, editedSpecification?: string): ItemDraft {
+  const next = { ...draft, ...changes, attributes: { ...(changes.attributes || draft.attributes) },
+    defaultSpecifications: [...(draft.defaultSpecifications || [])] };
+  if (changes.productType !== undefined && draft.requiresTypeConfirmation && changes.productType.trim()) next.requiresTypeConfirmation = false;
+  if (editedSpecification) next.defaultSpecifications = next.defaultSpecifications.filter(key => key !== editedSpecification);
+  if (changes.productType !== undefined && changes.productType.trim().toUpperCase() !== 'CAKE') {
+    for (const key of next.defaultSpecifications) if (next.attributes[key] === cakeDefaults[key]) next.attributes[key] = '';
+    next.defaultSpecifications = [];
+  } else if (changes.productType?.trim().toUpperCase() === 'CAKE') {
+    for (const key of ['base', 'filling'] as const) if (!next.attributes[key]) {
+      next.attributes[key] = cakeDefaults[key]; next.defaultSpecifications.push(key);
+    }
+  }
+  return next;
 }
 export function newDraft(date: string): OrderDraft {
   return { customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', address: '',
@@ -36,6 +55,7 @@ export function itemInput(draft: ItemDraft): { item: ItemInput | null; errors: R
   if (!draft.name.trim()) errors.name = '请填写商品名称。';
   else if (draft.name.length > 128) errors.name = '商品名称最多填写 128 个字符。';
   if (draft.productType.length > 32) errors.productType = '商品类型最多填写 32 个字符。';
+  else if (draft.requiresTypeConfirmation && !draft.productType.trim()) errors.productType = '此商品类型未识别，请人工确认后填写。';
   const quantity = Number(draft.quantity);
   if (!/^\d+$/.test(draft.quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) errors.quantity = '数量须为 1–2147483647 之间的整数。';
   const amount = (field: 'unitPrice' | 'memberPrice') => {

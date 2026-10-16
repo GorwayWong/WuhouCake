@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ApiError, creationResultUnknown } from './api';
-import { canEditItems, itemChangeRequest, itemDraft, itemInput, newItem, specificationFields, textSpecification } from './orderForm';
+import { canEditItems, changeItemDraft, itemChangeRequest, itemDraft, itemInput, newItem, specificationFields, textSpecification } from './orderForm';
 import type { Detail, ItemAddRequest, ItemChangeRequest } from './types';
 import { ErrorNotice, Product, valueText } from './ui';
 
@@ -54,10 +54,10 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
   }}>
     <fieldset className="create-fields" disabled={busy}>
       <div className="create-grid">
-        {(['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const).map((name, index) => <Field key={name} name={name} label={{ name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[name]} error={errors[name]} wide={name === 'name'}><input {...props(name)} autoFocus={index === 0} value={draft[name]} inputMode={name === 'quantity' ? 'numeric' : name.endsWith('Price') ? 'decimal' : undefined} maxLength={name === 'name' ? 128 : name === 'productType' ? 32 : undefined} required={name === 'name' || name === 'quantity'} placeholder={name.endsWith('Price') ? '未填写' : undefined} onChange={event => change({ ...draft, [name]: event.target.value })} /></Field>)}
+        {(['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const).map((name, index) => <Field key={name} name={name} label={{ name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[name]} error={errors[name]} wide={name === 'name'}><input {...props(name)} autoFocus={index === 0} value={draft[name]} inputMode={name === 'quantity' ? 'numeric' : name.endsWith('Price') ? 'decimal' : undefined} maxLength={name === 'name' ? 128 : name === 'productType' ? 32 : undefined} required={name === 'name' || name === 'quantity'} placeholder={name.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [name]: event.target.value }))} /></Field>)}
         {specificationFields.map(([key, label]) => {
           const structured = !textSpecification(original?.attributes[key]) || !textSpecification((baseline || latest).items.find(item => item.itemId === itemId)?.attributes[key]);
-          return <Field key={key} name={key} label={label} wide={key === 'requirements'}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[key] ?? original?.attributes[key])}<small>此规格保留原值。</small></span> : key === 'requirements' ? <textarea {...props(key)} rows={2} value={draft.attributes[key]} onChange={event => change({ ...draft, attributes: { ...draft.attributes, [key]: event.target.value } })} /> : <input {...props(key)} value={draft.attributes[key]} onChange={event => change({ ...draft, attributes: { ...draft.attributes, [key]: event.target.value } })} />}</Field>;
+          return <Field key={key} name={key} label={label} wide={key === 'requirements'}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[key] ?? original?.attributes[key])}<small>此规格保留原值。</small></span> : key === 'requirements' ? <textarea {...props(key)} rows={2} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} /> : <input {...props(key)} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} />}</Field>;
         })}
       </div>
       <p className="form-help">商品报价与数量修改不改变订单约定总金额。制作同事需复核最新规格与数量。{!itemId && latest.status === 'PROCESSING' && '制作中追加商品会清空整单已确认制作节点。'}</p>

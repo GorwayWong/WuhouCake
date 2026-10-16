@@ -29,7 +29,7 @@ export function ErrorNotice({ error, retry }: { error: unknown; retry?: () => vo
 }
 export function Empty({ children }: { children: ReactNode }) { return <div className="empty"><CalendarBlank size={32} /><p>{children}</p></div>; }
 export function Loading() { return <div className="loading" role="status">正在读取最新数据…</div>; }
-const attributeNames: Record<string, string> = { size: '尺寸', flavor: '口味', filling: '夹馅', base: '内胚', cakeBase: '内胚', message: '祝福语', greeting: '祝福语', requirements: '其他要求', otherRequirements: '其他要求' };
+const attributeNames: Record<string, string> = { size: '尺寸', flavor: '奶油', filling: '夹馅', base: '内胚', cakeBase: '内胚', message: '祝福语', greeting: '祝福语', requirements: '其他要求', otherRequirements: '其他要求' };
 export function valueText(value: unknown): string {
   if (value == null) return '未填写';
   if (Array.isArray(value)) return value.map(valueText).join('、');

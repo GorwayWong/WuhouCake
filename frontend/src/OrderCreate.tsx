@@ -1,21 +1,40 @@
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Cake, Plus, Trash, UserCircle, Truck, CurrencyCny } from '@phosphor-icons/react';
 import { creationResultUnknown, errorText } from './api';
-import { createOrderRequest, newItem, specificationFields } from './orderForm';
+import { changeItemDraft, createOrderRequest, newItem, specificationFields } from './orderForm';
+import { OrderRecognition } from './OrderRecognition';
 import type { ItemDraft, OrderDraft } from './orderForm';
 import type { CreateOrderRequest } from './types';
 
 function Field({ label, name, error, children, wide = false }: { label: string; name: string; error?: string; children: ReactNode; wide?: boolean }) {
   return <label className={wide ? 'form-wide' : undefined} htmlFor={name}>{label}{children}{error && <span className="field-error" id={`${name}-error`}>{error}</span>}</label>;
 }
-export function OrderCreate({ draft, onChange, onSubmit, busy, error, submitted }: {
+export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, error, submitted, onRecognitionDirtyChange }: {
   draft: OrderDraft; onChange: (draft: OrderDraft) => void; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
+  onRecognitionDirtyChange: (dirty: boolean) => void;
+  initialDraft: OrderDraft;
 }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const form = useRef<HTMLFormElement>(null);
-  const change = (next: OrderDraft) => { setErrors({}); onChange(next); };
-  const updateItem = (key: string, changes: Partial<ItemDraft>) => change({ ...draft, items: draft.items.map(item => item.key === key ? { ...item, ...changes } : item) });
+  const latest = useRef(draft); latest.current = draft;
+  const manualFields = useRef(new Set<string>());
+  const getDraft = useCallback(() => latest.current, []);
+  const change = (next: OrderDraft) => {
+    for (const field of Object.keys(next) as (keyof OrderDraft)[]) if (field !== 'items' && next[field] !== latest.current[field]) manualFields.current.add(field === 'totalAmount' ? 'totalAmountCents' : field);
+    for (const item of next.items) {
+      const previous = latest.current.items.find(x => x.key === item.key);
+      if (!previous) manualFields.current.add(item.key + '.new');
+      else {
+        for (const field of ['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const)
+          if (previous[field] !== item[field]) manualFields.current.add(item.key + '.' + (field === 'unitPrice' ? 'unitPriceCents' : field === 'memberPrice' ? 'memberPriceCents' : field));
+        for (const field of Object.keys(item.attributes) as (keyof ItemDraft['attributes'])[]) if (previous.attributes[field] !== item.attributes[field]) manualFields.current.add(item.key + '.' + field);
+      }
+    }
+    latest.current = next; setErrors({}); onChange(next);
+  };
+  const recognitionChange = (next: OrderDraft) => { latest.current = next; setErrors({}); onChange(next); };
+  const updateItem = (key: string, changes: Partial<ItemDraft>, editedSpecification?: string) => change({ ...draft, items: draft.items.map(item => item.key === key ? changeItemDraft(item, changes, editedSpecification) : item) });
   const inputProps = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': errors[name] ? `${name}-error` : undefined });
   const customerFields = [['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '下单人', 80]] as const;
   const submittedDate = submitted?.fulfillment.requestedReceiveDate || draft.requestedReceiveDate;
@@ -24,6 +43,7 @@ export function OrderCreate({ draft, onChange, onSubmit, busy, error, submitted 
     <a className="back-link" href="#" aria-disabled={busy}><ArrowLeft />返回工作台</a>
     <div className="page-heading"><div><p className="eyebrow">把客户的心意，交给下一位同事</p><h1>新建订单</h1></div></div>
     <p className="create-intro">标有 * 的内容必填。创建后可在订单详情添加参考图片、确认付款和制作进度。</p>
+    <OrderRecognition draft={draft} initialDraft={initialDraft} getDraft={getDraft} manualFields={manualFields.current} onChange={recognitionChange} busy={busy} onDirtyChange={onRecognitionDirtyChange} />
     <form ref={form} noValidate onSubmit={event => {
       event.preventDefault();
       if (busy) return;
@@ -54,10 +74,11 @@ export function OrderCreate({ draft, onChange, onSubmit, busy, error, submitted 
             <div className="create-grid">
               {(['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const).map(field => {
                 const name = `items.${index}.${field}`;
-                const label = { name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[field];
-                return <Field key={field} label={label} name={name} error={errors[name]} wide={field === 'name'}><input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} onChange={event => updateItem(item.key, { [field]: event.target.value })} required={field === 'name' || field === 'quantity'} maxLength={field === 'name' ? 128 : field === 'productType' ? 32 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} /></Field>;
+                const confirmType = field === 'productType' && item.requiresTypeConfirmation;
+                const label = { name: '商品名称 *', productType: confirmType ? '商品类型 *' : '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[field];
+                return <Field key={field} label={label} name={name} error={errors[name]} wide={field === 'name'}><input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} onChange={event => updateItem(item.key, { [field]: event.target.value })} required={field === 'name' || field === 'quantity' || confirmType} maxLength={field === 'name' ? 128 : field === 'productType' ? 32 : undefined} placeholder={confirmType ? '待人工确认' : field.endsWith('Price') ? '未填写' : undefined} /></Field>;
               })}
-              {specificationFields.map(([key, label]) => { const name = `items.${index}.${key}`; return <Field key={key} label={label} name={name} wide={key === 'requirements'}>{key === 'requirements' ? <textarea id={name} name={name} rows={2} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } })} /> : <input id={name} name={name} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } })} />}</Field>; })}
+              {specificationFields.map(([key, label]) => { const name = `items.${index}.${key}`; return <Field key={key} label={label} name={name} wide={key === 'requirements'}>{key === 'requirements' ? <textarea id={name} name={name} rows={2} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} /> : <input id={name} name={name} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} />}</Field>; })}
             </div>
           </div>)}
           <button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}><Plus />添加商品</button>
