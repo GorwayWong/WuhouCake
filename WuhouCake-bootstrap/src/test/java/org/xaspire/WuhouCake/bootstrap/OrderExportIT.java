@@ -1,6 +1,10 @@
 package org.xaspire.WuhouCake.bootstrap;
 
 import com.fasterxml.jackson.databind.*;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.AppenderBase;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.*;
@@ -11,6 +15,7 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.zip.ZipInputStream;
 import javax.imageio.ImageIO;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -28,9 +33,12 @@ import org.springframework.test.context.*;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.event.TransactionalEventListener;
+import org.slf4j.LoggerFactory;
+import org.xaspire.WuhouCake.bootstrap.security.ApiErrors;
 import org.xaspire.WuhouCake.bootstrap.integration.JwtTestKeys;
 import org.xaspire.WuhouCake.identity.application.service.IdentityService;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
+import org.xaspire.WuhouCake.order.adapter.web.OrderStreams;
 import org.xaspire.WuhouCake.order.domain.port.*;
 import org.xaspire.WuhouCake.order.domain.repository.OrderActivities;
 import static org.junit.jupiter.api.Assertions.*;
@@ -58,13 +66,14 @@ class OrderExportIT {
     @MockitoSpyBean OrderImages images;
     @MockitoSpyBean OrderActivities activities;
     @MockitoSpyBean OrderExportFiles files;
+    @MockitoSpyBean OrderStreams streams;
     @BeforeEach void clean() {
-        reset(images, activities, files); changes.events.clear();
+        reset(images, activities, files, streams); changes.events.clear();
         jdbc.execute("TRUNCATE cake_order_image, cake_order_activity, cake_order_item, cake_order, audit_operation, identity_account_role, identity_account CASCADE");
         clearSessions();
     }
     @AfterAll void removeTestData() {
-        reset(images, activities, files); clearSessions(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE");
+        reset(images, activities, files, streams); clearSessions(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE");
     }
     private void clearSessions() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
@@ -436,6 +445,55 @@ class OrderExportIT {
         var response = client.client.send(client.builder("/api/orders/stream", false).GET().build(), HttpResponse.BodyHandlers.ofInputStream());
         assertEquals(200, response.statusCode()); return response.body();
     }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void clientDisconnectCompletesTheSseWithoutErrorLogOrJsonAndOtherClientsKeepWorking(boolean reset) throws Exception {
+        var staff = staff(); var admin = new Client(); admin.login("0001", PASSWORD);
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var completed = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            var emitter = (org.springframework.web.servlet.mvc.method.annotation.SseEmitter) invocation.callRealMethod();
+            emitter.onCompletion(completed::countDown); return emitter;
+        }).when(streams).subscribe(eq(UUID.fromString(staff.accountId)), anyLong(), any(java.time.Instant.class), any(BooleanSupplier.class));
+        var logger = (Logger) LoggerFactory.getLogger(ApiErrors.class); var previous = logger.getLevel(); logger.setLevel(Level.DEBUG);
+        var root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME); var logs = new DisconnectLogs(); logs.start(); root.addAppender(logs);
+        try (var healthyInput = stream(admin); var healthy = new BufferedReader(new InputStreamReader(healthyInput, StandardCharsets.UTF_8))) {
+            assertTrue(nextStreamFrame(healthy).contains("event:ready"));
+            String requestId = null;
+            try (var socket = new Socket("127.0.0.1", port)) {
+                socket.setSoTimeout(5000); if (reset) socket.setSoLinger(true, 0);
+                socket.getOutputStream().write(("GET /api/orders/stream HTTP/1.1\r\nHost: localhost:" + port
+                        + "\r\nAuthorization: Bearer " + staff.token + "\r\nAccept: text/event-stream\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                socket.getOutputStream().flush(); var reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+                assertTrue(reader.readLine().contains("200"));
+                for (String line; (line = reader.readLine()) != null && !line.isEmpty();) {
+                    if (line.toLowerCase(Locale.ROOT).startsWith("x-request-id:")) requestId = line.substring(line.indexOf(':') + 1).strip();
+                }
+                assertNotNull(requestId); boolean ready = false;
+                for (int i = 0; i < 20; i++) { String line = reader.readLine(); if (line == null) break; if (line.contains("event:ready")) { ready = true; break; } }
+                assertTrue(ready);
+            }
+            int notes = 0;
+            do {
+                notes++;
+                assertEquals(201, admin.request("POST", "/api/orders/" + order.path("orderId").asText() + "/notes", Map.of("content", "断开后的正常备注" + notes)).statusCode());
+                assertTrue(nextStreamFrame(healthy).contains("event:order.changed"));
+            } while (completed.getCount() != 0 && notes < 3);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            String streamRequestId = requestId;
+            assertTrue(logs.events.stream().anyMatch(event -> event.getLoggerName().equals(ApiErrors.class.getName())
+                    && event.getLevel().equals(Level.DEBUG) && event.getFormattedMessage().contains("request_disconnected requestId=" + streamRequestId)));
+            assertFalse(logs.events.stream().anyMatch(event -> event.getLevel().isGreaterOrEqual(Level.ERROR) && event.getFormattedMessage().contains(streamRequestId)));
+            assertFalse(logs.events.stream().anyMatch(event -> event.getThrowableProxy() != null
+                    && event.getThrowableProxy().getClassName().equals("org.springframework.http.converter.HttpMessageNotWritableException")));
+            doThrow(new IllegalStateException("synthetic server failure")).when(activities).append(any());
+            var failed = admin.request("POST", "/api/orders/" + order.path("orderId").asText() + "/notes", Map.of("content", "故障对照"));
+            assertEquals(500, failed.statusCode()); assertEquals("INTERNAL_ERROR", body(failed).path("code").asText());
+            String failureId = header(failed, "X-Request-Id"); assertFalse(failureId.isBlank());
+            assertTrue(logs.events.stream().anyMatch(event -> event.getLoggerName().equals(ApiErrors.class.getName())
+                    && event.getLevel().equals(Level.ERROR) && event.getFormattedMessage().contains(failureId)));
+            assertEquals(1 + notes, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Integer.class));
+        } finally { root.detachAppender(logs); logs.stop(); logger.setLevel(previous); reset(streams, activities); }
+    }
     private static String nextStreamFrame(BufferedReader reader) throws Exception {
         var next = CompletableFuture.supplyAsync(() -> {
             try { return streamFrame(reader); } catch (IOException failure) { return null; }
@@ -494,6 +552,10 @@ class OrderExportIT {
     static class Changes {
         final Queue<OrderChanged> events = new ConcurrentLinkedQueue<>();
         @TransactionalEventListener public void changed(OrderChanged event) { events.add(event); }
+    }
+    static class DisconnectLogs extends AppenderBase<ILoggingEvent> {
+        final Queue<ILoggingEvent> events = new ConcurrentLinkedQueue<>();
+        @Override protected void append(ILoggingEvent event) { event.prepareForDeferredProcessing(); events.add(event); }
     }
     final class Client {
         final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
