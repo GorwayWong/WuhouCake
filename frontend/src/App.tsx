@@ -122,7 +122,8 @@ export function App() {
         client.setQueryData(['order', order.orderId, 'detail'], order);
       }
       saveDraft(null);
-      setNotice('订单已创建，可继续确认付款和制作。');
+      setSelected(order.fulfillment.requestedReceiveDate); setMode('week');
+      setNotice(`订单已创建，可继续确认付款和制作。返回工作台将查看 ${order.fulfillment.requestedReceiveDate} 的收货订单。`);
       const next = `#/orders/${order.orderId}`;
       window.history.replaceState(window.history.state, '', next);
       hashRef.current = next; setHash(next); window.scrollTo(0, 0);

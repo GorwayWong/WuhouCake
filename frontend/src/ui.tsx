@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { Item, OrderStatus } from './types';
 import { time } from './dates';
 import { errorText } from './api';
+import { productTypeLabel } from './productTypes';
 
 export const statusNames: Record<string, string> = {
   WAITING_PRODUCTION: '待制作', PROCESSING: '制作中', WAITING_DELIVERY: '待配送',
@@ -39,7 +40,7 @@ export function valueText(value: unknown): string {
 export function money(cents: number | null) { return cents == null ? '未填写' : `¥${(cents / 100).toFixed(2)}`; }
 export function Product({ item, prices = false, children, actions }: { item: Item; prices?: boolean; children?: ReactNode; actions?: ReactNode }) {
   return <section className="product" aria-label={`商品 ${item.name}`}>
-    <div className="product-heading"><span className="product-mark"><Cake size={24} /></span><div><h3>{item.name}</h3><span className="muted">{!item.productType || item.productType === 'CAKE' ? '定制蛋糕' : item.productType} · 数量 {item.quantity}</span></div></div>
+    <div className="product-heading"><span className="product-mark"><Cake size={24} /></span><div><h3>{item.name}</h3><span className="muted">{productTypeLabel(item.productType || 'CAKE')} · 数量 {item.quantity}</span></div></div>
     {actions}
     {children || <dl className="attributes">{Object.entries(item.attributes || {}).map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd>{valueText(value)}</dd></div>)}
       {prices && <><div><dt>单价</dt><dd>{money(item.unitPriceCents)}</dd></div><div><dt>会员单价</dt><dd>{money(item.memberPriceCents)}</dd></div></>}

@@ -5,9 +5,9 @@ import type { RecognitionDraft, RecognitionField } from './types.ts';
 
 export const recognitionLimit = 12000;
 export const recognitionLabels: Record<string, string> = {
-  customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '客户侧下单人',
+  customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '客户订购人',
   fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '收货日期',
-  plannedHandoffAt: '计划交接时间', plannedFinishAt: '计划出品时间', totalAmountCents: '约定总金额（元）',
+  plannedHandoffAt: '取货时间', plannedFinishAt: '计划出品时间', totalAmountCents: '约定总金额（元）',
   name: '商品名称', productType: '商品类型', quantity: '数量', size: '尺寸', flavor: '奶油', base: '内胚',
   filling: '夹馅', message: '祝福语', requirements: '其他要求', unitPriceCents: '商品单价（元）', memberPriceCents: '会员单价（元）',
 };

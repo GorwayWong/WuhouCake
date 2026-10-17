@@ -15,7 +15,7 @@ import { exportActivitySummary } from './exportFiles';
 
 const actionNames: Record<string, string> = { START_PRODUCTION: '开始制作', COMPLETE_LAYER: '确认整单夹层', COMPLETE_FROSTING: '确认整单抹面', COMPLETE_PRODUCTION: '整单制作完成', REOPEN_PRODUCTION: '重新制作', START_DELIVERY: '开始配送', COMPLETE_DELIVERY: '完成配送', CONFIRM_PICKUP: '确认自提' };
 const activityNames: Record<string, string> = { CREATED: '创建订单', ITEM_CHANGED: '修改商品', NOTE: '添加备注', PAYMENT_STATUS_CHANGED: '更新付款状态', ORDER_PRODUCTION_CHANGED: '更新整单制作', ORDER_FULFILLMENT_CHANGED: '更新交付状态', ORDER_CANCELLED: '取消订单', ORDER_INFORMATION_CHANGED: '修改订单信息', ITEM_ADDED: '添加商品', ITEM_REMOVED: '移除商品', IMAGE_ADDED: '添加参考图片', IMAGE_REMOVED: '移除参考图片', ORDER_EXPORTED: '导出订单' };
-const fieldNames: Record<string, string> = { status: '订单状态', currentStageCode: '制作阶段', paymentStatus: '付款状态', customer: '客户', fulfillment: '交付', customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '客户侧下单人', creditedEmployeeId: '下单员工 ID', creditedEmployeeName: '下单员工', type: '方式', address: '地址', requestedReceiveDate: '收货日期', plannedHandoffAt: '交付时间', plannedFinishAt: '出品时间', name: '商品名称', quantity: '数量', attributes: '商品要求', totalAmountCents: '订单金额（分）', unitPriceCents: '单价（分）', memberPriceCents: '会员价（分）', productionStatus: '制作状态', productType: '商品类型' };
+const fieldNames: Record<string, string> = { status: '订单状态', currentStageCode: '制作阶段', paymentStatus: '付款状态', customer: '客户', fulfillment: '交付', customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '客户订购人', creditedEmployeeId: '下单员工 ID', creditedEmployeeName: '下单员工', type: '方式', address: '地址', requestedReceiveDate: '收货日期', plannedHandoffAt: '取货时间', plannedFinishAt: '出品时间', name: '商品名称', quantity: '数量', attributes: '商品要求', totalAmountCents: '订单金额（分）', unitPriceCents: '单价（分）', memberPriceCents: '会员价（分）', productionStatus: '制作状态', productType: '商品类型' };
 function changeValue(value: unknown): string {
   if (value === null) return '未填写';
   if (Array.isArray(value)) return value.map(changeValue).join('、');
@@ -136,7 +136,7 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
   const fulfillment = order.status === 'WAITING_DELIVERY' ? 'START_DELIVERY' : order.status === 'DELIVERING' ? 'COMPLETE_DELIVERY' : order.status === 'WAITING_PICKUP' ? 'CONFIRM_PICKUP' : null;
   const mutateAction = (action: string, path: string) => mutation.mutate({ path, body: { expectedVersion: order.version, action } });
   return <div className="detail-page">
-    <a className="back-link" href="#" aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />返回工作台</a>
+    <a className="back-link" href={`#/?date=${order.fulfillment.requestedReceiveDate}`} aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />返回 {order.fulfillment.requestedReceiveDate} 工作台</a>
     <div className="page-heading"><div><p className="eyebrow">订单 #{order.orderNo}</p><h1>订单详情</h1></div><div className="badges"><Status order={order} /><Payment status={order.paymentStatus} /></div></div>
     <SingleOrderExport orderId={id} orderNo={order.orderNo} blocked={blocked} onPendingChange={exportWritingChange} />
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />

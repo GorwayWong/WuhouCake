@@ -79,7 +79,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             row(info, "订单状态", order.status()); row(info, "付款状态", order.paymentStatus()); row(info, "制作节点", order.currentStageCode());
             row(info, "客户", customer.customerName()); row(info, "联系电话", customer.phone()); row(info, "会员电话", customer.memberPhone());
             row(info, "购买人", customer.buyerName()); row(info, "交接方式", plan.type()); row(info, "地址", plan.address());
-            row(info, "收货日期", plan.requestedReceiveDate()); row(info, "计划交接时间", time(plan.plannedHandoffAt()));
+            row(info, "收货日期", plan.requestedReceiveDate()); row(info, "取货时间", time(plan.plannedHandoffAt()));
             row(info, "计划出品时间", time(plan.plannedFinishAt())); row(info, "约定总金额（元）", money(order.totalAmountCents()));
             row(info, "创建员工 ID", order.createdBy()); row(info, "创建时间", time(order.createdAt()));
             row(info, "下单员工工号", order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber());
