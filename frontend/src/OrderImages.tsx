@@ -79,9 +79,9 @@ export function OrderImages({ order, blocked, onDraftChange, onWritingChange }: 
   const invalidItem = Boolean(itemId && !order.items.some(item => item.itemId === itemId));
   return <section className="panel reference-images" aria-labelledby="reference-images-title">
     <div className="section-heading"><h2 id="reference-images-title"><Images />参考图片</h2><div className="item-heading-actions"><span className="muted">{query.data?.length ?? '—'} / 8 张</span>{!adding && <button className="secondary compact" disabled={busy || full || !query.data} onClick={() => { setFailure(null); setNotice(''); setAdding(true); }}><Plus />添加图片</button>}</div></div>
-    <p className="form-help">整单要求或单个蛋糕的参考图；仅支持 JPG/PNG，单张最多 5 MiB。</p>
+    {adding && <p className="form-help">JPG / PNG · 每张不超过 5 MB</p>}
     <ErrorNotice error={query.error} retry={() => void query.refetch()} />
-    {query.isPending ? <Loading /> : query.data?.length === 0 ? <p className="image-empty">暂无参考图片。点击「添加图片」，与制作同事核对客户要求。</p> : <ul className="image-grid">{query.data?.map(image => <ImageTile key={`${id}/${image.imageId}`} image={image} scope={image.itemId ? order.items.find(item => item.itemId === image.itemId)?.name || '历史商品图片' : '整张订单'} blocked={busy || adding} remove={() => { if (window.confirm(`移除参考图片「${image.filename}」？历史记录会保留。`)) submit({ type: 'remove', imageId: image.imageId }); }} />)}</ul>}
+    {query.isPending ? <Loading /> : query.data?.length === 0 ? null : <ul className="image-grid">{query.data?.map(image => <ImageTile key={`${id}/${image.imageId}`} image={image} scope={image.itemId ? order.items.find(item => item.itemId === image.itemId)?.name || '历史商品图片' : '整张订单'} blocked={busy || adding} remove={() => { if (window.confirm(`移除参考图片「${image.filename}」？历史记录会保留。`)) submit({ type: 'remove', imageId: image.imageId }); }} />)}</ul>}
     {full && <p className="form-help">已达 8 张上限，可移除误传图片后再添加。</p>}
     {adding && <form className="image-upload" onSubmit={event => { event.preventDefault(); if (file && !imageFileError(file) && !invalidItem && !full) submit({ type: 'upload', file, itemId }); }}>
       <fieldset disabled={busy}><legend>添加参考图片</legend>

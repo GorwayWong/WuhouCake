@@ -25,7 +25,7 @@ public final class AccountValues {
     public static void password(String value) {
         if (value == null) throw new IdentityFailure("VALIDATION_FAILED");
         int length = value.codePointCount(0, value.length());
-        if (length < 15 || length > 128 || !validUnicode(value)) throw new IdentityFailure("VALIDATION_FAILED");
+        if (length < 8 || length > 128 || !validUnicode(value)) throw new IdentityFailure("VALIDATION_FAILED");
     }
     public static boolean validUnicode(String value) {
         for (int i = 0; i < value.length(); i++) {

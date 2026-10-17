@@ -28,6 +28,9 @@ public class IdentityController {
             @NotEmpty @Size(max = 3) Set<@NotBlank @Size(max = 20) String> jobRoles, String systemRole) { }
     public record ProfileRequest(@NotNull @PositiveOrZero Long expectedVersion, @NotNull @Size(max = 160) String nickname,
             @NotEmpty @Size(max = 3) Set<@NotBlank @Size(max = 20) String> jobRoles) { }
+    public record EmployeePasswordRequest(@NotNull @PositiveOrZero Long expectedVersion, @NotNull @Size(max = 256) String newPassword) {
+        @Override public String toString() { return "EmployeePasswordRequest"; }
+    }
     private final IdentityFacade identity;
     private final boolean secureCookie;
     public IdentityController(IdentityFacade identity, boolean secureCookie) { this.identity = identity; this.secureCookie = secureCookie; }
@@ -79,6 +82,10 @@ public class IdentityController {
     }
     @PostMapping("/api/admin/employees/{id}/archive")
     public ApiResponse<IdentityFacade.AccountView> archive(@PathVariable UUID id) { return ApiResponse.success(identity.archive(id)); }
+    @PatchMapping("/api/admin/employees/{id}/password")
+    public ResponseEntity<ApiResponse<IdentityFacade.AccountView>> employeePassword(@PathVariable UUID id, @Valid @RequestBody EmployeePasswordRequest command) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.success(identity.setEmployeePassword(id, command.expectedVersion(), command.newPassword())));
+    }
     private String cookie(String value, long seconds) {
         return ResponseCookie.from(REFRESH_COOKIE, value).httpOnly(true).secure(secureCookie).sameSite("Lax")
                 .path("/api/auth").maxAge(seconds).build().toString();

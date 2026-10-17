@@ -5,8 +5,11 @@ import { api, ApiError, errorText, forgetSession, session } from '../src/api.ts'
 
 test('新密码确认检查长度、Unicode 字符数及逐字一致，不隐式去除空格', () => {
   assert.ok(newPasswordError('short', 'short'));
-  assert.ok(newPasswordError('🍰'.repeat(14), '🍰'.repeat(14)));
-  assert.equal(newPasswordError('🍰'.repeat(15), '🍰'.repeat(15)), '');
+  assert.ok(newPasswordError('1234567', '1234567'));
+  assert.equal(newPasswordError('Staff008', 'Staff008'), '');
+  assert.ok(newPasswordError('🍰'.repeat(7), '🍰'.repeat(7)));
+  assert.equal(newPasswordError('🍰'.repeat(8), '🍰'.repeat(8)), '');
+  assert.equal(newPasswordError('x'.repeat(128), 'x'.repeat(128)), '');
   assert.ok(newPasswordError('x'.repeat(129), 'x'.repeat(129)));
   assert.ok(newPasswordError('A long new password ', 'A long new password'));
   assert.equal(newPasswordError('A long new password ', 'A long new password '), '');

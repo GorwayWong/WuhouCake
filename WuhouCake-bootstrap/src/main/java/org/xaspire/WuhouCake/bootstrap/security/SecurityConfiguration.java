@@ -50,6 +50,7 @@ public class SecurityConfiguration {
             if (properties.permitApiDocs()) {
                 authorize.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll();
             }
+            authorize.requestMatchers(org.springframework.http.HttpMethod.GET, "/api/admin/orders", "/api/admin/orders/export").authenticated();
             authorize.requestMatchers("/api/admin/**").hasRole("SUPER_ADMIN");
             authorize.requestMatchers("/api/me", "/api/me/**").authenticated();
             authorize.requestMatchers("/api/employees/options").authenticated();
