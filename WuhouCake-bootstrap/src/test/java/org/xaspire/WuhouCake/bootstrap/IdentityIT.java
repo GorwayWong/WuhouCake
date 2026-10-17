@@ -93,6 +93,41 @@ class IdentityIT {
         var logs = admin.request("GET", "/api/admin/audit-logs?size=100", null).body.toString();
         assertFalse(logs.contains(temporary)); assertFalse(logs.contains(staff.token)); assertFalse(logs.contains("passwordHash"));
     }
+    @Test void administratorCanSetEightCharacterEmployeePasswordWithRevocationAndSafeAudit() throws Exception {
+        var admin = administrator(); var created = provision(admin, "0002", "STAFF");
+        String id = created.at("/data/account/accountId").asText();
+        String temporary = created.at("/data/temporaryPassword").asText();
+        var staff = new Browser(); staff.login("0002", temporary); staff.changePassword(temporary, PASSWORD); staff.login("0002", PASSWORD);
+        String path = "/api/admin/employees/" + id + "/password";
+        assertEquals(403, staff.request("PATCH", path, Map.of("expectedVersion", 1, "newPassword", "Staff008")).status);
+        assertEquals(409, admin.request("PATCH", path, Map.of("expectedVersion", 0, "newPassword", "Staff008")).status);
+        assertEquals(400, admin.request("PATCH", path, Map.of("expectedVersion", 1, "newPassword", "short77")).status);
+        var result = admin.request("PATCH", path, Map.of("expectedVersion", 1, "newPassword", "Staff008"));
+        assertEquals(200, result.status); assertTrue(result.body.at("/data/passwordChangeRequired").asBoolean());
+        assertEquals(2, result.body.at("/data/credentialVersion").asInt());
+        assertEquals(401, staff.request("GET", "/api/me", null).status);
+        assertEquals(401, staff.request("POST", "/api/auth/refresh", null).status);
+        staff.login("0002", "Staff008");
+        assertEquals(403, staff.request("GET", "/api/orders/workbench?date=2026-10-17", null).status);
+        staff.changePassword("Staff008", "Staff009"); staff.login("0002", "Staff009");
+        assertEquals(200, staff.request("GET", "/api/orders/workbench?date=2026-10-17", null).status);
+        assertEquals(200, staff.request("GET", "/api/admin/orders?from=2026-10-01&to=2026-11-01", null).status);
+        assertEquals(403, staff.request("GET", "/api/admin/employees", null).status);
+        assertEquals(403, staff.request("GET", "/api/admin/audit-logs", null).status);
+        var logs = admin.request("GET", "/api/admin/audit-logs?action=identity.password_set", null).body.toString();
+        assertFalse(logs.contains("Staff008")); assertFalse(logs.contains("Staff009")); assertFalse(logs.contains("passwordHash"));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action='identity.password_set'", Integer.class));
+    }
+    @Test void concurrentAdministratorPasswordChangesRejectTheStaleVersion() throws Exception {
+        var admin = administrator(); var created = provision(admin, "0002", "STAFF");
+        String path = "/api/admin/employees/" + created.at("/data/account/accountId").asText() + "/password";
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = executor.submit(() -> admin.request("PATCH", path, Map.of("expectedVersion", 0, "newPassword", "Staff008")).status);
+            var second = executor.submit(() -> admin.request("PATCH", path, Map.of("expectedVersion", 0, "newPassword", "Staff009")).status);
+            assertEquals(Set.of(200, 409), Set.of(first.get(), second.get()));
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action='identity.password_set'", Integer.class));
+    }
     @Test void incorrectCurrentPasswordKeepsTheFirstLoginSessionAndCanBeCorrected() throws Exception {
         identity.initializeAdministrator("0001", "店长", INITIAL);
         var browser = new Browser(); browser.login("0001", INITIAL);

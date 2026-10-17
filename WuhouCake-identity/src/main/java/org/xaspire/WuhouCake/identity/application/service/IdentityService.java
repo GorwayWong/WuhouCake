@@ -165,6 +165,22 @@ public class IdentityService implements IdentityFacade {
         return new Provisioned(view(changed), password);
     }
     @Override @Transactional
+    public AccountView setEmployeePassword(UUID id, long expectedVersion, String newPassword) {
+        accounts.lockAdministratorLifecycle();
+        var actor = administrator();
+        if (actor.id().equals(id)) throw new IdentityFailure("FORBIDDEN");
+        var account = accounts.lock(id).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
+        if (account.status() != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
+        if (expectedVersion < 0 || expectedVersion != account.version()) throw new IdentityFailure("CONCURRENT_MODIFICATION");
+        AccountValues.password(newPassword);
+        if (credentials.matches(newPassword, account.passwordHash())) throw new IdentityFailure("PASSWORD_REUSE_FORBIDDEN");
+        var changed = account.replacePassword(credentials.encode(newPassword), true, clock.instant());
+        accounts.update(changed);
+        events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
+        accountChange("identity.password_set", actor, account, changed);
+        return view(changed);
+    }
+    @Override @Transactional
     public AccountView archive(UUID id) {
         accounts.lockAdministratorLifecycle();
         var actor = administrator();

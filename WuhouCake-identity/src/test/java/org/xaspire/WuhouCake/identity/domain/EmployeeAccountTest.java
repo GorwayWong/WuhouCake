@@ -52,7 +52,12 @@ class EmployeeAccountTest {
         assertThrows(IdentityFailure.class, () -> AccountValues.nickname("a\nb"));
         assertThrows(IdentityFailure.class, () -> AccountValues.employeeNumber(" a "));
         assertThrows(IdentityFailure.class, () -> AccountValues.password("short"));
-        AccountValues.password("🍰".repeat(15));
+        assertThrows(IdentityFailure.class, () -> AccountValues.password("1234567"));
+        assertThrows(IdentityFailure.class, () -> AccountValues.password("🍰".repeat(7)));
+        AccountValues.password("Staff008");
+        AccountValues.password("🍰".repeat(8));
+        AccountValues.password("x".repeat(128));
+        assertThrows(IdentityFailure.class, () -> AccountValues.password("x".repeat(129)));
         assertThrows(IdentityFailure.class, () -> AccountValues.password("password length!" + '\uD800'));
         assertThrows(IdentityFailure.class, () -> AccountValues.nickname("bad" + '\uDC00'));
         assertThrows(IdentityFailure.class, () -> EmployeeAccount.create(UUID.randomUUID(), "001", "name", Set.of(), SystemRole.STAFF, "hash", now));

@@ -38,6 +38,7 @@ public interface IdentityFacade {
     Provisioned create(Create command);
     Page<AccountView> employees(Search query);
     Provisioned resetPassword(UUID accountId);
+    AccountView setEmployeePassword(UUID accountId, long expectedVersion, String newPassword);
     AccountView archive(UUID accountId);
     AccountView reviseEmployee(UUID accountId, Profile command);
     List<EmployeeOption> employeeOptions(boolean includeArchived);

@@ -4,7 +4,7 @@
 
 ## 员工管理与订单归属
 
-超级管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、重置密码和归档。工号固定，岗位不等于系统权限；归档代替物理删除，保留历史身份。账号响应增加 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。
+管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、随机重置密码、指定新密码和归档。工号固定，岗位不等于系统权限；归档代替物理删除，保留历史身份。账号响应增加 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。
 
 | 接口 | 契约 |
 | --- | --- |
@@ -76,11 +76,13 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 4. login/logout 会清除 CSRF Cookie，后续认证 POST 前重新取得 CSRF。refresh 依赖刷新 Cookie 和 CSRF，不依赖已到期 Bearer。
 5. 前端 access token 仅驻留内存；多个 401 共用一次刷新。切换员工后，旧请求不能使用新员工凭证重试或清除其登录状态。
 
-每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配。岗位不是权限：MANAGER 不等于 SUPER_ADMIN。当前所有完成改密的员工共享订单业务权限；管理员专属能力仅为 /api/admin 下的账号管理和审计查询。
+每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配。岗位不是权限：MANAGER 不等于 SUPER_ADMIN。所有完成改密的员工共享订单、查询统计及导出权限，包括 GET /api/admin/orders 和 GET /api/admin/orders/export；员工账号管理及其身份审计仍仅管理员可用，其余 /api/admin 路径不因此放开。
 
 新建、重置或恢复的账号须首次改密。改密前只允许 GET /api/me 和 POST /api/me/password，其他业务请求返回 PASSWORD_CHANGE_REQUIRED；认证端点仍可用于退出。新密码必须与当前密码不同，改密成功会撤销旧凭证，前端需重新登录。
 
 员工没有统一默认密码。管理员新增或重置后，系统随机生成初始密码，员工管理页定位到本次密码提示，可展开查看并复制。临时密码只保留在当前页面内存，关闭或离开后不能找回；未记录时应重置生成新的初始密码，再交给该员工。
+
+管理员也可为其他在职员工指定 8–128 个字符的新密码，提交 expectedVersion 防止并发覆盖。指定密码不能与该员工当前密码相同，成功后撤销旧凭证并要求员工首次登录改密；管理员不能通过员工管理入口修改自己的密码。指定密码操作记为 identity.password_set，审计只保存账号非敏感快照，不回传或记录明文密码。
 
 首次改密的“当前密码”填写初始化或重置时使用的旧密码，新密码需输入两次一致后才提交。当前密码校验失败返回 400 CURRENT_PASSWORD_INCORRECT，保留当前会话及输入，不修改密码、不撤销凭证；界面明确提示新密码尚未保存。只有真正过期或已撤销的身份返回 401。
 
@@ -100,13 +102,14 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 | GET /api/admin/employees | 可选 employeeNumber、nickname、status、jobRole、page、size | SUPER_ADMIN；分页查询 |
 | POST /api/admin/employees | employeeNumber、nickname、jobRoles、可选 systemRole | SUPER_ADMIN；data.account 和 temporaryPassword |
 | POST /api/admin/employees/{id}/reset-password | 无请求体 | SUPER_ADMIN；只重置其他 ACTIVE 账号，返回临时密码 |
+| PATCH /api/admin/employees/{id}/password | expectedVersion、newPassword | SUPER_ADMIN；指定其他 ACTIVE 员工的新临时密码，返回账号视图，过期版本 409 |
 | POST /api/admin/employees/{id}/archive | 无请求体 | SUPER_ADMIN；保留工号、岗位和历史 |
 | GET /api/admin/audit-logs | 可选 actorId、action、result、from、to、page、size | SUPER_ADMIN；时间为 Instant，区间 [from,to) |
 
 有效业务约束以领域校验为准，不能只参考 HTTP 注解的较宽上限：
 
 - 工号为 1–32 个字母、数字、下划线或短横线，规范化为大写且不可改；归档不释放工号。
-- 昵称去除两端空白后为 1–40 个 Unicode 码点，不允许控制字符；新密码为 15–128 个合法 Unicode 码点。
+- 昵称去除两端空白后为 1–40 个 Unicode 码点，不允许控制字符；新密码为 8–128 个合法 Unicode 码点。
 - jobRoles 至少一项，取 MANAGER、FRONT_DESK、PASTRY_CHEF；systemRole 为 STAFF（省略时默认）或 SUPER_ADMIN；status 为 ACTIVE/ARCHIVED。
 - page 从 1 开始，最大 1,000,000；size 为 1–100，默认 20。分页和枚举非法返回 VALIDATION_FAILED。
 - 禁止自行归档；至少保留一位 ACTIVE 超管。归档不物理删除账号，没有取消归档接口，也没有在线解锁/改工号接口。

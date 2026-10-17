@@ -92,7 +92,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 
 日历使用 [from,to)；工作台 date 按 Asia/Shanghai。非法、反向、空或超过 42 天的日历范围返回 400。统计字段：totalOrders 是全部订单数，createdOnDate 是门店当天创建数，deliveryDueOnDate 是该收货日尚未完成/取消的配送订单数，均不是商品数量统计。
 
-工作台 pendingOrders 字段返回该收货日全部状态的订单，前端再按同一状态/付款筛选规则显示日历与单日列表。经营查询 `GET /api/admin/orders` 仅限 SUPER_ADMIN，参数 from/to（右开区间，最多 366 天）、dateBasis（RECEIVE 默认按收货日期，CREATED 按北京时间录单日期）、status/paymentStatus/fulfillmentType、sizeInches、creditedEmployeeId、unassigned、includeCancelled、keyword、page/size（1 起、最大 100）。未知枚举、非法日期/尺寸/UUID/分页返回 400；空结果正常返回空列表及零统计。尺寸只匹配有效 CAKE 商品，累加 quantity；旧异常尺寸安全排除于精确尺寸筛选，未设尺寸时仍可查询并计为待核对。
+工作台 pendingOrders 字段返回该收货日全部状态的订单，前端再按同一状态/付款筛选规则显示日历与单日列表。经营查询 `GET /api/admin/orders` 向所有已改密员工开放，参数 from/to（右开区间，最多 366 天）、dateBasis（RECEIVE 默认按收货日期，CREATED 按北京时间录单日期）、status/paymentStatus/fulfillmentType、sizeInches、creditedEmployeeId、unassigned、includeCancelled、keyword、page/size（1 起、最大 100）。未知枚举、非法日期/尺寸/UUID/分页返回 400；空结果正常返回空列表及零统计。尺寸只匹配有效 CAKE 商品，累加 quantity；旧异常尺寸安全排除于精确尺寸筛选，未设尺寸时仍可查询并计为待核对。
 
 查询返回整段范围的 totals、sizes、employees，分页仅影响 items。尺寸按规范数值合并，各组订单数分别去重，混合尺寸订单会进入多组，不可相加；员工按稳定账号分组，显示最近录单的归属快照，历史未归属独立成组。金额仅求已填写约定金额，按手动付款标记分列，并单列未填金额订单数；不按尺寸分摊整单金额，本阶段提供员工业绩汇总，不计算提成。
 

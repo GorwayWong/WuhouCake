@@ -1,7 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
 .app-nav{max-width:1280px;margin:0 auto;display:flex;gap:24px;padding:16px 24px 0;flex-wrap:wrap}
-.app-nav a{color:var(--text);padding:8px 0;text-decoration:none}
-.app-nav a[aria-current=page]{font-weight:700;text-decoration:underline;text-underline-offset:8px}
+.app-nav a{color:var(--ink);padding:8px 0;border-bottom:3px solid transparent;text-decoration:none}
+.app-nav a[aria-current=page]{font-weight:700;border-bottom-color:var(--yellow)}
 .calendar-filter{display:flex;flex-direction:column;gap:6px;font-size:13px;min-width:130px}
 .calendar-filter select{font-size:16px}
 .management-page{display:grid;gap:20px;min-width:0}
@@ -250,7 +250,7 @@
   font-weight:400;
   --yellow:#f8bf28;
   --ink:#292b2b;
-  --muted:#767b80;
+  --muted:#596260;
   --line:#e8e9e5;
   --soft:#fff7df;
 }
@@ -874,12 +874,12 @@ small{
   align-items:center;
   flex-wrap:wrap;
   gap:7px 14px;
-  font-size:11px;
-  color:#8b9087;
+  font-size:12px;
+  color:#596260;
 }
 .note-meta strong{
   font-weight:500;
-  color:#77765f;
+  color:#56543f;
 }
 .note-meta time{
   margin-left:auto;
@@ -920,9 +920,10 @@ small{
   display:inline-flex;
   align-items:center;
   gap:8px;
-  font-size:12px;
-  color:#85897e;
-  margin-bottom:23px;
+  font-size:14px;
+  color:var(--muted);
+  min-height:44px;
+  margin-bottom:12px;
 }
 .detail-page>.panel,.detail-columns{
   margin-bottom:22px;
@@ -1012,7 +1013,7 @@ small{
   margin:16px 0 20px;
   flex-wrap:wrap;
   font-size:13px;
-  color:#858a80;
+  color:#52604f;
 }
 .actions{
   display:flex;
@@ -1043,7 +1044,7 @@ small{
   font-size:13px;
 }
 .info-grid dt{
-  color:#92968f;
+  color:#52604f;
   font-size:11px;
   margin-bottom:5px;
 }
@@ -1156,8 +1157,8 @@ input::placeholder,textarea::placeholder{
   overflow-wrap:anywhere;
 }
 .scope{
-  font-size:10px;
-  color:#9b8c64;
+  font-size:12px;
+  color:#6b5d35;
   margin-top:5px;
   display:inline-block;
 }
@@ -1645,19 +1646,6 @@ h1{
 button,a{
   transition:background-color .15s,border-color .15s,box-shadow .15s;
 }
-.panel{
-  animation:appear .24s ease-out;
-}
-@keyframes appear{
-from{
-  opacity:.4;
-  transform:translateY(4px);
-}
-to{
-  opacity:1;
-  transform:translateY(0);
-}
-}
 }
 
 .workbench-heading{
@@ -1887,4 +1875,28 @@ to{
   .create-submit .primary{
     justify-content:center;
   }
+}
+.history-page{display:grid;gap:20px;max-width:960px;margin:auto}
+.history-page .page-heading{margin-bottom:0}
+.history-toolbar{margin-bottom:24px}
+.history-toolbar label{display:block;max-width:260px}
+.history-toolbar select{width:100%;font-size:16px}
+.history-entry{display:flex;align-items:center;gap:12px;margin:20px 0;padding:18px 22px;border:1px solid var(--line);border-radius:12px;background:white;color:var(--ink);text-decoration:none;font-weight:600}
+.history-entry svg:last-child{margin-left:auto}
+.history-entry:hover{background:var(--soft)}
+.filter-summary{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:10px 16px;background:var(--soft);border-radius:10px;margin:0 0 16px;color:#514622}
+.report-range{margin:0;color:var(--muted);font-size:13px}
+.report-payment-summary{display:flex;gap:24px;flex-wrap:wrap;font-size:14px}
+.report-payment-summary strong{margin-left:8px;color:var(--ink)}
+.help-details{font-size:13px;color:var(--muted)}
+.help-details summary{cursor:pointer;width:fit-content;padding:6px 0}
+.help-details p{max-width:65ch;line-height:1.8;margin:8px 0 0}
+.password-editor h2{margin-top:0}
+.password-editor .actions{margin-top:20px}
+.detail-page>.page-heading{flex-wrap:wrap}
+.detail-page>.page-heading h1,.history-page h1{font-size:28px;font-weight:700;letter-spacing:0}
+@media(max-width:600px){
+  .detail-page>.page-heading h1,.history-page h1{font-size:24px}
+  .history-entry{padding:16px}
+  .report-payment-summary{gap:12px}
 }

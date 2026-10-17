@@ -63,7 +63,7 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
           return <Field key={key} name={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} error={errors[key]} wide={key === 'requirements'}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[key] ?? original?.attributes[key])}<small>此规格保留原值。</small></span> : key === 'requirements' ? <textarea {...props(key)} rows={2} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} /> : <input {...props(key)} inputMode={key === 'size' ? 'decimal' : undefined} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} />}</Field>;
         })}
       </div>
-      <p className="form-help">商品报价与数量修改不改变订单约定总金额。制作同事需复核最新规格与数量。{!itemId && latest.status === 'PROCESSING' && '制作中追加商品会清空整单已确认制作节点。'}</p>
+      <p className="form-help">商品报价不改变订单总额。{!itemId && latest.status === 'PROCESSING' && '追加商品后需重新确认制作进度。'}</p>
       <ErrorNotice error={unknownAddition ? null : error} />
       {unknownAddition && <p className="notice error" role="alert">追加结果暂时无法确认，商品可能已成功保存，输入已保留。请先核对上方最新商品列表及修改日志，确认是否已追加，再决定是否重新保存。</p>}
       {unavailable && <p className="notice" role="status">{itemId && !current ? '此商品已被同事移除，草稿已保留，请取消编辑并核对订单。' : ['WAITING_DELIVERY', 'WAITING_PICKUP'].includes(latest.status) ? '订单已进入待交接，草稿已保留。请先执行上方「重新制作」，再核对订单并保存。' : '订单状态已变化，当前不能修改商品。草稿已保留，请取消编辑并核对状态。'}</p>}

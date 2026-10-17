@@ -114,7 +114,8 @@ class WorkflowManagementIT {
         assertEquals(409, a.raw("POST", "/api/orders", create(b.id)).statusCode());
         assertFalse(a.data("GET", "/api/employees/options", null).toString().contains(b.id));
         assertTrue(a.data("GET", "/api/employees/options?includeArchived=true", null).toString().contains(b.id));
-        assertEquals(403, a.raw("GET", search(""), null).statusCode());
+        assertEquals(admin.data("GET", search(""), null), a.data("GET", search(""), null));
+        assertEquals(200, a.raw("GET", search("").replace("/api/admin/orders?", "/api/admin/orders/export?"), null).statusCode());
         assertEquals(403, a.raw("PATCH", "/api/admin/employees/" + a.id, Map.of("expectedVersion", 1, "nickname", "越权", "jobRoles", List.of("MANAGER"))).statusCode());
     }
     @Test void employeeChangesHaveBeforeAfterAndRollbackIfTheAuditFails() throws Exception {
@@ -219,9 +220,10 @@ class WorkflowManagementIT {
         assertFalse(details.toString().contains("passwordHash")); assertFalse(details.toString().contains(PASSWORD));
         var before = admin.data("GET", "/api/admin/employees?employeeNumber=B001", null).at("/items/0");
         doThrow(new org.springframework.dao.DataAccessResourceFailureException("synthetic audit unavailable")).when(operations)
-                .append(argThat(op -> Set.of("identity.account_created", "identity.account_archived", "identity.password_reset").contains(op.action())));
+                .append(argThat(op -> Set.of("identity.account_created", "identity.account_archived", "identity.password_reset", "identity.password_set").contains(op.action())));
         assertEquals(503, admin.raw("POST", "/api/admin/employees/" + b.id + "/archive", null).statusCode());
         assertEquals(503, admin.raw("POST", "/api/admin/employees/" + b.id + "/reset-password", null).statusCode());
+        assertEquals(503, admin.raw("PATCH", "/api/admin/employees/" + b.id + "/password", Map.of("expectedVersion", before.path("version").asLong(), "newPassword", "Staff008")).statusCode());
         assertEquals(503, admin.raw("POST", "/api/admin/employees", Map.of("employeeNumber", "C001", "nickname", "未提交", "jobRoles", List.of("FRONT_DESK"))).statusCode());
         assertEquals(before, admin.data("GET", "/api/admin/employees?employeeNumber=B001", null).at("/items/0"));
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM identity_account WHERE employee_number='C001'", Integer.class));

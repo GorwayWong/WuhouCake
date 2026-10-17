@@ -50,8 +50,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
   const unknownResult = creationResultUnknown(error);
   return <div className="create-page">
     <a className="back-link" href="#" aria-disabled={busy}><ArrowLeft />返回工作台</a>
-    <div className="page-heading"><div><p className="eyebrow">把客户的心意，交给下一位同事</p><h1>新建订单</h1></div></div>
-    <p className="create-intro">标有 * 的内容必填。创建后可在订单详情添加参考图片、确认付款和制作进度。</p>
+    <div className="page-heading"><div><h1>新建订单</h1></div></div>
     <OrderRecognition draft={draft} initialDraft={initialDraft} getDraft={getDraft} manualFields={manualFields.current} onChange={recognitionChange} busy={busy || unknownResult} onDirtyChange={onRecognitionDirtyChange} />
     <form ref={form} noValidate onSubmit={event => {
       event.preventDefault();
@@ -71,16 +70,16 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
           <section className="panel create-group"><h2><UserCircle />客户信息</h2><div className="create-grid">
             <Field label="下单员工（业绩归属）" name="creditedEmployeeId" error={errors.creditedEmployeeId}><EmployeeSelect id="creditedEmployeeId" value={draft.creditedEmployeeId || ''} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
             {customerFields.map(([name, label, maximum]) => <Field key={name} label={label} name={name} error={errors[name]}><input {...inputProps(name)} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} onChange={event => change({ ...draft, [name]: event.target.value })} required={name === 'phone'} maxLength={maximum} autoComplete="off" /></Field>)}
-          </div><p className="form-help">客户订购人是向门店订购商品的客户，代他人订购时可填写。下单员工用于员工业绩统计；实际录单人由系统另行记录。</p></section>
+          </div></section>
           <section className="panel create-group"><h2><Truck />交接信息</h2><div className="create-grid">
             <Field label="交接方式" name="fulfillmentType"><select {...inputProps('fulfillmentType')} value={draft.fulfillmentType} onChange={event => change({ ...draft, fulfillmentType: event.target.value as OrderDraft['fulfillmentType'] })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></select></Field>
             <Field label="收货日期 *" name="requestedReceiveDate" error={errors.requestedReceiveDate}><DateInput {...inputProps('requestedReceiveDate')} value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} required /></Field>
             <Field label="取货时间 *" name="plannedHandoffAt" error={errors.plannedHandoffAt} wide><DateInput {...inputProps('plannedHandoffAt')} type="datetime-local" step={60} value={draft.plannedHandoffAt} onChange={value => change({ ...draft, plannedHandoffAt: value })} required /></Field>
             <Field label="计划出品时间" name="plannedFinishAt" error={errors.plannedFinishAt} wide><DateInput {...inputProps('plannedFinishAt')} type="datetime-local" step={60} value={draft.plannedFinishAt} onChange={value => change({ ...draft, plannedFinishAt: value })} /></Field>
             <Field label={draft.fulfillmentType === 'DELIVERY' ? '配送地址 *' : '地址（自提可留空）'} name="address" error={errors.address} wide><textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} required={draft.fulfillmentType === 'DELIVERY'} /></Field>
-          </div><p className="form-help">以上时间均为北京时间。取货时间指客户到店自提或配送员从门店取走商品的时间；收货日期决定订单在日历中显示在哪一天。</p></section>
+          </div><p className="form-help">北京时间；取货指客户自提或配送员到店取走。</p></section>
         </div>
-        <section className="panel create-group"><div className="section-heading"><h2><Cake />蛋糕信息</h2><span className="muted">{draft.items.length} 项商品</span></div>
+        <section className="panel create-group"><div className="section-heading"><h2><Cake />商品信息</h2><span className="muted">{draft.items.length} 项</span></div>
           {draft.items.map((item, index) => <div className="create-item" key={item.key}>
             <div className="create-item-heading"><h3>商品 {index + 1}</h3><button type="button" className="text-button danger" aria-label={`移除商品 ${index + 1}`} disabled={draft.items.length === 1} onClick={() => change({ ...draft, items: draft.items.filter(other => other.key !== item.key) })}><Trash />移除</button></div>
             <div className="create-grid">
@@ -95,7 +94,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
           </div>)}
           <button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}><Plus />添加商品</button>
         </section>
-        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid"><Field label="订单约定总金额（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field></div><p className="form-help">按与客户约定的金额填写；不会根据商品报价自动计算。留空与 0 元不同。</p></section>
+        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid"><Field label="订单约定总金额（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field></div><p className="form-help">填写整单约定金额；留空为未报价，0 为零元。</p></section>
       </fieldset>
       {Object.keys(errors).length > 0 && <div className="notice error" role="alert">请检查标出的内容后再创建订单。</div>}
       {error ? unknownResult ? <div className="notice error create-result" role="alert"><p>创建结果暂时无法确认，录单内容已保留。可重试确认上次提交；系统会返回原订单或完成原提交，不会因同次重试重复建单。确认成功后可在详情中修改。也可先核对收货日期 <strong>{submittedDate}</strong>、联系电话 <strong>{submittedPhone}</strong>。</p><a className="text-button" href={`#/?date=${submittedDate}`} target="_blank" rel="noreferrer">打开 {submittedDate} 工作台核对（新标签页）</a></div> : <div className="notice error" role="alert">本次请求未新增订单。{errorText(error)}</div> : null}

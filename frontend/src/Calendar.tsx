@@ -9,13 +9,14 @@ import { BatchOrderExport } from './OrderExports';
 import { readCalendarFilters, writeCalendarFilters, matchesCalendarFilters } from './calendarFilters';
 import { exportOptions } from './exportFiles';
 import { DateInput } from './DateInput';
+import { calendarOrderHref } from './routes';
 
 type Mode = 'week' | 'month';
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 function DateBlock({ date, orders, selected, month, onSelect }: { date: string; orders: CalendarOrder[]; selected: string; month: boolean; onSelect: (date: string) => void }) {
   return <div className={`date-block ${date === selected ? 'selected' : ''} ${date.slice(0, 7) !== selected.slice(0, 7) && month ? 'outside-month' : ''}`}>
     <button className="date-select" aria-label={`选择 ${date}`} aria-pressed={date === selected} onClick={() => onSelect(date)}><span>{Number(date.slice(8))}</span>{date === today() && <small>今</small>}</button>
-    <div className="date-orders">{orders.map(order => <a href={`#/orders/${order.orderId}`} className="calendar-order" key={order.orderId}>
+    <div className="date-orders">{orders.map(order => <a href={calendarOrderHref(month, date, order.orderId)} onClick={event => { if (month && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onSelect(date); } }} className="calendar-order" key={order.orderId}>
       <strong>{order.items.map(item => `${item.name}${item.quantity > 1 ? ` ×${item.quantity}` : ''}`).join('、')}</strong>
       <span className="calendar-number">#{order.orderNo}</span><Status order={order} /><Payment status={order.paymentStatus} />
     </a>)}{!orders.length && <span className="no-orders" aria-label="无订单">—</span>}</div>
@@ -42,14 +43,14 @@ export function Calendar({ accountId, selected, setSelected, mode, setMode, onWr
   const daily = (workbench.data?.pendingOrders || []).filter(order => matchesCalendarFilters(order, filters));
   const changePeriod = (delta: number) => setSelected(mode === 'week' ? shiftDate(selected, delta * 7) : shiftMonth(selected, delta));
   return <>
-    <div className="page-heading workbench-heading"><div><p className="eyebrow">每一份心意，都准时抵达</p><h1>{mode === 'week' ? '日历工作台' : '月历工作台'}</h1></div><div className="workbench-heading-actions">{(['status', 'paymentStatus'] as const).map(key => <label className="calendar-filter" key={key}>{key === 'status' ? '订单状态' : '付款状态'}<select value={filters[key]} onChange={event => changeFilter(key, event.target.value)}><option value="">全部</option>{Object.entries(exportOptions[key]).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>)}<button className="secondary compact" onClick={() => setSelected(today())}>回到今天</button><a className="primary" href="#/orders/new"><Plus />新建订单</a></div></div>
+    <div className="page-heading workbench-heading"><div><h1>{mode === 'week' ? '日历工作台' : '月历工作台'}</h1></div><div className="workbench-heading-actions">{(['status', 'paymentStatus'] as const).map(key => <label className="calendar-filter" key={key}>{key === 'status' ? '订单状态' : '付款状态'}<select value={filters[key]} onChange={event => changeFilter(key, event.target.value)}><option value="">全部</option>{Object.entries(exportOptions[key]).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>)}<button className="secondary compact" onClick={() => setSelected(today())}>回到今天</button><a className="primary" href="#/orders/new"><Plus />新建订单</a></div></div>
     <BatchOrderExport selected={selected} onPendingChange={onWritingChange} />
-    <p className="form-help">按收货日期安排出货，当前查看 {selected}。预约单请切换到其收货日期；刚录入不代表今天出货。{(filters.status || filters.paymentStatus) && <>当前已启用状态筛选。<button type="button" className="text-button" onClick={() => { const next = { status: '', paymentStatus: '' }; setFilters(next); try { writeCalendarFilters(accountId, next, localStorage); } catch { /* Storage access may be denied. */ } }}>显示全部状态和付款</button></>}</p>
+    {(filters.status || filters.paymentStatus) && <p className="filter-summary">已筛选：{exportOptions.status[filters.status] || '全部状态'} · {exportOptions.paymentStatus[filters.paymentStatus] || '全部付款'}<button type="button" className="text-button" onClick={() => { const next = { status: '', paymentStatus: '' }; setFilters(next); try { writeCalendarFilters(accountId, next, localStorage); } catch { /* Storage access may be denied. */ } }}>清除筛选</button></p>}
     <section className={`panel calendar-panel ${mode}`} aria-label={mode === 'week' ? '周历' : '月历'}>
       <div className="calendar-toolbar"><div className="period"><h2>{selected.slice(0, 4)} 年 {Number(selected.slice(5, 7))} 月</h2><label className="date-jump"><span className="sr-only">跳转日期</span><DateInput value={selected} onChange={value => { if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) setSelected(value); }} /></label></div><div className="period-actions"><button className="icon-button" aria-label={mode === 'week' ? '上一周' : '上个月'} onClick={() => changePeriod(-1)}><ArrowLeft /></button><button className="icon-button" aria-label={mode === 'week' ? '下一周' : '下个月'} onClick={() => changePeriod(1)}><ArrowRight /></button></div></div>
       <ErrorNotice error={calendar.error} retry={() => void calendar.refetch()} />
       {calendar.error && calendar.data && <p className="notice" role="status">日历刷新失败，以下为上次读取的内容，请重试更新。</p>}
-      {calendar.isPending ? <Loading /> : !calendar.data ? null : <div className="calendar-scroll" ref={calendarScroll}><div className="calendar-weekdays">{weekdays.map(day => <span key={day}>周{day}</span>)}</div><div className="calendar-grid">{range.dates.map(date => <DateBlock key={date} date={date} selected={selected} month={mode === 'month'} onSelect={setSelected} orders={sorted.filter(order => order.calendarDate === date)} />)}</div></div>}
+      {calendar.isPending ? <Loading /> : !calendar.data ? null : <div className="calendar-scroll" ref={calendarScroll}><div className="calendar-weekdays">{weekdays.map(day => <span key={day}>周{day}</span>)}</div><div className="calendar-grid">{range.dates.map(date => <DateBlock key={date} date={date} selected={selected} month={mode === 'month'} onSelect={date => { setSelected(date); if (mode === 'month') { setMode('week'); window.location.hash = `#/?date=${date}`; } }} orders={sorted.filter(order => order.calendarDate === date)} />)}</div></div>}
       <button className="calendar-toggle" onClick={() => setMode(mode === 'week' ? 'month' : 'week')}>{mode === 'week' ? '展开本月日历' : `收起月历 · 查看 ${Number(selected.slice(5, 7))} 月 ${Number(selected.slice(8))} 日订单`}{mode === 'week' ? <CaretDown /> : <CaretUp />}</button>
     </section>
     {mode === 'week' && <>
