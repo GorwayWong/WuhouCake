@@ -58,6 +58,8 @@ Compose 的 env 文件不会自动设置宿主机 JVM 环境；直接运行 JVM 
 
 集成测试使用随机 schema 和 Redis 命名空间，仍须只连接开发或专用测试实例。口述需求八项补齐的测试与浏览器结果见[业务流程补齐验收](docs/verification/2026-10-17-workflow-fixes.md)，其他历史验证见[验证摘要](frontend/verification.md)；测试数量附执行日期，不代表以后修改自动通过。
 
+[GitHub Actions CI](.github/workflows/ci.yml) 在面向 main 的 PR 及 main 推送时运行：Java 21 执行全部单元、架构和 PostgreSQL/Redis 集成测试，Node.js 24 执行锁文件安装、前端测试与构建。服务为任务内临时测试实例，识别外部调用关闭；后端测试报告作为短期 CI 附件保存，工作流不部署应用。
+
 ## 4. 文档入口
 
 | 文档 | 用途 |
