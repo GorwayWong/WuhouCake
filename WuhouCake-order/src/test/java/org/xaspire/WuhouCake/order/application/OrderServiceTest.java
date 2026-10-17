@@ -25,7 +25,8 @@ class OrderServiceTest {
     private final OrderActivities activities = mock(OrderActivities.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final IdGenerator ids = mock(IdGenerator.class);
-    private final OrderService service = new OrderService(orders, activities, ids, Clock.fixed(NOW.plusSeconds(1), ZoneOffset.UTC), events);
+    private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity = mock(org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.class);
+    private final OrderService service = new OrderService(orders, activities, ids, Clock.fixed(NOW.plusSeconds(1), ZoneOffset.UTC), events, identity);
     private final OrderCommands.Operator operator = new OrderCommands.Operator(UUID.randomUUID(), "员工");
 
     @Test void identicalPaymentChecksDatabaseVersionWithoutWriting() {
@@ -47,34 +48,35 @@ class OrderServiceTest {
         verifyNoInteractions(events);
     }
     @Test void creationPublishesOnlyOrderIdentityAndInitialVersion() {
+        when(identity.selectEmployee(operator.accountId())).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(operator.accountId(), "0002", "员工", "ACTIVE"));
         when(ids.nextId()).thenAnswer(invocation -> UUID.randomUUID()); when(orders.nextNumber()).thenReturn("0000001");
         var command = new OrderCommands.Create(new OrderCommands.Customer("客户", "13800000000", null, null),
                 new OrderCommands.Fulfillment("PICKUP", null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
                 List.of(new OrderCommands.Item("蛋糕", null, 1, null, null, Map.of())), null);
         var result = service.create(command, operator);
-        verify(events).publishEvent(new OrderChanged(result.orderId(), null, OrderChanged.Type.CREATED, 0));
+        verify(events).publishEvent(new OrderChanged(result.orderId(), null, OrderChanged.Type.CREATED, 0, result.orderNo()));
     }
     @Test void itemAndPaymentChangesPublishTheirCommittedVersions() {
         var order = loaded(); var itemId = order.activeItems().getFirst().itemId();
         service.revise(order.id(), new OrderCommands.Revise(0, itemId, Map.of("quantity", 2)), operator);
-        verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_CHANGED, 1));
+        verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_CHANGED, 1, order.orderNo()));
         service.changePaymentStatus(order.id(), new OrderCommands.PaymentStatus(1, "PAID"), operator);
-        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.PAYMENT_STATUS_CHANGED, 2));
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.PAYMENT_STATUS_CHANGED, 2, order.orderNo()));
     }
     @Test void layerIsAnOrderNotificationWithoutAnItemId() {
         var order = loaded();
         service.productionAction(order.id(), new OrderCommands.ProductionAction(0, "START_PRODUCTION"), operator);
-        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED, 1));
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED, 1, order.orderNo()));
         service.productionAction(order.id(), new OrderCommands.ProductionAction(1, "COMPLETE_LAYER"), operator);
-        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED, 2));
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED, 2, order.orderNo()));
     }
     @Test void itemAndOrderNotesPublishWithoutAdvancingVersion() {
         var order = loaded(); var itemId = order.activeItems().getFirst().itemId();
         when(activities.append(any())).thenAnswer(invocation -> invocation.getArgument(0));
         service.note(order.id(), new OrderCommands.Note(itemId, "客户要求少糖"), operator);
-        verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.NOTE, 0));
+        verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.NOTE, 0, order.orderNo()));
         service.note(order.id(), new OrderCommands.Note(null, "订单备注"), operator);
-        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.NOTE, 0));
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.NOTE, 0, order.orderNo()));
         assertEquals(0, order.version()); assertEquals(NOW, order.updatedAt());
         verify(orders, never()).reviseItem(any(), anyLong(), any());
     }
@@ -87,7 +89,7 @@ class OrderServiceTest {
     }
     @Test void removalRecordsSnapshotAndHistoryRemainsQueryableWithVersionCheckedNoop() {
         var order = loaded();
-        var item = OrderItem.create(UUID.randomUUID(), "商品 B", null, 1, null, null, Map.of("size", "6寸"), NOW);
+        var item = OrderItem.create(UUID.randomUUID(), "商品 B", null, 1, null, null, Map.of("size", "6"), NOW);
         order = new Order(order.id(), order.orderNo(), 0, order.status(), order.paymentStatus(), null, order.customer(), order.fulfillment(),
                 order.totalAmountCents(), order.createdBy(), NOW, NOW, NOW, List.of(order.activeItems().getFirst(), item));
         when(orders.find(order.id())).thenReturn(Optional.of(order));
@@ -96,7 +98,7 @@ class OrderServiceTest {
         var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());
         assertEquals("ITEM_REMOVED", logged.getValue().type()); assertEquals(item.itemId(), logged.getValue().itemId());
         assertEquals(operator.accountId(), logged.getValue().actorId()); assertEquals(NOW.plusSeconds(1), logged.getValue().createdAt());
-        verify(events).publishEvent(new OrderChanged(order.id(), item.itemId(), OrderChanged.Type.ITEM_REMOVED, 1));
+        verify(events).publishEvent(new OrderChanged(order.id(), item.itemId(), OrderChanged.Type.ITEM_REMOVED, 1, order.orderNo()));
         assertDoesNotThrow(() -> service.activities(result.orderId(), item.itemId(), null, 1, 20));
         service.removeItem(order.id(), item.itemId(), new OrderCommands.RemoveItem(1), operator);
         verify(orders).verifyVersion(order.id(), 1); verify(activities, times(1)).append(any());
@@ -117,7 +119,7 @@ class OrderServiceTest {
     @Test void additionUsesServerIdPersistsStageResetAndLogsActorAndSnapshot() {
         var order = loaded(); order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
         var original = order.activeItems().getFirst(); var itemId = UUID.randomUUID(); when(ids.nextId()).thenReturn(itemId);
-        var input = new OrderCommands.Item("蛋糕 C", null, 1, 12000, null, Map.of("size", "6寸"));
+        var input = new OrderCommands.Item("蛋糕 C", null, 1, 12000, null, Map.of("size", "6"));
         var result = service.addItem(order.id(), new OrderCommands.AddItem(2, input), operator);
         assertEquals(3, result.version()); assertNull(result.currentStageCode()); assertNull(result.totalAmountCents());
         assertEquals(original, order.requireActiveItem(original.itemId())); assertEquals("IN_PROGRESS", order.requireActiveItem(itemId).productionStatus());
@@ -125,7 +127,7 @@ class OrderServiceTest {
         var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture()); var activity = logged.getValue();
         assertEquals("ITEM_ADDED", activity.type()); assertEquals(itemId, activity.itemId()); assertEquals(operator.accountId(), activity.actorId());
         assertEquals(NOW.plusSeconds(1), activity.createdAt()); assertEquals("LAYER_DONE", ((Map<?, ?>) activity.details().get("before")).get("currentStageCode"));
-        verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_ADDED, 3));
+        verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_ADDED, 3, order.orderNo()));
     }
     @Test void additionRejectsStaleAndDatabaseConflictingVersionsBeforeActivityOrPublication() {
         var order = loaded(); var input = new OrderCommands.Item("C", null, 1, null, null, Map.of());
@@ -147,7 +149,7 @@ class OrderServiceTest {
         assertEquals("13900000000", ((Map<?, ?>) activity.details().get("after")).get("phone"));
         assertEquals(operator.accountId(), activity.actorId()); assertEquals(operator.nickname(), activity.actorNameSnapshot());
         assertEquals(NOW.plusSeconds(1), activity.createdAt());
-        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_INFORMATION_CHANGED, 3));
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_INFORMATION_CHANGED, 3, order.orderNo()));
     }
     @Test void informationNoopChecksCurrentDatabaseVersionAndRejectsRacesWithoutWriting() {
         var order = loaded(); var command = new OrderCommands.Information(0, Map.of("phone", "13800000000"));
@@ -201,7 +203,7 @@ class OrderServiceTest {
         assertEquals("CONFIRM_PICKUP", activity.details().get("action")); assertEquals(Map.of("status", "WAITING_PICKUP"), activity.details().get("before"));
         assertEquals(Map.of("status", "COMPLETED"), activity.details().get("after")); assertEquals(operator.accountId(), activity.actorId());
         assertEquals(operator.nickname(), activity.actorNameSnapshot()); assertEquals(NOW.plusSeconds(1), activity.createdAt());
-        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_FULFILLMENT_CHANGED, 3));
+        verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_FULFILLMENT_CHANGED, 3, order.orderNo()));
     }
     @Test void cancellationRecordsTrimmedReasonAndPreservesPaymentStageAndNotes() {
         var order = loaded(); order.changePaymentStatus("PAID", NOW); order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
@@ -216,7 +218,7 @@ class OrderServiceTest {
         assertEquals("ORDER_CANCELLED", activity.type()); assertEquals("客户确认取消", activity.content()); assertNull(activity.itemId());
         assertEquals(Map.of("status", "PROCESSING"), activity.details().get("before")); assertEquals(Map.of("status", "CANCELLED"), activity.details().get("after"));
         assertEquals(operator.accountId(), activity.actorId()); assertEquals(operator.nickname(), activity.actorNameSnapshot());
-        assertEquals(NOW.plusSeconds(1), activity.createdAt()); verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_CANCELLED, 4));
+        assertEquals(NOW.plusSeconds(1), activity.createdAt()); verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_CANCELLED, 4, order.orderNo()));
     }
     @Test void terminalOrdersStillAllowNotesAndPaymentCorrection() {
         for (boolean completed : List.of(false, true)) {
@@ -228,10 +230,10 @@ class OrderServiceTest {
             when(activities.append(any())).thenAnswer(invocation -> invocation.getArgument(0));
             service.note(order.id(), new OrderCommands.Note(itemId, "人工处理备注"), operator);
             assertEquals(version, order.version()); assertEquals(status, order.status());
-            verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.NOTE, version));
+            verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.NOTE, version, order.orderNo()));
             service.changePaymentStatus(order.id(), new OrderCommands.PaymentStatus(version, "PAID"), operator);
             assertEquals(version + 1, order.version()); assertEquals(status, order.status());
-            verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.PAYMENT_STATUS_CHANGED, version + 1));
+            verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.PAYMENT_STATUS_CHANGED, version + 1, order.orderNo()));
         }
     }
     @Test void invalidFulfillmentCancellationAndStaleVersionsNeverPublishOrPersist() {

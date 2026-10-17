@@ -39,6 +39,14 @@ public record EmployeeAccount(UUID id, String employeeNumber, String nickname, S
         requireActive();
         return changed(nickname, hash, temporary, status, credentialVersion + 1, now, archivedAt, archivedBy);
     }
+    public EmployeeAccount reviseProfile(String name, Set<JobRole> roles, Instant now) {
+        if (status != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
+        name = AccountValues.nickname(name);
+        if (roles == null || roles.isEmpty() || roles.stream().anyMatch(java.util.Objects::isNull)) throw new IdentityFailure("VALIDATION_FAILED");
+        if (nickname.equals(name) && jobRoles.equals(roles)) return this;
+        return new EmployeeAccount(id, employeeNumber, name, roles, systemRole, status, passwordHash, passwordChangeRequired,
+                credentialVersion, version + 1, createdAt, now, archivedAt, archivedBy);
+    }
     public EmployeeAccount archive(UUID actor, long activeAdministrators, Instant now) {
         if (id.equals(actor)) throw new IdentityFailure("SELF_ARCHIVE_FORBIDDEN");
         if (status == Status.ARCHIVED) return this;

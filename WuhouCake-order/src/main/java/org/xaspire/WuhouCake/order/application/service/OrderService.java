@@ -22,15 +22,18 @@ import org.xaspire.WuhouCake.shared.response.Page;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 public class OrderService {
+    private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity;
     private final Orders orders;
     private final OrderActivities activities;
     private final IdGenerator ids;
     private final Clock clock;
     private final ApplicationEventPublisher events;
 
-    public OrderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events) {
+    public OrderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events,
+            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity) {
         this.orders = orders; this.activities = activities; this.ids = ids; this.clock = clock;
         this.events = events;
+        this.identity = identity;
     }
     @Transactional
     public OrderViews.Detail create(OrderCommands.Create command, Operator operator) {
@@ -46,9 +49,11 @@ public class OrderService {
             if (item == null) throw invalid();
             return OrderItem.create(ids.nextId(), item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
         }).toList();
-        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now);
+        var employee = selectEmployee(command.creditedEmployeeId() == null ? actor.accountId() : command.creditedEmployeeId());
+        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee);
         orders.create(order);
-        activities.append(OrderActivity.append(order.id(), null, "CREATED", "创建订单", Map.of("status", order.status(), "paymentStatus", order.paymentStatus()), actor, now));
+        activities.append(OrderActivity.append(order.id(), null, "CREATED", "创建订单", Map.of("status", order.status(), "paymentStatus", order.paymentStatus(),
+                "creditedEmployeeId", employee.accountId().toString(), "creditedEmployeeName", employee.nickname()), actor, now));
         changed(order, null, OrderChanged.Type.CREATED);
         return detail(order, List.of());
     }
@@ -104,7 +109,14 @@ public class OrderService {
         var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
         var order = requireOrder(id);
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
-        var now = now(); var changed = order.reviseInformation(command.changes(), now);
+        var employee = order.creditedEmployee();
+        if (command.changes().containsKey("creditedEmployeeId")) {
+            UUID selected;
+            try { selected = UUID.fromString((String) command.changes().get("creditedEmployeeId")); }
+            catch (RuntimeException failure) { throw invalid(); }
+            if (employee == null || !employee.accountId().equals(selected)) employee = selectEmployee(selected);
+        }
+        var now = now(); var changed = order.reviseInformation(command.changes(), now, employee);
         if (changed.isEmpty()) orders.verifyVersion(id, expected);
         else {
             orders.reviseInformation(order, expected);
@@ -183,10 +195,14 @@ public class OrderService {
     }
     private Order requireOrder(UUID id) { return orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND")); }
     private void changed(Order order, UUID itemId, OrderChanged.Type type) {
-        events.publishEvent(new OrderChanged(order.id(), itemId, type, order.version()));
+        events.publishEvent(new OrderChanged(order.id(), itemId, type, order.version(), order.orderNo()));
     }
     private Instant now() { return clock.instant().truncatedTo(ChronoUnit.MICROS); }
     private static Actor actor(Operator operator) { return new Actor(operator.accountId(), operator.nickname()); }
+    private Attribution selectEmployee(UUID id) {
+        var employee = identity.selectEmployee(id);
+        return new Attribution(employee.accountId(), employee.employeeNumber(), employee.nickname());
+    }
     private static OrderViews.Activity activity(OrderActivity activity) {
         return new OrderViews.Activity(activity.id(), activity.orderId(), activity.itemId(), activity.type(), activity.content(), activity.details(),
                 activity.actorId(), activity.actorNameSnapshot(), activity.createdAt());
@@ -201,6 +217,8 @@ public class OrderService {
         return new OrderViews.Detail(order.id(), order.orderNo(), order.version(), order.status(), order.paymentStatus(), order.currentStageCode(),
                 new OrderCommands.Customer(customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName()),
                 new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt()),
-                order.totalAmountCents(), order.createdBy(), order.createdAt(), order.confirmedAt(), order.updatedAt(), items);
+                order.totalAmountCents(), order.createdBy(), order.createdAt(), order.confirmedAt(), order.updatedAt(), items,
+                order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
+                        order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()));
     }
 }

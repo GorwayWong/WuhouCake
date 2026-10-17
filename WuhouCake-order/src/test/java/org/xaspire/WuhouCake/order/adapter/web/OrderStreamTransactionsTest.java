@@ -20,10 +20,15 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
+import org.xaspire.WuhouCake.order.application.service.OrderImageService;
+import org.xaspire.WuhouCake.order.domain.port.OrderImages;
+import org.xaspire.WuhouCake.order.domain.port.OrderImageValidator;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImage;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.Order;
 import org.xaspire.WuhouCake.order.domain.model.entity.OrderItem;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 import org.xaspire.WuhouCake.order.domain.repository.*;
+import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.CredentialsRevoked;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -38,6 +43,7 @@ class OrderStreamTransactionsTest {
     private final OrderCommands.Operator operator = new OrderCommands.Operator(UUID.randomUUID(), "员工");
     private DataSourceTransactionManager manager;
     private Order order;
+    private final UUID subscriber = UUID.randomUUID();
 
     @Configuration(proxyBeanMethods = false) @EnableTransactionManagement
     static class Transactions { }
@@ -53,8 +59,8 @@ class OrderStreamTransactionsTest {
         context.register(Transactions.class);
         context.registerBean(PlatformTransactionManager.class, () -> manager);
         context.registerBean(OrderStreams.class, () -> streams);
-        context.registerBean(OrderService.class, () -> new OrderService(orders, activities, UUID::randomUUID, clock, context));
-        context.refresh(); streams.subscribe(NOW.plusSeconds(60));
+        context.registerBean(OrderService.class, () -> new OrderService(orders, activities, UUID::randomUUID, clock, context, mock(org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.class)));
+        context.refresh(); streams.subscribe(subscriber, 0, NOW.plusSeconds(60), () -> true);
         order = Order.create(UUID.randomUUID(), "0000001", new CustomerContact(null, "13800000000", null, null),
                 new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
                 null, List.of(OrderItem.create(UUID.randomUUID(), "蛋糕", null, 1, null, null, Map.of(), NOW)), operator.accountId(), NOW);
@@ -62,7 +68,7 @@ class OrderStreamTransactionsTest {
         when(activities.append(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
     @AfterEach void close() { context.close(); }
-    private OrderChanged event() { return new OrderChanged(order.id(), null, OrderChanged.Type.NOTE, order.version()); }
+    private OrderChanged event() { return new OrderChanged(order.id(), null, OrderChanged.Type.NOTE, order.version(), order.orderNo()); }
 
     @Test void eventWaitsForCommitAndDoesNotRunOutsideATransaction() throws Exception {
         context.publishEvent(event()); verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
@@ -83,6 +89,24 @@ class OrderStreamTransactionsTest {
         assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event())));
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
     }
+    @Test void credentialRevocationClosesOnlyAfterCommit() throws Exception {
+        context.publishEvent(new CredentialsRevoked(subscriber, 1)); verify(emitter, never()).complete();
+        new TransactionTemplate(manager).executeWithoutResult(status -> {
+            context.publishEvent(new CredentialsRevoked(subscriber, 1)); verify(emitter, never()).complete();
+        });
+        verify(connection).commit(); verify(emitter).complete();
+        new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event()));
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @Test void credentialRevocationRollbackAndCommitFailureKeepTheConnectionOpen() throws Exception {
+        new TransactionTemplate(manager).executeWithoutResult(status -> { context.publishEvent(new CredentialsRevoked(subscriber, 1)); status.setRollbackOnly(); });
+        doThrow(new SQLException("commit failed")).when(connection).commit();
+        assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(new CredentialsRevoked(subscriber, 1))));
+        verify(emitter, never()).complete();
+        doNothing().when(connection).commit();
+        new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event()));
+        verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
+    }
     @Test void serviceNoteCommitsAndNotifiesDespiteUnchangedVersion() throws Exception {
         var itemId = order.activeItems().getFirst().itemId();
         var result = context.getBean(OrderService.class).note(order.id(), new OrderCommands.Note(itemId, "少糖"), operator);
@@ -93,6 +117,39 @@ class OrderStreamTransactionsTest {
         doThrow(new IllegalStateException("activity unavailable")).when(activities).append(any());
         assertThrows(IllegalStateException.class, () -> context.getBean(OrderService.class).note(order.id(), new OrderCommands.Note(null, "少糖"), operator));
         verify(connection).rollback(); verify(connection, never()).commit(); verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void imageChangesNotifyAfterCommitWithoutChangingOrder(boolean removal) throws Exception {
+        var action = imageAction(removal);
+        action.run();
+        var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        var sequence = inOrder(connection, emitter);
+        sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+        sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
+        var change = sent.getValue().build().stream().map(value -> value.getData()).filter(OrderChanged.class::isInstance)
+                .map(OrderChanged.class::cast).findFirst().orElseThrow();
+        assertEquals(removal ? OrderChanged.Type.IMAGE_REMOVED : OrderChanged.Type.IMAGE_ADDED, change.changeType());
+        assertEquals(0, change.version()); assertEquals(NOW, order.updatedAt());
+        verify(activities).append(argThat(log -> log.type().equals(change.changeType().name()) && log.details().containsKey("imageId")));
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void failedImageCommitNeverNotifies(boolean removal) throws Exception {
+        var action = imageAction(removal);
+        doThrow(new SQLException("commit failed")).when(connection).commit();
+        assertThrows(TransactionException.class, action::run);
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    private Runnable imageAction(boolean removal) {
+        var images = mock(OrderImages.class); var validator = mock(OrderImageValidator.class);
+        var image = new OrderImage(UUID.randomUUID(), order.id(), null, "image/png", "cake.png", 1, 1, 1,
+                operator.accountId(), operator.nickname(), NOW);
+        when(images.lockOrder(order.id())).thenReturn(true);
+        when(images.find(order.id(), image.imageId())).thenReturn(Optional.of(image));
+        when(validator.validate(any(), anyString())).thenReturn(new OrderImageValidator.Checked("image/png", "cake.png", 1, 1));
+        var service = new OrderImageService(orders, images, validator, new TransactionTemplate(manager), UUID::randomUUID,
+                Clock.fixed(NOW, ZoneOffset.UTC), activities, context);
+        return removal ? () -> service.remove(order.id(), image.imageId(), operator)
+                : () -> service.upload(order.id(), null, new byte[]{1}, "cake.png", operator);
     }
     @Test void sendFailureCannotFailTheCommittedServiceOperation() throws Exception {
         doThrow(new IOException("disconnected")).when(emitter).send(any(SseEmitter.SseEventBuilder.class));
@@ -112,7 +169,7 @@ class OrderStreamTransactionsTest {
         var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class); var sequence = inOrder(emitter, connection);
         sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class)); sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
         var event = sent.getValue().build().stream().map(value -> value.getData()).filter(OrderChanged.class::isInstance).map(OrderChanged.class::cast).findFirst().orElseThrow();
-        assertEquals(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_REMOVED, 1), event);
+        assertEquals(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_REMOVED, 1, order.orderNo()), event);
         service.removeItem(order.id(), itemId, new OrderCommands.RemoveItem(1), operator);
         verify(orders).verifyVersion(order.id(), 1); verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
     }
@@ -169,7 +226,7 @@ class OrderStreamTransactionsTest {
         var sequence = inOrder(emitter, connection);
         sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class)); sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
         var event = sent.getValue().build().stream().map(value -> value.getData()).filter(OrderChanged.class::isInstance).map(OrderChanged.class::cast).findFirst().orElseThrow();
-        assertEquals(new OrderChanged(order.id(), null, fulfillment ? OrderChanged.Type.ORDER_FULFILLMENT_CHANGED : OrderChanged.Type.ORDER_CANCELLED, expected + 1), event);
+        assertEquals(new OrderChanged(order.id(), null, fulfillment ? OrderChanged.Type.ORDER_FULFILLMENT_CHANGED : OrderChanged.Type.ORDER_CANCELLED, expected + 1, order.orderNo()), event);
     }
     @ParameterizedTest @ValueSource(booleans = {false, true})
     void outerRollbackSuppressesStatusChangeNotifications(boolean fulfillment) throws Exception {

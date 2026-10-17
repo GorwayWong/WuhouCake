@@ -48,7 +48,7 @@ public interface OrderQueryMapper {
 
     @Select("SELECT " + ORDER_COLUMNS + ", customer_name, customer_phone AS phone, member_phone, buyer_name,"
             + " delivery_address AS address, planned_finish_at FROM cake_order WHERE requested_receive_date=#{date}"
-            + " AND status NOT IN ('COMPLETED', 'CANCELLED')" + ORDER_SORT)
+            + ORDER_SORT)
     List<PendingRow> pending(LocalDate date);
 
     @Select("<script>SELECT order_id::text, id::text AS item_id, name, quantity FROM cake_order_item"

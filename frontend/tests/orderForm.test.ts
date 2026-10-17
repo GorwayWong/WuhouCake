@@ -30,9 +30,9 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   draft.address = '合成测试地址';
   draft.plannedHandoffAt = '2026-10-15T09:00';
   draft.items[0].name = '蛋糕 A'; draft.items[0].unitPrice = '199';
-  draft.items[0].attributes.size = '6寸'; draft.items[0].attributes.flavor = '芒果';
+  draft.items[0].attributes.size = '6'; draft.items[0].attributes.flavor = '芒果';
   const second = newItem(); second.name = '蛋糕 B'; second.quantity = '2'; second.memberPrice = '0';
-  second.attributes.size = '8寸'; second.attributes.flavor = '巧克力';
+  second.attributes.size = '8'; second.attributes.flavor = '巧克力';
   draft.items.push(second);
   const { request, errors } = createOrderRequest(draft);
   assert.deepEqual(errors, {});
@@ -42,7 +42,7 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   assert.equal(request.fulfillment.requestedReceiveDate, '2026-10-14');
   assert.equal(request.fulfillment.plannedHandoffAt, '2026-10-15T09:00:00+08:00');
   assert.equal(request.fulfillment.plannedFinishAt, null);
-  assert.deepEqual(request.items.map(item => item.attributes), [{ size: '6寸', flavor: '芒果' }, { size: '8寸', flavor: '巧克力' }]);
+  assert.deepEqual(request.items.map(item => item.attributes), [{ size: '6', flavor: '芒果', base: '原味', filling: '芒果' }, { size: '8', flavor: '巧克力', base: '原味', filling: '芒果' }]);
   assert.equal(request.items[0].unitPriceCents, 19900);
   assert.equal(request.items[1].memberPriceCents, 0);
   assert.equal(request.items[1].quantity, 2);

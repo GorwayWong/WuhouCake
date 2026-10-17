@@ -26,6 +26,8 @@ public class IdentityController {
     }
     public record CreateRequest(@NotBlank @Size(max = 32) String employeeNumber, @NotNull @Size(max = 160) String nickname,
             @NotEmpty @Size(max = 3) Set<@NotBlank @Size(max = 20) String> jobRoles, String systemRole) { }
+    public record ProfileRequest(@NotNull @PositiveOrZero Long expectedVersion, @NotNull @Size(max = 160) String nickname,
+            @NotEmpty @Size(max = 3) Set<@NotBlank @Size(max = 20) String> jobRoles) { }
     private final IdentityFacade identity;
     private final boolean secureCookie;
     public IdentityController(IdentityFacade identity, boolean secureCookie) { this.identity = identity; this.secureCookie = secureCookie; }
@@ -57,6 +59,14 @@ public class IdentityController {
             @RequestParam(required = false) String nickname, @RequestParam(required = false) String status,
             @RequestParam(required = false) String jobRole, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.success(identity.employees(new IdentityFacade.Search(employeeNumber, nickname, status, jobRole, page, size)));
+    }
+    @GetMapping("/api/employees/options")
+    public ApiResponse<java.util.List<IdentityFacade.EmployeeOption>> options(@RequestParam(defaultValue = "false") boolean includeArchived) {
+        return ApiResponse.success(identity.employeeOptions(includeArchived));
+    }
+    @PatchMapping("/api/admin/employees/{id}")
+    public ApiResponse<IdentityFacade.AccountView> profile(@PathVariable UUID id, @Valid @RequestBody ProfileRequest command) {
+        return ApiResponse.success(identity.reviseEmployee(id, new IdentityFacade.Profile(command.expectedVersion(), command.nickname(), command.jobRoles())));
     }
     @PostMapping("/api/admin/employees")
     public ResponseEntity<ApiResponse<IdentityFacade.Provisioned>> create(@Valid @RequestBody CreateRequest command) {

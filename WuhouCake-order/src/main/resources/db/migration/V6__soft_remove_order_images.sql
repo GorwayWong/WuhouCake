@@ -1,0 +1,1 @@
+ALTER TABLE cake_order_image ADD COLUMN is_removed BOOLEAN NOT NULL DEFAULT FALSE;

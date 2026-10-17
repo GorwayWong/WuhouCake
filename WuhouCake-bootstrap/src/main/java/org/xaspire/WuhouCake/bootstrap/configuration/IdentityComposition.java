@@ -6,6 +6,7 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.DelegatingPasswordEncoder;
@@ -34,7 +35,7 @@ import org.xaspire.WuhouCake.identity.domain.model.valobj.AccountValues.Actor;
 @MapperScan({"org.xaspire.WuhouCake.identity.infrastructure.persistence.mapper", "org.xaspire.WuhouCake.audit.infrastructure.persistence.mapper"})
 public class IdentityComposition {
     @Bean Accounts accounts(AccountMapper mapper) { return new PostgresAccounts(mapper); }
-    @Bean Operations operations(OperationMapper mapper) { return new PostgresOperations(mapper); }
+    @Bean Operations operations(OperationMapper mapper, org.xaspire.WuhouCake.shared.json.JsonCodec json) { return new PostgresOperations(mapper, json); }
     @Bean Credentials credentials() {
         var argon2 = new Argon2PasswordEncoder(16, 32, 1, 19456, 2);
         return new SpringCredentials(new DelegatingPasswordEncoder("argon2id", Map.of("argon2id", argon2)));
@@ -61,7 +62,7 @@ public class IdentityComposition {
     }
     @Bean AuditService auditService(Operations operations, AuditAccess access, IdGenerator ids) { return new AuditService(operations, access, ids); }
     @Bean IdentityService identityService(Accounts accounts, Credentials credentials, Sessions sessions, Attempts attempts,
-            AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock, IdentityProperties properties) {
-        return new IdentityService(accounts, credentials, sessions, attempts, tokens, actors, audit, ids, clock, properties.accessLifetime(), properties.sessionLifetime());
+            AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock, IdentityProperties properties, ApplicationEventPublisher events) {
+        return new IdentityService(accounts, credentials, sessions, attempts, tokens, actors, audit, ids, clock, properties.accessLifetime(), properties.sessionLifetime(), events);
     }
 }

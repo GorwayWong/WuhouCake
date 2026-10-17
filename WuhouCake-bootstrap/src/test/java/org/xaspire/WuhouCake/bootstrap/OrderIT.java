@@ -87,18 +87,18 @@ class OrderIT {
         doReturn(start.plusSeconds(1)).when(clock).instant();
         var changes = new LinkedHashMap<String, Object>();
         changes.put("name", "生日蛋糕"); changes.put("quantity", 2); changes.put("unitPriceCents", 12000);
-        changes.put("memberPriceCents", null); changes.put("attributes", Map.of("size", "10寸", "flavors", List.of("草莓")));
+        changes.put("memberPriceCents", null); changes.put("attributes", Map.of("size", "10", "flavors", List.of("草莓")));
         var revised = staff.request("PATCH", "/api/orders/" + orderId, patch(first, 0, changes));
         assertEquals(200, revised.status, revised.body.toString()); assertEquals(1, revised.body.at("/data/version").asLong());
         var after = staff.request("GET", "/api/orders/" + orderId, null).body.path("data");
         assertEquals(item(before, second), item(after, second));
         var changed = item(after, first);
         assertEquals("生日蛋糕", changed.path("name").asText()); assertEquals(2, changed.path("quantity").asInt());
-        assertEquals("10寸", changed.at("/attributes/size").asText()); assertEquals("生日快乐", changed.at("/attributes/greeting").asText());
+        assertEquals("10", changed.at("/attributes/size").asText()); assertEquals("生日快乐", changed.at("/attributes/greeting").asText());
         assertTrue(changed.path("memberPriceCents").isNull()); assertEquals("NOT_STARTED", changed.path("productionStatus").asText());
         assertEquals(start.plusSeconds(1), Instant.parse(changed.path("updatedAt").asText()));
         assertEquals(start.plusSeconds(1), Instant.parse(after.path("updatedAt").asText()));
-        assertEquals("10寸", jdbc.queryForObject("SELECT attributes->>'size' FROM cake_order_item WHERE id=?::uuid", String.class, first));
+        assertEquals("10", jdbc.queryForObject("SELECT attributes->>'size' FROM cake_order_item WHERE id=?::uuid", String.class, first));
         assertEquals(2, jdbc.queryForObject("SELECT quantity FROM cake_order_item WHERE id=?::uuid", Integer.class, first));
 
         var stale = staff.request("PATCH", "/api/orders/" + orderId, patch(first, 0, Map.of("quantity", 99)));
@@ -108,7 +108,7 @@ class OrderIT {
         assertEquals(200, history.status); assertEquals(1, history.body.at("/data/total").asLong());
         var log = history.body.at("/data/items/0");
         assertEquals("蛋糕", log.at("/details/before/name").asText()); assertEquals("生日蛋糕", log.at("/details/after/name").asText());
-        assertEquals("8寸", log.at("/details/before/attributes/size").asText()); assertEquals("10寸", log.at("/details/after/attributes/size").asText());
+        assertEquals("8", log.at("/details/before/attributes/size").asText()); assertEquals("10", log.at("/details/after/attributes/size").asText());
         assertEquals(8000, log.at("/details/before/memberPriceCents").asLong()); assertTrue(log.at("/details/after/memberPriceCents").isNull());
         assertEquals(staff.accountId, log.path("actorId").asText()); assertEquals("前台员工", log.path("actorNameSnapshot").asText());
         assertEquals(orderId, log.path("orderId").asText()); assertEquals(first, log.path("itemId").asText());
@@ -932,7 +932,7 @@ class OrderIT {
         assertEquals(8, workbench.at("/metrics/totalOrders").asLong());
         assertEquals(2, workbench.at("/metrics/createdOnDate").asLong());
         assertEquals(4, workbench.at("/metrics/deliveryDueOnDate").asLong());
-        var pending = workbench.path("pendingOrders"); assertEquals(5, pending.size());
+        var pending = workbench.path("pendingOrders"); assertEquals(7, pending.size());
         assertEquals(waiting.path("orderId"), pending.get(0).path("orderId"));
         assertEquals("PROCESSING", pending.get(1).path("status").asText());
         assertEquals("PAID", pending.get(1).path("paymentStatus").asText());
@@ -974,6 +974,32 @@ class OrderIT {
         assertEquals(200, result.status, result.body.toString()); return result.body.path("data");
     }
 
+    @Test void recognitionIsPartialAuthenticatedAndHasNoOrderSideEffects() throws Exception {
+        var staff = staff(); var original = staff.request("POST", "/api/orders", create()).body.path("data");
+        String id = original.path("orderId").asText();
+        String text = "【蛋糕预定单】 收货时间：2026.9.30 尺寸：8寸 口味（默认原味夹芒果）：芒果，脆啵啵，奥利奥 电话：13800000012 地址：合成地址 价格（客服填）： 会员手机号：13800000012 【订购需知】：满58免运费，4寸-6寸配5人份，夹层可以换草莓";
+        try (var stream = staff.stream()) {
+            clearInvocations(orders, activities);
+            assertEquals(401, new Client().request("POST", "/api/orders/recognition/parse", Map.of("text", text)).status);
+            var result = staff.request("POST", "/api/orders/recognition/parse", Map.of("text", text));
+            assertEquals(200, result.status, result.body.toString());
+            assertEquals("2026-09-30", result.body.at("/data/fields/requestedReceiveDate/value").asText());
+            assertTrue(result.body.at("/data/fields/plannedHandoffAt/value").isNull());
+            assertEquals("芒果、脆啵啵、奥利奥", result.body.at("/data/items/0/fields/filling/value").asText());
+            assertTrue(result.body.at("/data/items/0/fields/name/value").isNull());
+            assertTrue(result.body.at("/data/items/0/fields/quantity/value").isNull());
+            assertEquals(400, staff.request("POST", "/api/orders/recognition/parse", Map.of("text", "字".repeat(12001))).status);
+            assertEquals(400, staff.request("POST", "/api/orders/recognition/parse", Map.of("text", " ")).status);
+            var assisted = staff.request("POST", "/api/orders/recognition/assist", Map.of("text", "【蛋糕预定单】\n奶油用动物的", "allowExternalProcessing", true));
+            assertEquals(200, assisted.status); assertEquals("DISABLED", assisted.body.at("/data/status").asText());
+            verifyNoInteractions(orders, activities);
+            assertEquals(original, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Integer.class));
+            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_image", Integer.class));
+            stream.noChange();
+        }
+    }
     private Client staff() throws Exception {
         identity.initializeAdministrator("0001", "店长", INITIAL);
         var admin = new Client(); admin.login("0001", INITIAL); admin.changePassword(INITIAL); admin.login("0001", PASSWORD);
@@ -989,7 +1015,7 @@ class OrderIT {
         return Map.of("customer", Map.of("customerName", "客户", "phone", "13800000000"),
                 "fulfillment", Map.of("type", "DELIVERY", "address", "示例地址", "requestedReceiveDate", "2026-10-16", "plannedHandoffAt", "2026-10-16T10:00:00+08:00"),
                 "items", List.of(Map.of("name", "蛋糕", "productType", "CAKE", "quantity", 1, "unitPriceCents", 10000, "memberPriceCents", 8000,
-                        "attributes", Map.of("size", "8寸", "flavors", List.of("芒果"), "greeting", "生日快乐")),
+                        "attributes", Map.of("size", "8", "flavors", List.of("芒果"), "greeting", "生日快乐")),
                         Map.of("name", "纸杯", "productType", "CUPCAKE", "quantity", 6, "unitPriceCents", 1000, "attributes", Map.of("flavor", "香草"))));
     }
     private static Map<String, Object> patch(String itemId, Number version, Map<String, Object> changes) {
@@ -1033,7 +1059,8 @@ class OrderIT {
         void changed(String orderId, String itemId, String type, long version) throws Exception {
             var message = messages.poll(5, TimeUnit.SECONDS); assertNotNull(message, "missing order.changed"); assertEquals("order.changed", message.name);
             var data = message.data;
-            assertEquals(Set.of("orderId", "itemId", "changeType", "version"), json.convertValue(data, Map.class).keySet());
+            assertEquals(Set.of("orderId", "itemId", "changeType", "version", "orderNo"), json.convertValue(data, Map.class).keySet());
+            assertFalse(data.path("orderNo").asText().isBlank());
             assertEquals(orderId, data.path("orderId").asText());
             if (itemId == null) assertTrue(data.path("itemId").isNull()); else assertEquals(itemId, data.path("itemId").asText());
             assertEquals(type, data.path("changeType").asText()); assertEquals(version, data.path("version").asLong());

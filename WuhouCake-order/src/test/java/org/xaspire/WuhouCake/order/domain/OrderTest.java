@@ -15,13 +15,13 @@ class OrderTest {
     private static final Instant NOW = Instant.parse("2026-10-12T01:00:00Z");
 
     @Test void revisingOneItemPreservesOtherItemAndRecordsActualValues() {
-        var first = item("蛋糕", Map.of("size", "8寸", "flavors", List.of("芒果")));
+        var first = item("蛋糕", Map.of("size", "8", "flavors", List.of("芒果")));
         var second = item("纸杯", Map.of("flavor", "香草"));
         var order = order(first, second);
-        var details = order.reviseItem(first.itemId(), Map.of("quantity", 2, "attributes", Map.of("size", "10寸")), NOW.plusSeconds(1));
+        var details = order.reviseItem(first.itemId(), Map.of("quantity", 2, "attributes", Map.of("size", "10")), NOW.plusSeconds(1));
         assertEquals(1, order.version()); assertEquals(NOW.plusSeconds(1), order.updatedAt());
         assertEquals(2, order.requireActiveItem(first.itemId()).quantity());
-        assertEquals(Map.of("size", "10寸", "flavors", List.of("芒果")), order.requireActiveItem(first.itemId()).attributes());
+        assertEquals(Map.of("size", "10", "flavors", List.of("芒果"), "base", "原味", "filling", "芒果"), order.requireActiveItem(first.itemId()).attributes());
         assertEquals(second, order.requireActiveItem(second.itemId()));
         assertEquals(Map.of("quantity", BigDecimal.ONE, "attributes", first.attributes()), details.get("before"));
         assertEquals(Map.of("quantity", BigDecimal.valueOf(2), "attributes", order.requireActiveItem(first.itemId()).attributes()), details.get("after"));
@@ -31,7 +31,7 @@ class OrderTest {
         var attributes = new LinkedHashMap<String, Object>();
         attributes.put("flavors", flavors); attributes.put("greeting", "生日快乐"); attributes.put("decoration", Map.of("color", "粉", "shape", "兔子"));
         var item = item("蛋糕", attributes); var order = order(item);
-        flavors.add("草莓"); attributes.put("size", "12寸");
+        flavors.add("草莓"); attributes.put("size", "12");
         var patch = new LinkedHashMap<String, Object>();
         patch.put("greeting", null); patch.put("decoration", Map.of("color", "白"));
         var changes = new LinkedHashMap<String, Object>();
@@ -42,10 +42,10 @@ class OrderTest {
         assertFalse(revised.attributes().containsKey("greeting")); assertFalse(revised.attributes().containsKey("size"));
         assertEquals(Map.of("color", "白"), revised.attributes().get("decoration")); assertNull(revised.memberPriceCents());
         assertEquals("生日快乐", ((Map<?, ?>) ((Map<?, ?>) log.get("before")).get("attributes")).get("greeting"));
-        assertThrows(UnsupportedOperationException.class, () -> revised.attributes().put("size", "10寸"));
+        assertThrows(UnsupportedOperationException.class, () -> revised.attributes().put("size", "10"));
     }
     @Test void identicalChangesDoNotAdvanceVersionOrTimestamps() {
-        var item = item("蛋糕", Map.of("size", "8寸", "weight", 1)); var order = order(item);
+        var item = item("蛋糕", Map.of("size", "8", "weight", 1)); var order = order(item);
         assertTrue(order.reviseItem(item.itemId(), Map.of("quantity", 1, "attributes", Map.of("weight", 1.0)), NOW.plusSeconds(10)).isEmpty());
         assertEquals(0, order.version()); assertEquals(NOW, order.updatedAt());
         assertEquals(NOW, order.requireActiveItem(item.itemId()).updatedAt());
@@ -84,7 +84,7 @@ class OrderTest {
         assertEquals("UNPAID", order.paymentStatus()); assertEquals(2, order.version());
     }
     @Test void manualOrderStagesPreserveItemsAndCompletionSynchronizesOnlyProductionStatus() {
-        var first = item("蛋糕", Map.of("size", "8寸")); var second = item("预制品", Map.of()); var order = order(first, second);
+        var first = item("蛋糕", Map.of("size", "8")); var second = item("预制品", Map.of()); var order = order(first, second);
         var started = order.applyProductionAction("START_PRODUCTION", NOW.plusSeconds(1));
         assertEquals("PROCESSING", order.status()); assertEquals(2, ((List<?>) started.get("itemChanges")).size());
         var startedItems = order.activeItems();
@@ -254,7 +254,7 @@ class OrderTest {
         return order(FulfillmentType.PICKUP, items);
     }
     @Test void removalPreservesOtherItemsProductionAndOriginalSnapshot() {
-        var first = item("蛋糕 A", Map.of("size", "8寸")); var second = item("蛋糕 B", Map.of("size", "6寸"));
+        var first = item("蛋糕 A", Map.of("size", "8")); var second = item("蛋糕 B", Map.of("size", "6"));
         var order = order(first, second);
         order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
         var untouched = order.requireActiveItem(first.itemId()); var original = order.requireActiveItem(second.itemId());

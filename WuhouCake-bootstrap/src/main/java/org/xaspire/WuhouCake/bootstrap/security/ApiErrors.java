@@ -1,6 +1,8 @@
 package org.xaspire.WuhouCake.bootstrap.security;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.DispatcherType;
 import org.slf4j.*;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.*;
@@ -11,6 +13,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.util.DisconnectedClientHelper;
 import org.xaspire.WuhouCake.identity.domain.model.valobj.IdentityFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.shared.response.ApiResponse;
@@ -24,7 +27,7 @@ public class ApiErrors {
             case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND" -> 404;
             case "IMAGE_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
             case "UNSUPPORTED_IMAGE_FORMAT" -> 415;
-            case "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
+            case "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
                     "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED" -> 409;
             default -> 400;
         };
@@ -69,9 +72,17 @@ public class ApiErrors {
     @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
     ResponseEntity<ApiResponse<Void>> media(HttpMediaTypeNotSupportedException failure) { return response(415, "UNSUPPORTED_MEDIA_TYPE"); }
     @ExceptionHandler(Exception.class)
-    ResponseEntity<ApiResponse<Void>> unexpected(Exception failure, HttpServletRequest request) {
+    ResponseEntity<ApiResponse<Void>> unexpected(Exception failure, HttpServletRequest request, HttpServletResponse response) {
+        if ((request.isAsyncStarted() || request.getDispatcherType() == DispatcherType.ASYNC || response.isCommitted())
+                && DisconnectedClientHelper.isClientDisconnectedException(failure)) {
+            LOG.debug("request_disconnected requestId={} failureType={}", request.getAttribute("wuhoucake.requestId"), failure.getClass().getSimpleName());
+            return null;
+        }
         LOG.error("request_failed requestId={} failureType={}", request.getAttribute("wuhoucake.requestId"), failure.getClass().getSimpleName());
-        return response(500, "INTERNAL_ERROR");
+        // An already committed response cannot be replaced with a JSON error body.
+        if (response.isCommitted()) return null;
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).cacheControl(CacheControl.noStore()).contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResponse.failure("INTERNAL_ERROR", "INTERNAL_ERROR"));
     }
     private static ResponseEntity<ApiResponse<Void>> response(int status, String code) {
         return response(status, code, code);

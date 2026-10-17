@@ -55,6 +55,14 @@ springdoc:
     enabled: false
 
 wuhoucake:
+  order-recognition:
+    assist:
+      enabled: ${RECOGNITION_ASSIST_ENABLED:false}
+      api-key: ${DASHSCOPE_API_KEY:}
+      base-url: ${RECOGNITION_ASSIST_BASE_URL:}
+      model-id: ${RECOGNITION_ASSIST_MODEL:qwen3.7-flash}
+      timeout-millis: ${RECOGNITION_ASSIST_TIMEOUT_MILLIS:8000}
+      max-concurrent: ${RECOGNITION_ASSIST_MAX_CONCURRENT:2}
   identity:
     private-key: ${IDENTITY_PRIVATE_KEY:}
     public-key: ${IDENTITY_PUBLIC_KEY:}

@@ -11,5 +11,8 @@ public interface OrderImages {
     void insert(OrderImage image, byte[] content);
     List<OrderImage> list(UUID orderId);
     Optional<OrderImage> find(UUID orderId, UUID imageId);
+    boolean contains(UUID orderId, UUID imageId);
+    /** 按稳定 ID 读取原始内容，供已取得的导出快照使用；公开读取须先检查有效元数据。 */
     Optional<byte[]> content(UUID orderId, UUID imageId);
+    void remove(UUID orderId, UUID imageId);
 }

@@ -22,13 +22,20 @@ import org.xaspire.WuhouCake.shared.json.JsonCodec;
 @Configuration(proxyBeanMethods = false)
 @MapperScan(basePackageClasses = OrderMapper.class)
 public class OrderComposition {
+    @Bean OrderCreations orderCreations(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderCreationMapper mapper) { return new PostgresOrderCreations(mapper); }
+    @Bean OrderCreationService orderCreationService(OrderService orders, OrderCreations creations, JsonCodec json) { return new OrderCreationService(orders, creations, json); }
+    @Bean OrderManagementQueries orderManagementQueries(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderManagementMapper mapper) {
+        return new PostgresOrderManagementQueries(mapper);
+    }
+    @Bean OrderReportFiles orderReportFiles() { return new PoiOrderReportFiles(); }
+    @Bean OrderManagementService orderManagementService(OrderManagementQueries queries, OrderReportFiles files) { return new OrderManagementService(queries, files); }
     @Bean OrderImages orderImages(OrderImageMapper mapper) { return new PostgresOrderImages(mapper); }
     @Bean OrderImageValidator orderImageValidator() { return new JavaOrderImageValidator(); }
     @Bean OrderImageService orderImageService(Orders orders, OrderImages images, OrderImageValidator validator,
-            PlatformTransactionManager transactions, IdGenerator ids, Clock clock) {
+            PlatformTransactionManager transactions, IdGenerator ids, Clock clock, OrderActivities activities, ApplicationEventPublisher events) {
         var writes = new TransactionTemplate(transactions);
         writes.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
-        return new OrderImageService(orders, images, validator, writes, ids, clock);
+        return new OrderImageService(orders, images, validator, writes, ids, clock, activities, events);
     }
     @Bean OrderExportQueries orderExportQueries(OrderQueryMapper queries, OrderActivityMapper activities, JsonCodec json) {
         return new PostgresOrderExportQueries(queries, activities, json);
@@ -37,9 +44,8 @@ public class OrderComposition {
     @Bean OrderExportSnapshotService orderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images) {
         return new OrderExportSnapshotService(orders, activities, queries, images);
     }
-    @Bean OrderExportLogService orderExportLogService(OrderActivities activities, Clock clock) { return new OrderExportLogService(activities, clock); }
-    @Bean OrderExportService orderExportService(OrderExportSnapshotService snapshots, OrderExportLogService logs, OrderExportFiles files, IdGenerator ids) {
-        return new OrderExportService(snapshots, logs, files, ids);
+    @Bean OrderExportService orderExportService(OrderExportSnapshotService snapshots, OrderExportFiles files) {
+        return new OrderExportService(snapshots, files);
     }
     @Bean OrderQueries orderQueries(OrderQueryMapper mapper, JsonCodec json) { return new PostgresOrderQueries(mapper, json); }
     @Bean OrderQueryService orderQueryService(OrderQueries queries) { return new OrderQueryService(queries); }
@@ -47,7 +53,8 @@ public class OrderComposition {
     @Bean OrderActivities orderActivities(OrderActivityMapper mapper, JsonCodec json) {
         return new PostgresOrderActivities(mapper, json);
     }
-    @Bean OrderService orderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events) {
-        return new OrderService(orders, activities, ids, clock, events);
+    @Bean OrderService orderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events,
+            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity) {
+        return new OrderService(orders, activities, ids, clock, events, identity);
     }
 }

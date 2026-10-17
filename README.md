@@ -1,91 +1,76 @@
 # WuhouCake
 
-基于 [COLA 5.0 Light 脚手架](https://github.com/GorwayWong/COLA5.0-Light-Base-Archetype) 初始化，来源提交为 `6d325771e1fef3bff6fcdd004286b7c887bf9fb4`。
+蛋糕店员工协作系统：多商品订单、整单制作与交接、人工付款、备注、图片、导出及员工账号。采用 Java 21 / Spring Boot 模块化单体，React / TypeScript 前端。基于 [COLA Light 脚手架](https://github.com/GorwayWong/COLA5.0-Light-Base-Archetype) 初始化，来源提交 6d325771e1fef3bff6fcdd004286b7c887bf9fb4。
 
-基于 COLA Light 包分层的模块化单体工程。一个业务领域对应一个 Maven 模块，由 `WuhouCake-bootstrap` 统一装配并输出可执行 JAR。
+## 1. 当前范围
 
-## 1. 工程结构
-
-| 模块或目录 | 职责 |
+| 目录 | 职责 |
 | --- | --- |
-| `WuhouCake-bootstrap` | 应用入口、组合根、全局配置及运行镜像 |
-| `WuhouCake-shared` | 通用契约与技术能力 |
-| `WuhouCake-sample` | 可复制的空白领域模块模板 |
-| `WuhouCake-identity` | 员工账号、凭证、岗位与登录状态 |
-| `WuhouCake-audit` | 操作审计及超级管理员查询 |
-| `docs` | 架构规约、技术基线、部署说明及验收记录 |
+| [WuhouCake-bootstrap](WuhouCake-bootstrap/pom.xml) | 唯一应用入口、组合根、安全及运行配置 |
+| [WuhouCake-order](WuhouCake-order/README.md) | 订单、制作、交接、图片、导出、可选文本识别 |
+| [WuhouCake-identity](WuhouCake-identity/README.md) | 员工账号、岗位、凭证和登录会话 |
+| [WuhouCake-audit](WuhouCake-audit/README.md) | 身份操作审计及超级管理员查询 |
+| WuhouCake-shared | 通用契约、ID 和技术能力 |
+| [WuhouCake-sample](WuhouCake-sample/README.md) | 只有包职责和架构测试的空白领域模板 |
+| [frontend](frontend/README.md) | 店员工作台、录单和订单详情 |
 
-领域模块内部采用 `api / adapter / application / domain / infrastructure` 五层结构。`WuhouCake-sample` 的生产源码仅定义包职责，不包含业务接口、模型或数据库迁移。
+当前使用一个业务后端实例。制作按整单推进，付款人工确认；文本识别只辅助未保存草稿。当前能力与未实现项分别见[业务范围](docs/product-scope.md)，不能将旧开发计划当作已实现功能。
 
 ## 2. 快速开始
 
-构建目标为 Java 21，Maven 版本由 Wrapper 管理。开发运行需要 Docker Linux 容器及 Docker Compose。以下命令均在仓库根目录执行，Shell 示例使用 Bash；Windows 可使用 Git Bash，或通过 `./mvnw.cmd` 执行 Maven 命令。
+需要 Java 21+、Docker Linux 容器及 Docker Compose；前端需要 Node.js 22.18+。Maven 使用仓库 Wrapper。具体依赖版本以 [pom.xml](pom.xml)、[Wrapper 配置](.mvn/wrapper/maven-wrapper.properties)、[前端锁文件](frontend/package-lock.json)和 [Compose 清单](docs/dev-ops/README.md)为准。
 
-```bash
+以下从仓库根目录执行，Bash 示例用于首次本地配置；已有 env 文件和持久密钥应继续使用原文件。
+
+~~~bash
 ./mvnw clean verify
-
-umask 077
-mkdir -p secrets/identity
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out secrets/identity/private.pem
-openssl pkey -in secrets/identity/private.pem -pubout -out secrets/identity/public.pem
-chmod 700 secrets/identity
-chmod 600 secrets/identity/private.pem
-export IDENTITY_PRIVATE_KEY="$PWD/secrets/identity/private.pem"
-export IDENTITY_PUBLIC_KEY="$PWD/secrets/identity/public.pem"
-
 cp docs/dev-ops/env/dev.env.example docs/dev-ops/env/dev.env
 docker compose --env-file docs/dev-ops/env/dev.env \
   -f docs/dev-ops/compose/docker-compose-environment.yml \
   -f docs/dev-ops/compose/docker-compose-environment-dev.yml up -d --wait
+set -a
+source docs/dev-ops/env/dev.env
+set +a
+~~~
 
+接着按[账号运行说明](docs/identity.md#首次本地配置)生成或指定持久 RSA 密钥，并用一次性命令初始化管理员。普通启动不会创建或重置账号。
+
+~~~bash
 java -jar WuhouCake-bootstrap/target/WuhouCake-bootstrap-0.1.0-SNAPSHOT.jar \
   --spring.profiles.active=dev
-```
+cd frontend
+npm ci
+npm run dev
+~~~
 
-开发配置默认使用本机 PostgreSQL 和 Redis，与 `dev.env.example` 一致。调整端口或凭据后，须同步配置宿主机 JVM 的 `SPRING_*` 环境变量；具体规则见[部署说明](docs/dev-ops/README.md)。
+前端默认 http://127.0.0.1:5173，同源代理 /api 到 http://127.0.0.1:8080。后端 dev 提供 /actuator/health、/actuator/health/readiness 和 /swagger-ui/index.html。生产关闭接口文档，业务使用 Bearer JWT；首次登录必须改密后重新登录。
 
-| 访问地址 | 用途 |
-| --- | --- |
-| `http://localhost:8080/actuator/health` | 汇总健康状态 |
-| `http://localhost:8080/actuator/health/liveness` | 存活探针 |
-| `http://localhost:8080/actuator/health/readiness` | 就绪探针，包含数据库检查 |
-| `http://localhost:8080/swagger-ui/index.html` | 开发环境接口文档 |
+Compose 的 env 文件不会自动设置宿主机 JVM 环境；直接运行 JVM 的连接变量、端口和密码须与 Compose 一致。生产运行、镜像和反向代理边界见[开发与部署](docs/dev-ops/README.md)，不使用 vite preview 代替生产站点。
 
-启动须显式选择 `dev` 或 `prod`，并配置持久保存的 RSA 密钥。健康端点允许匿名访问；业务使用 Bearer JWT，员工管理和日志查询仅限超级管理员。生产环境关闭接口文档。首次部署须按[账号运行说明](docs/identity.md)初始化管理员，普通启动不会创建或重置账号。
+## 3. 验证
 
-## 3. 测试
-
-| 范围 | 命令 | 外部服务 |
+| 范围 | 命令 | 环境 |
 | --- | --- | --- |
-| 全工程架构与规则验证 | `./mvnw clean verify` | 无 |
-| 领域模板及其依赖 | `./mvnw -pl WuhouCake-sample -am clean verify` | 无 |
-| 基础设施集成验证 | `./mvnw -Pintegration verify` | PostgreSQL、Redis |
+| 常规测试及 ArchUnit | ./mvnw clean verify | 不依赖外部数据库或模型 |
+| 领域模板 | ./mvnw -pl WuhouCake-sample -am clean verify | 无外部服务 |
+| 全部基础设施及 HTTP 集成 | ./mvnw -Pintegration verify | 专用 PostgreSQL、Redis |
+| 前端 | 在 frontend 执行 npm test、npm run build | Node.js |
 
-集成测试使用测试 Mapper、事务内临时表、独立 Flyway schema 和 Redis 键前缀，覆盖基础设施、真实 HTTP 账号生命周期、并发管理员操作、凭证撤销、CSRF 与审计故障。仅连接开发或专用测试数据库。
+集成测试使用随机 schema 和 Redis 命名空间，仍须只连接开发或专用测试实例。口述需求八项补齐的测试与浏览器结果见[业务流程补齐验收](docs/verification/2026-10-17-workflow-fixes.md)，其他历史验证见[验证摘要](frontend/verification.md)；测试数量附执行日期，不代表以后修改自动通过。
 
-## 4. 扩展与部署
+[GitHub Actions CI](.github/workflows/ci.yml) 在面向 main 的 PR 及 main 推送时运行：Java 21 执行全部单元、架构和 PostgreSQL/Redis 集成测试，Node.js 24 执行锁文件安装、前端测试与构建。服务为任务内临时测试实例，识别外部调用关闭；后端测试报告作为短期 CI 附件保存，工作流不部署应用。
 
-新增领域按[模块模板说明](WuhouCake-sample/README.md)复制、改名并注册。接口、仓储实现与输入适配器均由 bootstrap 显式装配。
+## 4. 文档入口
 
-镜像使用预先构建的 bootstrap JAR。构建上下文为 `WuhouCake-bootstrap`：
-
-```bash
-docker build -t wuhoucake-bootstrap:local WuhouCake-bootstrap
-```
-
-部署通过 `APP_IMAGE` 指定已有镜像，不绑定具体 CI/CD 平台。使用过旧 Sample 示例迁移的数据库，须按[兼容性说明](docs/sample-module-implementation-report.md#4-兼容性说明)处理。
-
-## 5. 文档索引
-
-| 文档 | 内容 |
+| 文档 | 用途 |
 | --- | --- |
-| [架构设计](docs/architecture.md) | 模块职责、依赖方向与装配规约 |
-| [领域模块模板](WuhouCake-sample/README.md) | 包职责、复制步骤与模块测试 |
-| [开发与部署](docs/dev-ops/README.md) | Compose、环境变量与运行步骤 |
-| [技术基线](docs/technical-baseline.md) | 组件版本及管理位置 |
-| [账号运行与 API](docs/identity.md) | 密钥、初始化、管理员恢复、认证和接口契约 |
-| [Prod 管理员运维](docs/dev-ops/admin-prod.md) | 首位管理员初始化、忘记密码恢复及服务器命令 |
-| [领域词汇](CONTEXT.md) | 员工身份、工号、岗位和归档的含义 |
-| [模板验收记录](docs/sample-module-implementation-report.md) | 当前模板的验证范围与结果 |
-| [骨架演进记录](docs/implementation-report.md) | 初期业务样例的归档记录 |
-| [开发规约](AGENTS.md) | 仓库维护与验证要求 |
+| [业务范围与缺口](docs/product-scope.md) | 已实现能力、保留约束、尚未实现事项 |
+| [架构规约](docs/architecture.md) | 模块依赖、分层、事务和装配 |
+| [账号运行与 API](docs/identity.md) | 密钥、初始化、认证、账号和审计契约 |
+| [订单 API](WuhouCake-order/README.md) | 订单字段、状态、文件和识别契约 |
+| [前端运行与交互](frontend/README.md) | 草稿、并发、同步、图片与下载 |
+| [开发与部署](docs/dev-ops/README.md) | Compose、环境变量、运行边界 |
+| [管理员运维](docs/dev-ops/admin-prod.md) | 首位管理员初始化与密码恢复 |
+| [验证摘要](frontend/verification.md) | 自动测试、浏览器/视觉结果、独立报告 |
+| [身份领域词汇](CONTEXT.md) | 员工、工号、岗位、归档和会话 |
+| [领域模板](WuhouCake-sample/README.md) / [开发规约](AGENTS.md) | 新模块与仓库维护 |

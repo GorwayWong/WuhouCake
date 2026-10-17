@@ -101,4 +101,4 @@ cp -R WuhouCake-sample/src WuhouCake-agent/
 
 空层通过可选层和 `allowEmptyShould(true)` 处理，规则与验证夹具随模板复制。夹具仅位于 test，不进入运行 JAR。
 
-从根目录执行 `./mvnw -pl WuhouCake-sample -am clean verify`，无需外部服务。涉及完整应用启动的测试放在 bootstrap，避免领域模块依赖 bootstrap；公共基础设施验证见[验收记录](../docs/sample-module-implementation-report.md)。
+从根目录执行 `./mvnw -pl WuhouCake-sample -am clean verify`，无需外部服务。涉及完整应用启动的测试放在 bootstrap，避免领域模块依赖 bootstrap；当前执行命令与验证边界见[验证入口](../frontend/verification.md#验证入口)。

@@ -14,17 +14,21 @@ public interface OrderImageMapper {
     String lockOrder(String id);
     @Select("SELECT EXISTS(SELECT 1 FROM cake_order_item WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{itemId} AS uuid) AND NOT is_removed)")
     boolean activeItem(@Param("orderId") String orderId, @Param("itemId") String itemId);
-    @Select("SELECT count(*) FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid)")
+    @Select("SELECT count(*) FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed")
     int count(String id);
     @Insert("INSERT INTO cake_order_image (id, order_id, item_id, content_type, filename, size, width, height, uploaded_by,"
             + " uploader_name_snapshot, uploaded_at, content) VALUES (CAST(#{image.imageId} AS uuid), CAST(#{image.orderId} AS uuid),"
             + " CAST(#{image.itemId} AS uuid), #{image.contentType}, #{image.filename}, #{image.size}, #{image.width}, #{image.height},"
             + " CAST(#{image.uploadedBy} AS uuid), #{image.uploaderNameSnapshot}, #{image.uploadedAt}, #{content})")
     void insert(@Param("image") Row image, @Param("content") byte[] content);
-    @Select("SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) ORDER BY uploaded_at, id")
+    @Select("SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed ORDER BY uploaded_at, id")
     List<Row> list(String id);
-    @Select("SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid)")
+    @Select("SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid) AND NOT is_removed")
     Row find(@Param("orderId") String orderId, @Param("imageId") String imageId);
+    @Select("SELECT EXISTS(SELECT 1 FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid))")
+    boolean contains(@Param("orderId") String orderId, @Param("imageId") String imageId);
     @Select("SELECT content FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid)")
     ContentRow content(@Param("orderId") String orderId, @Param("imageId") String imageId);
+    @Update("UPDATE cake_order_image SET is_removed=true WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid) AND NOT is_removed")
+    void remove(@Param("orderId") String orderId, @Param("imageId") String imageId);
 }

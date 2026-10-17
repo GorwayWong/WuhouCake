@@ -52,6 +52,7 @@ public class SecurityConfiguration {
             }
             authorize.requestMatchers("/api/admin/**").hasRole("SUPER_ADMIN");
             authorize.requestMatchers("/api/me", "/api/me/**").authenticated();
+            authorize.requestMatchers("/api/employees/options").authenticated();
             authorize.requestMatchers("/api/orders", "/api/orders/**").authenticated();
             authorize.anyRequest().denyAll();
         });

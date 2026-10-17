@@ -1,0 +1,1 @@
+ALTER TABLE cake_order_creation DROP CONSTRAINT cake_order_creation_actor_id_fkey;

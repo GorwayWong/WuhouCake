@@ -11,34 +11,30 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 import org.xaspire.WuhouCake.order.domain.port.*;
 import org.xaspire.WuhouCake.order.domain.repository.*;
-import org.xaspire.WuhouCake.shared.id.IdGenerator;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class OrderExportServiceTest {
     private final OrderExportSnapshotService snapshots = mock(OrderExportSnapshotService.class);
-    private final OrderExportLogService logs = mock(OrderExportLogService.class);
     private final OrderExportFiles files = mock(OrderExportFiles.class);
-    private final IdGenerator ids = mock(IdGenerator.class);
-    private final OrderExportService service = new OrderExportService(snapshots, logs, files, ids);
+    private final OrderExportService service = new OrderExportService(snapshots, files);
     private final OrderCommands.Operator operator = new OrderCommands.Operator(UUID.randomUUID(), "员工");
 
-    @Test void generationPrecedesLogAndLogFailureDeletesFile() {
+    @Test void downloadDoesNotDependOnActivityWrites() {
         var data = List.<OrderExportFiles.Snapshot>of();
         var request = new OrderExportRequest(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 11, 1), null, null, null);
         var file = new OrderExportFiles.File("/tmp/internal", "orders.zip", "application/zip", 10);
-        when(snapshots.batch(any())).thenReturn(data); when(ids.nextId()).thenReturn(UUID.randomUUID());
+        when(snapshots.batch(any())).thenReturn(data);
         when(files.generate(any(), anyString(), eq(true))).thenReturn(file);
-        doThrow(new IllegalStateException("log failed")).when(logs).append(any(), any(), any(), any());
-        assertThrows(IllegalStateException.class, () -> service.batch(request, operator));
-        var ordered = inOrder(snapshots, files, logs); ordered.verify(snapshots).batch(any());
-        ordered.verify(files).generate(any(), anyString(), eq(true)); ordered.verify(logs).append(any(), any(), any(), any()); ordered.verify(files).delete(file);
+        assertEquals("orders.zip", service.batch(request, operator).filename());
+        var ordered = inOrder(snapshots, files); ordered.verify(snapshots).batch(any());
+        ordered.verify(files).generate(any(), anyString(), eq(true)); verify(files, never()).delete(any());
     }
     @Test void generationFailureNeverAppendsLog() {
-        when(snapshots.batch(any())).thenReturn(List.of()); when(ids.nextId()).thenReturn(UUID.randomUUID());
+        when(snapshots.batch(any())).thenReturn(List.of());
         when(files.generate(any(), anyString(), anyBoolean())).thenThrow(new IllegalStateException("render failed"));
         assertThrows(IllegalStateException.class, () -> service.batch(new OrderExportRequest(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 2), null, null, null), operator));
-        verifyNoInteractions(logs);
+        verify(files, never()).delete(any());
     }
     @Test void filtersRejectInvalidDatesAndValues() {
         assertThrows(OrderFailure.class, () -> new OrderExportQueries.Filter(null, null, null, null, null));

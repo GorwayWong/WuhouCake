@@ -82,6 +82,8 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             row(info, "收货日期", plan.requestedReceiveDate()); row(info, "计划交接时间", time(plan.plannedHandoffAt()));
             row(info, "计划出品时间", time(plan.plannedFinishAt())); row(info, "约定总金额（元）", money(order.totalAmountCents()));
             row(info, "创建员工 ID", order.createdBy()); row(info, "创建时间", time(order.createdAt()));
+            row(info, "下单员工工号", order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber());
+            row(info, "下单员工", order.creditedEmployee() == null ? "未归属" : order.creditedEmployee().nickname());
             row(info, "确认时间", time(order.confirmedAt())); row(info, "更新时间", time(order.updatedAt()));
             var items = sheet(book, "商品", "商品 ID", "名称", "类型", "数量", "报价（元）", "会员价（元）", "规格 JSON", "制作状态", "制作节点");
             for (var item : order.activeItems()) {

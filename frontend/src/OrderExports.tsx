@@ -1,0 +1,60 @@
+import { useEffect, useRef, useState } from 'react';
+import { DownloadSimple, X } from '@phosphor-icons/react';
+import { exportFailureText, exportFilters, exportOptions, fetchOrderExport, saveExportFile } from './exportFiles';
+import type { ExportDraft, ExportRequest } from './exportFiles';
+
+function useExportDownload(onPendingChange: (pending: boolean) => void) {
+  const active = useRef<AbortController | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [notice, setNotice] = useState('');
+  useEffect(() => () => { active.current?.abort(); active.current = null; onPendingChange(false); }, [onPendingChange]);
+  async function download(request: ExportRequest) {
+    if (active.current) return;
+    const controller = new AbortController(); active.current = controller;
+    setBusy(true); setError(null); setNotice(''); onPendingChange(true);
+    try {
+      const file = await fetchOrderExport(request, controller.signal);
+      if (!controller.signal.aborted) { saveExportFile(file); setNotice(`「${file.filename}」已交给浏览器下载，请在下载记录中确认保存。`); }
+    } catch (failure) { if (!controller.signal.aborted) setError(failure); }
+    finally {
+      if (active.current === controller) { active.current = null; setBusy(false); onPendingChange(false); }
+    }
+  }
+  return { busy, error, notice, download, reset: () => { setError(null); setNotice(''); } };
+}
+
+function ExportFeedback({ error, notice }: { error: unknown; notice: string }) {
+  return <div aria-live="polite">{error ? <p className="notice error" role="alert">{exportFailureText(error)}</p> : notice && <p className="form-help" role="status">{notice}</p>}</div>;
+}
+
+export function SingleOrderExport({ orderId, orderNo, blocked, onPendingChange }: {
+  orderId: string; orderNo: string; blocked: boolean; onPendingChange: (pending: boolean) => void;
+}) {
+  const state = useExportDownload(onPendingChange);
+  return <div className="single-export"><button className="secondary" disabled={blocked || state.busy} onClick={() => { if (!blocked) void state.download({ orderId, orderNo }); }}><DownloadSimple />{state.busy ? '正在生成 XLSX…' : '下载 XLSX'}</button><ExportFeedback error={state.error} notice={state.notice} /></div>;
+}
+
+export function BatchOrderExport({ selected, onPendingChange }: { selected: string; onPendingChange: (pending: boolean) => void }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<ExportDraft>({ from: selected, through: selected, status: '', fulfillmentType: '', paymentStatus: '' });
+  const [validation, setValidation] = useState('');
+  const state = useExportDownload(onPendingChange);
+  const change = (key: keyof ExportDraft, value: string) => { setDraft(current => ({ ...current, [key]: value })); setValidation(''); };
+  return <section className="batch-export" aria-label="筛选批量导出">
+    {!open ? <button className="secondary compact" aria-expanded={false} onClick={() => { setDraft({ from: selected, through: selected, status: '', fulfillmentType: '', paymentStatus: '' }); setValidation(''); state.reset(); setOpen(true); }}><DownloadSimple />批量导出 ZIP</button> : <div className="panel export-panel">
+      <div className="section-heading"><h2>筛选批量导出</h2><button className="icon-button" disabled={state.busy} aria-label="收起批量导出" onClick={() => setOpen(false)}><X size={22} /></button></div>
+      <p className="form-help">按收货日期筛选，包含开始和结束当天。最多 42 天、100 张订单，每张订单生成一份 XLSX。</p>
+      <form onSubmit={event => { event.preventDefault(); if (state.busy) return; const result = exportFilters(draft); setValidation(result.error || ''); if (result.filters) void state.download({ filters: result.filters }); }}>
+        <fieldset className="export-filters" disabled={state.busy}>
+          <label>开始日期<input type="date" value={draft.from} onChange={event => change('from', event.target.value)} required /></label>
+          <label>结束日期（含当天）<input type="date" value={draft.through} onChange={event => change('through', event.target.value)} required /></label>
+          {([['status', '订单状态'], ['fulfillmentType', '交接方式'], ['paymentStatus', '付款状态']] as const).map(([key, label]) => <label key={key}>{label}<select value={draft[key]} onChange={event => change(key, event.target.value)}><option value="">全部</option>{Object.entries(exportOptions[key]).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>)}
+        </fieldset>
+        {validation && <p className="field-error" role="alert">{validation}</p>}
+        <div className="export-submit"><p className="form-help">未筛选状态时包含已完成、已取消订单；只导出已保存内容。</p><button className="primary" disabled={state.busy}><DownloadSimple />{state.busy ? '正在生成 ZIP…' : '下载筛选结果 ZIP'}</button></div>
+      </form>
+      <ExportFeedback error={state.error} notice={state.notice} />
+    </div>}
+  </section>;
+}

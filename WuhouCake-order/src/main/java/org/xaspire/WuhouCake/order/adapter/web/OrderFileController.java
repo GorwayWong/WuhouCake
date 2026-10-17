@@ -32,6 +32,11 @@ public class OrderFileController {
     }
     @GetMapping("/{orderId}/images")
     public ApiResponse<List<OrderFileViews.Image>> list(@PathVariable UUID orderId) { return ApiResponse.success(images.list(orderId)); }
+    @DeleteMapping("/{orderId}/images/{imageId}")
+    public ApiResponse<Void> remove(@PathVariable UUID orderId, @PathVariable UUID imageId, Authentication authentication) {
+        images.remove(orderId, imageId, operator(authentication));
+        return ApiResponse.success(null);
+    }
     @GetMapping("/{orderId}/images/{imageId}")
     public ResponseEntity<byte[]> content(@PathVariable UUID orderId, @PathVariable UUID imageId) {
         var content = images.content(orderId, imageId);

@@ -9,17 +9,20 @@ import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
+import org.xaspire.WuhouCake.order.application.service.OrderCreationService;
 import org.xaspire.WuhouCake.shared.response.*;
 
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
     private final OrderService orders;
-    public OrderController(OrderService orders) { this.orders = orders; }
+    private final OrderCreationService creations;
+    public OrderController(OrderService orders, OrderCreationService creations) { this.orders = orders; this.creations = creations; }
 
     @PostMapping @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<OrderViews.Detail> create(@Valid @RequestBody OrderCommands.Create command, Authentication authentication) {
-        return ApiResponse.success(orders.create(command, operator(authentication)));
+    public ApiResponse<OrderViews.Detail> create(@Valid @RequestBody OrderCommands.Create command, Authentication authentication,
+            @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId) {
+        return ApiResponse.success(orders.detail(creations.create(command, operator(authentication), requestId)));
     }
     @GetMapping("/{id}")
     public ApiResponse<OrderViews.Detail> detail(@PathVariable UUID id) { return ApiResponse.success(orders.detail(id)); }
