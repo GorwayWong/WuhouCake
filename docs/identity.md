@@ -80,6 +80,8 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 
 新建、重置或恢复的账号须首次改密。改密前只允许 GET /api/me 和 POST /api/me/password，其他业务请求返回 PASSWORD_CHANGE_REQUIRED；认证端点仍可用于退出。新密码必须与当前密码不同，改密成功会撤销旧凭证，前端需重新登录。
 
+首次改密的“当前密码”填写初始化或重置时使用的旧密码，新密码需输入两次一致后才提交。当前密码校验失败返回 400 CURRENT_PASSWORD_INCORRECT，保留当前会话及输入，不修改密码、不撤销凭证；界面明确提示新密码尚未保存。只有真正过期或已撤销的身份返回 401。
+
 ## HTTP 契约
 
 响应为 ApiResponse，含 code、message、data；分页 data 为 items、total、page、size。创建员工返回 201，其他成功操作返回 200。认证与敏感凭证响应 no-store，/api 路径也统一设置 no-store。
@@ -107,7 +109,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 - page 从 1 开始，最大 1,000,000；size 为 1–100，默认 20。分页和枚举非法返回 VALIDATION_FAILED。
 - 禁止自行归档；至少保留一位 ACTIVE 超管。归档不物理删除账号，没有取消归档接口，也没有在线解锁/改工号接口。
 
-常见错误：401 AUTHENTICATION_FAILED；403 FORBIDDEN、PASSWORD_CHANGE_REQUIRED、SELF_ARCHIVE_FORBIDDEN；409 EMPLOYEE_NUMBER_CONFLICT、LAST_ADMINISTRATOR、ACCOUNT_ARCHIVED、CONCURRENT_MODIFICATION；429 LOGIN_THROTTLED；400 VALIDATION_FAILED 或 PASSWORD_REUSE_FORBIDDEN。输入不合法、数据库不可用等全局错误见现有 ApiErrors，不能用通用 500 解释业务拒绝。
+常见错误：401 AUTHENTICATION_FAILED；403 FORBIDDEN、PASSWORD_CHANGE_REQUIRED、SELF_ARCHIVE_FORBIDDEN；409 EMPLOYEE_NUMBER_CONFLICT、LAST_ADMINISTRATOR、ACCOUNT_ARCHIVED、CONCURRENT_MODIFICATION；429 LOGIN_THROTTLED；400 VALIDATION_FAILED、CURRENT_PASSWORD_INCORRECT 或 PASSWORD_REUSE_FORBIDDEN。输入不合法、数据库不可用等全局错误见现有 ApiErrors，不能用通用 500 解释业务拒绝。
 
 ## 撤销、SSE 与审计
 

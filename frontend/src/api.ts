@@ -12,6 +12,7 @@ export function errorText(error: unknown): string {
   if (!(error instanceof ApiError)) return '网络连接失败，请检查连接后重试。';
   return ({
     AUTHENTICATION_FAILED: '工号或密码有误，或登录已过期。',
+    CURRENT_PASSWORD_INCORRECT: '当前密码不正确，新密码尚未保存。请填写初始化或重置时使用的旧密码后重试。',
     CONCURRENT_MODIFICATION: '资料已被其他同事更新，请核对最新内容后重试；未保存输入已保留。',
     IDEMPOTENCY_KEY_CONFLICT: '本次录单标识已有其他提交，请先核对原订单，再从详情中修改。',
     INVALID_PRODUCTION_TRANSITION: '制作状态已变化，请核对最新状态后操作。',
