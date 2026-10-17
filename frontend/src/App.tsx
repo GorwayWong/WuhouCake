@@ -15,6 +15,7 @@ import { newDraft } from './orderForm';
 import type { OrderDraft } from './orderForm';
 import { AdminOrders } from './AdminOrders';
 import { EmployeeAdmin } from './EmployeeAdmin';
+import { newPasswordError } from './passwordForm';
 
 interface DraftRecord { accountId: string; requestId: string; initial: OrderDraft; value: OrderDraft }
 function changed(draft: DraftRecord | null) { return Boolean(draft && JSON.stringify(draft.initial) !== JSON.stringify(draft.value)); }
@@ -23,30 +24,41 @@ function Login({ changePassword = false, onAccount, onLogout }: { changePassword
   const [employee, setEmployee] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [validation, setValidation] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [message, setMessage] = useState('');
   const profile = useQuery({ queryKey: ['me'], queryFn: ({ signal }) => api<Account>('/me', { signal }), enabled: changePassword });
   useEffect(() => { if (changePassword && profile.data) onAccount(profile.data.accountId); }, [changePassword, profile.data, onAccount]);
   return <main className="login-layout"><section className="login-story"><img className="login-logo" src="/brand.jpg" alt="午逅 Story" /><p className="eyebrow">用心制作，温柔以待</p><h1>把每一份心意，<br />做成美好的日常。</h1><p>从第一层夹馅，到最后一次交付。<br />和同事一起，照顾好每一张订单。</p><span className="story-footer">午逅 · 员工工作台</span></section><section className="login-form-wrap"><form className="login-form" onSubmit={async event => {
-    event.preventDefault(); setBusy(true); setError(null); setMessage('');
+    event.preventDefault();
+    if (busy) return;
+    setError(null); setMessage('');
+    const problem = changePassword ? newPasswordError(newPassword, confirmation) : '';
+    setValidation(problem);
+    if (problem) return;
+    setBusy(true);
     try {
       if (changePassword) {
         await api('/me/password', { method: 'POST', body: { currentPassword: password, newPassword } });
         setEmployee(profile.data?.employeeNumber || employee.trim());
-        setPassword(''); setNewPassword(''); setMessage('密码已更新，请使用新密码重新登录。'); forgetSession();
+        setPassword(''); setNewPassword(''); setConfirmation(''); setShowPassword(false); setMessage('密码已更新，请使用新密码重新登录。'); forgetSession();
       } else { await session.login(employee.trim(), password); setPassword(''); }
     } catch (error) { setError(error); } finally { setBusy(false); }
   }}><span className="form-icon"><LockKey size={26} /></span><p className="eyebrow">WU HOU · STORY</p><h2>{changePassword ? '设置你的新密码' : '欢迎回到午逅'}</h2><p className="muted">{changePassword ? '首次登录需要修改初始密码，完成后请重新登录。' : '登录，开始今天的甜蜜工作。'}</p>
     {message && <div className="notice success" role="status">{message}</div>}
     {changePassword && <p className="muted">当前工号：{profile.data?.employeeNumber || employee || '正在读取…'}</p>}
     {!changePassword && <label>员工工号<input name="employeeNumber" autoComplete="username" value={employee} onChange={event => setEmployee(event.target.value)} required maxLength={32} disabled={busy} placeholder="输入员工工号" /></label>}
-    <label>{changePassword ? '当前密码' : '登录密码'}<input name="password" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required maxLength={256} disabled={busy} placeholder="输入密码" /></label>
-    {changePassword && <label>新密码<input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} required maxLength={256} disabled={busy} placeholder="15–128 个字符，不能与当前密码相同" /><span className="muted">密码长度为 15–128 个字符。</span></label>}
+    <label>{changePassword ? '当前密码' : '登录密码'}<input name={changePassword ? 'currentPassword' : 'password'} type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required maxLength={256} disabled={busy} placeholder={changePassword ? '填写初始化或重置时使用的旧密码' : '输入密码'} /></label>
+    {changePassword && <><p className="form-help">当前密码是初始化或重置时使用的旧密码；新密码在下方设置。</p><label>新密码<input name="newPassword" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={newPassword} onChange={event => { setNewPassword(event.target.value); setValidation(''); }} required maxLength={256} disabled={busy} placeholder="15–128 个字符，不能与当前密码相同" /><span className="muted">密码长度为 15–128 个字符。</span></label><label>确认新密码<input name="confirmPassword" type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={confirmation} onChange={event => { setConfirmation(event.target.value); setValidation(''); }} required maxLength={256} disabled={busy} placeholder="再次输入新密码" /></label></>}
+    <button type="button" className="text-button" aria-pressed={showPassword} disabled={busy} onClick={() => setShowPassword(value => !value)}>{showPassword ? '隐藏密码' : '显示密码'}</button>
+    {validation && <p className="field-error" role="alert">{validation}</p>}
     <ErrorNotice error={error} /><button className="primary" disabled={busy}>{busy ? '请稍候…' : changePassword ? '保存新密码' : '登录工作台'}<ArrowRight /></button>
     {changePassword && <button type="button" className="text-button" disabled={busy} onClick={async () => {
       setBusy(true);
-      try { if (await onLogout()) { setEmployee(''); setPassword(''); setNewPassword(''); setMessage(''); } }
+      try { if (await onLogout()) { setEmployee(''); setPassword(''); setNewPassword(''); setConfirmation(''); setValidation(''); setShowPassword(false); setMessage(''); } }
       catch (error) { setError(error); } finally { setBusy(false); }
     }}>退出登录</button>}
     <p className="login-help">账号由门店管理员开通。无法登录时，请联系管理员。</p>

@@ -118,9 +118,9 @@ public class IdentityService implements IdentityFacade {
         var context = actors.current();
         var account = accounts.lock(context.accountId()).orElseThrow(() -> new IdentityFailure("AUTHENTICATION_FAILED"));
         account.requireActive();
-        if (account.credentialVersion() != context.credentialVersion() || currentPassword == null
-                || currentPassword.codePointCount(0, currentPassword.length()) > 128
-                || !credentials.matches(currentPassword, account.passwordHash())) throw new IdentityFailure("AUTHENTICATION_FAILED");
+        if (account.credentialVersion() != context.credentialVersion()) throw new IdentityFailure("AUTHENTICATION_FAILED");
+        if (currentPassword == null || currentPassword.codePointCount(0, currentPassword.length()) > 128
+                || !credentials.matches(currentPassword, account.passwordHash())) throw new IdentityFailure("CURRENT_PASSWORD_INCORRECT");
         if (credentials.matches(newPassword, account.passwordHash())) throw new IdentityFailure("PASSWORD_REUSE_FORBIDDEN");
         var changed = account.replacePassword(credentials.encode(newPassword), false, clock.instant());
         accounts.update(changed);

@@ -93,6 +93,21 @@ class IdentityIT {
         var logs = admin.request("GET", "/api/admin/audit-logs?size=100", null).body.toString();
         assertFalse(logs.contains(temporary)); assertFalse(logs.contains(staff.token)); assertFalse(logs.contains("passwordHash"));
     }
+    @Test void incorrectCurrentPasswordKeepsTheFirstLoginSessionAndCanBeCorrected() throws Exception {
+        identity.initializeAdministrator("0001", "店长", INITIAL);
+        var browser = new Browser(); browser.login("0001", INITIAL);
+        var rejected = browser.request("POST", "/api/me/password", Map.of("currentPassword", "Mistyped initial password!", "newPassword", PASSWORD));
+        assertEquals(400, rejected.status); assertEquals("CURRENT_PASSWORD_INCORRECT", rejected.body.path("code").asText());
+        var stillLoggedIn = browser.request("GET", "/api/me", null);
+        assertEquals(200, stillLoggedIn.status); assertTrue(stillLoggedIn.body.at("/data/passwordChangeRequired").asBoolean());
+        assertEquals(0L, jdbc.queryForObject("SELECT credential_version FROM identity_account WHERE employee_number='0001'", Long.class));
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action='identity.password_changed'", Long.class));
+        browser.changePassword(INITIAL, PASSWORD);
+        assertEquals(401, browser.request("GET", "/api/me", null).status);
+        browser.login("0001", PASSWORD);
+        assertFalse(browser.request("GET", "/api/me", null).body.at("/data/passwordChangeRequired").asBoolean());
+        assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action='identity.password_changed'", Long.class));
+    }
     @Test void csrfCookiesLogoutAndMultiDeviceSessionsWork() throws Exception {
         Browser admin = administrator();
         Browser second = new Browser(); second.login("0001", PASSWORD);
