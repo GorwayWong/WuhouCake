@@ -64,7 +64,7 @@ export function saveExportFile(file: { blob: Blob; filename: string }) {
 }
 
 export function exportFailureText(error: unknown): string {
-  return creationResultUnknown(error) ? '未确认收到完整导出文件。文件可能已生成并记录导出活动。请先核对浏览器下载记录和订单日志，再决定是否重试。' : errorText(error);
+  return creationResultUnknown(error) ? '未确认收到完整导出文件。请先核对浏览器下载记录，再决定是否重试。' : errorText(error);
 }
 
 export function exportActivitySummary(details: Record<string, unknown>): string[] {

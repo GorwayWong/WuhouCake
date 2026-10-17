@@ -12,7 +12,8 @@ export function errorText(error: unknown): string {
   if (!(error instanceof ApiError)) return '网络连接失败，请检查连接后重试。';
   return ({
     AUTHENTICATION_FAILED: '工号或密码有误，或登录已过期。',
-    CONCURRENT_MODIFICATION: '其他同事已更新此订单。已获取最新数据，请核对后再次操作；未发布的内容已保留。',
+    CONCURRENT_MODIFICATION: '资料已被其他同事更新，请核对最新内容后重试；未保存输入已保留。',
+    IDEMPOTENCY_KEY_CONFLICT: '本次录单标识已有其他提交，请先核对原订单，再从详情中修改。',
     INVALID_PRODUCTION_TRANSITION: '制作状态已变化，请核对最新状态后操作。',
     INVALID_FULFILLMENT_TRANSITION: '当前订单不能执行此交付操作，请核对最新状态。',
     ORDER_NOT_CANCELLABLE: '此订单当前不能取消。',
@@ -27,7 +28,13 @@ export function errorText(error: unknown): string {
     EXPORT_LIMIT_EXCEEDED: '导出超过 42 天或 100 张订单，请缩小日期范围或增加筛选条件。',
     EXPORT_FILE_TOO_LARGE: '导出文件过大，请缩小筛选范围；单张订单请联系管理员核对。',
     EXPORT_CONTENT_TOO_LARGE: '订单内容或记录过多，请缩小筛选范围；单张订单请联系管理员核对。',
-    INVALID_EXPORT_RESPONSE: '未收到完整的导出文件，请核对下载记录及导出日志后重试。',
+    INVALID_EXPORT_RESPONSE: '未收到完整的导出文件，请核对下载记录后重试。',
+    REPORT_LIMIT_EXCEEDED: '经营导出超过 10,000 单或内容上限，请缩小日期范围或增加筛选条件。',
+    ACCOUNT_ARCHIVED: '该员工已归档，请刷新员工列表并重新选择。',
+    NOT_FOUND: '员工不存在，请刷新后重试。',
+    EMPLOYEE_NUMBER_CONFLICT: '该工号已存在，请使用其他工号。',
+    SELF_ARCHIVE_FORBIDDEN: '不能归档当前登录账号。',
+    LAST_ADMINISTRATOR: '必须至少保留一位在职超级管理员。',
     VALIDATION_FAILED: '填写内容不符合要求，请检查后重试。',
     FORBIDDEN: '当前账号不能执行此操作。',
     PASSWORD_CHANGE_REQUIRED: '请先修改初始密码。',
@@ -124,10 +131,10 @@ export async function authenticatedFetch(path: string, init: RequestInit = {}): 
   }
   return response;
 }
-export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {
   return decode<T>(await authenticatedFetch(path, {
     method: options.method || 'GET', signal: options.signal,
-    headers: options.body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers: { ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   }));
 }

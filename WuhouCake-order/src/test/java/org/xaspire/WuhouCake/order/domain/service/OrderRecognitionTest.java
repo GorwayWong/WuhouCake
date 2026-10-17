@@ -49,6 +49,18 @@ class OrderRecognitionTest {
         assertThrows(IllegalArgumentException.class, () -> parser.parse(" "));
         assertThrows(IllegalArgumentException.class, () -> parser.parse("字".repeat(12001)));
     }
+    @Test void invalidSizePrecisionRangesSignsAndHeightNeverBecomeUsableSizes() throws Exception {
+        for (String value : List.of("尺寸：8.123寸", "尺寸：1234567890寸", "商品：-8寸蛋糕", "商品：负8寸蛋糕", "商品：−8寸蛋糕", "商品：6-8寸蛋糕", "商品：4寸高蛋糕")) {
+            var field = recognition().parse(value).items().getFirst().fields().get("size");
+            assertNull(field.value(), value); assertTrue(field.needsReview(), value);
+        }
+        assertEquals("8.25", recognition().parse("尺寸：8.25寸").items().getFirst().fields().get("size").value());
+        for (String value : List.of("商品：8寸蛋糕-2个", "商品：8寸蛋糕配餐具10份", "商品：8寸蛋糕12.5个")) {
+            var field = recognition().parse(value).items().getFirst().fields().get("quantity");
+            assertNull(field.value(), value); assertTrue(field.needsReview(), value);
+        }
+        assertNull(recognition().parse("商品：十二个蛋糕").items().getFirst().fields().get("quantity").value());
+    }
     @Test void timeConflictsAndRangesDoNotChooseOneValue() throws Exception {
         var result = recognition().parse("【蛋糕预定单】\n收货日期：2026-09-30\n交接时间：10:00\n交接时间：11:00\n尺寸：4寸-6寸");
         assertNull(result.fields().get("plannedHandoffAt").value());

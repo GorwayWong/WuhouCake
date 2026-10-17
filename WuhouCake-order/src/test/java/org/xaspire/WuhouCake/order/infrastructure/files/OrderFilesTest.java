@@ -69,7 +69,7 @@ class OrderFilesTest {
             var product = book.getSheet("商品").getRow(1);
             assertEquals("=蛋糕", product.getCell(1).getStringCellValue()); assertEquals(CellType.STRING, product.getCell(1).getCellType());
             assertEquals("1.01", product.getCell(4).getStringCellValue()); assertEquals("", product.getCell(5).getStringCellValue());
-            assertEquals(Map.of("nested", Map.of("flavors", List.of("草莓", "芒果"))), new ObjectMapper().readValue(product.getCell(6).getStringCellValue(), Map.class));
+            assertEquals(Map.of("nested", Map.of("flavors", List.of("草莓", "芒果")), "base", "原味", "filling", "芒果"), new ObjectMapper().readValue(product.getCell(6).getStringCellValue(), Map.class));
             var restored = new StringBuilder();
             for (var row : book.getSheet("备注")) if (row.getRowNum() > 0) restored.append(row.getCell(2).getStringCellValue());
             assertEquals(longNote, restored.toString()); assertEquals(2, book.getAllPictures().size());

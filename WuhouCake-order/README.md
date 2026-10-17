@@ -55,13 +55,16 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 
 - phone、requestedReceiveDate、plannedHandoffAt 和至少一件有名称/数量的商品必填；DELIVERY 必须有非空地址，PICKUP 可空。客户姓名、会员电话、客户侧下单人、计划出品时间、报价和总额可选。正式 API 的 phone 是最长 32 字符的非空文本，不提供电话真实性验证。
 - 数量为 1–2147483647 的整数；金额为非负 Long 整数分，不接收浮点小数或负数。前端以元输入并限制在 JavaScript 安全整数范围；空值与 0 不同，不按商品报价自动计算订单总额。
-- productType 省略时后端默认 CAKE，attributes 是开放 JSON，未提供时为空对象，不自动补内胚/夹馅；共享默认用于录单表单和识别候选。界面只编辑常用文本规格，未知/对象/数组规格保留。奶油仍存 attributes.flavor，内胚 base、夹馅 filling，不迁移旧历史值。尺寸识别规范化为数值文本，正式 attributes 不引入新的尺寸枚举。
+- productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling 缺失、null、空白时，写入和读取均使用原味/芒果，读取不写库。奶油仍存 flavor。新建、追加及明确修改的蛋糕 size 只接受正数、最多两位小数、整数部分最多九位，存为无单位数值文本；非法值返回 400。旧规格可读，未改尺寸时不会因旧尺寸异常阻止其他字段更正。
 - 时间以 ISO 8601 带偏移输入、UTC 输出，前端按北京时间展示；收货日期决定日历归日，交接时刻不替代收货日期。
-- 资料 changes 只接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、plannedHandoffAt、plannedFinishAt、totalAmountCents。商品 changes 只接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 按顶层合并、null 删除该键，结构值整体替换。
+- 创建可传 creditedEmployeeId，省略时归属当前员工；需为在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
+- 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling 回落默认），结构值整体替换。
 - 所有状态都能更正资料和约定金额；商品仅在 WAITING_PRODUCTION/PROCESSING 可增删改，待交接须先重新制作。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。
 - 制作中追加商品清空已确认的整单节点；修改/移除不主动清空节点。商品变化不改约定总额和付款。DELIVERING 改为 PICKUP 时转 WAITING_PICKUP；完成/取消后的交接类型更正不重开状态。
 
-写请求带当前 expectedVersion。有效资料、商品、付款和状态变化同事务推进一次版本并记录活动；无实际变化仍校验版本，但不写版本/时间/活动。409 CONCURRENT_MODIFICATION 后须读取最新状态人工复核，不自动重试。备注、图片不增加订单版本，仍会发 SSE；导出另记活动但不发 SSE。
+写请求带当前 expectedVersion。有效资料、商品、付款和状态变化同事务推进一次版本并记录活动；无实际变化仍校验版本，但不写版本/时间/活动。409 CONCURRENT_MODIFICATION 后须读取最新状态人工复核，不自动重试。备注、图片不增加订单版本，仍会发 SSE；导出不记新活动、不发 SSE。
+
+创建接口可带 UUID 格式的 `Idempotency-Key` 请求头。标识按实际创建员工隔离；同标识及相同内容的并发或后续重试仅创建一单、一组商品及一条创建活动，后续请求返回原订单的最新详情，不再推送创建事件。相同标识改用不同内容返回 409 IDEMPOTENCY_KEY_CONFLICT。预约标识、订单和创建活动同事务提交，失败全部回滚；仅保存请求内容指纹及订单引用，不复制客户资料。已成功的提交即使归属员工随后归档，仍可重试读取原单。未带此请求头的调用每次创建新单；网页在当前草稿生命周期内始终携带标识。
 
 ## 整单状态
 
@@ -83,13 +86,19 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 
 夹层和抹面可跳过，未记录不得展示成已完成；制作完成不自动送达。取消要求非空原因，完成/取消的终态不能再次取消。无独立商品制作按钮、部分交付或配送任务聚合。
 
-活动包含服务端操作者和昵称快照、时间、动作及适用的 before/after；按 createdAt/id 倒序分页。各商品最近三条 NOTE 只属于该商品，整单备注不混入。导出活动语义是文件已生成并发起下载，不表示员工已保存。
+活动包含服务端操作者和昵称快照、时间、动作及适用的 before/after；按 createdAt/id 倒序分页。各商品最近三条 NOTE 只属于该商品，整单备注不混入。历史导出活动继续可读，不再新增。
 
 ## 查询与 SSE
 
 日历使用 [from,to)；工作台 date 按 Asia/Shanghai。非法、反向、空或超过 42 天的日历范围返回 400。统计字段：totalOrders 是全部订单数，createdOnDate 是门店当天创建数，deliveryDueOnDate 是该收货日尚未完成/取消的配送订单数，均不是商品数量统计。
 
-SSE 使用带 Bearer 的 Fetch，先发送 ready/data={}，提交成功后发送 order.changed，载荷仅 orderId、itemId、changeType、version。资料迁日、备注和图片同版本通知都应触发 REST 重取；不能用版本相同丢弃通知。ORDER_EXPORTED 不推送，其他员工通过日志查询刷新读取。
+工作台 pendingOrders 字段返回该收货日全部状态的订单，前端再按同一状态/付款筛选规则显示日历与单日列表。经营查询 `GET /api/admin/orders` 仅限 SUPER_ADMIN，参数 from/to（右开区间，最多 366 天）、dateBasis（RECEIVE 默认按收货日期，CREATED 按北京时间录单日期）、status/paymentStatus/fulfillmentType、sizeInches、creditedEmployeeId、unassigned、includeCancelled、keyword、page/size（1 起、最大 100）。未知枚举、非法日期/尺寸/UUID/分页返回 400；空结果正常返回空列表及零统计。尺寸只匹配有效 CAKE 商品，累加 quantity；旧异常尺寸安全排除于精确尺寸筛选，未设尺寸时仍可查询并计为待核对。
+
+查询返回整段范围的 totals、sizes、employees，分页仅影响 items。尺寸按规范数值合并，各组订单数分别去重，混合尺寸订单会进入多组，不可相加；员工按稳定账号分组，显示最近录单的归属快照，历史未归属独立成组。金额仅求已填写约定金额，按手动付款标记分列，并单列未填金额订单数；不按尺寸分摊整单金额，本阶段提供员工业绩汇总，不计算提成。
+
+`GET /api/admin/orders/export` 使用相同业务条件及可重复读快照，返回“统计”“尺寸统计”“员工业绩”“订单明细”“商品明细”五张 XLSX 表。最多 10,000 单、50,000 行商品，订单商品描述和商品明细各限 8 MiB、单格 32767 字符；超限 REPORT_LIMIT_EXCEEDED，不截断。默认排除取消单；includeCancelled=true 包含，status=CANCELLED 明确只看取消。约定总额不是实收或提成；JSON 金额汇总/明细用整数分字符串保留精度。导出数量为可计算的数值单元格，工号/订单号等为文本，不执行输入公式；表头冻结并支持筛选。
+
+SSE 使用带 Bearer 的 Fetch，先发送 ready/data={}，提交成功后发送 order.changed，载荷为 orderId、itemId、changeType、version、orderNo，不携带客户联系方式。资料迁日、备注和图片同版本通知都触发 REST 重取；不能用版本相同丢弃通知。读取和导出不推送。前端保留本次在线期间最近 20 张订单的更新提示，重连通过 REST 补齐数据，完整操作仍以订单日志为准。
 
 连接绑定账号、会话和凭证版本，注册及每个 ready/事件/心跳发送前复验身份。同进程凭证撤销成功提交后清空旧流队列并关闭，回滚不误断；新版本和其他员工保持。单实例、15 秒心跳、最长 5 分钟，不持久化、不重放、不支持 Last-Event-ID。跨进程账号变更由后续复验兜底，空闲连接最迟下一次心跳关闭。
 
@@ -112,7 +121,7 @@ ZIP 筛选 from/to 是收货日期右开区间，界面结束当天须先加一�
 
 XLSX 含订单、商品、备注、图片四张表：有效商品及完整规格 JSON、全部整单备注、各有效商品最近三条备注、有效整单/商品图片；图片实际嵌入。金额精确转为元文本，空金额留空；时间按门店时区，长文本拆连续行，文本不作为公式执行。
 
-短 REPEATABLE_READ 事务固定订单、备注和有效图片 ID，事务外逐单生成文件；后续移除不破坏正在生成的既有快照，后续上传不混入。完整文件生成后，每单追加一条 ORDER_EXPORTED，批量日志原子提交；日志失败不返回成功文件。导出不改变版本/状态/付款，临时文件在正常结束、异常和复制中断时清理。文件名分别为订单-{orderNo}.xlsx、orders-{from:yyyyMMdd}-{to前一天:yyyyMMdd}.zip。
+短 REPEATABLE_READ 事务固定订单、备注和有效图片 ID，事务外逐单生成文件；后续移除不破坏正在生成的既有快照，后续上传不混入。导出不新增活动、不改变版本/状态/付款，临时文件在正常结束、异常和复制中断时清理。文件名分别为订单-{orderNo}.xlsx、orders-{from:yyyyMMdd}-{to前一天:yyyyMMdd}.zip。
 
 常见错误：400 VALIDATION_FAILED/INVALID_IMAGE/IMAGE_DIMENSIONS_EXCEEDED/EXPORT_LIMIT_EXCEEDED/EXPORT_EMPTY；404 ORDER_NOT_FOUND/IMAGE_NOT_FOUND；409 CONCURRENT_MODIFICATION/ORDER_NOT_EDITABLE/ORDER_IMAGE_LIMIT_EXCEEDED 或非法状态转换；413 IMAGE_TOO_LARGE/EXPORT_FILE_TOO_LARGE/EXPORT_CONTENT_TOO_LARGE；415 UNSUPPORTED_IMAGE_FORMAT。固定限制以 [OrderFileLimits](src/main/java/org/xaspire/WuhouCake/order/domain/model/valobj/OrderFileLimits.java) 和 bootstrap multipart 配置为准。
 

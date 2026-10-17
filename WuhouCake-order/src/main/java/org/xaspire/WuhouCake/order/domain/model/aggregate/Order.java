@@ -22,6 +22,7 @@ public final class Order {
     private FulfillmentPlan fulfillment;
     private Long totalAmountCents;
     private final UUID createdBy;
+    private Attribution creditedEmployee;
     private final Instant createdAt;
     private final Instant confirmedAt;
     private final Map<UUID, OrderItem> items = new LinkedHashMap<>();
@@ -31,12 +32,19 @@ public final class Order {
     public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
             FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
             Instant updatedAt, List<OrderItem> items) {
+        this(id, orderNo, version, status, paymentStatus, currentStageCode, customer, fulfillment, totalAmountCents,
+                createdBy, createdAt, confirmedAt, updatedAt, items, null);
+    }
+    public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
+            FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
+            Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee) {
         this.id = Objects.requireNonNull(id); this.orderNo = requiredText(orderNo, 32);
         this.version = nonNegativeInteger(version); this.status = Objects.requireNonNull(status); this.paymentStatus = Objects.requireNonNull(paymentStatus);
         if (currentStageCode != null && !Set.of("LAYER_DONE", "FROSTING_DONE").contains(currentStageCode)) throw invalid();
         this.currentStageCode = currentStageCode;
         this.customer = Objects.requireNonNull(customer); this.fulfillment = Objects.requireNonNull(fulfillment);
         this.totalAmountCents = money(totalAmountCents); this.createdBy = Objects.requireNonNull(createdBy);
+        this.creditedEmployee = creditedEmployee;
         this.createdAt = Objects.requireNonNull(createdAt); this.confirmedAt = Objects.requireNonNull(confirmedAt); this.updatedAt = Objects.requireNonNull(updatedAt);
         if (items == null || items.isEmpty()) throw invalid();
         for (var item : items) if (this.items.putIfAbsent(item.itemId(), item) != null) throw invalid();
@@ -45,6 +53,10 @@ public final class Order {
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now) {
         return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items);
+    }
+    public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
+            List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee) {
+        return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items, creditedEmployee);
     }
     public OrderItem requireActiveItem(UUID itemId) {
         var item = requireItem(itemId);
@@ -104,10 +116,14 @@ public final class Order {
         return JsonSnapshot.object(Map.of("before", before, "after", after));
     }
     public Map<String, Object> reviseInformation(Map<String, Object> changes, Instant now) {
+        return reviseInformation(changes, now, creditedEmployee);
+    }
+    public Map<String, Object> reviseInformation(Map<String, Object> changes, Instant now, Attribution employee) {
         var fields = Set.of("customerName", "phone", "memberPhone", "buyerName", "fulfillmentType", "address", "requestedReceiveDate",
-                "plannedHandoffAt", "plannedFinishAt", "totalAmountCents");
+                "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "creditedEmployeeId");
         if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !fields.contains(key))) throw invalid();
         var previous = informationValues(customer, fulfillment, totalAmountCents);
+        previous.put("creditedEmployeeId", creditedEmployee == null ? null : creditedEmployee.accountId().toString());
         var merged = new LinkedHashMap<>(previous); merged.putAll(changes);
         var contact = new CustomerContact(text(merged.get("customerName")), text(merged.get("phone")), text(merged.get("memberPhone")), text(merged.get("buyerName")));
         FulfillmentType type;
@@ -121,14 +137,20 @@ public final class Order {
         if (type != fulfillment.type() && Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(status))
             nextStatus = type == FulfillmentType.DELIVERY ? "WAITING_DELIVERY" : "WAITING_PICKUP";
         var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
-        informationValues(contact, plan, total).forEach((field, value) -> {
+        var nextValues = informationValues(contact, plan, total);
+        nextValues.put("creditedEmployeeId", employee == null ? null : employee.accountId().toString());
+        nextValues.forEach((field, value) -> {
             if (!Objects.equals(previous.get(field), value)) { before.put(field, previous.get(field)); after.put(field, value); }
         });
         if (!status.equals(nextStatus)) { before.put("status", status); after.put("status", nextStatus); }
+        if (before.containsKey("creditedEmployeeId")) {
+            before.put("creditedEmployeeName", creditedEmployee == null ? "未归属" : creditedEmployee.nickname() + " · " + creditedEmployee.employeeNumber());
+            after.put("creditedEmployeeName", employee == null ? "未归属" : employee.nickname() + " · " + employee.employeeNumber());
+        }
         if (before.isEmpty()) return Map.of();
         requireNextVersion();
         var details = JsonSnapshot.object(Map.of("before", before, "after", after));
-        customer = contact; fulfillment = plan; totalAmountCents = total; status = nextStatus; version++; updatedAt = now;
+        customer = contact; fulfillment = plan; totalAmountCents = total; status = nextStatus; creditedEmployee = employee; version++; updatedAt = now;
         return details;
     }
     private static Map<String, Object> informationValues(CustomerContact customer, FulfillmentPlan fulfillment, Long total) {
@@ -261,6 +283,7 @@ public final class Order {
     public FulfillmentPlan fulfillment() { return fulfillment; }
     public Long totalAmountCents() { return totalAmountCents; }
     public UUID createdBy() { return createdBy; }
+    public Attribution creditedEmployee() { return creditedEmployee; }
     public Instant createdAt() { return createdAt; }
     public Instant confirmedAt() { return confirmedAt; }
     public Instant updatedAt() { return updatedAt; }

@@ -31,6 +31,13 @@ public final class OrderValues {
             nickname = requiredText(nickname, 100);
         }
     }
+    public record Attribution(UUID accountId, String employeeNumber, String nickname) {
+        public Attribution {
+            if (accountId == null) throw invalid();
+            employeeNumber = requiredText(employeeNumber, 32);
+            nickname = requiredText(nickname, 100);
+        }
+    }
     public static String requiredText(Object value, int maximum) {
         if (!(value instanceof String text) || text.isBlank() || text.length() > maximum) throw invalid();
         return text.strip();

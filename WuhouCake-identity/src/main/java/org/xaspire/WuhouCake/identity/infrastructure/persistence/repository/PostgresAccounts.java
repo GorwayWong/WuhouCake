@@ -28,6 +28,12 @@ public final class PostgresAccounts implements Accounts {
     }
     @Override public void update(EmployeeAccount account) {
         if (mapper.update(row(account), account.version() - 1) != 1) throw new IdentityFailure("CONCURRENT_MODIFICATION");
+        mapper.deleteRoles(account.id().toString());
+        account.jobRoles().forEach(role -> mapper.insertRole(account.id().toString(), role.name()));
+    }
+    @Override public List<DirectoryEntry> directory(boolean includeArchived) {
+        return mapper.directory(includeArchived).stream().map(row -> new DirectoryEntry(UUID.fromString(row.accountId()),
+                row.employeeNumber(), row.nickname(), Status.valueOf(row.status()))).toList();
     }
     @Override public List<EmployeeAccount> search(Search q) {
         return mapper.search(q.employeeNumber(), q.nickname(), name(q.status()), name(q.jobRole()), q.size(), (q.page() - 1) * q.size()).stream().map(this::account).toList();

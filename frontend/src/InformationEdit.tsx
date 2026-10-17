@@ -5,11 +5,13 @@ import { informationDraft, informationRequest } from './orderForm';
 import type { Detail, InformationRequest } from './types';
 import { time } from './dates';
 import { ErrorNotice, money } from './ui';
+import { EmployeeSelect } from './EmployeeSelect';
 
 export function InformationSummary({ order, includeAmount = false }: { order: Detail; includeAmount?: boolean }) {
   return <dl className="info-grid">
+    <div><dt>下单员工（业绩归属）</dt><dd>{order.creditedEmployee ? `${order.creditedEmployee.nickname} · ${order.creditedEmployee.employeeNumber}` : '未归属'}</dd></div>
     <div><dt>客户姓名</dt><dd>{order.customer.customerName || '未填写'}</dd></div><div><dt>联系电话</dt><dd><a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a></dd></div>
-    <div><dt>会员手机</dt><dd>{order.customer.memberPhone || '未填写'}</dd></div><div><dt>下单人</dt><dd>{order.customer.buyerName || '未填写'}</dd></div>
+    <div><dt>会员手机</dt><dd>{order.customer.memberPhone || '未填写'}</dd></div><div><dt>客户侧下单人</dt><dd>{order.customer.buyerName || '未填写'}</dd></div>
     <div><dt>收货日期</dt><dd>{order.fulfillment.requestedReceiveDate}</dd></div><div><dt>计划交付</dt><dd>{time(order.fulfillment.plannedHandoffAt, true)}</dd></div>
     <div><dt>计划出品</dt><dd>{time(order.fulfillment.plannedFinishAt, true)}</dd></div><div><dt>下单时间</dt><dd>{time(order.createdAt, true)}</dd></div>
     <div className="wide"><dt>{order.fulfillment.type === 'PICKUP' ? '自提安排' : '配送地址'}</dt><dd>{order.fulfillment.type === 'PICKUP' ? `门店自提${order.fulfillment.address ? ` · ${order.fulfillment.address}` : ''}` : order.fulfillment.address}</dd></div>
@@ -32,14 +34,13 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
   const dirty = Boolean(pending.request) || Boolean(Object.keys(pending.errors).length && JSON.stringify(draft) !== JSON.stringify(informationDraft(initial)));
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
-  useEffect(() => {
-    if (conflict && !baseline && latest.version > attemptedVersion.current) setBaseline(latest);
-  }, [conflict, baseline, latest]);
+  const stale = !baseline || latest.version > baseline.version;
+  const canReview = latest.version > (baseline?.version ?? attemptedVersion.current);
   const props = (name: string) => ({ id: `edit-${name}`, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': errors[name] ? `edit-${name}-error` : undefined });
   const change = (next: typeof draft) => { setDraft(next); setErrors({}); };
   return <form ref={form} className="information-form" noValidate onSubmit={async event => {
     event.preventDefault();
-    if (busy || !baseline) return;
+    if (busy || !baseline || stale) return;
     const result = informationRequest(initial, draft, baseline);
     setErrors(result.errors);
     if (Object.keys(result.errors).length) {
@@ -56,7 +57,8 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
   }}>
     <fieldset className="create-fields" disabled={busy}>
       <div className="information-group"><h3>客户信息</h3><div className="create-grid">
-        {([['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '下单人', 80]] as const).map(([name, label, maximum], index) => <Field key={name} name={name} label={label} error={errors[name]}><input {...props(name)} autoFocus={index === 0} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} maxLength={maximum} required={name === 'phone'} onChange={event => change({ ...draft, [name]: event.target.value })} /></Field>)}
+        <Field name="creditedEmployeeId" label="下单员工（业绩归属）" error={errors.creditedEmployeeId}><EmployeeSelect id="edit-creditedEmployeeId" value={draft.creditedEmployeeId || ''} saved={initial.creditedEmployee} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
+        {([['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '客户侧下单人', 80]] as const).map(([name, label, maximum], index) => <Field key={name} name={name} label={label} error={errors[name]}><input {...props(name)} autoFocus={index === 0} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} maxLength={maximum} required={name === 'phone'} onChange={event => change({ ...draft, [name]: event.target.value })} /></Field>)}
       </div></div>
       <div className="information-group"><h3>配送／自提与交接时间</h3><div className="create-grid">
         <Field name="fulfillmentType" label="交接方式" error={errors.fulfillmentType}><select {...props('fulfillmentType')} value={draft.fulfillmentType} onChange={event => change({ ...draft, fulfillmentType: event.target.value as typeof draft.fulfillmentType })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></select></Field>
@@ -66,8 +68,8 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
       </div><p className="form-help">时间按北京时间填写。收货日期决定日历归日，与计划交接时间分别保存。</p></div>
       <div className="information-group"><h3>订单约定总金额</h3><div className="create-grid"><Field name="totalAmount" label="约定总金额（元）" error={errors.totalAmount}><input {...props('totalAmount')} inputMode="decimal" value={draft.totalAmount} placeholder="未填写" onChange={event => change({ ...draft, totalAmount: event.target.value })} /></Field></div><p className="form-help">留空表示未填写，0 元表示约定为零；修改金额不改变付款状态，不按商品报价计算。</p></div>
       <ErrorNotice error={error} />
-      {conflict && <div className="information-review"><p className="notice" role="status">输入已保留。请核对下方最新资料，再点击保存修改；只提交你改过的字段。{!baseline && '最新资料尚未读取，请先重试顶部的数据读取。'}</p><h3>最新资料（用于核对）</h3><InformationSummary order={latest} includeAmount /></div>}
-      <div className="actions"><button className="primary" disabled={busy || !baseline}>{busy ? '正在保存…' : '保存修改'}</button><button className="secondary" type="button" onClick={onCancel}>取消</button></div>
+      {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已有新版本，你的输入已保留。请先核对最新资料。' : '已核对最新版本，请再次检查自己的修改后保存。'}只提交你改过的字段。{!baseline && !canReview && '最新资料尚未读取，请重试顶部的数据读取。'}</p><h3>最新资料（用于核对）</h3><InformationSummary order={latest} includeAmount />{stale && <button type="button" className="secondary" disabled={!canReview} onClick={() => { setBaseline(latest); setConflict(true); }}>已核对最新版本，继续编辑</button>}</div>}
+      <div className="actions"><button className="primary" disabled={busy || stale}>{busy ? '正在保存…' : '保存修改'}</button><button className="secondary" type="button" onClick={onCancel}>取消</button></div>
     </fieldset>
   </form>;
 }

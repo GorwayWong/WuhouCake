@@ -118,10 +118,7 @@ class OrderExportIT {
         }
         assertEquals(before, data(staff.request("GET", "/api/orders/" + id, null))); assertTrue(changes.events.isEmpty());
         var history = data(staff.request("GET", "/api/orders/" + id + "/activities?type=ORDER_EXPORTED", null));
-        assertEquals(1, history.path("total").asInt()); var activity = history.at("/items/0");
-        assertEquals(staff.accountId, activity.path("actorId").asText()); assertEquals("SINGLE", activity.at("/details/mode").asText());
-        assertEquals("XLSX", activity.at("/details/format").asText()); assertEquals(0, activity.at("/details/snapshotVersion").asLong());
-        assertEquals(2, activity.at("/details/imageIds").size()); assertFalse(activity.path("details").toString().contains("13800000000"));
+        assertEquals(0, history.path("total").asInt());
         assertEquals(tempBefore, temporaryFiles());
     }
     @Test void rejectsInvalidUploadsAndSerializesConcurrentImageLimit() throws Exception {
@@ -168,7 +165,7 @@ class OrderExportIT {
         assertEquals(200, staff.request("DELETE", path, null).statusCode());
         assertEquals(200, staff.request("DELETE", path, null).statusCode());
         assertEquals(1, changes.events.size());
-        assertEquals(new OrderChanged(UUID.fromString(id), UUID.fromString(item), OrderChanged.Type.IMAGE_REMOVED, 0), changes.events.peek());
+        assertEquals(new OrderChanged(UUID.fromString(id), UUID.fromString(item), OrderChanged.Type.IMAGE_REMOVED, 0, order.path("orderNo").asText()), changes.events.peek());
         assertEquals(404, staff.request("GET", path, null).statusCode());
         assertEquals(7, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
         assertTrue(jdbc.queryForObject("SELECT is_removed FROM cake_order_image WHERE id=?::uuid", Boolean.class, imageId));
@@ -215,7 +212,7 @@ class OrderExportIT {
         var next = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(next.body()))) { assertTrue(book.getAllPictures().isEmpty()); }
     }
-    @Test void batchFiltersDatesAndBusinessConditionsAndLogsEveryIncludedOrder() throws Exception {
+    @Test void batchFiltersDatesAndBusinessConditionsWithoutCreatingActivity() throws Exception {
         var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));
         var b = data(staff.request("POST", "/api/orders", create("2026-10-02")));
         var c = data(staff.request("POST", "/api/orders", create("2026-10-03")));
@@ -225,25 +222,19 @@ class OrderExportIT {
         var all = staff.request("POST", "/api/orders/exports/zip", range());
         assertEquals(200, all.statusCode(), text(all));
         assertEquals(List.of(filename(a), filename(b), filename(c)), entries(all));
-        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_EXPORTED'", Integer.class));
-        assertEquals(1, jdbc.queryForObject("SELECT count(DISTINCT details->>'batchId') FROM cake_order_activity WHERE type='ORDER_EXPORTED'", Integer.class));
-        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_EXPORTED' AND actor_id=?::uuid"
-                + " AND details->>'mode'='BATCH' AND details->>'format'='XLSX' AND details->'filters'->>'from'='2026-10-01'", Integer.class, staff.accountId));
+        assertEquals(0, exportCount());
         var filtered = new LinkedHashMap<String, Object>(range()); filtered.put("status", "WAITING_PRODUCTION"); filtered.put("paymentStatus", "UNPAID"); filtered.put("fulfillmentType", "DELIVERY");
         assertEquals(List.of(filename(a)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
         filtered = new LinkedHashMap<>(range()); filtered.put("paymentStatus", "PAID"); assertEquals(List.of(filename(b)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
         filtered = new LinkedHashMap<>(range()); filtered.put("status", "CANCELLED"); assertEquals(List.of(filename(c)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
         filtered = new LinkedHashMap<>(range()); filtered.put("fulfillmentType", "PICKUP"); assertEquals(List.of(filename(b)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
     }
-    @Test void generationAndLogFailuresRollBackEveryActivityAndDeleteFiles() throws Exception {
+    @Test void activityUnavailableDoesNotBlockExportAndGenerationFailureDeletesFiles() throws Exception {
         var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));
         staff.request("POST", "/api/orders", create("2026-10-02"));
-        var before = temporaryFiles(); var appended = new AtomicInteger();
-        doAnswer(invocation -> {
-            if (appended.incrementAndGet() == 2) throw new DataAccessResourceFailureException("test log unavailable");
-            return invocation.callRealMethod();
-        }).when(activities).append(argThat(activity -> activity.type().equals("ORDER_EXPORTED")));
-        assertEquals(503, staff.request("POST", "/api/orders/exports/zip", range()).statusCode());
+        var before = temporaryFiles();
+        doThrow(new DataAccessResourceFailureException("test log unavailable")).when(activities).append(any());
+        assertEquals(200, staff.request("POST", "/api/orders/exports/zip", range()).statusCode());
         assertEquals(0, exportCount()); assertEquals(before, temporaryFiles()); reset(activities);
         String id = a.path("orderId").asText(); staff.upload(id, null, picture("png"), "x.png");
         doThrow(new DataAccessResourceFailureException("test image unavailable")).when(images).content(any(), any());
@@ -264,7 +255,7 @@ class OrderExportIT {
             assertEquals("UNPAID", book.getSheet("订单").getRow(5).getCell(1).getStringCellValue());
         }
         assertEquals("PAID", data(staff.request("GET", "/api/orders/" + id, null)).path("paymentStatus").asText());
-        assertEquals("0", jdbc.queryForObject("SELECT details->>'snapshotVersion' FROM cake_order_activity WHERE type='ORDER_EXPORTED'", String.class));
+        assertEquals(0, exportCount());
     }
     @Test void emptyInvalidAndOverLimitRequestsNeverCreateLogs() throws Exception {
         var staff = staff();
@@ -309,7 +300,7 @@ class OrderExportIT {
         assertEquals(0, exportCount()); assertEquals(before, temporaryFiles());
         verify(files, never()).generate(any(), anyString(), anyBoolean());
     }
-    @Test void deferredLogCommitFailureReturnsNoFileAndDeletesCompleteArchive() throws Exception {
+    @Test void exportIsUnaffectedByDeferredActivityWriteFailure() throws Exception {
         var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));
         var b = data(staff.request("POST", "/api/orders", create("2026-10-02"))); var before = temporaryFiles();
         jdbc.execute("CREATE FUNCTION reject_export_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN"
@@ -323,8 +314,8 @@ class OrderExportIT {
         }).when(activities).append(argThat(activity -> activity.type().equals("ORDER_EXPORTED")));
         try {
             var response = staff.request("POST", "/api/orders/exports/zip", range());
-            assertEquals(503, response.statusCode(), text(response)); assertTrue(header(response, "Content-Type").contains("application/json"));
-            assertEquals(2, appended.get()); assertEquals(0, exportCount()); assertEquals(before, temporaryFiles());
+            assertEquals(200, response.statusCode(), text(response)); assertTrue(header(response, "Content-Type").contains("application/zip"));
+            assertEquals(0, appended.get()); assertEquals(0, exportCount()); assertEquals(before, temporaryFiles());
             assertEquals(a, data(staff.request("GET", "/api/orders/" + a.path("orderId").asText(), null)));
             assertEquals(b, data(staff.request("GET", "/api/orders/" + b.path("orderId").asText(), null)));
         } finally { jdbc.execute("DROP FUNCTION reject_export_commit() CASCADE"); }
@@ -359,13 +350,13 @@ class OrderExportIT {
         var exact = Map.of("from", "2026-10-01", "to", "2026-11-12");
         var names = entries(staff.request("POST", "/api/orders/exports/zip", exact));
         assertEquals(100, names.size()); assertEquals(new HashSet<>(expected), new HashSet<>(names));
-        assertEquals(100, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
+        assertEquals(0, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
         var longRange = staff.request("POST", "/api/orders/exports/zip", Map.of("from", "2026-10-01", "to", "2026-11-13"));
         assertEquals(400, longRange.statusCode()); assertEquals("EXPORT_LIMIT_EXCEEDED", body(longRange).path("code").asText());
         staff.request("POST", "/api/orders", create("2026-11-11")); changes.events.clear();
         var tooMany = staff.request("POST", "/api/orders/exports/zip", exact);
         assertEquals(400, tooMany.statusCode()); assertEquals("EXPORT_LIMIT_EXCEEDED", body(tooMany).path("code").asText());
-        assertEquals(100, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
+        assertEquals(0, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
     }
     @Test void malformedExportFiltersReturnValidationErrorsWithoutFilesOrHistory() throws Exception {
         var staff = staff(); var before = temporaryFiles();
@@ -504,6 +495,7 @@ class OrderExportIT {
     private static String streamFrame(BufferedReader reader) throws IOException {
         var frame = new StringBuilder();
         for (String line; (line = reader.readLine()) != null;) {
+            if (line.startsWith(":")) continue;
             if (line.isEmpty()) { if (!frame.isEmpty()) return frame.toString(); }
             else frame.append(line).append('\n');
         }
@@ -524,7 +516,7 @@ class OrderExportIT {
     private static Map<String, Object> create(String date) {
         return Map.of("customer", Map.of("customerName", "客户", "phone", "13800000000"), "totalAmountCents", 12345,
                 "fulfillment", Map.of("type", "DELIVERY", "address", "地址", "requestedReceiveDate", date, "plannedHandoffAt", date + "T10:00:00+08:00"),
-                "items", List.of(Map.of("name", "蛋糕", "quantity", 1, "unitPriceCents", 10000, "attributes", Map.of("size", "8寸", "nested", List.of(Map.of("flavor", "草莓")))),
+                "items", List.of(Map.of("name", "蛋糕", "quantity", 1, "unitPriceCents", 10000, "attributes", Map.of("size", "8", "nested", List.of(Map.of("flavor", "草莓")))),
                         Map.of("name", "纸杯", "quantity", 6)));
     }
     private Client staff() throws Exception {

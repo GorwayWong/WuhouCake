@@ -8,6 +8,8 @@ import org.xaspire.WuhouCake.identity.domain.model.valobj.AccountValues.*;
 
 public interface Accounts {
     record Search(String employeeNumber, String nickname, Status status, JobRole jobRole, int page, int size) { }
+    record DirectoryEntry(UUID accountId, String employeeNumber, String nickname, Status status) { }
+    List<DirectoryEntry> directory(boolean includeArchived);
     Optional<EmployeeAccount> find(UUID id);
     Optional<EmployeeAccount> findByNumber(String number);
     Optional<EmployeeAccount> lock(UUID id);

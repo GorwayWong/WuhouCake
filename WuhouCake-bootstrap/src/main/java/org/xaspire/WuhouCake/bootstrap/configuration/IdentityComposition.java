@@ -35,7 +35,7 @@ import org.xaspire.WuhouCake.identity.domain.model.valobj.AccountValues.Actor;
 @MapperScan({"org.xaspire.WuhouCake.identity.infrastructure.persistence.mapper", "org.xaspire.WuhouCake.audit.infrastructure.persistence.mapper"})
 public class IdentityComposition {
     @Bean Accounts accounts(AccountMapper mapper) { return new PostgresAccounts(mapper); }
-    @Bean Operations operations(OperationMapper mapper) { return new PostgresOperations(mapper); }
+    @Bean Operations operations(OperationMapper mapper, org.xaspire.WuhouCake.shared.json.JsonCodec json) { return new PostgresOperations(mapper, json); }
     @Bean Credentials credentials() {
         var argon2 = new Argon2PasswordEncoder(16, 32, 1, 19456, 2);
         return new SpringCredentials(new DelegatingPasswordEncoder("argon2id", Map.of("argon2id", argon2)));

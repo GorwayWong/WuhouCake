@@ -39,7 +39,7 @@ public final class RecognitionValues {
     }
     public static String size(String text) {
         String value = text.strip().replaceFirst("(?:英寸|寸)$", "").strip();
-        if (!value.matches("\\d+(?:\\.\\d+)?")) throw new IllegalArgumentException("尺寸需要单个明确数值");
+        if (!value.matches("[0-9]{1,9}(?:\\.[0-9]{1,2})?")) throw new IllegalArgumentException("尺寸需要单个正数，最多两位小数、九位整数");
         var number = new BigDecimal(value);
         if (number.signum() <= 0 || value.length() > 32) throw new IllegalArgumentException("尺寸需要人工核对");
         return number.stripTrailingZeros().toPlainString();

@@ -1,13 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
-import { connectOrders, receiveEvent } from '../src/realtime.ts';
+import { collectUpdate, connectOrders, receiveEvent } from '../src/realtime.ts';
+import type { OrderUpdate } from '../src/realtime.ts';
 import { api, session, forgetSession, ApiError } from '../src/api.ts';
 
 const waitFor = async (condition: () => boolean) => {
   for (let i = 0; i < 200 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(condition(), 'condition was not reached');
 };
+test('站内更新保留同版本备注，合并同一订单、限制数量，坏事件只同步不产生可点击通知', () => {
+  const client = new QueryClient(); let updates: OrderUpdate[] = [];
+  const notify = (change: OrderUpdate) => { updates = collectUpdate(updates, change); };
+  const id = '00000000-0000-4000-8000-000000000001';
+  client.setQueryData(['order', id, 'detail'], { orderNo: '0000001' });
+  for (const changeType of ['NOTE', 'NOTE', 'IMAGE_ADDED']) receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: id, changeType, version: 0 }) }, notify);
+  assert.equal(updates.length, 1); assert.equal(updates[0].changeType, 'IMAGE_ADDED'); assert.equal(updates[0].orderNo, '0000001');
+  for (const data of ['null', '{bad', JSON.stringify({ orderId: 'javascript:alert(1)', changeType: 'NOTE', version: 0 }), JSON.stringify({ orderId: id, changeType: '__proto__', version: 0 }), JSON.stringify({ orderId: id, changeType: 'NOTE', version: -1 })]) receiveEvent(client, { event: 'order.changed', data }, notify);
+  assert.equal(updates.length, 1);
+  receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: id, orderNo: '0000002', changeType: 'NOTE', version: 0 }) }, notify);
+  assert.equal(updates[0].orderNo, '0000002');
+  for (let n = 2; n < 30; n++) notify({ orderId: String(n), changeType: 'NOTE', version: 0, receivedAt: n });
+  assert.equal(updates.length, 20); assert.equal(updates[0].orderId, '29'); client.clear();
+});
 test('相同版本 NOTE 仍刷新详情与商品备注，跨日通知重新获取整个可见范围', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const counts: Record<string, number> = {};

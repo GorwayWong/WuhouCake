@@ -15,8 +15,11 @@ import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class OrderWebComposition {
+    @Bean org.xaspire.WuhouCake.order.adapter.web.OrderManagementController orderManagementController(org.xaspire.WuhouCake.order.application.service.OrderManagementService service) {
+        return new org.xaspire.WuhouCake.order.adapter.web.OrderManagementController(service);
+    }
     @Bean OrderFileController orderFileController(OrderImageService images, OrderExportService exports) { return new OrderFileController(images, exports); }
-    @Bean OrderController orderController(OrderService orders) { return new OrderController(orders); }
+    @Bean OrderController orderController(OrderService orders, org.xaspire.WuhouCake.order.application.service.OrderCreationService creations) { return new OrderController(orders, creations); }
     @Bean OrderQueryController orderQueryController(OrderQueryService queries) { return new OrderQueryController(queries); }
     @Bean(destroyMethod = "shutdownNow") ScheduledExecutorService orderStreamScheduler() {
         var scheduler = new ScheduledThreadPoolExecutor(1, Thread.ofPlatform().name("order-stream-timer-", 0).factory());

@@ -3,12 +3,20 @@ package org.xaspire.WuhouCake.identity.api.facade;
 import java.time.Instant;
 import java.util.Set;
 import java.util.UUID;
+import java.util.List;
 import org.xaspire.WuhouCake.shared.response.Page;
 
 public interface IdentityFacade {
     record AccountView(UUID accountId, String employeeNumber, String nickname, Set<String> jobRoles,
             String systemRole, String status, boolean passwordChangeRequired, long credentialVersion,
-            Instant createdAt, Instant archivedAt) { }
+            Instant createdAt, Instant archivedAt, long version) {
+        public AccountView(UUID accountId, String employeeNumber, String nickname, Set<String> jobRoles, String systemRole,
+                String status, boolean passwordChangeRequired, long credentialVersion, Instant createdAt, Instant archivedAt) {
+            this(accountId, employeeNumber, nickname, jobRoles, systemRole, status, passwordChangeRequired, credentialVersion, createdAt, archivedAt, 0);
+        }
+    }
+    record EmployeeOption(UUID accountId, String employeeNumber, String nickname, String status) { }
+    record Profile(long expectedVersion, String nickname, Set<String> jobRoles) { }
     record Create(String employeeNumber, String nickname, Set<String> jobRoles, String systemRole) { }
     record Search(String employeeNumber, String nickname, String status, String jobRole, int page, int size) { }
     /** Invalidates older credential versions only after the publishing transaction commits. */
@@ -31,4 +39,7 @@ public interface IdentityFacade {
     Page<AccountView> employees(Search query);
     Provisioned resetPassword(UUID accountId);
     AccountView archive(UUID accountId);
+    AccountView reviseEmployee(UUID accountId, Profile command);
+    List<EmployeeOption> employeeOptions(boolean includeArchived);
+    EmployeeOption selectEmployee(UUID accountId);
 }

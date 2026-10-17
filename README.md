@@ -56,7 +56,7 @@ Compose 的 env 文件不会自动设置宿主机 JVM 环境；直接运行 JVM 
 | 全部基础设施及 HTTP 集成 | ./mvnw -Pintegration verify | 专用 PostgreSQL、Redis |
 | 前端 | 在 frontend 执行 npm test、npm run build | Node.js |
 
-集成测试使用随机 schema 和 Redis 命名空间，仍须只连接开发或专用测试实例。最新执行结果、真实浏览器证据和未验证边界见[验证摘要](frontend/verification.md)；测试数量附执行日期，不代表以后修改自动通过。
+集成测试使用随机 schema 和 Redis 命名空间，仍须只连接开发或专用测试实例。口述需求八项补齐的测试与浏览器结果见[业务流程补齐验收](docs/verification/2026-10-17-workflow-fixes.md)，其他历史验证见[验证摘要](frontend/verification.md)；测试数量附执行日期，不代表以后修改自动通过。
 
 ## 4. 文档入口
 

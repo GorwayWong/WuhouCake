@@ -10,9 +10,10 @@ public final class OrderViews {
 
     public record Detail(UUID orderId, String orderNo, long version, String status, String paymentStatus, String currentStageCode,
             Customer customer, Fulfillment fulfillment, Long totalAmountCents, UUID createdBy,
-            Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items) {
+            Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items, Employee creditedEmployee) {
         public Detail { items = List.copyOf(items); }
     }
+    public record Employee(UUID accountId, String employeeNumber, String nickname) { }
     public record Item(UUID itemId, String name, String productType, int quantity, Long unitPriceCents, Long memberPriceCents,
             Map<String, Object> attributes, String productionStatus, String currentStageCode,
             Instant createdAt, Instant updatedAt, List<Activity> recentNotes) {

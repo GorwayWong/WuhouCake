@@ -187,13 +187,14 @@ class IdentityIT {
         }
         assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM identity_account WHERE employee_number='0002'", Long.class));
     }
-    @Test void auditFailureDoesNotRollBackAccountChange() throws Exception {
+    @Test void auditFailureRollsBackAccountChange() throws Exception {
         Browser admin = administrator(); long before = identity.auditFailureCount();
         jdbc.execute("ALTER TABLE audit_operation RENAME TO unavailable_audit_operation");
         try {
-            assertEquals(200, admin.request("PATCH", "/api/me/nickname", Map.of("nickname", "已提交")).status);
-            assertEquals("已提交", jdbc.queryForObject("SELECT nickname FROM identity_account WHERE employee_number='0001'", String.class));
-            assertEquals(before + 1, identity.auditFailureCount());
+            String nickname = jdbc.queryForObject("SELECT nickname FROM identity_account WHERE employee_number='0001'", String.class);
+            assertEquals(503, admin.request("PATCH", "/api/me/nickname", Map.of("nickname", "应当回滚")).status);
+            assertEquals(nickname, jdbc.queryForObject("SELECT nickname FROM identity_account WHERE employee_number='0001'", String.class));
+            assertEquals(before, identity.auditFailureCount());
         } finally { jdbc.execute("ALTER TABLE unavailable_audit_operation RENAME TO audit_operation"); }
     }
     @Test void unavailableDatabaseOrRedisDoesNotGrantAccess() throws Exception {

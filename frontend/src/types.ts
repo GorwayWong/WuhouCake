@@ -1,5 +1,7 @@
 export interface Token { accessToken: string; tokenType: string; expiresIn: number; passwordChangeRequired: boolean }
-export interface Account { accountId: string; employeeNumber: string; nickname: string; jobRoles: string[] }
+export interface Account { accountId: string; employeeNumber: string; nickname: string; jobRoles: string[]; systemRole?: string }
+export interface EmployeeOption { accountId: string; employeeNumber: string; nickname: string; status: string }
+export interface EmployeeAccount extends Account { status: string; version: number; passwordChangeRequired: boolean; createdAt: string }
 export interface Customer { customerName: string | null; phone: string; memberPhone: string | null; buyerName: string | null }
 export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; plannedHandoffAt: string; plannedFinishAt: string | null }
 export interface Note { id: number; itemId: string | null; actorNameSnapshot: string; createdAt: string; content: string }
@@ -23,17 +25,19 @@ export interface CalendarOrder extends OrderStatus {
 export interface PendingOrder extends CalendarOrder { customer: Customer; address: string | null; plannedFinishAt: string | null; items: Item[] }
 export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number }; pendingOrders: PendingOrder[] }
 export interface Detail extends OrderStatus {
+  createdBy?: string; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
   orderId: string; orderNo: string; version: number; customer: Customer; fulfillment: Fulfillment;
   totalAmountCents: number | null; createdAt: string; updatedAt: string; items: Item[];
 }
 export interface CreateOrderRequest {
+  creditedEmployeeId?: string;
   customer: Customer;
   fulfillment: Omit<Fulfillment, 'type'> & { type: 'DELIVERY' | 'PICKUP' };
   items: Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'>[];
   totalAmountCents: number | null;
 }
 export type InformationChanges = Partial<Customer & Omit<Fulfillment, 'type'> & {
-  fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null;
+  fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null; creditedEmployeeId: string;
 }>;
 export interface InformationRequest { expectedVersion: number; changes: InformationChanges }
 export type ItemInput = CreateOrderRequest['items'][number];

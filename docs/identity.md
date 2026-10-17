@@ -2,6 +2,19 @@
 
 本文描述当前身份实现；生产管理员操作步骤单独维护在[管理员运维](dev-ops/admin-prod.md)。订单业务活动与身份操作审计是不同记录，分别见[订单说明](../WuhouCake-order/README.md)和[审计模块](../WuhouCake-audit/README.md)。
 
+## 员工管理与订单归属
+
+超级管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、重置密码和归档。工号固定，岗位不等于系统权限；归档代替物理删除，保留历史身份。账号响应增加 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。
+
+| 接口 | 契约 |
+| --- | --- |
+| GET /api/employees/options | 已改密员工可读取 ID、工号、姓名、状态；默认仅在职，includeArchived=true 包含历史员工；不返回凭证和密码信息 |
+| PATCH /api/admin/employees/{id} | expectedVersion、nickname、jobRoles；仅超级管理员，归档员工不可编辑，过期版本 409，无变化不递增版本 |
+
+账号创建、姓名/岗位修改、密码变更/重置、归档及管理员初始化/恢复均与审计同事务提交，details 保存适用的前后姓名、岗位、状态和版本等非敏感快照；审计失败回滚业务变更。创建、重置密码的初始密码只在当次响应中返回，前端页面关闭后清除。登录和退出等会话事件独立记录，审计故障不阻止退出或使失效凭证恢复。
+
+订单独立保存下单员工 ID 和当时的工号/姓名快照，实际创建人与每次操作人来自服务器认证。选择新归属时锁定并校验在职资格；归档不改写旧订单归属。历史未归属订单保持未归属，不自动认定创建者。
+
 ## 首次本地配置
 
 先按[快速开始](../README.md#2-快速开始)构建 JAR、启动 PostgreSQL/Redis 并加载本地环境变量。Web 启动必须显式选择 dev 或 prod，并提供持久 RSA 密钥；缺失密钥不会自动生成临时密钥。
@@ -102,6 +115,6 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 
 每个 ready、订单事件和 15 秒心跳发送前再次复验身份，连接最长 5 分钟。独立命令进程不会向正在运行的服务广播本地撤销事件；后者在下一次发送或心跳复验关闭旧流。已进入网络的字节无法撤回；不提供跨实例即时广播或事件重放。
 
-身份审计记录操作人、目标、动作、结果、时间和 requestId，不保存密码、刷新凭证或令牌。事务性账号变更在提交成功后记审计；审计写入失败单独诊断，不假装业务回滚。订单业务历史不使用身份审计替代。SSE 正常断开按 DEBUG 处理，不再次写 JSON；真正服务端故障仍保留诊断。
+身份审计记录操作人、目标、动作、结果、时间和 requestId，不保存密码、密码哈希、刷新凭证或令牌。事务性账号变更使用 appendChange 与业务一起提交或回滚；非事务性的登录/退出审计失败单独诊断。订单业务历史使用自己的活动记录。SSE 正常断开按 DEBUG 处理，不再次写 JSON；真正服务端故障仍保留诊断。
 
 源码依据：[IdentityController](../WuhouCake-identity/src/main/java/org/xaspire/WuhouCake/identity/adapter/web/IdentityController.java)、[IdentityService](../WuhouCake-identity/src/main/java/org/xaspire/WuhouCake/identity/application/service/IdentityService.java)、[SecurityConfiguration](../WuhouCake-bootstrap/src/main/java/org/xaspire/WuhouCake/bootstrap/security/SecurityConfiguration.java)、[IdentityCommands](../WuhouCake-bootstrap/src/main/java/org/xaspire/WuhouCake/bootstrap/configuration/IdentityCommands.java)。实际验证见[验证摘要](../frontend/verification.md)。

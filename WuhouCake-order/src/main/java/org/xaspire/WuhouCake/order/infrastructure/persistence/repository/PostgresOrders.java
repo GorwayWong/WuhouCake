@@ -26,7 +26,8 @@ public final class PostgresOrders implements Orders {
         return Optional.of(new Order(id, row.orderNo(), row.version(), row.status(), row.paymentStatus(), row.currentStageCode(),
                 new CustomerContact(row.customerName(), row.customerPhone(), row.memberPhone(), row.buyerName()),
                 new FulfillmentPlan(FulfillmentType.valueOf(row.fulfillmentType()), row.deliveryAddress(), row.requestedReceiveDate(), row.plannedHandoffAt(), row.plannedFinishAt()),
-                row.totalAmountCents(), UUID.fromString(row.createdBy()), row.createdAt(), row.confirmedAt(), row.updatedAt(), items));
+                row.totalAmountCents(), UUID.fromString(row.createdBy()), row.createdAt(), row.confirmedAt(), row.updatedAt(), items,
+                row.creditedEmployeeId() == null ? null : new Attribution(UUID.fromString(row.creditedEmployeeId()), row.creditedEmployeeNumber(), row.creditedEmployeeName())));
     }
     @Override public void reviseItem(Order order, long expectedVersion, UUID itemId) {
         if (mapper.advanceVersion(order.id().toString(), expectedVersion, order.updatedAt()) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
@@ -67,7 +68,10 @@ public final class PostgresOrders implements Orders {
         return new OrderMapper.Row(order.id().toString(), order.orderNo(), order.version(), order.status(), order.paymentStatus(), order.currentStageCode(),
                 customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName(), fulfillment.type().name(), fulfillment.address(),
                 fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), order.totalAmountCents(),
-                order.createdBy().toString(), order.createdAt(), order.confirmedAt(), order.updatedAt());
+                order.createdBy().toString(), order.createdAt(), order.confirmedAt(), order.updatedAt(),
+                order.creditedEmployee() == null ? null : order.creditedEmployee().accountId().toString(),
+                order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber(),
+                order.creditedEmployee() == null ? null : order.creditedEmployee().nickname());
     }
     private OrderMapper.ItemRow row(UUID orderId, OrderItem item) {
         return new OrderMapper.ItemRow(item.itemId().toString(), orderId.toString(), item.name(), item.productType(), item.quantity(),

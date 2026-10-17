@@ -13,14 +13,14 @@ public final class OrderRecognition {
             "address", "requestedReceiveDate", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents");
     public static final List<String> ITEM_FIELDS = List.of("name", "productType", "quantity", "size", "flavor", "base", "filling", "message", "requirements", "unitPriceCents", "memberPriceCents");
     private static final Map<String, String> LABELS = labels();
-    private static final Pattern LABEL = Pattern.compile("(" + String.join("|", LABELS.keySet().stream().sorted(Comparator.comparingInt(String::length).reversed()).map(Pattern::quote).toList())
+    private static final Pattern LABEL = Pattern.compile("(?<![\\p{L}\\p{N}])(" + String.join("|", LABELS.keySet().stream().sorted(Comparator.comparingInt(String::length).reversed()).map(Pattern::quote).toList())
             + ")([（(][^）)\\n]{0,80}[）)])?\\s*[:：]\\s*");
     private static final Pattern ITEM_HEADING = Pattern.compile("^(?:[【\\[])?(蛋糕|商品|小产品)\\s*[一二三四五六七八九十\\dA-Z]+[】\\]]?\\s*[:：、.]?\\s*(.*)$");
     private static final Pattern NOTICE = Pattern.compile("^[【\\[（(\\s]*[一二三四五六七八九十\\d、.\\s]*(?:订购须知|订购需知|预订须知|温馨提示|配送规则|配送说明|配套餐具|餐具说明|可选口味|注意事项).*");
     private static final Pattern NOTICE_SECTION = Pattern.compile("[【\\[]\\s*(?:订购须知|订购需知|预订须知|温馨提示|配送规则|配套餐具[^】\\]]*|餐具说明)\\s*[】\\]]|(?:^|\\s)(?:订购须知|订购需知|预订须知|温馨提示|配送规则)\\s*[:：]");
     private static final Pattern TITLE = Pattern.compile("^[【\\[](?:蛋糕预定单|蛋糕预订单|蛋糕订购单)[】\\]]\\s*");
     private static final Pattern SIZE = Pattern.compile("\\d+(?:\\.\\d+)?\\s*(?:英寸|寸)");
-    private static final Pattern QUANTITY = Pattern.compile("(?<!\\d)([一二两三四五六七八九\\d]+)\\s*(?:个|只|份|盒)");
+    private static final Pattern QUANTITY = Pattern.compile("(?<![\\d一二两三四五六七八九十百千万零〇])([一二两三四五六七八九\\d]+)\\s*(?:个|只|份|盒)");
     private final Map<String, String> cakeDefaults;
     public OrderRecognition(Map<String, String> cakeDefaults) { this.cakeDefaults = Map.copyOf(cakeDefaults); }
     public RecognitionDraft parse(String text) {
@@ -29,6 +29,7 @@ public final class OrderRecognition {
         var fragments = new ArrayList<Fragment>(); var unmapped = new ArrayList<String>(); MutableItem current = null;
         var times = new LinkedHashMap<String, List<String>>();
         boolean notice = false, itemOverflow = false;
+        var contactLines = new ArrayList<String>();
         String body = text.replace("\r\n", "\n").replace('\r', '\n');
         var section = NOTICE_SECTION.matcher(body);
         if (section.find()) body = body.substring(0, section.start());
@@ -57,7 +58,10 @@ public final class OrderRecognition {
             }
             var matches = new ArrayList<Match>(); var matcher = LABEL.matcher(line);
             while (matcher.find()) matches.add(new Match(matcher.start(), matcher.end(), matcher.group(1), matcher.group(2)));
+            boolean businessContext = !matches.isEmpty() && ContactRecognition.businessContact(line.substring(0, matches.getFirst().start));
+            if (!matches.isEmpty() && !businessContext && matches.getFirst().start > 0) contactLines.add(line.substring(0, matches.getFirst().start));
             if (matches.isEmpty()) {
+                contactLines.add(line);
                 if (current != null) inline(current, line);
                 fragments.add(new Fragment(current == null ? null : current.id, line)); unmapped.add(line); continue;
             }
@@ -72,7 +76,12 @@ public final class OrderRecognition {
                     continue;
                 }
                 if (key.equals("plannedHandoffAt") || key.equals("plannedFinishAt")) { if (!value.isBlank()) times.computeIfAbsent(key, k -> new ArrayList<>()).add(value); continue; }
-                if (ORDER_FIELDS.contains(key)) { assign(fields, key, value, evidence); continue; }
+                if (ORDER_FIELDS.contains(key)) {
+                    if (Set.of("phone", "address", "customerName").contains(key)
+                            && (businessContext || ContactRecognition.businessPrefix(line.substring(0, match.start)))
+                            && !match.label.matches("^(?:收货|收件|客户).*")) { unmapped.add(evidence); continue; }
+                    assign(fields, key, value, evidence); continue;
+                }
                 if (itemOverflow) { unmapped.add(evidence); continue; }
                 if (current == null) current = addItem(items);
                 if (key.equals("name")) product(current, value, evidence);
@@ -80,6 +89,9 @@ public final class OrderRecognition {
                 else assign(current.fields, key, value, evidence);
             }
         }
+        ContactRecognition.extract(contactLines, fields.get("phone").value(), fields.get("address").value()).forEach((key, value) -> {
+            if (fields.get(key).source() == null) fields.put(key, value);
+        });
         for (var time : times.entrySet()) for (String raw : time.getValue()) {
             try {
                 String date;
@@ -156,12 +168,24 @@ public final class OrderRecognition {
         inline(item, value);
     }
     private static void inline(MutableItem item, String value) {
-        var sizes = SIZE.matcher(value); var found = new LinkedHashSet<String>(); while (sizes.find()) found.add(sizes.group());
-        if (found.size() == 1) assign(item.fields, "size", found.iterator().next(), value);
+        var sizes = SIZE.matcher(value); var found = new LinkedHashSet<String>(); boolean ambiguousSize = false;
+        while (sizes.find()) {
+            found.add(sizes.group());
+            ambiguousSize |= numericPrefix(value, sizes.start()) || value.substring(sizes.end()).stripLeading().matches("^(?:高|厚|长|宽).*");
+        }
+        if (ambiguousSize) put(item.fields, "size", invalid(value, "尺寸含符号、范围或高度含义，请人工核对"));
+        else if (found.size() == 1) assign(item.fields, "size", found.iterator().next(), value);
         else if (found.size() > 1) put(item.fields, "size", invalid(value, "同一商品有多个尺寸，请核对"));
-        var quantities = QUANTITY.matcher(value); found.clear(); while (quantities.find()) found.add(quantities.group(1));
-        if (found.size() == 1) assign(item.fields, "quantity", found.iterator().next(), value);
+        var quantities = QUANTITY.matcher(value); found.clear(); boolean ambiguousQuantity = false;
+        while (quantities.find()) { found.add(quantities.group(1)); ambiguousQuantity |= numericPrefix(value, quantities.start()); }
+        ambiguousQuantity |= !found.isEmpty() && value.matches(".*(?:餐具|人份|蜡烛|叉碟).*" );
+        if (ambiguousQuantity) put(item.fields, "quantity", invalid(value, "数量含符号、范围或配件含义，请人工核对"));
+        else if (found.size() == 1) assign(item.fields, "quantity", found.iterator().next(), value);
         else if (found.size() > 1) put(item.fields, "quantity", invalid(value, "同一商品有多个数量，请核对"));
+    }
+    private static boolean numericPrefix(String value, int start) {
+        String prefix = value.substring(0, start).stripTrailing();
+        return !prefix.isEmpty() && "0123456789.+-~～至到—负−－＋".indexOf(prefix.charAt(prefix.length() - 1)) >= 0;
     }
     private static void legacyFlavor(MutableItem item, String value, String evidence, boolean templateHint, List<Fragment> fragments) {
         if (value.isBlank()) return;
@@ -204,7 +228,7 @@ public final class OrderRecognition {
     private record Match(int start, int end, String label, String hint) { }
     private static Map<String, String> labels() {
         var map = new LinkedHashMap<String, String>();
-        add(map, "customerName", "客户姓名", "收货人", "联系人", "姓名"); add(map, "phone", "联系电话", "收货电话", "手机号", "电话");
+        add(map, "customerName", "客户姓名", "收货人", "收件人", "联系人", "姓名"); add(map, "phone", "联系电话", "收货电话", "收件电话", "手机号", "电话");
         add(map, "memberPhone", "会员手机号", "会员手机", "会员电话"); add(map, "buyerName", "客户下单人", "下单人");
         add(map, "address", "配送地址", "收货地址", "地址"); add(map, "fulfillmentType", "配送方式", "交接方式", "交付方式", "取货方式");
         add(map, "requestedReceiveDate", "收货日期", "取货日期", "配送日期", "日期"); add(map, "receiveTime", "收货时间", "取货时间");

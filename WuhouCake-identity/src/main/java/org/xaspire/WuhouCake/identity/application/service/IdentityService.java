@@ -12,8 +12,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 import org.xaspire.WuhouCake.identity.domain.model.aggregate.EmployeeAccount;
@@ -111,7 +109,7 @@ public class IdentityService implements IdentityFacade {
         if (actor.passwordChangeRequired()) throw new IdentityFailure("PASSWORD_CHANGE_REQUIRED");
         var changed = actor.rename(nickname, clock.instant());
         accounts.update(changed);
-        afterCommit("identity.nickname_changed", actor, actor.id());
+        accountChange("identity.nickname_changed", actor, actor, changed);
         return view(changed);
     }
     @Override @Transactional
@@ -127,7 +125,7 @@ public class IdentityService implements IdentityFacade {
         var changed = account.replacePassword(credentials.encode(newPassword), false, clock.instant());
         accounts.update(changed);
         events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
-        afterCommit("identity.password_changed", account, account.id());
+        accountChange("identity.password_changed", account, account, changed);
     }
     @Override @Transactional
     public Provisioned create(Create command) {
@@ -140,7 +138,7 @@ public class IdentityService implements IdentityFacade {
         Set<JobRole> roles = command.jobRoles().stream().map(JobRole::valueOf).collect(Collectors.toSet());
         var account = EmployeeAccount.create(ids.nextId(), command.employeeNumber(), command.nickname(), roles, role, credentials.encode(password), clock.instant());
         accounts.insert(account);
-        afterCommit("identity.account_created", actor, account.id());
+        accountChange("identity.account_created", actor, null, account);
         return new Provisioned(view(account), password);
     }
     @Override @Transactional(readOnly = true)
@@ -163,7 +161,7 @@ public class IdentityService implements IdentityFacade {
         var changed = account.replacePassword(credentials.encode(password), true, clock.instant());
         accounts.update(changed);
         events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
-        afterCommit("identity.password_reset", actor, id);
+        accountChange("identity.password_reset", actor, account, changed);
         return new Provisioned(view(changed), password);
     }
     @Override @Transactional
@@ -175,9 +173,38 @@ public class IdentityService implements IdentityFacade {
         if (changed != account) {
             accounts.update(changed);
             events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
-            afterCommit("identity.account_archived", actor, id);
+            accountChange("identity.account_archived", actor, account, changed);
         }
         return view(changed);
+    }
+    @Override @Transactional
+    public AccountView reviseEmployee(UUID id, Profile command) {
+        var actor = administrator();
+        var account = accounts.lock(id).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
+        if (command.expectedVersion() < 0 || command.expectedVersion() != account.version()) throw new IdentityFailure("CONCURRENT_MODIFICATION");
+        if (command.jobRoles() == null || command.jobRoles().isEmpty() || command.jobRoles().stream().anyMatch(java.util.Objects::isNull))
+            throw new IdentityFailure("VALIDATION_FAILED");
+        var roles = command.jobRoles().stream().map(JobRole::valueOf).collect(Collectors.toSet());
+        var changed = account.reviseProfile(command.nickname(), roles, clock.instant());
+        if (changed != account) {
+            accounts.update(changed);
+            accountChange("identity.profile_changed", actor, account, changed);
+        }
+        return view(changed);
+    }
+    @Override @Transactional(readOnly = true)
+    public java.util.List<EmployeeOption> employeeOptions(boolean includeArchived) {
+        var actor = actorAccount();
+        if (actor.passwordChangeRequired()) throw new IdentityFailure("PASSWORD_CHANGE_REQUIRED");
+        return accounts.directory(includeArchived).stream().map(e -> new EmployeeOption(e.accountId(), e.employeeNumber(), e.nickname(), e.status().name())).toList();
+    }
+    @Override @Transactional
+    public EmployeeOption selectEmployee(UUID id) {
+        var actor = actorAccount();
+        if (actor.passwordChangeRequired()) throw new IdentityFailure("PASSWORD_CHANGE_REQUIRED");
+        var employee = accounts.lock(id).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
+        if (employee.status() != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
+        return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
     }
     @Transactional
     public AccountView initializeAdministrator(String number, String nickname, String password) {
@@ -186,7 +213,7 @@ public class IdentityService implements IdentityFacade {
         if (accounts.administrators() != 0) throw new IdentityFailure("ADMINISTRATOR_ALREADY_INITIALIZED");
         var account = EmployeeAccount.create(ids.nextId(), number, nickname, Set.of(JobRole.MANAGER), SystemRole.SUPER_ADMIN, credentials.encode(password), clock.instant());
         accounts.insert(account);
-        afterCommit("identity.admin_initialized", null, account.id());
+        accountChange("identity.admin_initialized", null, null, account);
         return view(account);
     }
     @Transactional
@@ -200,7 +227,7 @@ public class IdentityService implements IdentityFacade {
         var changed = account.replacePassword(credentials.encode(password), true, clock.instant());
         accounts.update(changed);
         events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
-        afterCommit("identity.admin_recovered", null, account.id());
+        accountChange("identity.admin_recovered", null, account, changed);
         return new Provisioned(view(changed), password);
     }
     private EmployeeAccount actorAccount() {
@@ -233,14 +260,24 @@ public class IdentityService implements IdentityFacade {
                 Duration.between(now, expiry).toSeconds(), account.passwordChangeRequired(), refreshCredential,
                 Duration.between(now, session.expiresAt()).toSeconds());
     }
-    private void afterCommit(String action, EmployeeAccount actor, UUID target) {
+    private void accountChange(String action, EmployeeAccount actor, EmployeeAccount before, EmployeeAccount after) {
         String requestId = actor == null ? UUID.randomUUID().toString() : actors.current().requestId();
-        var command = command(action, "SUCCESS", actor, target, requestId);
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override public void afterCommit() { record(command); }
-            });
-        } else record(command);
+        var details = new java.util.LinkedHashMap<String, String>();
+        snapshot(details, "before", before); snapshot(details, "after", after);
+        audit.appendChange(new AuditFacade.Command(clock.instant(), action, "SUCCESS", actor == null ? null : actor.id(),
+                actor == null ? null : actor.employeeNumber(), actor == null ? null : actor.nickname(), after.id().toString(), requestId, details));
+    }
+    private static void snapshot(java.util.Map<String, String> details, String prefix, EmployeeAccount account) {
+        details.put(prefix + ".exists", Boolean.toString(account != null));
+        if (account == null) return;
+        details.put(prefix + ".nickname", account.nickname());
+        details.put(prefix + ".employeeNumber", account.employeeNumber());
+        details.put(prefix + ".status", account.status().name());
+        details.put(prefix + ".systemRole", account.systemRole().name());
+        details.put(prefix + ".jobRoles", account.jobRoles().stream().map(Enum::name).sorted().collect(Collectors.joining(",")));
+        details.put(prefix + ".credentialVersion", Long.toString(account.credentialVersion()));
+        details.put(prefix + ".passwordChangeRequired", Boolean.toString(account.passwordChangeRequired()));
+        details.put(prefix + ".version", Long.toString(account.version()));
     }
     private AuditFacade.Command command(String action, String result, EmployeeAccount actor, UUID target, String requestId) {
         return new AuditFacade.Command(clock.instant(), action, result, actor == null ? null : actor.id(),
@@ -258,6 +295,6 @@ public class IdentityService implements IdentityFacade {
     private static AccountView view(EmployeeAccount account) {
         return new AccountView(account.id(), account.employeeNumber(), account.nickname(),
                 account.jobRoles().stream().map(Enum::name).collect(Collectors.toUnmodifiableSet()), account.systemRole().name(),
-                account.status().name(), account.passwordChangeRequired(), account.credentialVersion(), account.createdAt(), account.archivedAt());
+                account.status().name(), account.passwordChangeRequired(), account.credentialVersion(), account.createdAt(), account.archivedAt(), account.version());
     }
 }

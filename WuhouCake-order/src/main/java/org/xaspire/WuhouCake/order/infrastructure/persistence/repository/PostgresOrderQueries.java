@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.JsonSnapshot;
+import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.port.OrderQueries;
 import org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderQueryMapper;
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
@@ -31,7 +32,7 @@ public final class PostgresOrderQueries implements OrderQueries {
         if (orderIds.isEmpty()) return List.of();
         return mapper.items(ids(orderIds)).stream().map(row -> new Item(UUID.fromString(row.orderId()), UUID.fromString(row.itemId()),
                 row.name(), row.productType(), row.quantity(), row.unitPriceCents(), row.memberPriceCents(),
-                JsonSnapshot.object(json.read(row.attributes(), Map.class)))).toList();
+                CakeSpecifications.effective(row.productType(), JsonSnapshot.object(json.read(row.attributes(), Map.class))))).toList();
     }
     @Override public List<Note> recentNotes(List<UUID> orderIds, List<UUID> itemIds) {
         if (orderIds.isEmpty() || itemIds.isEmpty()) return List.of();

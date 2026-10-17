@@ -24,6 +24,7 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
   const [assistNotice, setAssistNotice] = useState('');
   const [notice, setNotice] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [showEmpty, setShowEmpty] = useState(false);
   const [undo, setUndo] = useState<UndoStep[]>([]);
   const lifecycle = useRef(new RecognitionLifecycle());
   const parsedText = useRef('');
@@ -86,6 +87,7 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
   };
   const row = (field: string, candidate: RecognitionField, itemId?: string) => {
     const key = rowKey(field, itemId), value = edits[key] || '';
+    if (!showEmpty && !value && !candidate.needsReview && !candidate.issues.length && !candidate.evidence.length && !errors[key]) return null;
     const target = itemId ? targets[itemId] || 'new' : undefined;
     const current = target === 'new' ? '' : currentValue(draft, field, target);
     const conflict = Boolean(value && current && value !== current);
@@ -115,8 +117,10 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
         }}>撤销识别填充</button>}</div>
       {failure != null && <p className="notice error" role="alert">识别暂不可用，原文及录单内容已保留。{errorText(failure)} 可继续在下方手工录单。</p>}
       {notice && <p className="notice" role="status">{notice}</p>}
+      {result && <p className="form-help">请在下方核对联系电话、收货日期、交接时间和商品名称；缺少的信息可手动补齐。蛋糕内胚和夹馅留空时使用原味＋芒果。</p>}
       {result && <details className="recognition-results" open={reviewOpen} onToggle={event => setReviewOpen(event.currentTarget.open)}><summary>字段对照与待确认项</summary><div className="section-heading"><h2>识别候选</h2><button type="button" className="secondary" disabled={busy} onClick={() => apply()}>应用全部可用候选</button></div>
         <p className="form-help">批量应用会跳过待确认项和冲突字段。空值保留待填写，商品名称、数量和交接时刻不会补造。</p>
+        <label className="check-label"><input type="checkbox" checked={showEmpty} onChange={event => setShowEmpty(event.target.checked)} />显示未提供的空字段</label>
         {result.fragments.length > 0 && <details className="recognition-assist"><summary>可选：补充未理解的商品语义</summary>
           <p className="form-help">手工录单不需要AI。仅下列商品片段及归属会发送至阿里百炼，不重复发送已解析的姓名、电话或地址。请核对片段仍可能包含的个人信息；第三方可能按服务协议保留调用数据。</p>
           {result.fragments.map((fragment, i) => <p className="recognition-quote" key={i}>{fragment.text}</p>)}
@@ -127,6 +131,7 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
         {result.issues.map((issue, i) => <p key={i} className="field-error">{issue}</p>)}
         <details className="recognition-group" open><summary>客户与交接</summary>{Object.entries(result.fields).map(([field, candidate]) => row(field, candidate))}</details>
         {result.items.map((item, i) => <details className="recognition-group" key={item.id} open><summary>商品候选 {i + 1}</summary>
+          {item.fields.quantity?.value === null && <p className="form-help">原文未提供数量，请在下方填写并核对；不会从餐具人数推算数量。</p>}
           <label>填入哪个商品<select value={targets[item.id] || 'new'} disabled={busy} onChange={event => setTargets(values => ({ ...values, [item.id]: event.target.value }))}>
             <option value="choose">请选择，避免与手工商品串项</option><option value="new">作为新商品添加</option>{draft.items.map((existing, index) => <option key={existing.key} value={existing.key}>商品 {index + 1} · {existing.name || '尚未命名'}</option>)}
           </select></label>{Object.entries(item.fields).map(([field, candidate]) => row(field, candidate, item.id))}</details>)}

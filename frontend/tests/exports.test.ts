@@ -50,7 +50,7 @@ test('导出携带 Bearer 并复用 401 刷新，区分单单 XLSX 和筛选 ZIP
       assert.equal(writes.length, before + 1);
     }
     assert.match(exportFailureText(new ApiError(400, 'EXPORT_EMPTY')), /没有订单/);
-    assert.match(exportFailureText(new TypeError('lost')), /可能已生成/);
+    assert.match(exportFailureText(new TypeError('lost')), /核对浏览器下载记录/);
   } finally { forgetSession(); globalThis.fetch = original; }
 });
 

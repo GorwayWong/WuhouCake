@@ -65,7 +65,7 @@ public class OrderImageService {
                 type == OrderChanged.Type.IMAGE_ADDED ? "添加参考图片" : "移除参考图片",
                 Map.of("imageId", image.imageId().toString(), "filename", image.filename()), actor,
                 clock.instant().truncatedTo(ChronoUnit.MICROS)));
-        events.publishEvent(new OrderChanged(image.orderId(), image.itemId(), type, order.version()));
+        events.publishEvent(new OrderChanged(image.orderId(), image.itemId(), type, order.version(), order.orderNo()));
     }
     public List<OrderFileViews.Image> list(UUID orderId) {
         if (orders.find(orderId).isEmpty()) throw new OrderFailure("ORDER_NOT_FOUND");

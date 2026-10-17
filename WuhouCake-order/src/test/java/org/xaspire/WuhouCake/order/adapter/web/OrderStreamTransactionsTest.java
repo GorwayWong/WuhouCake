@@ -59,7 +59,7 @@ class OrderStreamTransactionsTest {
         context.register(Transactions.class);
         context.registerBean(PlatformTransactionManager.class, () -> manager);
         context.registerBean(OrderStreams.class, () -> streams);
-        context.registerBean(OrderService.class, () -> new OrderService(orders, activities, UUID::randomUUID, clock, context));
+        context.registerBean(OrderService.class, () -> new OrderService(orders, activities, UUID::randomUUID, clock, context, mock(org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.class)));
         context.refresh(); streams.subscribe(subscriber, 0, NOW.plusSeconds(60), () -> true);
         order = Order.create(UUID.randomUUID(), "0000001", new CustomerContact(null, "13800000000", null, null),
                 new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
@@ -68,7 +68,7 @@ class OrderStreamTransactionsTest {
         when(activities.append(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
     @AfterEach void close() { context.close(); }
-    private OrderChanged event() { return new OrderChanged(order.id(), null, OrderChanged.Type.NOTE, order.version()); }
+    private OrderChanged event() { return new OrderChanged(order.id(), null, OrderChanged.Type.NOTE, order.version(), order.orderNo()); }
 
     @Test void eventWaitsForCommitAndDoesNotRunOutsideATransaction() throws Exception {
         context.publishEvent(event()); verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
@@ -169,7 +169,7 @@ class OrderStreamTransactionsTest {
         var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class); var sequence = inOrder(emitter, connection);
         sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class)); sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
         var event = sent.getValue().build().stream().map(value -> value.getData()).filter(OrderChanged.class::isInstance).map(OrderChanged.class::cast).findFirst().orElseThrow();
-        assertEquals(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_REMOVED, 1), event);
+        assertEquals(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_REMOVED, 1, order.orderNo()), event);
         service.removeItem(order.id(), itemId, new OrderCommands.RemoveItem(1), operator);
         verify(orders).verifyVersion(order.id(), 1); verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
     }
@@ -226,7 +226,7 @@ class OrderStreamTransactionsTest {
         var sequence = inOrder(emitter, connection);
         sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class)); sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
         var event = sent.getValue().build().stream().map(value -> value.getData()).filter(OrderChanged.class::isInstance).map(OrderChanged.class::cast).findFirst().orElseThrow();
-        assertEquals(new OrderChanged(order.id(), null, fulfillment ? OrderChanged.Type.ORDER_FULFILLMENT_CHANGED : OrderChanged.Type.ORDER_CANCELLED, expected + 1), event);
+        assertEquals(new OrderChanged(order.id(), null, fulfillment ? OrderChanged.Type.ORDER_FULFILLMENT_CHANGED : OrderChanged.Type.ORDER_CANCELLED, expected + 1, order.orderNo()), event);
     }
     @ParameterizedTest @ValueSource(booleans = {false, true})
     void outerRollbackSuppressesStatusChangeNotifications(boolean fulfillment) throws Exception {

@@ -15,6 +15,10 @@ public interface AccountMapper {
             + "<if test='nickname != null'> AND position(#{nickname} IN nickname)&gt;0</if>"
             + "<if test='status != null'> AND status=#{status}</if>"
             + "<if test='role != null'> AND EXISTS (SELECT 1 FROM identity_account_role r WHERE r.account_id=a.id AND r.role=#{role})</if>";
+    record DirectoryRow(String accountId, String employeeNumber, String nickname, String status) { }
+    @Select("<script>SELECT id::text AS account_id, employee_number, nickname, status FROM identity_account"
+            + "<if test='!includeArchived'> WHERE status='ACTIVE'</if> ORDER BY employee_number, id</script>")
+    List<DirectoryRow> directory(boolean includeArchived);
     @Select("SELECT " + COLUMNS + " FROM identity_account WHERE id=CAST(#{id} AS uuid)") Row find(String id);
     @Select("SELECT " + COLUMNS + " FROM identity_account WHERE employee_number=#{number}") Row byNumber(String number);
     @Select("SELECT " + COLUMNS + " FROM identity_account WHERE id=CAST(#{id} AS uuid) FOR UPDATE") Row lock(String id);
@@ -25,6 +29,7 @@ public interface AccountMapper {
     @Insert("INSERT INTO identity_account VALUES (CAST(#{id} AS uuid), #{employeeNumber}, #{nickname}, #{systemRole}, #{status}, #{passwordHash},"
             + "#{passwordChangeRequired}, #{credentialVersion}, #{version}, #{createdAt}, #{updatedAt}, #{archivedAt}, CAST(#{archivedBy} AS uuid))") void insert(Row row);
     @Insert("INSERT INTO identity_account_role VALUES (CAST(#{id} AS uuid), #{role})") void insertRole(@Param("id") String id, @Param("role") String role);
+    @Delete("DELETE FROM identity_account_role WHERE account_id=CAST(#{id} AS uuid)") void deleteRoles(String id);
     @Update("UPDATE identity_account SET nickname=#{row.nickname}, status=#{row.status}, password_hash=#{row.passwordHash},"
             + " password_change_required=#{row.passwordChangeRequired}, credential_version=#{row.credentialVersion}, version=#{row.version},"
             + " updated_at=#{row.updatedAt}, archived_at=#{row.archivedAt}, archived_by=CAST(#{row.archivedBy} AS uuid)"

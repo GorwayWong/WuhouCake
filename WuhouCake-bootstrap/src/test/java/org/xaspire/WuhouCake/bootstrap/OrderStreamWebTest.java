@@ -43,9 +43,11 @@ class OrderStreamWebTest {
     @MockitoBean JwtDecoder decoder;
     @MockitoBean IdentityFacade identity;
     @MockitoBean OrderService orders;
+    @MockitoBean org.xaspire.WuhouCake.order.application.service.OrderCreationService creations;
     @MockitoBean OrderQueryService queries;
     @MockitoBean OrderImageService images;
     @MockitoBean OrderExportService exports;
+    @MockitoBean org.xaspire.WuhouCake.order.application.service.OrderManagementService management;
     private final UUID accountId = UUID.randomUUID(), sessionId = UUID.randomUUID();
 
     @BeforeEach void token() {
@@ -69,7 +71,7 @@ class OrderStreamWebTest {
                 .andExpect(status().isOk()).andExpect(request().asyncStarted()).andExpect(content().contentTypeCompatibleWith("text/event-stream"))
                 .andExpect(header().string("Cache-Control", "no-store")).andReturn();
         assertTrue(result.getResponse().getContentAsString().contains("event:ready\n"));
-        var event = new OrderChanged(UUID.randomUUID(), null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED, 5);
+        var event = new OrderChanged(UUID.randomUUID(), null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED, 5, "0000001");
         String frame = "data:" + json.writeValueAsString(event) + "\n\n";
         streams.changed(event);
         long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
@@ -77,7 +79,8 @@ class OrderStreamWebTest {
         String content = result.getResponse().getContentAsString();
         assertTrue(content.contains("event:order.changed\n") && content.contains(frame), content);
         var payload = json.readTree(content.substring(content.lastIndexOf("data:") + 5).strip());
-        assertEquals(Set.of("orderId", "itemId", "changeType", "version"), json.convertValue(payload, Map.class).keySet());
+        assertEquals(Set.of("orderId", "itemId", "changeType", "version", "orderNo"), json.convertValue(payload, Map.class).keySet());
+        assertEquals("0000001", payload.path("orderNo").asText());
         assertEquals(event.orderId().toString(), payload.path("orderId").asText()); assertTrue(payload.path("itemId").isNull());
         assertEquals("ORDER_PRODUCTION_CHANGED", payload.path("changeType").asText()); assertEquals(5, payload.path("version").asLong());
         result.getRequest().getAsyncContext().complete();

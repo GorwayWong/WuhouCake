@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { DownloadSimple, X } from '@phosphor-icons/react';
 import { exportFailureText, exportFilters, exportOptions, fetchOrderExport, saveExportFile } from './exportFiles';
 import type { ExportDraft, ExportRequest } from './exportFiles';
 
 function useExportDownload(onPendingChange: (pending: boolean) => void) {
-  const client = useQueryClient();
   const active = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -20,10 +18,6 @@ function useExportDownload(onPendingChange: (pending: boolean) => void) {
       if (!controller.signal.aborted) { saveExportFile(file); setNotice(`「${file.filename}」已交给浏览器下载，请在下载记录中确认保存。`); }
     } catch (failure) { if (!controller.signal.aborted) setError(failure); }
     finally {
-      if (!controller.signal.aborted) await client.invalidateQueries({
-        queryKey: 'orderId' in request ? ['order', request.orderId, 'activities'] : ['order'],
-        predicate: query => query.queryKey[2] === 'activities',
-      });
       if (active.current === controller) { active.current = null; setBusy(false); onPendingChange(false); }
     }
   }

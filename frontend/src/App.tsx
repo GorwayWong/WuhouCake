@@ -3,8 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, CalendarBlank, LockKey, SignOut, UserCircle, WifiHigh, WifiSlash } from '@phosphor-icons/react';
 import { api, creationResultUnknown, forgetSession, refresh, session } from './api';
 import type { Account, CreateOrderRequest, Detail } from './types';
-import { connectOrders, synchronize } from './realtime';
-import type { Connection } from './realtime';
+import { collectUpdate, connectOrders, synchronize } from './realtime';
+import type { Connection, OrderUpdate } from './realtime';
+import { OrderUpdates } from './OrderUpdates';
 import { today, workbenchDate } from './dates';
 import { Brand, ErrorNotice, Loading } from './ui';
 import { Calendar } from './Calendar';
@@ -12,8 +13,10 @@ import { OrderDetail } from './OrderDetail';
 import { OrderCreate } from './OrderCreate';
 import { newDraft } from './orderForm';
 import type { OrderDraft } from './orderForm';
+import { AdminOrders } from './AdminOrders';
+import { EmployeeAdmin } from './EmployeeAdmin';
 
-interface DraftRecord { accountId: string; initial: OrderDraft; value: OrderDraft }
+interface DraftRecord { accountId: string; requestId: string; initial: OrderDraft; value: OrderDraft }
 function changed(draft: DraftRecord | null) { return Boolean(draft && JSON.stringify(draft.initial) !== JSON.stringify(draft.value)); }
 
 function Login({ changePassword = false, onAccount, onLogout }: { changePassword?: boolean; onAccount: (accountId: string) => void; onLogout: () => Promise<boolean> }) {
@@ -59,16 +62,19 @@ function Workspace({ token, hash, selected, setSelected, mode, setMode, draft, o
 }) {
   const client = useQueryClient();
   const [connection, setConnection] = useState<Connection>('connecting');
+  const [updates, setUpdates] = useState<OrderUpdate[]>([]);
+  const notify = useCallback((change: OrderUpdate) => setUpdates(current => collectUpdate(current, change)), []);
   const [logoutError, setLogoutError] = useState<unknown>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const me = useQuery({ queryKey: ['me'], queryFn: ({ signal }) => api<Account>('/me', { signal }) });
   useEffect(() => {
     synchronize(client);
-    return connectOrders(client, setConnection);
-  }, [client, token]);
+    return connectOrders(client, setConnection, notify);
+  }, [client, token, notify]);
+  useEffect(() => { setUpdates([]); }, [me.data?.accountId]);
   useEffect(() => { if (me.data) onAccount(me.data.accountId, hash === '#/orders/new' ? selected : undefined); }, [me.data, hash, selected, onAccount]);
   const id = /^#\/orders\/([a-f\d-]{36})$/i.exec(hash)?.[1];
-  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><span className={`connection ${connection}`} role="status">{connection === 'live' ? <WifiHigh /> : <WifiSlash />}<span>{connection === 'live' ? '协作已连接' : connection === 'connecting' ? '正在连接' : '正在重连'}</span></span><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating || writing} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><main className="workspace"><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{connection === 'reconnecting' && <div className="notice">实时连接暂时中断，正在自动重连；恢复后会重新获取最新订单。</div>}{hash === '#/orders/new' ? draft && draft.accountId === me.data?.accountId ? <OrderCreate key={draft.accountId} draft={draft.value} initialDraft={draft.initial} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} onRecognitionDirtyChange={onEditDirtyChange} /> : <Loading /> : id ? <OrderDetail key={id} id={id} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : <Calendar selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} onWritingChange={onWritingChange} />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span><span>把心意，准时送达。</span></footer></>;
+  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><span className={`connection ${connection}`} role="status">{connection === 'live' ? <WifiHigh /> : <WifiSlash />}<span>{connection === 'live' ? '协作已连接' : connection === 'connecting' ? '正在连接' : '正在重连'}</span></span><OrderUpdates currentOrderId={id} updates={updates} clear={() => setUpdates([])} dismiss={id => setUpdates(current => current.filter(update => update.orderId !== id))} /><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating || writing} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><nav className="app-nav" aria-label="工作区导航"><a href="#" aria-current={!hash.startsWith('#/admin') ? 'page' : undefined}>日历工作台</a>{me.data?.systemRole === 'SUPER_ADMIN' && <><a href="#/admin/orders" aria-current={hash === '#/admin/orders' ? 'page' : undefined}>订单查询与统计</a><a href="#/admin/employees" aria-current={hash === '#/admin/employees' ? 'page' : undefined}>员工管理</a></>}</nav><main className="workspace"><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{connection === 'reconnecting' && <div className="notice">实时连接暂时中断，正在自动重连；恢复后会重新获取最新订单。</div>}{hash === '#/orders/new' ? draft && draft.accountId === me.data?.accountId ? <OrderCreate key={draft.accountId} draft={draft.value} initialDraft={draft.initial} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} onRecognitionDirtyChange={onEditDirtyChange} /> : <Loading /> : id ? <OrderDetail key={id} id={id} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : hash === '#/admin/orders' ? me.data?.systemRole === 'SUPER_ADMIN' ? <AdminOrders onWritingChange={onWritingChange} /> : <p role="alert">当前账号无管理权限。</p> : hash === '#/admin/employees' ? me.data?.systemRole === 'SUPER_ADMIN' ? <EmployeeAdmin onWritingChange={onWritingChange} onDirtyChange={onEditDirtyChange} /> : <p role="alert">当前账号无管理权限。</p> : me.data ? <Calendar key={me.data.accountId} accountId={me.data.accountId} selected={selected} setSelected={setSelected} mode={mode} setMode={setMode} onWritingChange={onWritingChange} /> : <Loading />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span><span>把心意，准时送达。</span></footer></>;
 }
 export function App() {
   const state = useSyncExternalStore(session.subscribe, session.snapshot);
@@ -94,7 +100,10 @@ export function App() {
   }, []);
   const saveDraft = useCallback((next: DraftRecord | null) => { draftRef.current = next; setDraft(next); }, []);
   const creation = useMutation({
-    mutationFn: (request: CreateOrderRequest) => api<Detail>('/orders', { method: 'POST', body: request }),
+    mutationFn: (request: CreateOrderRequest) => {
+      if (!draftRef.current) throw new Error('录单草稿已失效，请重新打开录单页面。');
+      return api<Detail>('/orders', { method: 'POST', body: request, headers: { 'Idempotency-Key': draftRef.current.requestId } });
+    },
     onSuccess: order => {
       if (session.snapshot().token) {
         synchronize(client, order.orderId);
@@ -124,7 +133,8 @@ export function App() {
     }
     if (!current && date !== undefined) {
       const value = newDraft(date);
-      saveDraft({ accountId, initial: value, value });
+      value.creditedEmployeeId = accountId;
+      saveDraft({ accountId, requestId: crypto.randomUUID(), initial: value, value });
     }
   }, [saveDraft, creation.reset]);
   useEffect(() => {

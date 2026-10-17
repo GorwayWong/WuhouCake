@@ -9,7 +9,8 @@ public interface OrderMapper {
     record Row(String id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, String customerName,
             String customerPhone, String memberPhone, String buyerName, String fulfillmentType, String deliveryAddress,
             LocalDate requestedReceiveDate, Instant plannedHandoffAt, Instant plannedFinishAt, Long totalAmountCents,
-            String createdBy, Instant createdAt, Instant confirmedAt, Instant updatedAt) { }
+            String createdBy, Instant createdAt, Instant confirmedAt, Instant updatedAt, String creditedEmployeeId,
+            String creditedEmployeeNumber, String creditedEmployeeName) { }
     record ItemRow(String id, String orderId, String name, String productType, int quantity, Long unitPriceCents,
             Long memberPriceCents, String attributes, String productionStatus, String currentStageCode,
             boolean removed, Instant createdAt, Instant updatedAt) { }
@@ -17,7 +18,7 @@ public interface OrderMapper {
     @Select("SELECT nextval('cake_order_no_seq')") long nextNumber();
     @Select("SELECT id::text, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
-            + " created_by::text, created_at, confirmed_at, updated_at FROM cake_order WHERE id=CAST(#{id} AS uuid)")
+            + " created_by::text, created_at, confirmed_at, updated_at, credited_employee_id::text, credited_employee_number, credited_employee_name FROM cake_order WHERE id=CAST(#{id} AS uuid)")
     Row find(String id);
     @Select("SELECT id::text, order_id::text, name, product_type, quantity, unit_price_cents, member_price_cents, attributes::text,"
             + " production_status, current_stage_code, is_removed AS removed, created_at, updated_at FROM cake_order_item"
@@ -25,9 +26,10 @@ public interface OrderMapper {
     List<ItemRow> items(String id);
     @Insert("INSERT INTO cake_order (id, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
-            + " created_by, created_at, confirmed_at, updated_at) VALUES (CAST(#{id} AS uuid), #{orderNo}, #{version}, #{status}, #{paymentStatus}, #{currentStageCode},"
+            + " created_by, created_at, confirmed_at, updated_at, credited_employee_id, credited_employee_number, credited_employee_name) VALUES (CAST(#{id} AS uuid), #{orderNo}, #{version}, #{status}, #{paymentStatus}, #{currentStageCode},"
             + " #{customerName}, #{customerPhone}, #{memberPhone}, #{buyerName}, #{fulfillmentType}, #{deliveryAddress}, #{requestedReceiveDate},"
-            + " #{plannedHandoffAt}, #{plannedFinishAt}, #{totalAmountCents}, CAST(#{createdBy} AS uuid), #{createdAt}, #{confirmedAt}, #{updatedAt})")
+            + " #{plannedHandoffAt}, #{plannedFinishAt}, #{totalAmountCents}, CAST(#{createdBy} AS uuid), #{createdAt}, #{confirmedAt}, #{updatedAt},"
+            + " CAST(#{creditedEmployeeId} AS uuid), #{creditedEmployeeNumber}, #{creditedEmployeeName})")
     void insert(Row row);
     @Insert("INSERT INTO cake_order_item (id, order_id, name, product_type, quantity, unit_price_cents, member_price_cents, attributes,"
             + " production_status, current_stage_code, is_removed, created_at, updated_at) VALUES (CAST(#{id} AS uuid), CAST(#{orderId} AS uuid),"
@@ -43,7 +45,8 @@ public interface OrderMapper {
     @Update("UPDATE cake_order SET customer_name=#{row.customerName}, customer_phone=#{row.customerPhone}, member_phone=#{row.memberPhone},"
             + " buyer_name=#{row.buyerName}, fulfillment_type=#{row.fulfillmentType}, delivery_address=#{row.deliveryAddress},"
             + " requested_receive_date=#{row.requestedReceiveDate}, planned_handoff_at=#{row.plannedHandoffAt}, planned_finish_at=#{row.plannedFinishAt},"
-            + " total_amount_cents=#{row.totalAmountCents}, status=#{row.status}, version=version+1, updated_at=#{row.updatedAt}"
+            + " total_amount_cents=#{row.totalAmountCents}, status=#{row.status}, credited_employee_id=CAST(#{row.creditedEmployeeId} AS uuid),"
+            + " credited_employee_number=#{row.creditedEmployeeNumber}, credited_employee_name=#{row.creditedEmployeeName}, version=version+1, updated_at=#{row.updatedAt}"
             + " WHERE id=CAST(#{row.id} AS uuid) AND version=#{expected}")
     int updateInformation(@Param("row") Row row, @Param("expected") long expected);
     @Update("UPDATE cake_order_item SET is_removed=true, updated_at=#{updatedAt}"

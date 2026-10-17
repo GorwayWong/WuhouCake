@@ -82,6 +82,7 @@ test('蛋糕默认值共用单一资源，非蛋糕移除自动默认，明确�
   const explicit = changeItemDraft(cake, { attributes: { ...cake.attributes, base: '原味' } }, 'base');
   assert.equal(changeItemDraft(explicit, { productType: 'DONUT' }).attributes.base, '原味');
   assert.equal(normalizeSize('08.00寸'), '8'); assert.throws(() => normalizeSize('4寸-6寸'));
+  for (const size of ['8.123寸', '1234567890寸', '-8寸', '4寸高']) assert.throws(() => normalizeSize(size));
 });
 test('候选金额和字段白名单验证不影响其他字段，也不能引入付款状态', () => {
   assert.equal(recognitionValue('unitPriceCents', '19929'), '199.29'); assert.equal(recognitionValue('totalAmountCents', '0'), '0.00');

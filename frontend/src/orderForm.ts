@@ -1,5 +1,5 @@
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
-import { cakeDefaults } from './productRules.ts';
+import { cakeDefaults, numericSize } from './productRules.ts';
 
 export const specificationFields = [
   ['size', '尺寸'], ['flavor', '奶油'], ['filling', '夹馅'],
@@ -13,6 +13,7 @@ export interface ItemDraft {
   requiresTypeConfirmation?: boolean;
 }
 export interface OrderDraft {
+  creditedEmployeeId?: string;
   customerName: string; phone: string; memberPhone: string; buyerName: string;
   fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveDate: string;
   plannedHandoffAt: string; plannedFinishAt: string; totalAmount: string; items: ItemDraft[];
@@ -50,7 +51,7 @@ export function moneyToCents(input: string): number | null {
   if (cents > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('金额过大，请核对后重新填写。');
   return Number(cents);
 }
-export function itemInput(draft: ItemDraft): { item: ItemInput | null; errors: Record<string, string> } {
+export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemInput | null; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
   if (!draft.name.trim()) errors.name = '请填写商品名称。';
   else if (draft.name.length > 128) errors.name = '商品名称最多填写 128 个字符。';
@@ -65,6 +66,10 @@ export function itemInput(draft: ItemDraft): { item: ItemInput | null; errors: R
   const item: ItemInput = { name: draft.name.trim(), productType: draft.productType.trim() || 'CAKE', quantity,
     unitPriceCents: amount('unitPrice'), memberPriceCents: amount('memberPrice'),
     attributes: Object.fromEntries(specificationFields.flatMap(([key]) => draft.attributes[key].trim() ? [[key, draft.attributes[key].trim()]] : [])) };
+  if (item.productType?.toUpperCase() === 'CAKE') {
+    item.attributes.base ||= cakeDefaults.base; item.attributes.filling ||= cakeDefaults.filling;
+    if (validateSize && draft.attributes.size.trim()) { try { item.attributes.size = numericSize(draft.attributes.size); } catch (error) { errors.size = (error as Error).message; } }
+  }
   return { item: Object.keys(errors).length ? null : item, errors };
 }
 export function textSpecification(value: unknown): boolean { return value == null || typeof value === 'string'; }
@@ -79,9 +84,10 @@ export function canRemoveItem(order: Detail, itemId: string): boolean { return c
 export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original): { request: ItemChangeRequest | null; errors: Record<string, string> } {
   const before = original.items.find(item => item.itemId === itemId), current = baseline.items.find(item => item.itemId === itemId);
   if (!before || !current) return { request: null, errors: { item: '此商品已被移除，输入已保留，请取消编辑并核对订单。' } };
-  const result = itemInput(draft);
+  const initial = itemDraft(before);
+  const result = itemInput(draft, draft.attributes.size !== initial.attributes.size || draft.productType !== initial.productType);
   if (!result.item) return { request: null, errors: result.errors };
-  const initial = itemDraft(before), changes: Partial<ItemInput> = {};
+  const changes: Partial<ItemInput> = {};
   for (const field of ['name', 'productType', 'quantity'] as const) {
     if (draft[field] !== initial[field] && result.item[field] !== before[field] && result.item[field] !== current[field]) Object.assign(changes, { [field]: result.item[field] });
   }
@@ -148,6 +154,7 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       return result.item!;
     }),
     totalAmountCents: amount(draft.totalAmount, 'totalAmount'),
+    ...(draft.creditedEmployeeId ? { creditedEmployeeId: draft.creditedEmployeeId } : {}),
   };
   return { request: Object.keys(errors).length ? null : request, errors };
 }
@@ -164,11 +171,15 @@ export function informationDraft(order: Detail): InformationDraft {
   return { customerName: order.customer.customerName || '', phone: order.customer.phone, memberPhone: order.customer.memberPhone || '', buyerName: order.customer.buyerName || '',
     fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: order.fulfillment.requestedReceiveDate,
     plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt),
-    totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}` };
+    totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`, creditedEmployeeId: order.creditedEmployee?.accountId || '' };
 }
 export function informationRequest(original: Detail, draft: InformationDraft, baseline = original): { request: InformationRequest | null; errors: Record<string, string> } {
   const initial = informationDraft(original), current = informationDraft(baseline);
   const changes: InformationChanges = {}, errors: Record<string, string> = {};
+  if (draft.creditedEmployeeId !== initial.creditedEmployeeId && draft.creditedEmployeeId !== current.creditedEmployeeId) {
+    if (!draft.creditedEmployeeId || !/^[a-f\d-]{36}$/i.test(draft.creditedEmployeeId)) errors.creditedEmployeeId = '请选择下单员工。';
+    else changes.creditedEmployeeId = draft.creditedEmployeeId;
+  }
   for (const [field, label, maximum] of [['customerName', '客户姓名', 80], ['phone', '联系电话', 32], ['memberPhone', '会员手机', 32], ['buyerName', '下单人', 80], ['address', '地址', 2147483647]] as const) {
     const value = draft[field].trim() || null;
     if (draft[field].length > maximum) errors[field] = `${label}最多填写 ${maximum} 个字符。`;
