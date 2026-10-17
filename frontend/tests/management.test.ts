@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { managementQuery, exactYuan } from '../src/management.ts';
+import { defaultManagementDraft, managementQuery, exactYuan } from '../src/management.ts';
 import { readCalendarFilters, writeCalendarFilters, matchesCalendarFilters } from '../src/calendarFilters.ts';
 import { itemInput, newItem } from '../src/orderForm.ts';
+
+test('管理默认查询本月录单日期，未来收货的预约单不被收货范围排除', () => {
+  const draft = defaultManagementDraft('2026-10-17');
+  const q = new URLSearchParams(managementQuery(draft));
+  assert.equal(q.get('dateBasis'), 'CREATED');
+  assert.equal(q.get('from'), '2026-10-01'); assert.equal(q.get('to'), '2026-10-18');
+  assert.equal(q.get('includeCancelled'), 'false'); assert.equal(q.has('status'), false);
+  assert.equal(new URLSearchParams(managementQuery({ ...draft, dateBasis: 'RECEIVE', through: '2026-11-01' })).get('dateBasis'), 'RECEIVE');
+});
 
 test('经营条件规范化数字、日期、员工与金额，拒绝非法条件', () => {
   const draft = { from: '2026-10-01', through: '2026-10-31', status: '', paymentStatus: '', fulfillmentType: '', sizeInches: '8.00', creditedEmployeeId: '', unassigned: false, includeCancelled: false, keyword: ' 合成 ', dateBasis: 'RECEIVE' };

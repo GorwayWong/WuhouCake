@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { DownloadSimple, X } from '@phosphor-icons/react';
 import { exportFailureText, exportFilters, exportOptions, fetchOrderExport, saveExportFile } from './exportFiles';
 import type { ExportDraft, ExportRequest } from './exportFiles';
+import { DateInput } from './DateInput';
 
 function useExportDownload(onPendingChange: (pending: boolean) => void) {
   const active = useRef<AbortController | null>(null);
@@ -47,8 +48,8 @@ export function BatchOrderExport({ selected, onPendingChange }: { selected: stri
       <p className="form-help">按收货日期筛选，包含开始和结束当天。最多 42 天、100 张订单，每张订单生成一份 XLSX。</p>
       <form onSubmit={event => { event.preventDefault(); if (state.busy) return; const result = exportFilters(draft); setValidation(result.error || ''); if (result.filters) void state.download({ filters: result.filters }); }}>
         <fieldset className="export-filters" disabled={state.busy}>
-          <label>开始日期<input type="date" value={draft.from} onChange={event => change('from', event.target.value)} required /></label>
-          <label>结束日期（含当天）<input type="date" value={draft.through} onChange={event => change('through', event.target.value)} required /></label>
+          <label>开始日期<DateInput value={draft.from} onChange={value => change('from', value)} required /></label>
+          <label>结束日期（含当天）<DateInput value={draft.through} onChange={value => change('through', value)} required /></label>
           {([['status', '订单状态'], ['fulfillmentType', '交接方式'], ['paymentStatus', '付款状态']] as const).map(([key, label]) => <label key={key}>{label}<select value={draft[key]} onChange={event => change(key, event.target.value)}><option value="">全部</option>{Object.entries(exportOptions[key]).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></label>)}
         </fieldset>
         {validation && <p className="field-error" role="alert">{validation}</p>}

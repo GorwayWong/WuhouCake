@@ -5,6 +5,10 @@ import { exportOptions } from './exportFiles.ts';
 
 export interface ManagementDraft { from: string; through: string; status: string; paymentStatus: string; fulfillmentType: string;
   sizeInches: string; creditedEmployeeId: string; unassigned: boolean; includeCancelled: boolean; keyword: string; dateBasis: string }
+export function defaultManagementDraft(date: string): ManagementDraft {
+  return { from: date.slice(0, 8) + '01', through: date, status: '', paymentStatus: '', fulfillmentType: '',
+    sizeInches: '', creditedEmployeeId: '', unassigned: false, includeCancelled: false, keyword: '', dateBasis: 'CREATED' };
+}
 export function managementQuery(draft: ManagementDraft): string {
   if (!validDate(draft.from) || !validDate(draft.through) || draft.from > draft.through) throw new Error('请填写有效的开始和结束日期，结束日期不能早于开始日期。');
   const to = shiftDate(draft.through, 1);
