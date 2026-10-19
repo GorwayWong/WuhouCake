@@ -4,14 +4,11 @@ import type { Item, OrderStatus } from './types';
 import { time } from './dates';
 import { errorText } from './api';
 import { productTypeLabel } from './productTypes';
+import { displayedStatusCode, statusNames } from './orderStates';
+export { statusNames } from './orderStates';
 
-export const statusNames: Record<string, string> = {
-  WAITING_PRODUCTION: '待制作', PROCESSING: '制作中', WAITING_DELIVERY: '待配送',
-  WAITING_PICKUP: '待自提', DELIVERING: '配送中', COMPLETED: '已完成', CANCELLED: '已取消',
-  LAYER_DONE: '已夹层', FROSTING_DONE: '已抹面',
-};
 export function statusLabel(order: OrderStatus) {
-  return statusNames[order.status === 'PROCESSING' && order.currentStageCode ? order.currentStageCode : order.status] || order.status;
+  return statusNames[displayedStatusCode(order)] || order.status;
 }
 export function Status({ order }: { order: OrderStatus }) {
   const Icon = order.status === 'COMPLETED' ? CheckCircle : order.status === 'CANCELLED' ? XCircle

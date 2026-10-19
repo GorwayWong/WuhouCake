@@ -5,6 +5,20 @@ import { exportOptions } from './exportFiles.ts';
 
 export interface ManagementDraft { from: string; through: string; status: string; paymentStatus: string; fulfillmentType: string;
   sizeInches: string; creditedEmployeeId: string; unassigned: boolean; includeCancelled: boolean; keyword: string; dateBasis: string }
+export interface ManagementView { draft: ManagementDraft; applied: ManagementDraft; page: number }
+export const orderPageSize = 10;
+export function orderPagination(total: number, page: number) {
+  const count = Number.isSafeInteger(total) && total > 0 ? total : 0;
+  const size = orderPageSize;
+  const last = Math.max(1, Math.ceil(count / size));
+  const current = Math.max(1, Math.min(Number.isSafeInteger(page) ? page : 1, last));
+  let pages: (number | 'gap')[];
+  if (last <= 7) pages = Array.from({ length: last }, (_, index) => index + 1);
+  else if (current <= 4) pages = [1, 2, 3, 4, 5, 'gap', last];
+  else if (current >= last - 3) pages = [1, 'gap', last - 4, last - 3, last - 2, last - 1, last];
+  else pages = [1, 'gap', current - 1, current, current + 1, 'gap', last];
+  return { total: count, size, last, current, from: count ? (current - 1) * size + 1 : 0, through: Math.min(current * size, count), pages };
+}
 export function defaultManagementDraft(date: string): ManagementDraft {
   return { from: date.slice(0, 8) + '01', through: date, status: '', paymentStatus: '', fulfillmentType: '',
     sizeInches: '', creditedEmployeeId: '', unassigned: false, includeCancelled: false, keyword: '', dateBasis: 'CREATED' };

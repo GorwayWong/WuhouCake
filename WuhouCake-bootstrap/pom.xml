@@ -35,6 +35,7 @@
             <groupId>org.xaspire</groupId>
             <artifactId>WuhouCake-sample</artifactId>
             <version>${project.version}</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.xaspire</groupId>
