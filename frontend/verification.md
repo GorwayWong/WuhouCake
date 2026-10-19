@@ -30,6 +30,8 @@ npm run build
 
 当前准入为 **CONDITIONAL GO**：未发现新的 P0/P1，F1/F2/F3 已关闭。维护者已明确接受仅同一门店可信员工共享读取和导出；使用真实订单前仍须完成实际 HTTPS/代理、员工设备及正式备份恢复检查，部署 JDK 21 时另补该运行时回归。详情见最新报告的[剩余阻塞项](../docs/verification/2026-10-17-core-uat-rerun.md#6-试用准入与剩余阻塞项)。
 
+部署站点已完成[应用侧静态核对及环境信息清单](../docs/verification/2026-10-17-deployment-admission.md)：Cookie、SSE 和文件响应契约已核对，Compose 合成解析通过；实际站点 URL、代理配置和合成身份尚未提供，站点准入仍为 NOT RUN。
+
 ## 浏览器业务证据
 
 下表保留 2026-10-13 至 16 日的历史证据；2026-10-17 已按最新报告分项复跑，不等同于生产站点或真实手机验证。最新完整旅程见[本轮核心 UAT](../docs/verification/2026-10-17-core-uat-rerun.md)，较早阶段的详细 HAR/截图和实现过程可从 Git 历史追溯。

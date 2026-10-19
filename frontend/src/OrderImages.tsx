@@ -7,6 +7,7 @@ import { imageFileError, loadImagePreview } from './imagePreview';
 import { synchronize } from './realtime';
 import type { Detail, OrderImage } from './types';
 import { ErrorNotice, Loading } from './ui';
+import { Select } from './Select';
 
 type ImageAction = { type: 'upload'; file: File; itemId: string } | { type: 'remove'; imageId: string };
 
@@ -86,7 +87,7 @@ export function OrderImages({ order, blocked, onDraftChange, onWritingChange }: 
     {adding && <form className="image-upload" onSubmit={event => { event.preventDefault(); if (file && !imageFileError(file) && !invalidItem && !full) submit({ type: 'upload', file, itemId }); }}>
       <fieldset disabled={busy}><legend>添加参考图片</legend>
         <label>图片文件<input ref={input} type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" onChange={event => { const selected = event.target.files?.[0] || null; const error = selected ? imageFileError(selected) : ''; setValidation(error); setFile(error ? null : selected); }} /></label>
-        <label>图片归属<select value={itemId} onChange={event => setItemId(event.target.value)}><option value="">整张订单</option>{order.items.map((item, index) => <option key={item.itemId} value={item.itemId}>商品 {index + 1} · {item.name}</option>)}{invalidItem && <option value={itemId}>已移除的商品，请重新选择</option>}</select></label>
+        <label>图片归属<Select label="图片归属" disabled={busy} value={itemId} onChange={setItemId}><option value="">整张订单</option>{order.items.map((item, index) => <option key={item.itemId} value={item.itemId}>商品 {index + 1} · {item.name}</option>)}{invalidItem && <option value={itemId}>已移除的商品，请重新选择</option>}</Select></label>
         {preview && <div className="image-local-preview"><img src={preview} alt="待上传图片预览" /><span>{file?.name}</span></div>}
         {validation && <p className="field-error" role="alert">{validation}</p>}{invalidItem && <p className="field-error">该商品已移除，请重新选择图片归属。</p>}
         <div className="actions"><button className="primary" disabled={busy || !file || invalidItem || full}>{saving ? '正在保存…' : '确认上传'}</button><button type="button" className="secondary" onClick={() => { clear(); setFailure(null); }} disabled={busy}>取消</button></div>

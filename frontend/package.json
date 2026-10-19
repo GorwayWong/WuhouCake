@@ -10,10 +10,12 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
+    "@internationalized/date": "^3.12.4",
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-query": "^5.90.3",
     "eventsource-parser": "^3.0.6",
     "react": "^19.2.0",
+    "react-aria-components": "^1.22.1",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
@@ -24,5 +26,7 @@
     "typescript": "~5.9.3",
     "vite": "^7.3.5"
   },
-  "engines": { "node": ">=22.18.0" }
+  "engines": {
+    "node": ">=22.18.0"
+  }
 }

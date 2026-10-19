@@ -1,9 +1,10 @@
 import { ApiError, authenticatedFetch, creationResultUnknown, errorText } from './api.ts';
 import { shiftDate, workbenchDate } from './dates.ts';
 import type { ExportFilters } from './types.ts';
+import { orderStatusNames } from './orderStates.ts';
 
 export const exportOptions: Record<'status' | 'fulfillmentType' | 'paymentStatus', Record<string, string>> = {
-  status: { WAITING_PRODUCTION: '待制作', PROCESSING: '制作中', WAITING_DELIVERY: '待配送', WAITING_PICKUP: '待自提', DELIVERING: '配送中', COMPLETED: '已完成', CANCELLED: '已取消' },
+  status: orderStatusNames,
   fulfillmentType: { DELIVERY: '配送', PICKUP: '自提' },
   paymentStatus: { UNPAID: '未付款', PAID: '已付款' },
 };

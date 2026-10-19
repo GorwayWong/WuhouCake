@@ -7,6 +7,8 @@ import { OrderRecognition } from './OrderRecognition';
 import { EmployeeSelect } from './EmployeeSelect';
 import { DateInput } from './DateInput';
 import { ProductTypeSelect } from './ProductTypeSelect';
+import { Select } from './Select';
+import { focusFormField } from './formFocus';
 import type { ItemDraft, OrderDraft } from './orderForm';
 import type { CreateOrderRequest } from './types';
 
@@ -61,21 +63,20 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
       setErrors(result.errors);
       if (result.request) onSubmit(result.request);
       else {
-        const first = form.current?.elements.namedItem(Object.keys(result.errors)[0]);
-        if (first instanceof HTMLElement) first.focus();
+        focusFormField(form.current, Object.keys(result.errors)[0]);
       }
     }}>
       <fieldset className="create-fields" disabled={busy || unknownResult}>
         <div className="create-top-groups">
           <section className="panel create-group"><h2><UserCircle />客户信息</h2><div className="create-grid">
-            <Field label="下单员工（业绩归属）" name="creditedEmployeeId" error={errors.creditedEmployeeId}><EmployeeSelect id="creditedEmployeeId" value={draft.creditedEmployeeId || ''} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
+            <Field label="下单员工（业绩归属）" name="creditedEmployeeId" error={errors.creditedEmployeeId}><EmployeeSelect name="creditedEmployeeId" disabled={busy || unknownResult} id="creditedEmployeeId" value={draft.creditedEmployeeId || ''} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
             {customerFields.map(([name, label, maximum]) => <Field key={name} label={label} name={name} error={errors[name]}><input {...inputProps(name)} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} onChange={event => change({ ...draft, [name]: event.target.value })} required={name === 'phone'} maxLength={maximum} autoComplete="off" /></Field>)}
           </div></section>
           <section className="panel create-group"><h2><Truck />交接信息</h2><div className="create-grid">
-            <Field label="交接方式" name="fulfillmentType"><select {...inputProps('fulfillmentType')} value={draft.fulfillmentType} onChange={event => change({ ...draft, fulfillmentType: event.target.value as OrderDraft['fulfillmentType'] })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></select></Field>
-            <Field label="收货日期 *" name="requestedReceiveDate" error={errors.requestedReceiveDate}><DateInput {...inputProps('requestedReceiveDate')} value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} required /></Field>
-            <Field label="取货时间 *" name="plannedHandoffAt" error={errors.plannedHandoffAt} wide><DateInput {...inputProps('plannedHandoffAt')} type="datetime-local" step={60} value={draft.plannedHandoffAt} onChange={value => change({ ...draft, plannedHandoffAt: value })} required /></Field>
-            <Field label="计划出品时间" name="plannedFinishAt" error={errors.plannedFinishAt} wide><DateInput {...inputProps('plannedFinishAt')} type="datetime-local" step={60} value={draft.plannedFinishAt} onChange={value => change({ ...draft, plannedFinishAt: value })} /></Field>
+            <Field label="交接方式" name="fulfillmentType"><Select label="交接方式" disabled={busy || unknownResult} {...inputProps('fulfillmentType')} value={draft.fulfillmentType} onChange={value => change({ ...draft, fulfillmentType: value as OrderDraft['fulfillmentType'] })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></Select></Field>
+            <Field label="收货日期 *" name="requestedReceiveDate" error={errors.requestedReceiveDate}><DateInput label="收货日期" disabled={busy || unknownResult} {...inputProps('requestedReceiveDate')} value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} required /></Field>
+            <Field label="取货时间 *" name="plannedHandoffAt" error={errors.plannedHandoffAt} wide><DateInput label="取货时间" disabled={busy || unknownResult} {...inputProps('plannedHandoffAt')} type="datetime-local" value={draft.plannedHandoffAt} onChange={value => change({ ...draft, plannedHandoffAt: value })} required /></Field>
+            <Field label="计划出品时间" name="plannedFinishAt" error={errors.plannedFinishAt} wide><DateInput label="计划出品时间" disabled={busy || unknownResult} {...inputProps('plannedFinishAt')} type="datetime-local" value={draft.plannedFinishAt} onChange={value => change({ ...draft, plannedFinishAt: value })} /></Field>
             <Field label={draft.fulfillmentType === 'DELIVERY' ? '配送地址 *' : '地址（自提可留空）'} name="address" error={errors.address} wide><textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} required={draft.fulfillmentType === 'DELIVERY'} /></Field>
           </div><p className="form-help">北京时间；取货指客户自提或配送员到店取走。</p></section>
         </div>
@@ -87,7 +88,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
                 const name = `items.${index}.${field}`;
                 const confirmType = field === 'productType' && item.requiresTypeConfirmation;
                 const label = { name: '商品名称 *', productType: confirmType ? '商品类型 *' : '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[field];
-                return <Field key={field} label={label} name={name} error={errors[name]} wide={field === 'name'}>{field === 'productType' ? <ProductTypeSelect {...inputProps(name)} value={item.productType} onChange={event => updateItem(item.key, { productType: event.target.value })} required={confirmType} /> : <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} onChange={event => updateItem(item.key, { [field]: event.target.value })} required={field === 'name' || field === 'quantity'} maxLength={field === 'name' ? 128 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} />}</Field>;
+                return <Field key={field} label={label} name={name} error={errors[name]} wide={field === 'name'}>{field === 'productType' ? <ProductTypeSelect disabled={busy || unknownResult} {...inputProps(name)} value={item.productType} onChange={value => updateItem(item.key, { productType: value })} required={confirmType} /> : <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} onChange={event => updateItem(item.key, { [field]: event.target.value })} required={field === 'name' || field === 'quantity'} maxLength={field === 'name' ? 128 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} />}</Field>;
               })}
               {specificationFields.map(([key, label]) => { const name = `items.${index}.${key}`; return <Field key={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} name={name} error={errors[name]} wide={key === 'requirements'}>{key === 'requirements' ? <textarea id={name} name={name} rows={2} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} /> : <input {...inputProps(name)} inputMode={key === 'size' ? 'decimal' : undefined} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} />}</Field>; })}
             </div>
