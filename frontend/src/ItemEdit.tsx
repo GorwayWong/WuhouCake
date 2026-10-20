@@ -5,6 +5,7 @@ import { canEditItems, changeItemDraft, itemChangeRequest, itemDraft, itemInput,
 import type { Detail, ItemAddRequest, ItemChangeRequest } from './types';
 import { ErrorNotice, Product, valueText } from './ui';
 import { ProductTypeSelect } from './ProductTypeSelect';
+import { focusFormField } from './formFocus';
 
 function Field({ name, label, error, children, wide = false }: { name: string; label: string; error?: string; children: ReactNode; wide?: boolean }) {
   return <label htmlFor={`item-${name}`} className={wide ? 'form-wide' : undefined}>{label}{children}{error && <span className="field-error" id={`item-${name}-error`}>{error}</span>}</label>;
@@ -44,8 +45,7 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
     const result = itemId ? itemChangeRequest(initial, itemId, draft, baseline) : { request: input.item ? { expectedVersion: baseline.version, item: input.item } : null, errors: input.errors };
     setErrors(result.errors);
     if (Object.keys(result.errors).length) {
-      const first = form.current?.elements.namedItem(Object.keys(result.errors)[0]);
-      if (first instanceof HTMLElement) first.focus();
+      focusFormField(form.current, Object.keys(result.errors)[0]);
       return;
     }
     if (!result.request) { onCancel(); return; }
@@ -57,7 +57,7 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
   }}>
     <fieldset className="create-fields" disabled={busy}>
       <div className="create-grid">
-        {(['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const).map((name, index) => <Field key={name} name={name} label={{ name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[name]} error={errors[name]} wide={name === 'name'}>{name === 'productType' ? <ProductTypeSelect {...props(name)} value={draft.productType} onChange={event => change(changeItemDraft(draft, { productType: event.target.value }))} /> : <input {...props(name)} autoFocus={index === 0} value={draft[name]} inputMode={name === 'quantity' ? 'numeric' : name.endsWith('Price') ? 'decimal' : undefined} maxLength={name === 'name' ? 128 : undefined} required={name === 'name' || name === 'quantity'} placeholder={name.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [name]: event.target.value }))} />}</Field>)}
+        {(['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const).map((name, index) => <Field key={name} name={name} label={{ name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[name]} error={errors[name]} wide={name === 'name'}>{name === 'productType' ? <ProductTypeSelect disabled={busy} {...props(name)} value={draft.productType} onChange={value => change(changeItemDraft(draft, { productType: value }))} /> : <input {...props(name)} autoFocus={index === 0} value={draft[name]} inputMode={name === 'quantity' ? 'numeric' : name.endsWith('Price') ? 'decimal' : undefined} maxLength={name === 'name' ? 128 : undefined} required={name === 'name' || name === 'quantity'} placeholder={name.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [name]: event.target.value }))} />}</Field>)}
         {specificationFields.map(([key, label]) => {
           const structured = !textSpecification(original?.attributes[key]) || !textSpecification((baseline || latest).items.find(item => item.itemId === itemId)?.attributes[key]);
           return <Field key={key} name={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} error={errors[key]} wide={key === 'requirements'}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[key] ?? original?.attributes[key])}<small>此规格保留原值。</small></span> : key === 'requirements' ? <textarea {...props(key)} rows={2} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} /> : <input {...props(key)} inputMode={key === 'size' ? 'decimal' : undefined} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} />}</Field>;

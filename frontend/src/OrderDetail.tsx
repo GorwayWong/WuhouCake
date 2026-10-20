@@ -13,6 +13,7 @@ import { OrderImages } from './OrderImages';
 import { SingleOrderExport } from './OrderExports';
 import { exportActivitySummary } from './exportFiles';
 import { uniqueActivities } from './activities';
+import { Select } from './Select';
 
 const actionNames: Record<string, string> = { START_PRODUCTION: '开始制作', COMPLETE_LAYER: '确认整单夹层', COMPLETE_FROSTING: '确认整单抹面', COMPLETE_PRODUCTION: '整单制作完成', REOPEN_PRODUCTION: '重新制作', START_DELIVERY: '开始配送', COMPLETE_DELIVERY: '完成配送', CONFIRM_PICKUP: '确认自提' };
 const activityNames: Record<string, string> = { CREATED: '创建订单', ITEM_CHANGED: '修改商品', NOTE: '添加备注', PAYMENT_STATUS_CHANGED: '更新付款状态', ORDER_PRODUCTION_CHANGED: '更新整单制作', ORDER_FULFILLMENT_CHANGED: '更新交付状态', ORDER_CANCELLED: '取消订单', ORDER_INFORMATION_CHANGED: '修改订单信息', ITEM_ADDED: '添加商品', ITEM_REMOVED: '移除商品', IMAGE_ADDED: '添加参考图片', IMAGE_REMOVED: '移除参考图片', ORDER_EXPORTED: '导出订单' };
@@ -49,7 +50,7 @@ export function OrderHistory({ id, initialType }: { id: string; initialType?: st
   return <div className="history-page"><a className="back-link" href={`#/orders/${id}`}><ArrowLeft />返回订单详情</a>
     <div className="page-heading"><div><h1>订单记录</h1>{detail.data && <p className="muted">#{detail.data.orderNo}</p>}</div></div>
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
-    <section className="panel"><div className="history-toolbar"><label>记录类型<select value={type} onChange={event => setType(event.target.value)}><option value="">全部记录</option>{Object.entries(activityNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
+    <section className="panel"><div className="history-toolbar"><label>记录类型<Select label="记录类型" value={type} onChange={setType}><option value="">全部记录</option>{Object.entries(activityNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></label></div>
       <ActivityFeed id={id} type={type || undefined} items={detail.data?.items || []} />
     </section></div>;
 }
@@ -79,7 +80,7 @@ function OrderProgress({ order }: { order: Detail }) {
   })}</ol>;
 }
 
-export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: string; onEditDirtyChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void }) {
+export function OrderDetail({ id, returnToOrders = false, onEditDirtyChange, onWritingChange }: { id: string; returnToOrders?: boolean; onEditDirtyChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void }) {
   const client = useQueryClient();
   const detail = useQuery({ queryKey: ['order', id, 'detail'], queryFn: ({ signal }) => api<Detail>(`/orders/${id}`, { signal }) });
   const [note, setNote] = useState('');
@@ -135,7 +136,7 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
     onSettled: (_result, _error, _variables, context) => { if (context?.page === page.current) onWritingChange(false); },
   });
   if (detail.isPending) return <Loading />;
-  if (!detail.data) return <><a className="back-link" href="#"><ArrowLeft />返回工作台</a><ErrorNotice error={detail.error} retry={() => void detail.refetch()} /></>;
+  if (!detail.data) return <><a className="back-link" href={returnToOrders ? '#/admin/orders' : '#'}><ArrowLeft />{returnToOrders ? '返回查询结果' : '返回工作台'}</a><ErrorNotice error={detail.error} retry={() => void detail.refetch()} /></>;
   const order = detail.data;
   const removedDraft = editing?.kind === 'item' && editing.itemId && !order.items.some(item => item.itemId === editing.itemId) ? editing.order.items.find(item => item.itemId === editing.itemId) : undefined;
   const visibleItems = removedDraft ? [...order.items, removedDraft] : order.items;
@@ -149,7 +150,7 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
   const fulfillment = order.status === 'WAITING_DELIVERY' ? 'START_DELIVERY' : order.status === 'DELIVERING' ? 'COMPLETE_DELIVERY' : order.status === 'WAITING_PICKUP' ? 'CONFIRM_PICKUP' : null;
   const mutateAction = (action: string, path: string) => mutation.mutate({ path, body: { expectedVersion: order.version, action } });
   return <div className="detail-page">
-    <a className="back-link" href={`#/?date=${order.fulfillment.requestedReceiveDate}`} aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />返回 {order.fulfillment.requestedReceiveDate} 工作台</a>
+    <a className="back-link" href={returnToOrders ? '#/admin/orders' : `#/?date=${order.fulfillment.requestedReceiveDate}`} aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />{returnToOrders ? '返回查询结果' : `返回 ${order.fulfillment.requestedReceiveDate} 工作台`}</a>
     <div className="page-heading"><h1>订单 #{order.orderNo}</h1><div className="badges"><Status order={order} /><Payment status={order.paymentStatus} /></div></div>
     <SingleOrderExport orderId={id} orderNo={order.orderNo} blocked={blocked} onPendingChange={exportWritingChange} />
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
@@ -172,7 +173,7 @@ export function OrderDetail({ id, onEditDirtyChange, onWritingChange }: { id: st
     </section>
     <OrderImages key={id} order={order} blocked={mutation.isPending || Boolean(editing) || exportWriting} onDraftChange={imageDraftChange} onWritingChange={imageWritingChange} />
     <section className="panel" aria-label="订单备注"><div className="section-heading"><h2><NotePencil />备注</h2><a className="text-button" href={`#/orders/${id}/activities?type=NOTE`}>全部备注<ArrowRight /></a></div><form className="note-form" onSubmit={event => { event.preventDefault(); if (!blocked && note.trim() && (!itemId || order.items.some(item => item.itemId === itemId))) mutation.mutate({ path: 'notes', body: { itemId: itemId || null, content: note.trim() } }); }}>
-      <label>备注对象<select value={itemId} onChange={event => setItemId(event.target.value)} disabled={mutation.isPending}><option value="">整张订单</option>{order.items.map(item => <option key={item.itemId} value={item.itemId}>{item.name}</option>)}{itemId && !order.items.some(item => item.itemId === itemId) && <option value={itemId}>已移除的商品，请重新选择</option>}</select></label>
+      <label>备注对象<Select label="备注对象" value={itemId} onChange={setItemId} disabled={mutation.isPending}><option value="">整张订单</option>{order.items.map(item => <option key={item.itemId} value={item.itemId}>{item.name}</option>)}{itemId && !order.items.some(item => item.itemId === itemId) && <option value={itemId}>已移除的商品，请重新选择</option>}</Select></label>
       <label className="note-content">备注内容<textarea placeholder="记录客户的心意，或交接给下一位同事…" value={note} onChange={event => setNote(event.target.value)} required disabled={mutation.isPending} rows={3} /></label>
       <button className="primary" disabled={blocked || !note.trim() || Boolean(itemId && !order.items.some(item => item.itemId === itemId))}>发布备注<ArrowRight /></button>
     </form><ActivityFeed id={id} type="NOTE" items={order.items} preview /></section>

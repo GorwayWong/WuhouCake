@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { api, errorText } from './api';
 import { ProductTypeSelect } from './ProductTypeSelect';
+import { Select } from './Select';
 import type { OrderDraft } from './orderForm';
 import type { RecognitionAssist, RecognitionDraft, RecognitionField } from './types';
 import { RecognitionLifecycle, applyRecognition, candidateEdits, currentValue, pristineItem, recognitionLabels, recognitionLimit,
@@ -92,12 +93,13 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
     const target = itemId ? targets[itemId] || 'new' : undefined;
     const current = target === 'new' ? '' : currentValue(draft, field, target);
     const conflict = Boolean(value && current && value !== current);
-    const input = { id: 'recognition-' + key, value, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-      setEdits(values => ({ ...values, [key]: event.target.value })); setEditedFields(values => new Set([...values, key])); setErrors(values => { const next = { ...values }; delete next[key]; return next; });
-    } };
+    const editValue = (value: string) => {
+      setEdits(values => ({ ...values, [key]: value })); setEditedFields(values => new Set([...values, key])); setErrors(values => { const next = { ...values }; delete next[key]; return next; });
+    };
+    const input = { id: 'recognition-' + key, value, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => editValue(event.target.value) };
     return <div className="recognition-field" key={key}>
       <div className="recognition-field-title"><label htmlFor={input.id}>{recognitionLabels[field] || field}</label><span className={'recognition-source ' + (candidate.source || 'missing').toLowerCase()}>{editedFields.has(key) ? '人工修改 · 待采用' : candidate.source === 'DEFAULT' ? '系统默认 · 客户未明示' : candidate.source === 'MODEL' ? 'AI建议 · 待确认' : candidate.needsReview ? '规则候选 · 待确认' : candidate.value === null ? '待填写' : '规则识别'}</span></div>
-      <div className="recognition-value">{field === 'productType' ? <ProductTypeSelect {...input} /> : field === 'fulfillmentType' ? <select {...input}><option value="">待填写</option><option value="DELIVERY">配送</option><option value="PICKUP">自提</option></select> : ['address', 'requirements', 'message'].includes(field) ? <textarea {...input} rows={2} placeholder="待填写" /> : <input {...input} placeholder="待填写" inputMode={field.endsWith('Cents') ? 'decimal' : undefined} />}
+      <div className="recognition-value">{field === 'productType' ? <ProductTypeSelect {...input} onChange={editValue} /> : field === 'fulfillmentType' ? <Select label="交接方式" {...input} onChange={editValue}><option value="">待填写</option><option value="DELIVERY">配送</option><option value="PICKUP">自提</option></Select> : ['address', 'requirements', 'message'].includes(field) ? <textarea {...input} rows={2} placeholder="待填写" /> : <input {...input} placeholder="待填写" inputMode={field.endsWith('Cents') ? 'decimal' : undefined} />}
         <button type="button" className="secondary compact" disabled={busy || !value.trim() || target === 'choose'} onClick={() => apply({ field, candidate, itemId })}>{conflict ? '改用此值' : candidate.needsReview ? '确认采用' : '采用'}</button></div>
       {conflict && <p className="form-help">当前录单：{current}。仅点击“改用此值”才会替换此字段。</p>}
       {candidate.issues.map((issue, i) => <p className="field-error" key={i}>{issue}</p>)}{errors[key] && <p className="field-error" role="alert">{errors[key]}</p>}
@@ -133,9 +135,9 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
         <details className="recognition-group" open><summary>客户与交接</summary>{Object.entries(result.fields).map(([field, candidate]) => row(field, candidate))}</details>
         {result.items.map((item, i) => <details className="recognition-group" key={item.id} open><summary>商品候选 {i + 1}</summary>
           {item.fields.quantity?.value === null && <p className="form-help">原文未提供数量，请在下方填写并核对；不会从餐具人数推算数量。</p>}
-          <label>填入哪个商品<select value={targets[item.id] || 'new'} disabled={busy} onChange={event => setTargets(values => ({ ...values, [item.id]: event.target.value }))}>
+          <label>填入哪个商品<Select label="填入哪个商品" value={targets[item.id] || 'new'} disabled={busy} onChange={value => setTargets(values => ({ ...values, [item.id]: value }))}>
             <option value="choose">请选择，避免与手工商品串项</option><option value="new">作为新商品添加</option>{draft.items.map((existing, index) => <option key={existing.key} value={existing.key}>商品 {index + 1} · {existing.name || '尚未命名'}</option>)}
-          </select></label>{Object.entries(item.fields).map(([field, candidate]) => row(field, candidate, item.id))}</details>)}
+          </Select></label>{Object.entries(item.fields).map(([field, candidate]) => row(field, candidate, item.id))}</details>)}
         {result.unmappedText.length > 0 && <details className="recognition-evidence"><summary>未映射内容 · 请人工核对</summary>{result.unmappedText.map((line, i) => <p key={i}>{line}</p>)}</details>}
       </details>}
     </div>

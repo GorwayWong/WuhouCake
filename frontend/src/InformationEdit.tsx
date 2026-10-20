@@ -7,6 +7,8 @@ import { time } from './dates';
 import { ErrorNotice, money } from './ui';
 import { EmployeeSelect } from './EmployeeSelect';
 import { DateInput } from './DateInput';
+import { Select } from './Select';
+import { focusFormField } from './formFocus';
 
 export function InformationSummary({ order, includeAmount = false }: { order: Detail; includeAmount?: boolean }) {
   return <dl className="info-grid">
@@ -45,8 +47,7 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
     const result = informationRequest(initial, draft, baseline);
     setErrors(result.errors);
     if (Object.keys(result.errors).length) {
-      const first = form.current?.elements.namedItem(Object.keys(result.errors)[0]);
-      if (first instanceof HTMLElement) first.focus();
+      focusFormField(form.current, Object.keys(result.errors)[0]);
       return;
     }
     if (!result.request) { onCancel(); return; }
@@ -58,14 +59,14 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
   }}>
     <fieldset className="create-fields" disabled={busy}>
       <div className="information-group"><h3>客户信息</h3><div className="create-grid">
-        <Field name="creditedEmployeeId" label="下单员工（业绩归属）" error={errors.creditedEmployeeId}><EmployeeSelect id="edit-creditedEmployeeId" value={draft.creditedEmployeeId || ''} saved={initial.creditedEmployee} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
+        <Field name="creditedEmployeeId" label="下单员工（业绩归属）" error={errors.creditedEmployeeId}><EmployeeSelect name="creditedEmployeeId" disabled={busy} id="edit-creditedEmployeeId" value={draft.creditedEmployeeId || ''} saved={initial.creditedEmployee} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
         {([['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '客户订购人', 80]] as const).map(([name, label, maximum], index) => <Field key={name} name={name} label={label} error={errors[name]}><input {...props(name)} autoFocus={index === 0} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} maxLength={maximum} required={name === 'phone'} onChange={event => change({ ...draft, [name]: event.target.value })} /></Field>)}
       </div></div>
       <div className="information-group"><h3>配送／自提与交接时间</h3><div className="create-grid">
-        <Field name="fulfillmentType" label="交接方式" error={errors.fulfillmentType}><select {...props('fulfillmentType')} value={draft.fulfillmentType} onChange={event => change({ ...draft, fulfillmentType: event.target.value as typeof draft.fulfillmentType })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></select></Field>
-        <Field name="requestedReceiveDate" label="收货日期 *" error={errors.requestedReceiveDate}><DateInput {...props('requestedReceiveDate')} required value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} /></Field>
+        <Field name="fulfillmentType" label="交接方式" error={errors.fulfillmentType}><Select label="交接方式" disabled={busy} {...props('fulfillmentType')} value={draft.fulfillmentType} onChange={value => change({ ...draft, fulfillmentType: value as typeof draft.fulfillmentType })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></Select></Field>
+        <Field name="requestedReceiveDate" label="收货日期 *" error={errors.requestedReceiveDate}><DateInput label="收货日期" disabled={busy} {...props('requestedReceiveDate')} required value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} /></Field>
         <Field name="address" label={draft.fulfillmentType === 'DELIVERY' ? '配送地址 *' : '地址（自提可留空）'} error={errors.address} wide><textarea {...props('address')} rows={2} required={draft.fulfillmentType === 'DELIVERY'} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} /></Field>
-        {([['plannedHandoffAt', '取货时间 *'], ['plannedFinishAt', '计划出品时间']] as const).map(([name, label]) => <Field key={name} name={name} label={label} error={errors[name]}><DateInput {...props(name)} type="datetime-local" step={60} required={name === 'plannedHandoffAt'} value={draft[name]} onChange={value => change({ ...draft, [name]: value })} /></Field>)}
+        {([['plannedHandoffAt', '取货时间 *'], ['plannedFinishAt', '计划出品时间']] as const).map(([name, label]) => <Field key={name} name={name} label={label} error={errors[name]}><DateInput label={label.replace(' *', '')} disabled={busy} {...props(name)} type="datetime-local" required={name === 'plannedHandoffAt'} value={draft[name]} onChange={value => change({ ...draft, [name]: value })} /></Field>)}
       </div><p className="form-help">北京时间；取货指客户自提或配送员到店取走。</p></div>
       <div className="information-group"><h3>订单约定总金额</h3><div className="create-grid"><Field name="totalAmount" label="约定总金额（元）" error={errors.totalAmount}><input {...props('totalAmount')} inputMode="decimal" value={draft.totalAmount} placeholder="未填写" onChange={event => change({ ...draft, totalAmount: event.target.value })} /></Field></div><p className="form-help">留空为未报价，0 为零元；修改金额不改变付款状态。</p></div>
       <ErrorNotice error={error} />
