@@ -45,4 +45,6 @@ public interface IdentityFacade {
     EmployeeOption selectEmployee(UUID accountId);
     /** Returns an active front-desk/manager entry owner, or null; does not require a customer login. */
     EmployeeOption customerEntryOwner(UUID accountId);
+    /** Holds a shared owner lock until the caller's transaction completes; requires an existing transaction. */
+    EmployeeOption lockCustomerEntryOwner(UUID accountId);
 }

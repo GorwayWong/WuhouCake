@@ -5,6 +5,7 @@ import java.security.*;
 import java.time.Clock;
 import java.util.*;
 import org.springframework.transaction.annotation.Transactional;
+import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 import org.xaspire.WuhouCake.order.api.command.*;
 import org.xaspire.WuhouCake.order.api.dto.SubmissionViews;
@@ -18,29 +19,44 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 public class CustomerSubmissionService {
     private final CustomerSubmissions submissions; private final IdentityFacade identity; private final OrderService orders;
     private final JsonCodec json; private final Clock clock; private final String publicOrigin;
-    public CustomerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders, JsonCodec json, Clock clock, String publicOrigin) {
+    private final AuditFacade audit;
+    public CustomerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders, JsonCodec json, Clock clock, String publicOrigin, AuditFacade audit) {
         this.submissions = submissions; this.identity = identity; this.orders = orders; this.json = json; this.clock = clock;
+        this.audit = audit;
         this.publicOrigin = publicOrigin.replaceAll("/+$", "");
     }
     @Transactional(readOnly = true) public SubmissionViews.Entry entry(UUID ownerId) {
         var me = staff(); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
         return entryView(submissions.entryForOwner(owner));
     }
-    @Transactional public SubmissionViews.Entry changeEntry(UUID ownerId, String action) {
+    @Transactional public SubmissionViews.Entry changeEntry(UUID ownerId, String action, String requestId) {
         var me = staff(); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
         var employee = identity.selectEmployee(owner); var old = submissions.entryForOwner(owner);
         if (action == null || !Set.of("CREATE", "RESET", "ENABLE", "DISABLE").contains(action)) throw invalid();
         if (old == null && (!owner.equals(me.accountId()) || !"CREATE".equals(action))) throw invalid();
         if (old != null && "CREATE".equals(action)) return entryView(old);
         String token = old == null || "RESET".equals(action) ? randomToken() : old.token();
-        return entryView(submissions.saveEntry(owner, employee.nickname(), token, !"DISABLE".equals(action)));
+        boolean enabled = switch (action) {
+            case "CREATE", "ENABLE" -> true;
+            case "DISABLE" -> false;
+            default -> old.enabled();
+        };
+        if (old != null && old.enabled() == enabled && old.token().equals(token) && old.ownerName().equals(employee.nickname())) return entryView(old);
+        var saved = submissions.saveEntry(owner, employee.nickname(), token, enabled);
+        var details = new LinkedHashMap<String, String>();
+        details.put("ownerId", owner.toString()); details.put("ownerEmployeeNumber", employee.employeeNumber()); details.put("ownerName", employee.nickname());
+        details.put("before.exists", Boolean.toString(old != null)); details.put("before.enabled", old == null ? "" : Boolean.toString(old.enabled()));
+        details.put("after.enabled", Boolean.toString(enabled)); details.put("tokenRotated", Boolean.toString(old != null && !old.token().equals(token)));
+        String event = switch (action) { case "CREATE" -> "created"; case "ENABLE" -> "enabled"; case "DISABLE" -> "disabled"; default -> "reset"; };
+        audit.appendChange(new AuditFacade.Command(clock.instant(), "order.entry_" + event, "SUCCESS", me.accountId(), me.employeeNumber(), me.nickname(), saved.id().toString(), requestId, details));
+        return entryView(saved);
     }
-    @Transactional public SubmissionViews.PublicEntry publicEntry(String token) {
-        return new SubmissionViews.PublicEntry(validEntry(token).ownerName());
+    @Transactional(readOnly = true) public SubmissionViews.PublicEntry publicEntry(String token) {
+        return new SubmissionViews.PublicEntry(validEntry(token, false).ownerName());
     }
     @Transactional public SubmissionViews.Receipt submit(String token, UUID requestId, SubmissionCommands.Content command) {
         if (requestId == null || command == null) throw invalid();
-        var entry = validEntry(token); var content = convert(command, CustomerSubmission.Content.class);
+        var entry = validEntry(token, true); var content = convert(command, CustomerSubmission.Content.class);
         var submission = submissions.submit(entry, requestId, fingerprint(content), content, clock.instant());
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
@@ -85,7 +101,7 @@ public class CustomerSubmissionService {
             items.add(new OrderCommands.Item(item.name(), item.productType(), item.quantity(), price.unitPriceCents(), price.memberPriceCents(), new LinkedHashMap<>(item.attributes())));
         }
         var create = new OrderCommands.Create(new OrderCommands.Customer(null, content.phone(), content.memberPhone(), null),
-                new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), null),
+                new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), null, content.requestedReceiveAt()),
                 items, review.totalAmountCents(), review.creditedEmployeeId());
         var order = orders.createCustomer(create, new OrderCommands.Operator(me.accountId(), me.nickname()), id);
         submissions.update(submission, review, "CONFIRMED", order.orderId(), clock.instant());
@@ -104,12 +120,13 @@ public class CustomerSubmissionService {
         return submission == null ? null : new SubmissionViews.Origin(submission.id(), "CUSTOMER_SUBMITTED", submission.ownerId(), submission.ownerName(),
                 submission.createdAt(), submission.original().requestedReceiveAt());
     }
-    private CustomerSubmissions.Entry validEntry(String token) {
+    private CustomerSubmissions.Entry validEntry(String token, boolean forSubmission) {
         if (token == null || !token.matches("[A-Za-z0-9_-]{43}")) throw new OrderFailure("ENTRY_UNAVAILABLE");
         var entry = submissions.entryByToken(token);
         if (entry == null || !entry.enabled()) throw new OrderFailure("ENTRY_UNAVAILABLE");
-        if (identity.customerEntryOwner(entry.ownerId()) == null) throw new OrderFailure("ENTRY_UNAVAILABLE");
-        entry = submissions.lockEntry(token);
+        var owner = forSubmission ? identity.lockCustomerEntryOwner(entry.ownerId()) : identity.customerEntryOwner(entry.ownerId());
+        if (owner == null) throw new OrderFailure("ENTRY_UNAVAILABLE");
+        if (forSubmission) entry = submissions.lockEntry(token);
         if (entry == null || !entry.enabled()) throw new OrderFailure("ENTRY_UNAVAILABLE");
         return entry;
     }

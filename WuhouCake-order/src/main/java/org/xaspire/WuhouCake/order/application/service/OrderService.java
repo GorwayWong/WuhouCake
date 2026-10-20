@@ -52,7 +52,7 @@ public class OrderService {
         FulfillmentType type;
         try { type = FulfillmentType.valueOf(fulfillment.type()); }
         catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
-        var plan = new FulfillmentPlan(type, fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt());
+        var plan = new FulfillmentPlan(type, fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt());
         var items = command.items().stream().map(item -> {
             if (item == null) throw invalid();
             return OrderItem.create(ids.nextId(), item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
@@ -227,7 +227,7 @@ public class OrderService {
         var customer = order.customer(); var fulfillment = order.fulfillment();
         return new OrderViews.Detail(order.id(), order.orderNo(), order.version(), order.status(), order.paymentStatus(), order.currentStageCode(),
                 new OrderCommands.Customer(customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName()),
-                new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt()),
+                new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt()),
                 order.totalAmountCents(), order.createdBy(), order.createdAt(), order.confirmedAt(), order.updatedAt(), items,
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
                         order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()));

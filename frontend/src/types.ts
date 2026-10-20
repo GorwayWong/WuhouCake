@@ -3,7 +3,7 @@ export interface Account { accountId: string; employeeNumber: string; nickname: 
 export interface EmployeeOption { accountId: string; employeeNumber: string; nickname: string; status: string }
 export interface EmployeeAccount extends Account { status: string; version: number; passwordChangeRequired: boolean; createdAt: string }
 export interface Customer { customerName: string | null; phone: string; memberPhone: string | null; buyerName: string | null }
-export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; plannedHandoffAt: string; plannedFinishAt: string | null }
+export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; requestedReceiveAt?: string | null; plannedHandoffAt: string; plannedFinishAt: string | null }
 export interface Note { id: number; itemId: string | null; actorNameSnapshot: string; createdAt: string; content: string }
 export interface Activity extends Note { orderId: string; type: string; details: Record<string, unknown> }
 export interface OrderImage {

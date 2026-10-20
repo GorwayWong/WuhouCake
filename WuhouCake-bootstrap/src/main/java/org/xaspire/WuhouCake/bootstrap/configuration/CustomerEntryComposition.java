@@ -26,8 +26,8 @@ public class CustomerEntryComposition {
     }
     @Bean CustomerSubmissions customerSubmissions(CustomerSubmissionMapper mapper, JsonCodec json) { return new PostgresCustomerSubmissions(mapper, json); }
     @Bean CustomerSubmissionService customerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders,
-            JsonCodec json, Clock clock, CustomerEntryProperties properties) {
-        return new CustomerSubmissionService(submissions, identity, orders, json, clock, properties.publicOrigin());
+            JsonCodec json, Clock clock, CustomerEntryProperties properties, org.xaspire.WuhouCake.audit.api.facade.AuditFacade audit) {
+        return new CustomerSubmissionService(submissions, identity, orders, json, clock, properties.publicOrigin(), audit);
     }
     @Bean @org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication
     FilterRegistrationBean<CustomerEntryProtection> customerEntryProtection(StringRedisTemplate redis, CustomerEntryProperties properties,

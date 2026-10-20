@@ -606,6 +606,7 @@ class OrderIT {
             var changes = new LinkedHashMap<String, Object>();
             changes.put("customerName", "更正客户"); changes.put("phone", "13900000000"); changes.put("memberPhone", "13700000000");
             changes.put("buyerName", "下单人"); changes.put("address", "新配送地址"); changes.put("requestedReceiveDate", "2026-10-17");
+            changes.put("requestedReceiveAt", "2026-10-17T19:00:00+08:00");
             changes.put("plannedHandoffAt", "2026-10-17T12:00:00+08:00"); changes.put("plannedFinishAt", "2026-10-17T11:00:00+08:00");
             changes.put("totalAmountCents", 28000);
             var corrected = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 3, "changes", changes));
@@ -823,7 +824,7 @@ class OrderIT {
         assertTrue(orderIds(query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01")).contains(id));
         assertFalse(orderIds(query(staff, "/api/orders/calendar?from=2026-10-02&to=2026-10-03")).contains(id));
         var moved = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1,
-                "changes", Map.of("requestedReceiveDate", "2026-10-02")));
+                "changes", Map.of("requestedReceiveDate", "2026-10-02", "requestedReceiveAt", "2026-10-02T18:00:00+08:00")));
         assertEquals(200, moved.status);
         assertFalse(orderIds(query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01")).contains(id));
         assertEquals(List.of(id), orderIds(query(staff, "/api/orders/calendar?from=2026-10-02&to=2026-10-03")));

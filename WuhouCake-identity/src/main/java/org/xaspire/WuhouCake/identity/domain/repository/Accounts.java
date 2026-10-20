@@ -13,6 +13,7 @@ public interface Accounts {
     Optional<EmployeeAccount> find(UUID id);
     Optional<EmployeeAccount> findByNumber(String number);
     Optional<EmployeeAccount> lock(UUID id);
+    Optional<EmployeeAccount> lockShared(UUID id);
     void lockAdministratorLifecycle();
     long activeAdministrators();
     long administrators();

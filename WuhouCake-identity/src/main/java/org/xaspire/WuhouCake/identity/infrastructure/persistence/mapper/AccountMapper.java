@@ -22,6 +22,7 @@ public interface AccountMapper {
     @Select("SELECT " + COLUMNS + " FROM identity_account WHERE id=CAST(#{id} AS uuid)") Row find(String id);
     @Select("SELECT " + COLUMNS + " FROM identity_account WHERE employee_number=#{number}") Row byNumber(String number);
     @Select("SELECT " + COLUMNS + " FROM identity_account WHERE id=CAST(#{id} AS uuid) FOR UPDATE") Row lock(String id);
+    @Select("SELECT " + COLUMNS + " FROM identity_account WHERE id=CAST(#{id} AS uuid) FOR SHARE") Row lockShared(String id);
     @Select("SELECT TRUE FROM (SELECT pg_advisory_xact_lock(711001)) AS lifecycle_lock") boolean lockAdministrators();
     @Select("SELECT count(*) FROM identity_account WHERE system_role='SUPER_ADMIN' AND status='ACTIVE'") long activeAdministrators();
     @Select("SELECT count(*) FROM identity_account WHERE system_role='SUPER_ADMIN'") long administrators();

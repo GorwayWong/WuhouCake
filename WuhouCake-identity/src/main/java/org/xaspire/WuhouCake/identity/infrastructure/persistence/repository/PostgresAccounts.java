@@ -17,6 +17,7 @@ public final class PostgresAccounts implements Accounts {
     @Override public Optional<EmployeeAccount> find(UUID id) { return Optional.ofNullable(mapper.find(id.toString())).map(this::account); }
     @Override public Optional<EmployeeAccount> findByNumber(String number) { return Optional.ofNullable(mapper.byNumber(number)).map(this::account); }
     @Override public Optional<EmployeeAccount> lock(UUID id) { return Optional.ofNullable(mapper.lock(id.toString())).map(this::account); }
+    @Override public Optional<EmployeeAccount> lockShared(UUID id) { return Optional.ofNullable(mapper.lockShared(id.toString())).map(this::account); }
     @Override public void lockAdministratorLifecycle() { mapper.lockAdministrators(); }
     @Override public long activeAdministrators() { return mapper.activeAdministrators(); }
     @Override public long administrators() { return mapper.administrators(); }

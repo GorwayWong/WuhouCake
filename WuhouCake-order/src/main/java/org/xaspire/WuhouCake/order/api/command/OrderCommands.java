@@ -11,7 +11,11 @@ public final class OrderCommands {
 
     public record Customer(String customerName, @NotBlank String phone, String memberPhone, String buyerName) { }
     public record Fulfillment(@NotNull String type, String address, @NotNull LocalDate requestedReceiveDate,
-            @NotNull Instant plannedHandoffAt, Instant plannedFinishAt) { }
+            @NotNull Instant plannedHandoffAt, Instant plannedFinishAt, Instant requestedReceiveAt) {
+        public Fulfillment(String type, String address, LocalDate requestedReceiveDate, Instant plannedHandoffAt, Instant plannedFinishAt) {
+            this(type, address, requestedReceiveDate, plannedHandoffAt, plannedFinishAt, null);
+        }
+    }
     public record Item(@NotBlank String name, String productType, @NotNull Number quantity,
             Number unitPriceCents, Number memberPriceCents, Map<String, Object> attributes) { }
     public record Create(@NotNull @Valid Customer customer, @NotNull @Valid Fulfillment fulfillment,

@@ -30,5 +30,7 @@ public class CustomerSubmissionController {
         return ApiResponse.success(service.entry(ownerId));
     }
     @PostMapping("/entry") public ApiResponse<SubmissionViews.Entry> changeEntry(@RequestParam(required = false) UUID ownerId,
-            @RequestBody SubmissionCommands.EntryChange command) { return ApiResponse.success(service.changeEntry(ownerId, command.action())); }
+            @RequestBody SubmissionCommands.EntryChange command, @RequestAttribute(value = "wuhoucake.requestId", required = false) String requestId) {
+        return ApiResponse.success(service.changeEntry(ownerId, command.action(), requestId));
+    }
 }

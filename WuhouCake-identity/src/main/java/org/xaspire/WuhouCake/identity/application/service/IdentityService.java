@@ -222,9 +222,15 @@ public class IdentityService implements IdentityFacade {
         if (employee.status() != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
         return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
     }
-    @Override @Transactional
+    @Override @Transactional(readOnly = true)
     public EmployeeOption customerEntryOwner(UUID id) {
-        var employee = accounts.lock(id).orElse(null);
+        return entryOwner(accounts.find(id).orElse(null));
+    }
+    @Override @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public EmployeeOption lockCustomerEntryOwner(UUID id) {
+        return entryOwner(accounts.lockShared(id).orElse(null));
+    }
+    private static EmployeeOption entryOwner(EmployeeAccount employee) {
         if (employee == null || employee.status() != Status.ACTIVE || employee.jobRoles().stream().noneMatch(role -> role.name().equals("FRONT_DESK") || role.name().equals("MANAGER"))) return null;
         return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
     }
