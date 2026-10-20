@@ -19,12 +19,17 @@ public final class OrderValues {
         }
     }
     public record FulfillmentPlan(FulfillmentType type, String address, LocalDate requestedReceiveDate,
-            Instant plannedHandoffAt, Instant plannedFinishAt) {
+            Instant plannedHandoffAt, Instant plannedFinishAt, Instant requestedReceiveAt) {
+        public FulfillmentPlan(FulfillmentType type, String address, LocalDate requestedReceiveDate, Instant plannedHandoffAt, Instant plannedFinishAt) {
+            this(type, address, requestedReceiveDate, plannedHandoffAt, plannedFinishAt, null);
+        }
         public FulfillmentPlan {
             if (type == null || requestedReceiveDate == null || plannedHandoffAt == null) throw invalid();
+            if (requestedReceiveAt != null && !requestedReceiveDate.equals(receiveDate(requestedReceiveAt))) throw invalid();
             address = type == FulfillmentType.DELIVERY ? requiredText(address, Integer.MAX_VALUE) : optionalText(address, Integer.MAX_VALUE);
         }
     }
+    public static LocalDate receiveDate(Instant value) { return value.atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate(); }
     public record Actor(UUID accountId, String nickname) {
         public Actor {
             if (accountId == null) throw invalid();

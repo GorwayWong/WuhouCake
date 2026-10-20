@@ -321,10 +321,37 @@ class OrderTest {
             if (state.equals("COMPLETED")) order.applyFulfillmentAction("COMPLETE_DELIVERY", NOW);
             if (state.equals("CANCELLED")) order.cancel("取消", NOW);
             var items = order.activeItems(); var stage = order.currentStageCode(); var version = order.version();
-            order.reviseInformation(Map.of("phone", "13900000000", "address", "更正地址", "requestedReceiveDate", "2026-10-18", "totalAmountCents", 0), NOW.plusSeconds(1));
+            order.reviseInformation(Map.of("phone", "13900000000", "address", "更正地址", "requestedReceiveDate", "2026-10-18", "requestedReceiveAt", "2026-10-18T19:00:00+08:00", "totalAmountCents", 0), NOW.plusSeconds(1));
             assertEquals(state, order.status()); assertEquals(stage, order.currentStageCode()); assertEquals(items, order.activeItems());
             assertEquals(version + 1, order.version()); assertEquals(0L, order.totalAmountCents());
         }
+    }
+    @Test void requestedReceiveTimeOwnsCalendarDateAndChangesAreAudited() {
+        var order = order(FulfillmentType.DELIVERY, item("A", Map.of()));
+        var details = order.reviseInformation(Map.of("requestedReceiveAt", "2026-10-18T00:30:00+08:00"), NOW.plusSeconds(1));
+        assertEquals(LocalDate.of(2026, 10, 18), order.fulfillment().requestedReceiveDate());
+        assertEquals(Instant.parse("2026-10-17T16:30:00Z"), order.fulfillment().requestedReceiveAt());
+        assertNull(((Map<?, ?>) details.get("before")).get("requestedReceiveAt"));
+        assertEquals("2026-10-18", ((Map<?, ?>) details.get("after")).get("requestedReceiveDate"));
+        assertTrue(order.reviseInformation(Map.of("requestedReceiveAt", "2026-10-17T16:30:00Z"), NOW.plusSeconds(2)).isEmpty());
+        assertEquals(1, order.version());
+    }
+    @Test void reschedulingRequiresFullTimeAndCannotClearOrConflictWithDate() {
+        var order = order(FulfillmentType.DELIVERY, item("A", Map.of()));
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-18"), NOW));
+        order.reviseInformation(Map.of("requestedReceiveAt", "2026-10-18T19:00:00+08:00"), NOW);
+        var plan = order.fulfillment();
+        var clear = new LinkedHashMap<String, Object>(); clear.put("requestedReceiveAt", null);
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(clear, NOW));
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-19"), NOW));
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-19", "requestedReceiveAt", "2026-10-18T20:00:00+08:00"), NOW));
+        assertEquals(plan, order.fulfillment()); assertEquals(1, order.version());
+    }
+    @Test void legacyDateOnlyOrdersAllowUnrelatedEditsAndCreationRejectsMismatchedFullTime() {
+        var order = order(FulfillmentType.PICKUP, item("A", Map.of()));
+        order.reviseInformation(Map.of("phone", "13900000000"), NOW);
+        assertNull(order.fulfillment().requestedReceiveAt());
+        assertThrows(OrderFailure.class, () -> new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 18), NOW, null, Instant.parse("2026-10-18T16:30:00Z")));
     }
     @Test void invalidInformationIsRejectedWithoutPartialMutationAndEquivalentTimesAreNoops() {
         var order = order(FulfillmentType.DELIVERY, item("A", Map.of())); var customer = order.customer(); var plan = order.fulfillment();

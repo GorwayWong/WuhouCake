@@ -54,16 +54,15 @@ public class IdentityService implements IdentityFacade {
     @Override public Login login(String number, String password, String requestId) {
         number = AccountValues.employeeNumber(number);
         if (password == null || password.codePointCount(0, password.length()) > 128) throw new IdentityFailure("VALIDATION_FAILED");
-        try {
-            attempts.check(number);
+        try (var attempt = attempts.begin(number)) {
             var found = accounts.findByNumber(number);
             boolean matched = credentials.matches(password, found.map(EmployeeAccount::passwordHash).orElse(dummyHash));
             if (!matched || found.isEmpty() || found.get().status() != Status.ACTIVE) {
-                attempts.failed(number);
+                attempt.failed();
                 throw new IdentityFailure("AUTHENTICATION_FAILED");
             }
             var account = found.get();
-            attempts.clear(number);
+            attempt.succeeded();
             String secret = credentials.secret();
             var session = new LoginSession(ids.nextId(), account.id(), account.credentialVersion(), credentials.digest(secret), clock.instant().plus(sessionLifetime));
             sessions.save(session);
@@ -220,6 +219,18 @@ public class IdentityService implements IdentityFacade {
         if (actor.passwordChangeRequired()) throw new IdentityFailure("PASSWORD_CHANGE_REQUIRED");
         var employee = accounts.lock(id).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
         if (employee.status() != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
+        return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
+    }
+    @Override @Transactional(readOnly = true)
+    public EmployeeOption customerEntryOwner(UUID id) {
+        return entryOwner(accounts.find(id).orElse(null));
+    }
+    @Override @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public EmployeeOption lockCustomerEntryOwner(UUID id) {
+        return entryOwner(accounts.lockShared(id).orElse(null));
+    }
+    private static EmployeeOption entryOwner(EmployeeAccount employee) {
+        if (employee == null || employee.status() != Status.ACTIVE || employee.jobRoles().stream().noneMatch(role -> role.name().equals("FRONT_DESK") || role.name().equals("MANAGER"))) return null;
         return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
     }
     @Transactional

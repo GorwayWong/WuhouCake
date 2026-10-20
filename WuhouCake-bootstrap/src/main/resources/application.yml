@@ -55,6 +55,12 @@ springdoc:
     enabled: false
 
 wuhoucake:
+  customer-entry:
+    public-origin: ${CUSTOMER_ENTRY_PUBLIC_ORIGIN:http://localhost:5173}
+    per-minute: ${CUSTOMER_ENTRY_PER_MINUTE:10}
+    per-hour: ${CUSTOMER_ENTRY_PER_HOUR:100}
+    max-body-bytes: ${CUSTOMER_ENTRY_MAX_BODY_BYTES:131072}
+    trusted-proxies: ${CUSTOMER_ENTRY_TRUSTED_PROXIES:}
   order-recognition:
     assist:
       enabled: ${RECOGNITION_ASSIST_ENABLED:false}

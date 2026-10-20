@@ -3,7 +3,7 @@ export interface Account { accountId: string; employeeNumber: string; nickname: 
 export interface EmployeeOption { accountId: string; employeeNumber: string; nickname: string; status: string }
 export interface EmployeeAccount extends Account { status: string; version: number; passwordChangeRequired: boolean; createdAt: string }
 export interface Customer { customerName: string | null; phone: string; memberPhone: string | null; buyerName: string | null }
-export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; plannedHandoffAt: string; plannedFinishAt: string | null }
+export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; requestedReceiveAt?: string | null; plannedHandoffAt: string; plannedFinishAt: string | null }
 export interface Note { id: number; itemId: string | null; actorNameSnapshot: string; createdAt: string; content: string }
 export interface Activity extends Note { orderId: string; type: string; details: Record<string, unknown> }
 export interface OrderImage {
@@ -23,7 +23,7 @@ export interface CalendarOrder extends OrderStatus {
   plannedHandoffAt: string; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
 }
 export interface PendingOrder extends CalendarOrder { customer: Customer; address: string | null; plannedFinishAt: string | null; items: Item[] }
-export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number }; pendingOrders: PendingOrder[] }
+export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number } | null; pendingOrders: PendingOrder[] }
 export interface Detail extends OrderStatus {
   createdBy?: string; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
   orderId: string; orderNo: string; version: number; customer: Customer; fulfillment: Fulfillment;

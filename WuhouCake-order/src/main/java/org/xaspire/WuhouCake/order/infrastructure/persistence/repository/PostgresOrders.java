@@ -25,7 +25,7 @@ public final class PostgresOrders implements Orders {
         var items = mapper.items(id.toString()).stream().map(this::item).toList();
         return Optional.of(new Order(id, row.orderNo(), row.version(), row.status(), row.paymentStatus(), row.currentStageCode(),
                 new CustomerContact(row.customerName(), row.customerPhone(), row.memberPhone(), row.buyerName()),
-                new FulfillmentPlan(FulfillmentType.valueOf(row.fulfillmentType()), row.deliveryAddress(), row.requestedReceiveDate(), row.plannedHandoffAt(), row.plannedFinishAt()),
+                new FulfillmentPlan(FulfillmentType.valueOf(row.fulfillmentType()), row.deliveryAddress(), row.requestedReceiveDate(), row.plannedHandoffAt(), row.plannedFinishAt(), row.requestedReceiveAt()),
                 row.totalAmountCents(), UUID.fromString(row.createdBy()), row.createdAt(), row.confirmedAt(), row.updatedAt(), items,
                 row.creditedEmployeeId() == null ? null : new Attribution(UUID.fromString(row.creditedEmployeeId()), row.creditedEmployeeNumber(), row.creditedEmployeeName())));
     }
@@ -71,7 +71,7 @@ public final class PostgresOrders implements Orders {
                 order.createdBy().toString(), order.createdAt(), order.confirmedAt(), order.updatedAt(),
                 order.creditedEmployee() == null ? null : order.creditedEmployee().accountId().toString(),
                 order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber(),
-                order.creditedEmployee() == null ? null : order.creditedEmployee().nickname());
+                order.creditedEmployee() == null ? null : order.creditedEmployee().nickname(), fulfillment.requestedReceiveAt());
     }
     private OrderMapper.ItemRow row(UUID orderId, OrderItem item) {
         return new OrderMapper.ItemRow(item.itemId().toString(), orderId.toString(), item.name(), item.productType(), item.quantity(),

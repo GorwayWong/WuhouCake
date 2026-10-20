@@ -16,6 +16,7 @@ export function InformationSummary({ order, includeAmount = false }: { order: De
     <div><dt>客户姓名</dt><dd>{order.customer.customerName || '未填写'}</dd></div><div><dt>联系电话</dt><dd><a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a></dd></div>
     <div><dt>会员手机</dt><dd>{order.customer.memberPhone || '未填写'}</dd></div><div><dt>客户订购人</dt><dd>{order.customer.buyerName || '未填写'}</dd></div>
     <div><dt>收货日期</dt><dd>{order.fulfillment.requestedReceiveDate}</dd></div><div><dt>取货时间</dt><dd>{time(order.fulfillment.plannedHandoffAt, true)}</dd></div>
+    <div><dt>当前期望收货时间</dt><dd>{order.fulfillment.requestedReceiveAt ? time(order.fulfillment.requestedReceiveAt, true) : '具体时刻未填写'}</dd></div>
     <div><dt>计划出品</dt><dd>{time(order.fulfillment.plannedFinishAt, true)}</dd></div><div><dt>下单时间</dt><dd>{time(order.createdAt, true)}</dd></div>
     <div className="wide"><dt>{order.fulfillment.type === 'PICKUP' ? '自提安排' : '配送地址'}</dt><dd>{order.fulfillment.type === 'PICKUP' ? `门店自提${order.fulfillment.address ? ` · ${order.fulfillment.address}` : ''}` : order.fulfillment.address}</dd></div>
     {includeAmount && <div><dt>订单约定总金额</dt><dd>{money(order.totalAmountCents)}</dd></div>}
@@ -64,7 +65,7 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
       </div></div>
       <div className="information-group"><h3>配送／自提与交接时间</h3><div className="create-grid">
         <Field name="fulfillmentType" label="交接方式" error={errors.fulfillmentType}><Select label="交接方式" disabled={busy} {...props('fulfillmentType')} value={draft.fulfillmentType} onChange={value => change({ ...draft, fulfillmentType: value as typeof draft.fulfillmentType })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></Select></Field>
-        <Field name="requestedReceiveDate" label="收货日期 *" error={errors.requestedReceiveDate}><DateInput label="收货日期" disabled={busy} {...props('requestedReceiveDate')} required value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} /></Field>
+        <Field name="requestedReceiveAt" label="期望收货日期和时刻" error={errors.requestedReceiveAt} wide><DateInput label="期望收货时间" disabled={busy} {...props('requestedReceiveAt')} type="datetime-local" resetTimeOnDateChange value={draft.requestedReceiveAt} onChange={(value, parts) => change({ ...draft, requestedReceiveAt: value, requestedReceiveDate: parts?.date || draft.requestedReceiveDate })} /><span className="form-help">日历收货日期：{draft.requestedReceiveDate}。改期后请重新填写时刻；历史未填写的具体时刻不会自动推算。</span></Field>
         <Field name="address" label={draft.fulfillmentType === 'DELIVERY' ? '配送地址 *' : '地址（自提可留空）'} error={errors.address} wide><textarea {...props('address')} rows={2} required={draft.fulfillmentType === 'DELIVERY'} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} /></Field>
         {([['plannedHandoffAt', '取货时间 *'], ['plannedFinishAt', '计划出品时间']] as const).map(([name, label]) => <Field key={name} name={name} label={label} error={errors[name]}><DateInput label={label.replace(' *', '')} disabled={busy} {...props(name)} type="datetime-local" required={name === 'plannedHandoffAt'} value={draft[name]} onChange={value => change({ ...draft, [name]: value })} /></Field>)}
       </div><p className="form-help">北京时间；取货指客户自提或配送员到店取走。</p></div>

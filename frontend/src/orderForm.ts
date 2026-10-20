@@ -159,7 +159,7 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
   return { request: Object.keys(errors).length ? null : request, errors };
 }
 
-export type InformationDraft = Omit<OrderDraft, 'items'>;
+export type InformationDraft = Omit<OrderDraft, 'items'> & { requestedReceiveAt: string };
 function localStoreTime(value: string | null): string {
   if (!value) return '';
   const parts = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value));
@@ -170,6 +170,7 @@ export function informationDraft(order: Detail): InformationDraft {
   const cents = order.totalAmountCents == null ? null : BigInt(order.totalAmountCents);
   return { customerName: order.customer.customerName || '', phone: order.customer.phone, memberPhone: order.customer.memberPhone || '', buyerName: order.customer.buyerName || '',
     fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: order.fulfillment.requestedReceiveDate,
+    requestedReceiveAt: localStoreTime(order.fulfillment.requestedReceiveAt || null),
     plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt),
     totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`, creditedEmployeeId: order.creditedEmployee?.accountId || '' };
 }
@@ -191,9 +192,15 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   }
   if (!['DELIVERY', 'PICKUP'].includes(draft.fulfillmentType)) errors.fulfillmentType = '请选择配送或自提。';
   else if (draft.fulfillmentType !== initial.fulfillmentType && draft.fulfillmentType !== current.fulfillmentType) changes.fulfillmentType = draft.fulfillmentType;
-  if (draft.requestedReceiveDate !== initial.requestedReceiveDate && draft.requestedReceiveDate !== current.requestedReceiveDate) {
-    if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的收货日期。';
-    else changes.requestedReceiveDate = draft.requestedReceiveDate;
+  const receiveDateChanged = draft.requestedReceiveDate !== initial.requestedReceiveDate && draft.requestedReceiveDate !== current.requestedReceiveDate;
+  const receiveTimeChanged = draft.requestedReceiveAt !== initial.requestedReceiveAt && draft.requestedReceiveAt !== current.requestedReceiveAt;
+  if (receiveTimeChanged) {
+    try {
+      changes.requestedReceiveAt = storeTime(draft.requestedReceiveAt);
+      if (receiveDateChanged && draft.requestedReceiveDate !== draft.requestedReceiveAt.slice(0, 10)) errors.requestedReceiveAt = '收货日期与期望收货时间不一致。';
+    } catch (error) { errors.requestedReceiveAt = (error as Error).message; }
+  } else if (receiveDateChanged) {
+    errors.requestedReceiveAt = '改期时请明确完整的期望收货日期和时刻。';
   }
   for (const field of ['plannedHandoffAt', 'plannedFinishAt'] as const) {
     // 未改动的分钟输入不回写，保留服务端秒与微秒精度。

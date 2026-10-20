@@ -120,7 +120,7 @@ public final class Order {
     }
     public Map<String, Object> reviseInformation(Map<String, Object> changes, Instant now, Attribution employee) {
         var fields = Set.of("customerName", "phone", "memberPhone", "buyerName", "fulfillmentType", "address", "requestedReceiveDate",
-                "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "creditedEmployeeId");
+                "requestedReceiveAt", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "creditedEmployeeId");
         if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !fields.contains(key))) throw invalid();
         var previous = informationValues(customer, fulfillment, totalAmountCents);
         previous.put("creditedEmployeeId", creditedEmployee == null ? null : creditedEmployee.accountId().toString());
@@ -129,9 +129,17 @@ public final class Order {
         FulfillmentType type;
         try { type = FulfillmentType.valueOf(text(merged.get("fulfillmentType"))); }
         catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
-        var plan = new FulfillmentPlan(type, text(merged.get("address")), date(merged.get("requestedReceiveDate")),
+        var requestedDate = date(merged.get("requestedReceiveDate"));
+        var requestedAt = changes.containsKey("requestedReceiveAt") ? instant(changes.get("requestedReceiveAt")) : fulfillment.requestedReceiveAt();
+        if (changes.containsKey("requestedReceiveAt") && requestedAt == null && fulfillment.requestedReceiveAt() != null) throw invalid();
+        if (changes.containsKey("requestedReceiveAt") && requestedAt != null) {
+            var derivedDate = receiveDate(requestedAt);
+            if (changes.containsKey("requestedReceiveDate") && !derivedDate.equals(requestedDate)) throw invalid();
+            requestedDate = derivedDate;
+        } else if (!Objects.equals(requestedDate, fulfillment.requestedReceiveDate())) throw invalid();
+        var plan = new FulfillmentPlan(type, text(merged.get("address")), requestedDate,
                 changes.containsKey("plannedHandoffAt") ? instant(changes.get("plannedHandoffAt")) : fulfillment.plannedHandoffAt(),
-                changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt());
+                changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt(), requestedAt);
         var total = money(merged.get("totalAmountCents"));
         var nextStatus = status;
         if (type != fulfillment.type() && Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(status))
@@ -159,6 +167,7 @@ public final class Order {
         values.put("memberPhone", customer.memberPhone()); values.put("buyerName", customer.buyerName());
         values.put("fulfillmentType", fulfillment.type().name());
         values.put("address", fulfillment.address()); values.put("requestedReceiveDate", fulfillment.requestedReceiveDate().toString());
+        values.put("requestedReceiveAt", fulfillment.requestedReceiveAt() == null ? null : fulfillment.requestedReceiveAt().toString());
         values.put("plannedHandoffAt", fulfillment.plannedHandoffAt().toString());
         values.put("plannedFinishAt", fulfillment.plannedFinishAt() == null ? null : fulfillment.plannedFinishAt().toString());
         values.put("totalAmountCents", total);

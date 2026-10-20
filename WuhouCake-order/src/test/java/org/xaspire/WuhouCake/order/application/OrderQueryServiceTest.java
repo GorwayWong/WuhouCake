@@ -40,4 +40,14 @@ class OrderQueryServiceTest {
         assertTrue(result.pendingOrders().isEmpty());
         verify(queries).metrics(date, from, to); verify(queries).pending(date); verifyNoMoreInteractions(queries);
     }
+
+    @Test void workbenchCanSkipUnusedMetricsWithoutQueryingTheOrderHistory() {
+        var date = LocalDate.of(2026, 10, 20);
+        when(queries.pending(date)).thenReturn(List.of());
+        var result = service.workbench(date, false);
+        assertEquals(date, result.date()); assertNull(result.metrics()); assertTrue(result.pendingOrders().isEmpty());
+        verify(queries).pending(date); verifyNoMoreInteractions(queries);
+        assertThrows(OrderFailure.class, () -> service.workbench(null, false));
+        verifyNoMoreInteractions(queries);
+    }
 }

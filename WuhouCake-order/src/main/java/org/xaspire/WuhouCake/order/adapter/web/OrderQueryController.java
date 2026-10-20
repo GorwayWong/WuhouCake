@@ -23,7 +23,8 @@ public class OrderQueryController {
 
     @GetMapping("/workbench")
     public ApiResponse<OrderQueryViews.Workbench> workbench(
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ApiResponse.success(queries.workbench(date));
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(defaultValue = "true") boolean includeMetrics) {
+        return ApiResponse.success(queries.workbench(date, includeMetrics));
     }
 }

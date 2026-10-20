@@ -41,6 +41,13 @@ export function errorText(error: unknown): string {
     PASSWORD_CHANGE_REQUIRED: '请先修改初始密码。',
     PASSWORD_REUSE_FORBIDDEN: '新密码不能与当前密码相同。',
     SERVICE_UNAVAILABLE: '服务暂时不可用，请稍后重试。',
+    ENTRY_UNAVAILABLE: '填写入口已停用或失效，请联系发送二维码的客服。',
+    SUBMISSION_NOT_FOUND: '填单不存在，请返回列表重新查看。',
+    SUBMISSION_NOT_PENDING: '填单已确认或删除，请读取最新记录。',
+    NEWER_SUBMISSION_EXISTS: '同手机号、同收货日期有更新填单，请刷新并核对后确认。',
+    SUBMISSION_FORBIDDEN: '仅前台和管理人员可以处理客户填单。',
+    SUBMISSION_TOO_LARGE: '填写内容过长，请精简商品需求后再提交。',
+    SUBMISSION_THROTTLED: '提交过于频繁，请稍后再试。',
   } as Record<string, string>)[error.code] || (error.status === 429 ? '操作过于频繁，请稍后重试。' : `请求未完成（${error.code}），请核对后重试。`);
 }
 async function decode<T>(response: Response): Promise<T> {
@@ -135,6 +142,13 @@ export async function authenticatedFetch(path: string, init: RequestInit = {}): 
 export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {
   return decode<T>(await authenticatedFetch(path, {
     method: options.method || 'GET', signal: options.signal,
+    headers: { ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  }));
+}
+export async function publicApi<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {
+  return decode<T>(await fetch(`/api${path}`, {
+    method: options.method || 'GET', credentials: 'omit', cache: 'no-store', signal: options.signal,
     headers: { ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   }));

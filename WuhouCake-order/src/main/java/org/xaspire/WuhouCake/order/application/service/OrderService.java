@@ -37,6 +37,14 @@ public class OrderService {
     }
     @Transactional
     public OrderViews.Detail create(OrderCommands.Create command, Operator operator) {
+        return createInternal(command, operator, null);
+    }
+    @Transactional
+    public OrderViews.Detail createCustomer(OrderCommands.Create command, Operator operator, UUID submissionId) {
+        if (command.creditedEmployeeId() == null) throw invalid();
+        return createInternal(command, operator, submissionId);
+    }
+    private OrderViews.Detail createInternal(OrderCommands.Create command, Operator operator, UUID submissionId) {
         var actor = actor(operator); var now = now();
         if (command.customer() == null || command.fulfillment() == null || command.items() == null || command.items().isEmpty()) throw invalid();
         var customer = command.customer(); var fulfillment = command.fulfillment();
@@ -44,7 +52,7 @@ public class OrderService {
         FulfillmentType type;
         try { type = FulfillmentType.valueOf(fulfillment.type()); }
         catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
-        var plan = new FulfillmentPlan(type, fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt());
+        var plan = new FulfillmentPlan(type, fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt());
         var items = command.items().stream().map(item -> {
             if (item == null) throw invalid();
             return OrderItem.create(ids.nextId(), item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
@@ -52,8 +60,11 @@ public class OrderService {
         var employee = selectEmployee(command.creditedEmployeeId() == null ? actor.accountId() : command.creditedEmployeeId());
         var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee);
         orders.create(order);
-        activities.append(OrderActivity.append(order.id(), null, "CREATED", "创建订单", Map.of("status", order.status(), "paymentStatus", order.paymentStatus(),
-                "creditedEmployeeId", employee.accountId().toString(), "creditedEmployeeName", employee.nickname()), actor, now));
+        var creation = new LinkedHashMap<String, Object>();
+        creation.put("status", order.status()); creation.put("paymentStatus", order.paymentStatus());
+        creation.put("creditedEmployeeId", employee.accountId().toString()); creation.put("creditedEmployeeName", employee.nickname());
+        if (submissionId != null) { creation.put("source", "CUSTOMER_SUBMITTED"); creation.put("submissionId", submissionId.toString()); }
+        activities.append(OrderActivity.append(order.id(), null, "CREATED", submissionId == null ? "创建订单" : "确认客户填单 · 来源：用户填写", creation, actor, now));
         changed(order, null, OrderChanged.Type.CREATED);
         return detail(order, List.of());
     }
@@ -216,7 +227,7 @@ public class OrderService {
         var customer = order.customer(); var fulfillment = order.fulfillment();
         return new OrderViews.Detail(order.id(), order.orderNo(), order.version(), order.status(), order.paymentStatus(), order.currentStageCode(),
                 new OrderCommands.Customer(customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName()),
-                new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt()),
+                new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt()),
                 order.totalAmountCents(), order.createdBy(), order.createdAt(), order.confirmedAt(), order.updatedAt(), items,
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
                         order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()));

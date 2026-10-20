@@ -20,6 +20,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.xaspire.WuhouCake.bootstrap.integration.JwtTestKeys;
 import org.xaspire.WuhouCake.identity.application.service.IdentityService;
 import org.xaspire.WuhouCake.identity.domain.port.IdentityPorts.Sessions;
+import org.xaspire.WuhouCake.identity.domain.port.IdentityPorts.Attempts;
+import org.xaspire.WuhouCake.identity.domain.model.valobj.IdentityFailure;
 import org.xaspire.WuhouCake.identity.domain.repository.Accounts;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -44,6 +46,7 @@ class IdentityIT {
     @Autowired JdbcTemplate jdbc;
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
+    @Autowired Attempts attempts;
     @MockitoSpyBean Accounts accounts;
     @MockitoSpyBean Sessions sessions;
     @MockitoSpyBean Clock clock;
@@ -193,6 +196,53 @@ class IdentityIT {
         }
         assertEquals(429, client.request("POST", "/api/auth/login", Map.of("employeeNumber", "0001", "password", PASSWORD)).status);
         assertTrue(redis.getExpire(NAMESPACE + ":attempts:0001") > 0);
+    }
+    @Test void concurrentLoginChecksRespectTheRemainingBudget() throws Exception {
+        administrator();
+        for (int i = 0; i < 4; i++) assertThrows(IdentityFailure.class, () -> identity.login("0001", "wrong", "seed"));
+        var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
+        clearInvocations(accounts);
+        doAnswer(call -> {
+            entered.countDown();
+            assertTrue(release.await(10, TimeUnit.SECONDS));
+            return call.callRealMethod();
+        }).when(accounts).findByNumber("0001");
+        Callable<String> login = () -> {
+            try { identity.login("0001", "wrong", UUID.randomUUID().toString()); return "UNEXPECTED_SUCCESS"; }
+            catch (IdentityFailure failure) { return failure.code(); }
+        };
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var remaining = executor.submit(login);
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var rejected = new ArrayList<Future<String>>();
+                for (int i = 0; i < 8; i++) rejected.add(executor.submit(login));
+                for (var result : rejected) assertEquals("LOGIN_THROTTLED", result.get(5, TimeUnit.SECONDS));
+                verify(accounts, times(1)).findByNumber("0001");
+            } finally { release.countDown(); }
+            assertEquals("AUTHENTICATION_FAILED", remaining.get(5, TimeUnit.SECONDS));
+        }
+        assertEquals("5", redis.opsForValue().get(NAMESPACE + ":attempts:0001"));
+        assertEquals(0L, redis.opsForZSet().zCard(NAMESPACE + ":attempts:0001:pending"));
+    }
+    @Test void successfulAttemptsClearFailuresAndKeepOtherReservations() {
+        String key = NAMESPACE + ":attempts:MIXED";
+        try (var success = attempts.begin("MIXED"); var delayed = attempts.begin("MIXED"); var failure = attempts.begin("MIXED")) {
+            failure.failed(); failure.failed();
+            assertEquals("1", redis.opsForValue().get(key));
+            success.succeeded();
+            assertNull(redis.opsForValue().get(key));
+            assertEquals(1L, redis.opsForZSet().zCard(key + ":pending"));
+            try (var a = attempts.begin("MIXED"); var b = attempts.begin("MIXED");
+                    var c = attempts.begin("MIXED"); var d = attempts.begin("MIXED")) {
+                assertEquals("LOGIN_THROTTLED", assertThrows(IdentityFailure.class, () -> attempts.begin("MIXED")).code());
+            }
+            delayed.failed();
+            assertEquals("1", redis.opsForValue().get(key));
+        }
+        assertEquals(0L, redis.opsForZSet().zCard(key + ":pending"));
+        try (var recovered = attempts.begin("MIXED")) { recovered.succeeded(); }
+        assertNull(redis.opsForValue().get(key));
     }
     @Test void logoutSucceedsWhenAuditAccountMetadataIsUnavailable() throws Exception {
         Browser admin = administrator();

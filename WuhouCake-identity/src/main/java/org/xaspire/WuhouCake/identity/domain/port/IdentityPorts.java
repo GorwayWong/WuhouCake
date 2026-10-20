@@ -23,9 +23,12 @@ public final class IdentityPorts {
         void remove(UUID id);
     }
     public interface Attempts {
-        void check(String employeeNumber);
-        void failed(String employeeNumber);
-        void clear(String employeeNumber);
+        Attempt begin(String employeeNumber);
+        interface Attempt extends AutoCloseable {
+            void failed();
+            void succeeded();
+            @Override void close();
+        }
     }
     public interface AccessTokens { String issue(UUID accountId, UUID sessionId, long version, Instant issuedAt, Instant expiresAt); }
 }

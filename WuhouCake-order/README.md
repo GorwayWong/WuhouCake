@@ -1,5 +1,7 @@
 # 订单领域
 
+客户扫码填单、客服确认接单及来源留痕见[客户填单说明](../docs/customer-entry.md)。未确认填单独立于正式订单，不进入下述制作日历、经营统计与导出。
+
 Order 聚合管理多个商品、客户和交付安排、整单制作、付款及历史。bootstrap 显式装配，application 管理事务；员工须完成首次改密。业务范围与缺口见[当前范围](../docs/product-scope.md)，认证契约见[账号 API](../docs/identity.md)。
 
 ## HTTP 接口
@@ -42,6 +44,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
   "fulfillment": {
     "type":"DELIVERY","address":"合成市示例路1号",
     "requestedReceiveDate":"2026-11-01",
+    "requestedReceiveAt":"2026-11-01T19:00:00+08:00",
     "plannedHandoffAt":"2026-11-01T18:00:00+08:00"
   },
   "items":[
@@ -56,9 +59,10 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 - phone、requestedReceiveDate、plannedHandoffAt 和至少一件有名称/数量的商品必填；DELIVERY 必须有非空地址，PICKUP 可空。客户姓名、会员电话、客户侧下单人、计划出品时间、报价和总额可选。正式 API 的 phone 是最长 32 字符的非空文本，不提供电话真实性验证。
 - 数量为 1–2147483647 的整数；金额为非负 Long 整数分，不接收浮点小数或负数。前端以元输入并限制在 JavaScript 安全整数范围；空值与 0 不同，不按商品报价自动计算订单总额。
 - productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling 缺失、null、空白时，写入和读取均使用原味/芒果，读取不写库。奶油仍存 flavor。新建、追加及明确修改的蛋糕 size 只接受正数、最多两位小数、整数部分最多九位，存为无单位数值文本；非法值返回 400。旧规格可读，未改尺寸时不会因旧尺寸异常阻止其他字段更正。
-- 时间以 ISO 8601 带偏移输入、UTC 输出，前端按北京时间展示；收货日期决定日历归日，交接时刻不替代收货日期。
+- 时间以 ISO 8601 带偏移输入、UTC 输出，前端按北京时间展示。requestedReceiveAt 是当前期望收货时刻，可空以兼容历史日期型订单；非空时其北京时间日期必须与 requestedReceiveDate 一致。客户填单确认时写入核对后的值，交接时间不替代期望收货时间。
+- 改期必须更正完整 requestedReceiveAt，服务端同步日历日期；同时传入冲突日期、只改日期或清空已知时刻均拒绝。历史缺失具体时刻不阻止其他资料更正，不从交接时间推算。新迁移仅从已确认填单的核对时间回填日期一致的客户订单，日期冲突保留未知时刻。订单详情与 XLSX 统一读取正式订单当前值，来源记录保留原始时间。
 - 创建可传 creditedEmployeeId，省略时归属当前员工；需为在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
-- 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling 回落默认），结构值整体替换。
+- 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、requestedReceiveAt、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling 回落默认），结构值整体替换。
 - 所有状态都能更正资料和约定金额；商品仅在 WAITING_PRODUCTION/PROCESSING 可增删改，待交接须先重新制作。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。
 - 制作中追加商品清空已确认的整单节点；修改/移除不主动清空节点。商品变化不改约定总额和付款。DELIVERING 改为 PICKUP 时转 WAITING_PICKUP；完成/取消后的交接类型更正不重开状态。
 
@@ -91,6 +95,8 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 ## 查询与 SSE
 
 日历使用 [from,to)；工作台 date 按 Asia/Shanghai。非法、反向、空或超过 42 天的日历范围返回 400。统计字段：totalOrders 是全部订单数，createdOnDate 是门店当天创建数，deliveryDueOnDate 是该收货日尚未完成/取消的配送订单数，均不是商品数量统计。
+
+`GET /api/orders/workbench` 的 `includeMetrics` 默认 `true`，继续返回上述统计；显式传 `false` 时 `metrics` 为 `null`，只读取当天订单、商品及备注，不计算全局统计。日历工作台使用此轻量读取，页面统计来自当天筛选后的订单。
 
 工作台 pendingOrders 字段返回该收货日全部状态的订单，前端再按同一状态/付款筛选规则显示日历与单日列表。经营查询 `GET /api/admin/orders` 向所有已改密员工开放，参数 from/to（右开区间，最多 366 天）、dateBasis（RECEIVE 默认按收货日期，CREATED 按北京时间录单日期）、status/paymentStatus/fulfillmentType、sizeInches、creditedEmployeeId、unassigned、includeCancelled、keyword、page/size（1 起、最大 100）。未知枚举、非法日期/尺寸/UUID/分页返回 400；空结果正常返回空列表及零统计。尺寸只匹配有效 CAKE 商品，累加 quantity；旧异常尺寸安全排除于精确尺寸筛选，未设尺寸时仍可查询并计为待核对。
 

@@ -32,13 +32,18 @@ public class OrderQueryService {
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public OrderQueryViews.Workbench workbench(LocalDate date) {
+        return workbench(date, true);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.Workbench workbench(LocalDate date, boolean includeMetrics) {
         if (date == null) throw invalid();
         Instant from, to;
         try {
             from = date.atStartOfDay(STORE_ZONE).toInstant();
             to = date.plusDays(1).atStartOfDay(STORE_ZONE).toInstant();
         } catch (DateTimeException failure) { throw invalid(); }
-        var metrics = queries.metrics(date, from, to);
+        var metrics = includeMetrics ? queries.metrics(date, from, to) : null;
         var orders = queries.pending(date);
         var orderIds = orders.stream().map(OrderQueries.PendingOrder::orderId).toList();
         var items = orderIds.isEmpty() ? List.<OrderQueries.Item>of() : queries.items(orderIds);
@@ -54,6 +59,7 @@ public class OrderQueryService {
                 order.status(), order.currentStageCode(), order.paymentStatus(), order.fulfillmentType(), order.plannedHandoffAt(),
                 new Customer(order.customerName(), order.phone(), order.memberPhone(), order.buyerName()), order.address(), order.plannedFinishAt(),
                 itemsByOrder.getOrDefault(order.orderId(), List.of()))).toList();
-        return new OrderQueryViews.Workbench(date, new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()), pending);
+        return new OrderQueryViews.Workbench(date, metrics == null ? null
+                : new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()), pending);
     }
 }
