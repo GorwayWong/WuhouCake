@@ -29,7 +29,7 @@ export function Calendar({ accountId, selected, setSelected, mode, setMode, onWr
   const changeFilter = (key: 'status' | 'paymentStatus', value: string) => { const next = { ...filters, [key]: value }; setFilters(next); try { writeCalendarFilters(accountId, next, localStorage); } catch { /* Storage access may be denied. */ } };
   const range = calendarRange(selected, mode);
   const calendar = useQuery({ queryKey: ['calendar', range.from, range.to], queryFn: ({ signal }) => api<CalendarOrder[]>(`/orders/calendar?from=${range.from}&to=${range.to}`, { signal }) });
-  const workbench = useQuery({ queryKey: ['workbench', selected], queryFn: ({ signal }) => api<Workbench>(`/orders/workbench?date=${selected}`, { signal }), enabled: mode === 'week' });
+  const workbench = useQuery({ queryKey: ['workbench', selected], queryFn: ({ signal }) => api<Workbench>(`/orders/workbench?date=${selected}&includeMetrics=false`, { signal }), enabled: mode === 'week' });
   const calendarScroll = useRef<HTMLDivElement>(null);
   const statuses = calendarStatusOptions(calendar.data || []);
   useEffect(() => {

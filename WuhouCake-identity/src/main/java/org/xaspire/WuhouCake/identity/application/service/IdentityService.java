@@ -54,16 +54,15 @@ public class IdentityService implements IdentityFacade {
     @Override public Login login(String number, String password, String requestId) {
         number = AccountValues.employeeNumber(number);
         if (password == null || password.codePointCount(0, password.length()) > 128) throw new IdentityFailure("VALIDATION_FAILED");
-        try {
-            attempts.check(number);
+        try (var attempt = attempts.begin(number)) {
             var found = accounts.findByNumber(number);
             boolean matched = credentials.matches(password, found.map(EmployeeAccount::passwordHash).orElse(dummyHash));
             if (!matched || found.isEmpty() || found.get().status() != Status.ACTIVE) {
-                attempts.failed(number);
+                attempt.failed();
                 throw new IdentityFailure("AUTHENTICATION_FAILED");
             }
             var account = found.get();
-            attempts.clear(number);
+            attempt.succeeded();
             String secret = credentials.secret();
             var session = new LoginSession(ids.nextId(), account.id(), account.credentialVersion(), credentials.digest(secret), clock.instant().plus(sessionLifetime));
             sessions.save(session);

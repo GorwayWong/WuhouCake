@@ -76,6 +76,8 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 4. login/logout 会清除 CSRF Cookie，后续认证 POST 前重新取得 CSRF。refresh 依赖刷新 Cookie 和 CSRF，不依赖已到期 Bearer。
 5. 前端 access token 仅驻留内存；多个 401 共用一次刷新。切换员工后，旧请求不能使用新员工凭证重试或清除其登录状态。
 
+同一工号的失败次数与正在校验的登录尝试合计最多 5 次，准入通过 Redis 原子占用；超过时返回 LOGIN_THROTTLED。失败转为计数，累计第 5 次失败后锁定 10 分钟；成功清除失败次数但保留其他在途占用，基础设施异常仅释放本次占用。未完成的占用最长保留 10 分钟，避免进程中断后永久占用配额。
+
 每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配。岗位不是权限：MANAGER 不等于 SUPER_ADMIN。所有完成改密的员工共享订单、查询统计及导出权限，包括 GET /api/admin/orders 和 GET /api/admin/orders/export；员工账号管理及其身份审计仍仅管理员可用，其余 /api/admin 路径不因此放开。
 
 新建、重置或恢复的账号须首次改密。改密前只允许 GET /api/me 和 POST /api/me/password，其他业务请求返回 PASSWORD_CHANGE_REQUIRED；认证端点仍可用于退出。新密码必须与当前密码不同，改密成功会撤销旧凭证，前端需重新登录。

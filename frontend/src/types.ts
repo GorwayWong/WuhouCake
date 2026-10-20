@@ -23,7 +23,7 @@ export interface CalendarOrder extends OrderStatus {
   plannedHandoffAt: string; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
 }
 export interface PendingOrder extends CalendarOrder { customer: Customer; address: string | null; plannedFinishAt: string | null; items: Item[] }
-export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number }; pendingOrders: PendingOrder[] }
+export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number } | null; pendingOrders: PendingOrder[] }
 export interface Detail extends OrderStatus {
   createdBy?: string; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
   orderId: string; orderNo: string; version: number; customer: Customer; fulfillment: Fulfillment;

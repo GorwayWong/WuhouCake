@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, Cake, CheckCircle, Clock, NotePencil, ListBullets, Package, Plus, Stack, Trash, Truck, XCircle } from '@phosphor-icons/react';
-import { api } from './api';
+import { api, creationResultUnknown } from './api';
 import { synchronize } from './realtime';
 import type { Activity, Detail, Page } from './types';
 import { CustomerOrderOrigin } from './CustomerSubmissions';
@@ -85,6 +85,7 @@ export function OrderDetail({ id, returnToOrders = false, onEditDirtyChange, onW
   const client = useQueryClient();
   const detail = useQuery({ queryKey: ['order', id, 'detail'], queryFn: ({ signal }) => api<Detail>(`/orders/${id}`, { signal }) });
   const [note, setNote] = useState('');
+  const [noteResultUnknown, setNoteResultUnknown] = useState(false);
   const [itemId, setItemId] = useState('');
   const [reason, setReason] = useState('');
   const [showCancel, setShowCancel] = useState(false);
@@ -129,11 +130,17 @@ export function OrderDetail({ id, returnToOrders = false, onEditDirtyChange, onW
         setEditing(current => current?.kind === 'item' ? { ...current, reopened: updated } : current);
       }
       if (['information', '', 'items'].includes(variables.path)) setEditing(null);
-      if (variables.path === 'notes') { setNote(''); }
+      if (variables.path === 'notes') { setNote(''); setNoteResultUnknown(false); }
       if (variables.path === 'cancel') { setReason(''); setShowCancel(false); }
       await synchronize(client, id);
     },
-    onError: async (_error, _variables, context) => { if (context?.page === page.current) { setMessage(''); await synchronize(client, id); } },
+    onError: async (error, variables, context) => {
+      if (context?.page === page.current) {
+        setMessage('');
+        if (variables.path === 'notes' && creationResultUnknown(error)) setNoteResultUnknown(true);
+        await synchronize(client, id);
+      }
+    },
     onSettled: (_result, _error, _variables, context) => { if (context?.page === page.current) onWritingChange(false); },
   });
   if (detail.isPending) return <Loading />;
@@ -156,7 +163,7 @@ export function OrderDetail({ id, returnToOrders = false, onEditDirtyChange, onW
     <CustomerOrderOrigin orderId={id} />
     <SingleOrderExport orderId={id} orderNo={order.orderNo} blocked={blocked} onPendingChange={exportWritingChange} />
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
-    <div className="feedback" aria-live="polite">{message && (!itemMutation || canEditItems(order)) && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={editing ? null : mutation.error} /></div>
+    <div className="feedback" aria-live="polite">{message && (!itemMutation || canEditItems(order)) && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={editing || (noteResultUnknown && mutation.variables?.path === 'notes') ? null : mutation.error} /></div>
     <div className="detail-columns detail-summary">
     <section className="panel detail-status"><div className="section-heading"><h2><Clock />整单制作与交付</h2><span className="muted">{order.items.length} 项商品，统一确认</span></div>
       <OrderProgress order={order} />
@@ -174,10 +181,12 @@ export function OrderDetail({ id, returnToOrders = false, onEditDirtyChange, onW
       {editing?.kind === 'item' && !editing.itemId && <div className="item-add"><h3>添加商品</h3>{itemEditor}</div>}
     </section>
     <OrderImages key={id} order={order} blocked={mutation.isPending || Boolean(editing) || exportWriting} onDraftChange={imageDraftChange} onWritingChange={imageWritingChange} />
-    <section className="panel" aria-label="订单备注"><div className="section-heading"><h2><NotePencil />备注</h2><a className="text-button" href={`#/orders/${id}/activities?type=NOTE`}>全部备注<ArrowRight /></a></div><form className="note-form" onSubmit={event => { event.preventDefault(); if (!blocked && note.trim() && (!itemId || order.items.some(item => item.itemId === itemId))) mutation.mutate({ path: 'notes', body: { itemId: itemId || null, content: note.trim() } }); }}>
+    <section className="panel" aria-label="订单备注"><div className="section-heading"><h2><NotePencil />备注</h2><a className="text-button" href={`#/orders/${id}/activities?type=NOTE`}>全部备注<ArrowRight /></a></div>
+    {noteResultUnknown && <div className="notice" role="alert"><p>发布结果尚未确认，备注可能已经保存。请先核对下方记录或全部备注，确认未保存后再允许重发。</p><button type="button" className="secondary compact" disabled={blocked} onClick={() => { setNoteResultUnknown(false); mutation.reset(); }}>已核对未保存，允许重发</button></div>}
+    <form className="note-form" onSubmit={event => { event.preventDefault(); if (!blocked && !noteResultUnknown && note.trim() && (!itemId || order.items.some(item => item.itemId === itemId))) mutation.mutate({ path: 'notes', body: { itemId: itemId || null, content: note.trim() } }); }}>
       <label>备注对象<Select label="备注对象" value={itemId} onChange={setItemId} disabled={mutation.isPending}><option value="">整张订单</option>{order.items.map(item => <option key={item.itemId} value={item.itemId}>{item.name}</option>)}{itemId && !order.items.some(item => item.itemId === itemId) && <option value={itemId}>已移除的商品，请重新选择</option>}</Select></label>
       <label className="note-content">备注内容<textarea placeholder="记录客户的心意，或交接给下一位同事…" value={note} onChange={event => setNote(event.target.value)} required disabled={mutation.isPending} rows={3} /></label>
-      <button className="primary" disabled={blocked || !note.trim() || Boolean(itemId && !order.items.some(item => item.itemId === itemId))}>发布备注<ArrowRight /></button>
+      <button className="primary" disabled={blocked || noteResultUnknown || !note.trim() || Boolean(itemId && !order.items.some(item => item.itemId === itemId))}>发布备注<ArrowRight /></button>
     </form><ActivityFeed id={id} type="NOTE" items={order.items} preview /></section>
     <a className="history-entry" href={`#/orders/${id}/activities`}><ListBullets />全部操作记录<ArrowRight /></a>
     {!['COMPLETED', 'CANCELLED'].includes(order.status) && <section className="cancel-section"><button className="text-button danger" disabled={blocked} onClick={() => setShowCancel(!showCancel)} aria-expanded={showCancel}>取消订单</button>{showCancel && <form onSubmit={event => { event.preventDefault(); if (!blocked) mutation.mutate({ path: 'cancel', body: { expectedVersion: order.version, reason: reason.trim() } }); }}><label>取消原因<input value={reason} onChange={event => setReason(event.target.value)} required disabled={mutation.isPending} /></label><button className="danger-button" disabled={blocked || !reason.trim()}>确认取消订单</button></form>}</section>}

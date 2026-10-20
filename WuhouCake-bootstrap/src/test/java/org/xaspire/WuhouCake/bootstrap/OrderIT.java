@@ -887,6 +887,12 @@ class OrderIT {
             assertEquals("CAKE", cake.path("productType").asText()); assertEquals(10000, cake.path("unitPriceCents").asLong());
             assertEquals(8000, cake.path("memberPriceCents").asLong()); assertEquals(item(firstOrder, a).path("attributes"), cake.path("attributes"));
             clearInvocations(queryMapper);
+            var withoutMetrics = query(staff, "/api/orders/workbench?date=2026-09-30&includeMetrics=false");
+            assertFalse(withoutMetrics.hasNonNull("metrics"));
+            assertEquals(workbench.path("pendingOrders"), withoutMetrics.path("pendingOrders"));
+            verify(queryMapper).pending(any()); verify(queryMapper).items(any()); verify(queryMapper).recentNotes(any(), any());
+            verifyNoMoreInteractions(queryMapper); verifyNoInteractions(orders, activities);
+            clearInvocations(queryMapper);
             query(staff, "/api/orders/calendar?from=2026-09-28&to=2026-11-09");
             verify(queryMapper).calendar(any(), any()); verify(queryMapper).calendarItems(any());
             verifyNoMoreInteractions(queryMapper); verifyNoInteractions(orders, activities);
