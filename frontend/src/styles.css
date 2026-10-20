@@ -3,7 +3,6 @@
 .app-nav a{color:var(--ink);padding:8px 0;border-bottom:3px solid transparent;text-decoration:none}
 .app-nav a[aria-current=page]{font-weight:700;border-bottom-color:var(--yellow)}
 .calendar-filter{display:flex;flex-direction:column;gap:6px;font-size:13px;min-width:130px}
-.calendar-filter select{font-size:16px}
 .management-page{display:grid;gap:20px;min-width:0}
 .management-page .page-heading{margin-bottom:0}
 .management-page .panel{min-width:0}
@@ -44,7 +43,7 @@
   padding:0;
   min-width:0;
 }
-.export-filters input,.export-filters select{
+.export-filters input{
   width:100%;
   min-width:0;
   font-size:16px;
@@ -166,7 +165,7 @@
   font-weight:600;
   margin-bottom:14px;
 }
-.image-upload input,.image-upload select{
+.image-upload input{
   width:100%;
   min-width:0;
   font-size:16px;
@@ -580,15 +579,6 @@ small{
 .period-actions{
   display:flex;
   gap:8px;
-}
-.date-jump input{
-  border:1px solid var(--line);
-  border-radius:8px;
-  padding:7px 10px;
-  width:147px;
-  background:#fff;
-  color:#747a76;
-  font-size:12px;
 }
 .calendar-weekdays,.calendar-grid{
   display:grid;
@@ -1401,11 +1391,6 @@ h1{
 .date-jump{
   margin-top:8px;
 }
-.date-jump input{
-  font-size:11px;
-  padding:4px 7px;
-  width:131px;
-}
 .period-actions{
   gap:5px;
 }
@@ -1704,7 +1689,7 @@ button,a{
   color:#4d5549;
   font-size:13px;
 }
-.create-grid input,.create-grid textarea,.create-grid select{
+.create-grid input,.create-grid textarea{
   min-width:0;
   max-width:100%;
   min-height:44px;
@@ -1758,7 +1743,7 @@ button,a{
 .recognition-panel>summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;cursor:pointer;min-height:44px;}
 .recognition-panel>summary span{color:#596252;font-size:13px;}
 .recognition-content{padding-top:16px;min-width:0;}
-.recognition-content textarea,.recognition-content input,.recognition-content select{max-width:100%;min-width:0;font-size:16px;}
+.recognition-content textarea,.recognition-content input{max-width:100%;min-width:0;font-size:16px;}
 .recognition-content .actions{flex-wrap:wrap;}
 .recognition-results{margin-top:24px;}
 .recognition-results>summary{cursor:pointer;min-height:44px;font-weight:600;}
@@ -1865,7 +1850,7 @@ button,a{
   .create-grid{
     grid-template-columns:minmax(0,1fr);
   }
-  .create-grid input,.create-grid textarea,.create-grid select{
+  .create-grid input,.create-grid textarea{
     font-size:16px;
   }
   .create-submit{
@@ -1880,7 +1865,6 @@ button,a{
 .history-page .page-heading{margin-bottom:0}
 .history-toolbar{margin-bottom:24px}
 .history-toolbar label{display:block;max-width:260px}
-.history-toolbar select{width:100%;font-size:16px}
 .history-entry{display:flex;align-items:center;gap:12px;margin:20px 0;padding:18px 22px;border:1px solid var(--line);border-radius:12px;background:white;color:var(--ink);text-decoration:none;font-weight:600}
 .history-entry svg:last-child{margin-left:auto}
 .history-entry:hover{background:var(--soft)}

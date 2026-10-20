@@ -11,7 +11,7 @@
 | [WuhouCake-identity](WuhouCake-identity/README.md) | 员工账号、岗位、凭证和登录会话 |
 | [WuhouCake-audit](WuhouCake-audit/README.md) | 身份操作审计及超级管理员查询 |
 | WuhouCake-shared | 通用契约、ID 和技术能力 |
-| [WuhouCake-sample](WuhouCake-sample/README.md) | 只有包职责和架构测试的空白领域模板 |
+| [WuhouCake-sample](WuhouCake-sample/README.md) | 包职责和架构测试的空白领域模板，不打入运行 JAR |
 | [frontend](frontend/README.md) | 店员工作台、录单和订单详情 |
 
 当前使用一个业务后端实例。制作按整单推进，付款人工确认；文本识别只辅助未保存草稿。当前能力与未实现项分别见[业务范围](docs/product-scope.md)，不能将旧开发计划当作已实现功能。
