@@ -43,6 +43,17 @@ public class SecurityConfiguration {
         return http.build();
     }
     @Bean @Order(2)
+    SecurityFilterChain customerEntryEndpoints(HttpSecurity http, SecurityErrors errors) throws Exception {
+        http.securityMatcher("/api/public/order-entries/**")
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/public/order-entries/{token}").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/public/order-entries/{token}/submissions").permitAll()
+                        .anyRequest().denyAll())
+                .csrf(AbstractHttpConfigurer::disable)
+                .exceptionHandling(config -> config.authenticationEntryPoint(errors).accessDeniedHandler(errors));
+        stateless(http); return http.build();
+    }
+    @Bean @Order(3)
     SecurityFilterChain businessEndpoints(HttpSecurity http, ApplicationSecurityProperties properties, IdentityFacade identity, SecurityErrors errors) throws Exception {
         http.authorizeHttpRequests(authorize -> {
             authorize.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll();
@@ -55,6 +66,7 @@ public class SecurityConfiguration {
             authorize.requestMatchers("/api/me", "/api/me/**").authenticated();
             authorize.requestMatchers("/api/employees/options").authenticated();
             authorize.requestMatchers("/api/orders", "/api/orders/**").authenticated();
+            authorize.requestMatchers("/api/customer-submissions", "/api/customer-submissions/**").authenticated();
             authorize.anyRequest().denyAll();
         });
         http.csrf(AbstractHttpConfigurer::disable)

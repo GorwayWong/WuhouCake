@@ -24,11 +24,12 @@ public class ApiErrors {
     @ExceptionHandler(OrderFailure.class)
     ResponseEntity<ApiResponse<Void>> order(OrderFailure failure) {
         int status = switch (failure.code()) {
-            case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND" -> 404;
+            case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE" -> 404;
+            case "SUBMISSION_FORBIDDEN" -> 403;
             case "IMAGE_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
             case "UNSUPPORTED_IMAGE_FORMAT" -> 415;
             case "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
-                    "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED" -> 409;
+                    "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED", "NEWER_SUBMISSION_EXISTS", "SUBMISSION_NOT_PENDING" -> 409;
             default -> 400;
         };
         String message = switch (failure.code()) {
@@ -59,7 +60,7 @@ public class ApiErrors {
     }
     @ExceptionHandler({IllegalArgumentException.class, MethodArgumentNotValidException.class, HttpMessageNotReadableException.class, MethodArgumentTypeMismatchException.class,
             org.springframework.web.multipart.support.MissingServletRequestPartException.class,
-            org.springframework.web.bind.MissingServletRequestParameterException.class})
+            org.springframework.web.bind.MissingServletRequestParameterException.class, org.springframework.web.bind.MissingRequestHeaderException.class})
     ResponseEntity<ApiResponse<Void>> validation(Exception failure) { return response(400, "VALIDATION_FAILED"); }
     @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
     ResponseEntity<ApiResponse<Void>> uploadSize(Exception failure) { return response(413, "IMAGE_TOO_LARGE"); }

@@ -222,6 +222,12 @@ public class IdentityService implements IdentityFacade {
         if (employee.status() != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
         return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
     }
+    @Override @Transactional
+    public EmployeeOption customerEntryOwner(UUID id) {
+        var employee = accounts.lock(id).orElse(null);
+        if (employee == null || employee.status() != Status.ACTIVE || employee.jobRoles().stream().noneMatch(role -> role.name().equals("FRONT_DESK") || role.name().equals("MANAGER"))) return null;
+        return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
+    }
     @Transactional
     public AccountView initializeAdministrator(String number, String nickname, String password) {
         AccountValues.password(password);

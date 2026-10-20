@@ -1,5 +1,7 @@
 # 订单领域
 
+客户扫码填单、客服确认接单及来源留痕见[客户填单说明](../docs/customer-entry.md)。未确认填单独立于正式订单，不进入下述制作日历、经营统计与导出。
+
 Order 聚合管理多个商品、客户和交付安排、整单制作、付款及历史。bootstrap 显式装配，application 管理事务；员工须完成首次改密。业务范围与缺口见[当前范围](../docs/product-scope.md)，认证契约见[账号 API](../docs/identity.md)。
 
 ## HTTP 接口

@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, Cake, CheckCircle, Clock, NotePencil, ListBullet
 import { api } from './api';
 import { synchronize } from './realtime';
 import type { Activity, Detail, Page } from './types';
+import { CustomerOrderOrigin } from './CustomerSubmissions';
 import { time } from './dates';
 import { Empty, ErrorNotice, Loading, money, Payment, Product, Status, statusNames, valueText } from './ui';
 import { InformationEdit, InformationSummary } from './InformationEdit';
@@ -152,6 +153,7 @@ export function OrderDetail({ id, returnToOrders = false, onEditDirtyChange, onW
   return <div className="detail-page">
     <a className="back-link" href={returnToOrders ? '#/admin/orders' : `#/?date=${order.fulfillment.requestedReceiveDate}`} aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />{returnToOrders ? '返回查询结果' : `返回 ${order.fulfillment.requestedReceiveDate} 工作台`}</a>
     <div className="page-heading"><h1>订单 #{order.orderNo}</h1><div className="badges"><Status order={order} /><Payment status={order.paymentStatus} /></div></div>
+    <CustomerOrderOrigin orderId={id} />
     <SingleOrderExport orderId={id} orderNo={order.orderNo} blocked={blocked} onPendingChange={exportWritingChange} />
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
     <div className="feedback" aria-live="polite">{message && (!itemMutation || canEditItems(order)) && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={editing ? null : mutation.error} /></div>
