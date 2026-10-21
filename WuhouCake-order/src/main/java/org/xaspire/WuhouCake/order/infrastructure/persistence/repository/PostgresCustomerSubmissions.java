@@ -33,8 +33,12 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
         return mapper.search(string(owner), status, limit, offset).stream().map(this::submission).toList();
     }
     @Override public long count(UUID owner, String status) { return mapper.count(string(owner), status); }
-    @Override public UUID newer(CustomerSubmission submission) {
-        return uuid(mapper.newer(submission.id().toString(), submission.original().phone(), submission.original().requestedDate(), submission.createdAt()));
+    @Override public List<Duplicate> duplicates(CustomerSubmission submission) {
+        var content = submission.reviewed() == null ? submission.original() : submission.reviewed().content();
+        return mapper.duplicates(submission.id().toString(), content.phone().replaceAll("[ ()-]", ""), content.requestedDate()).stream()
+                .map(row -> new Duplicate(row.kind(), uuid(row.id()), row.version(), row.status(), row.orderNo(), row.phone(),
+                        row.requestedReceiveDate(), row.requestedReceiveAt(), List.of(json.read(row.items(), DuplicateItem[].class)),
+                        row.totalAmountCents(), row.handledBy(), row.createdAt(), !"CANCELLED".equals(row.status()))).toList();
     }
     @Override public void update(CustomerSubmission submission, CustomerSubmission.Review review, String status, UUID orderId, Instant now) {
         if (mapper.update(submission.id().toString(), submission.version(), review == null ? null : json.write(review), status, string(orderId), now) != 1)

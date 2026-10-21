@@ -28,6 +28,11 @@
 .submission-list a{flex:none}
 .submission-warning{color:#704b0f;line-height:1.7}
 .submission-warning .check-label{margin-top:12px}
+.duplicate-records{list-style:none;margin:12px 0;padding:0;color:#263c30}
+.duplicate-records>li{padding:16px 0;border-top:1px solid #dce2db;overflow-wrap:anywhere}
+.duplicate-records p{margin:6px 0}
+.activity-feed .duplicate-records>li{display:block}
+.activity-feed .duplicate-records>li:before{display:none}
 .entry-content{display:flex;align-items:center;gap:32px;flex-wrap:wrap}
 .entry-content>div:last-child{flex:1;min-width:220px}
 .entry-qr{display:block;width:240px;height:240px;max-width:100%;object-fit:contain}

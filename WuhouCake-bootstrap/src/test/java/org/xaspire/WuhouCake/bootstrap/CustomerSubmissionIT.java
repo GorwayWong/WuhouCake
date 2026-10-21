@@ -95,7 +95,7 @@ class CustomerSubmissionIT {
         assertEquals(400, client.request("POST", submitPath(token), input).status);
         assertEquals(0, count("cake_order")); assertEquals(1, count("customer_order_submission"));
     }
-    @Test void sameRequestIsIdempotentButNewRequestsAreRetainedAndLatestRequiresAcknowledgement() throws Exception {
+    @Test void sameRequestIsIdempotentButNewRequestsNeedFullDuplicateAcknowledgement() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00"); var key = UUID.randomUUID();
         String first = submit(token, input, key).at("/data/submissionId").asText();
         assertEquals(first, submit(token, input, key).at("/data/submissionId").asText());
@@ -103,13 +103,90 @@ class CustomerSubmissionIT {
         String second = submit(token, input, UUID.randomUUID()).at("/data/submissionId").asText();
         submit(token, content("13800000000", "2026-11-03T18:00:00+08:00"), UUID.randomUUID());
         assertEquals(3, count("customer_order_submission"));
-        assertEquals(second, staff.data("GET", "/api/customer-submissions/" + first, null).path("newerSubmissionId").asText());
+        assertEquals(second, staff.data("GET", "/api/customer-submissions/" + first, null).at("/duplicates/0/id").asText());
         staff.data("PATCH", "/api/customer-submissions/" + first, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
         assertEquals(409, staff.request("POST", "/api/customer-submissions/" + first + "/confirm", Map.of("expectedVersion", 1)).status);
-        assertEquals(200, staff.request("POST", "/api/customer-submissions/" + first + "/confirm", Map.of("expectedVersion", 1, "acknowledgedNewerSubmissionId", second)).status);
+        assertEquals(409, staff.request("POST", "/api/customer-submissions/" + first + "/confirm", Map.of("expectedVersion", 1, "acknowledgedNewerSubmissionId", second)).status);
+        var checked = staff.data("GET", "/api/customer-submissions/" + first, null);
+        assertEquals(200, staff.request("POST", "/api/customer-submissions/" + first + "/confirm", Map.of("expectedVersion", 1, "duplicateCheckToken", checked.path("duplicateCheckToken").asText())).status);
         staff.data("DELETE", "/api/customer-submissions/" + second, Map.of("expectedVersion", 0));
         assertEquals("DELETED", staff.data("GET", "/api/customer-submissions/" + second, null).at("/submission/status").asText());
         assertEquals(3, count("customer_order_submission")); assertEquals(1, staff.data("GET", "/api/customer-submissions?mine=false", null).path("total").asInt());
+    }
+    @Test void duplicatesIncludeAllAgesOwnersAndManualOrdersAndConfirmedSubmissionsAppearOnlyAsOrders() throws Exception {
+        var staff = admin(); var other = employee(staff, "0002", "FRONT_DESK");
+        var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String manual = manualOrder(staff, "138 (0000)-0000", "2026-11-02");
+        String first = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        String second = submit(entry(other), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        String third = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + first, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        staff.data("PATCH", "/api/customer-submissions/" + third, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        var before = staff.data("GET", "/api/customer-submissions/" + first, null);
+        assertEquals(Set.of(manual, second, third), duplicateIds(before));
+        var manualRecord = duplicate(before, manual);
+        assertEquals("店长", manualRecord.path("handledBy").asText()); assertEquals(2, manualRecord.at("/items/0/quantity").asInt());
+        assertEquals(9900, manualRecord.path("totalAmountCents").asLong());
+        assertEquals(409, staff.request("POST", "/api/customer-submissions/" + third + "/confirm", Map.of("expectedVersion", 1)).status);
+        var newest = staff.data("GET", "/api/customer-submissions/" + third, null);
+        String confirmedOrder = staff.data("POST", "/api/customer-submissions/" + third + "/confirm", Map.of("expectedVersion", 1,
+                "duplicateCheckToken", newest.path("duplicateCheckToken").asText())).at("/submission/orderId").asText();
+        assertEquals(409, confirmWithToken(staff, first, before).status);
+        var current = staff.data("GET", "/api/customer-submissions/" + first, null);
+        assertEquals(Set.of(manual, second, confirmedOrder), duplicateIds(current));
+        assertEquals("ORDER", duplicate(current, confirmedOrder).path("kind").asText());
+        var confirmed = staff.data("POST", "/api/customer-submissions/" + first + "/confirm", Map.of("expectedVersion", 1,
+                "duplicateCheckToken", current.path("duplicateCheckToken").asText()));
+        var log = confirmed.at("/activities/0");
+        assertEquals(staff.id, log.path("actorId").asText());
+        assertEquals("CONFIRMED_INDEPENDENT_ORDER", log.at("/details/duplicateReview/decision").asText());
+        assertEquals(3, log.at("/details/duplicateReview/records").size());
+    }
+    @Test void duplicateMatchingUsesReviewedAndCurrentContactsAndShanghaiDatesWithoutCountryGuessing() throws Exception {
+        var staff = admin(); String token = entry(staff);
+        var original = content("13800000000", "2026-11-02T00:30:00+08:00");
+        String first = submit(token, original, UUID.randomUUID()).at("/data/submissionId").asText();
+        String peer = submit(token, content("13900000000", "2026-11-03T18:00:00+08:00"), UUID.randomUUID()).at("/data/submissionId").asText();
+        String removed = submit(token, original, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("DELETE", "/api/customer-submissions/" + removed, Map.of("expectedVersion", 0));
+        String manual = manualOrder(staff, "138-0000-0000", "2026-11-02");
+        manualOrder(staff, "+8613800000000", "2026-11-02");
+        var initial = staff.data("GET", "/api/customer-submissions/" + first, null);
+        assertEquals(Set.of(manual), duplicateIds(initial));
+        assertEquals("2026-11-02", duplicate(initial, manual).path("requestedReceiveDate").asText());
+        var saved = staff.data("PATCH", "/api/customer-submissions/" + peer, Map.of("expectedVersion", 0, "review", review(original, staff.id, 8000)));
+        assertEquals("13900000000", saved.at("/submission/original/phone").asText());
+        var changed = staff.data("GET", "/api/customer-submissions/" + first, null);
+        assertEquals(Set.of(manual, peer), duplicateIds(changed));
+        assertNotEquals(initial.path("duplicateCheckToken"), changed.path("duplicateCheckToken"));
+        var revised = content("13800000000", "2026-11-03T00:30:00+08:00");
+        staff.data("PATCH", "/api/customer-submissions/" + first, Map.of("expectedVersion", 0, "review", review(revised, staff.id, 12300)));
+        assertTrue(duplicateIds(staff.data("GET", "/api/customer-submissions/" + first, null)).isEmpty());
+        staff.data("PATCH", "/api/orders/" + manual + "/information", Map.of("expectedVersion", 0, "changes", Map.of("requestedReceiveAt", "2026-11-03T00:30:00+08:00")));
+        assertEquals(Set.of(manual), duplicateIds(staff.data("GET", "/api/customer-submissions/" + first, null)));
+    }
+    @Test void changedCandidatesInvalidateAcknowledgementAndCancelledOrdersAreReferenceOnly() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        var empty = staff.data("GET", "/api/customer-submissions/" + id, null);
+        String manual = manualOrder(staff, "13800000000", "2026-11-02");
+        assertEquals(409, confirmWithToken(staff, id, empty).status);
+        var before = staff.data("GET", "/api/customer-submissions/" + id, null);
+        staff.data("PATCH", "/api/orders/" + manual + "/information", Map.of("expectedVersion", 0, "changes", Map.of("totalAmountCents", 12000)));
+        assertEquals(409, confirmWithToken(staff, id, before).status);
+        var modified = staff.data("GET", "/api/customer-submissions/" + id, null);
+        jdbc.update("UPDATE cake_order SET status='COMPLETED',version=version+1 WHERE id=?::uuid", manual);
+        assertEquals(409, confirmWithToken(staff, id, modified).status);
+        var completed = staff.data("GET", "/api/customer-submissions/" + id, null);
+        assertTrue(duplicate(completed, manual).path("requiresAcknowledgement").asBoolean());
+        assertEquals(409, staff.request("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).status);
+        jdbc.update("UPDATE cake_order SET status='CANCELLED',version=version+1 WHERE id=?::uuid", manual);
+        assertEquals(409, confirmWithToken(staff, id, completed).status);
+        var cancelled = staff.data("GET", "/api/customer-submissions/" + id, null);
+        assertEquals("CANCELLED", duplicate(cancelled, manual).path("status").asText());
+        assertFalse(duplicate(cancelled, manual).path("requiresAcknowledgement").asBoolean());
+        assertEquals(200, staff.request("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).status);
     }
     @Test void anotherFrontDeskCanConfirmWithoutCreditingTheEntryOwnerAndChefsCannotHandleSubmissions() throws Exception {
         var admin = admin(); var front = employee(admin, "0002", "FRONT_DESK"); var chef = employee(admin, "0003", "PASTRY_CHEF");
@@ -338,6 +415,23 @@ class CustomerSubmissionIT {
             assertNull(old.queryForObject("SELECT requested_receive_at FROM cake_order WHERE order_no='OLD-2'", java.sql.Timestamp.class));
             assertEquals("2026-11-03", old.queryForObject("SELECT requested_receive_date::text FROM cake_order WHERE order_no='OLD-1'", String.class));
         } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + migrationSchema + " CASCADE"); }
+    }
+    private Set<String> duplicateIds(JsonNode detail) {
+        var ids = new HashSet<String>(); detail.path("duplicates").forEach(record -> ids.add(record.path("id").asText())); return ids;
+    }
+    private JsonNode duplicate(JsonNode detail, String id) {
+        for (var record : detail.path("duplicates")) if (id.equals(record.path("id").asText())) return record;
+        throw new AssertionError("Missing duplicate " + id + ": " + detail);
+    }
+    private Result confirmWithToken(Client staff, String id, JsonNode detail) throws Exception {
+        return staff.request("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", detail.at("/submission/version").asLong(),
+                "duplicateCheckToken", detail.path("duplicateCheckToken").asText()));
+    }
+    private String manualOrder(Client staff, String phone, String date) throws Exception {
+        return staff.data("POST", "/api/orders", Map.of("customer", Map.of("phone", phone),
+                "fulfillment", Map.of("type", "PICKUP", "requestedReceiveDate", date, "plannedHandoffAt", date + "T16:00:00+08:00"),
+                "items", List.of(Map.of("name", "手工蛋糕", "productType", "CAKE", "quantity", 2, "attributes", Map.of("size", "8"))),
+                "totalAmountCents", 9900)).path("orderId").asText();
     }
     private long entryAuditCount() { return jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action LIKE 'order.entry_%'", Long.class); }
     private static void await(CountDownLatch latch) {

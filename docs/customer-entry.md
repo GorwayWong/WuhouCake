@@ -21,7 +21,11 @@ V13 迁移只对已确认的客户来源订单回填核对后的期望时间，�
 | 客户提交时间 | 保存在原始填单中 |
 | 订单创建、确认时间 | 取客服确认时刻 |
 
-同原始手机号、同北京时间收货日期的待确认填单提示更新版本。旧单仍可确认，须先明确核实更新填单。不同日期分别处理，不自动覆盖、合并或删除。客服删除待确认填单后，日常列表不再展示，原始内容和删除活动继续保留用于追溯；没有恢复入口。确认后的填单不能通过此删除功能删除正式订单。
+同联系电话、同北京时间收货日期的记录提示疑似重复，覆盖所有客服的待确认填单及扫码、手工创建的正式订单，不限制新旧顺序。待确认填单优先使用已保存核对内容，否则使用原始填写；正式订单使用当前资料。电话比较去除空格、括号和短横线，不推断国家区号。已确认填单只展示对应正式订单；已删除填单不参与，取消订单仅作历史参考，完成订单仍须核对。商品、数量、金额和具体时刻供人工比较，不作为排除条件。
+
+确认页展示全部匹配记录及详情入口。有待确认填单或未取消正式订单时，客服须勾选「已核实，这是独立订单，继续接单。」。候选新增、修改、确认或删除后，旧勾选失效，须重新核对。人工放行的确认日志保存匹配记录快照及独立订单决定，操作者与时间沿用活动字段。检测基于查询时已提交的数据，不提供跨录单入口的强唯一约束。
+
+客服删除待确认填单后，日常列表不再展示，原始内容和删除活动继续保留用于追溯；没有恢复入口。确认后的填单不能通过此删除功能删除正式订单，不自动覆盖、合并或删除其他记录。
 
 ## 字段契约
 
@@ -47,9 +51,9 @@ V13 迁移只对已确认的客户来源订单回填核对后的期望时间，�
 | 方法和路径 | 行为 |
 | --- | --- |
 | `GET /api/customer-submissions?mine=true&status=PENDING&page=1&size=20` | 分页查询；可选全部客服及 `CONFIRMED` 状态 |
-| `GET /api/customer-submissions/{id}` | 原始内容、核对结果、更新填单提示、处理日志 |
+| `GET /api/customer-submissions/{id}` | 原始内容、核对结果、疑似重复记录及核对 token、处理日志 |
 | `PATCH /api/customer-submissions/{id}` | `{expectedVersion, review}` 保存核对结果 |
-| `POST /api/customer-submissions/{id}/confirm` | `{expectedVersion, acknowledgedNewerSubmissionId?}` 确认生成正式订单 |
+| `POST /api/customer-submissions/{id}/confirm` | `{expectedVersion, duplicateCheckToken?}` 确认生成正式订单；需核对时提交当前 token |
 | `DELETE /api/customer-submissions/{id}` | `{expectedVersion}` 软删除未确认填单 |
 | `GET /api/customer-submissions/entry?ownerId=...` | 本人二维码；管理人员可查询同事二维码 |
 | `POST /api/customer-submissions/entry?ownerId=...` | `{action}`：`CREATE`、`ENABLE`、`DISABLE`、`RESET`；其他员工先由本人生成入口 |
@@ -57,11 +61,13 @@ V13 迁移只对已确认的客户来源订单回填核对后的期望时间，�
 
 `review` 包含客户 `content`、与商品逐项对应的可选 `prices`、`totalAmountCents`、`creditedEmployeeId`、`plannedHandoffAt`。金额单位为非负整数分，空与零不同。状态变化使用版本校验；`409 CONCURRENT_MODIFICATION` 后读取最新状态人工核对。保存与确认是两个独立操作，不自动覆盖他人核对结果。
 
+详情和列表项的 `duplicates` 返回记录种类、ID、版本、状态、订单号、联系电话、当前收货日期和时刻、商品名称与数量、总金额、经办员工、创建时间及 `requiresAcknowledgement`。`duplicateCheckToken` 绑定当前填单 ID／版本和完整候选集合，填单非待确认时为 null。确认事务内重新查询并比对 token；旧 `acknowledgedNewerSubmissionId` 请求字段仍可解析，但不作为放行依据。
+
 二维码 `CREATE` 创建启用入口，已有入口不受重复创建影响；`RESET` 仅轮换令牌，保留当前启停状态；只有 `ENABLE`／`DISABLE` 改变启停状态。实际创建、变更和重置通过审计模块 `appendChange()` 与二维码写入同一事务，审计失败整体回滚。审计动作是 `order.entry_created`、`order.entry_enabled`、`order.entry_disabled`、`order.entry_reset`，记录实际操作者、入口和所属员工、时间、服务端请求 ID、启停前后值及令牌是否轮换，不记录令牌或完整链接；无变化的幂等操作不新增变更日志。管理人员代操作时与所属员工分别记录。
 
 公开 GET 使用只读事务和普通查询，不获取员工或入口行锁。POST 先共享锁定所属员工并核查在职、岗位，再共享锁定入口并复核令牌及状态；锁保持至填单事务结束。身份模块的共享校验方法要求调用方事务，二维码管理按相同的「所属员工 → 入口」顺序获取锁。多个提交可同时持有共享锁，而归档、岗位变更、停用和重置与提交互斥。已持锁的合法提交可先完成，之后管理变更生效；变更已提交后的新请求会被拒绝。
 
-同一入口与幂等标识只接收同一份规范化内容，不同内容返回 `409 IDEMPOTENCY_KEY_CONFLICT`。确认事务原子保存订单、填单状态、唯一关联与日志；重试已成功确认的操作返回原订单，不再建单。确认时检测到尚未核实的新填单返回 `409 NEWER_SUBMISSION_EXISTS`。
+同一入口与幂等标识只接收同一份规范化内容，不同内容返回 `409 IDEMPOTENCY_KEY_CONFLICT`。确认事务原子保存订单、填单状态、唯一关联与日志；重试已成功确认的操作返回原订单，不再建单。缺少必要的核对 token 或 token 已过期时返回 `409 DUPLICATE_REVIEW_REQUIRED`；前端刷新候选、取消勾选并保留未保存输入。
 
 ## 部署与保护
 

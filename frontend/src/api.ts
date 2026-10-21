@@ -44,7 +44,7 @@ export function errorText(error: unknown): string {
     ENTRY_UNAVAILABLE: '填写入口已停用或失效，请联系发送二维码的客服。',
     SUBMISSION_NOT_FOUND: '填单不存在，请返回列表重新查看。',
     SUBMISSION_NOT_PENDING: '填单已确认或删除，请读取最新记录。',
-    NEWER_SUBMISSION_EXISTS: '同手机号、同收货日期有更新填单，请刷新并核对后确认。',
+    DUPLICATE_REVIEW_REQUIRED: '疑似重复记录尚未核实或已发生变化，请核对最新记录后再确认接单。',
     SUBMISSION_FORBIDDEN: '仅前台和管理人员可以处理客户填单。',
     SUBMISSION_TOO_LARGE: '填写内容过长，请精简商品需求后再提交。',
     SUBMISSION_THROTTLED: '提交过于频繁，请稍后再试。',

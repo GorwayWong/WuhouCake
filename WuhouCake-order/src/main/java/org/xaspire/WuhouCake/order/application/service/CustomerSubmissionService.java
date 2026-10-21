@@ -91,9 +91,12 @@ public class CustomerSubmissionService {
         // A lost confirmation response can be retried without creating another order.
         if ("CONFIRMED".equals(submission.status())) return view(submission, true);
         submission.requirePending(expected);
-        UUID newer = submissions.newer(submission);
-        if (newer != null && !newer.equals(command.acknowledgedNewerSubmissionId())) throw new OrderFailure("NEWER_SUBMISSION_EXISTS");
         var review = submission.reviewed(); if (review == null) throw invalid(); review.requireConfirmation();
+        var duplicates = submissions.duplicates(submission);
+        boolean requiresAcknowledgement = duplicates.stream().anyMatch(CustomerSubmissions.Duplicate::requiresAcknowledgement);
+        if ((requiresAcknowledgement || command.duplicateCheckToken() != null)
+                && !duplicateCheckToken(submission, duplicates).equals(command.duplicateCheckToken()))
+            throw new OrderFailure("DUPLICATE_REVIEW_REQUIRED");
         var content = review.content();
         var items = new ArrayList<OrderCommands.Item>();
         for (int i = 0; i < content.items().size(); i++) {
@@ -106,8 +109,13 @@ public class CustomerSubmissionService {
         var order = orders.createCustomer(create, new OrderCommands.Operator(me.accountId(), me.nickname()), id);
         submissions.update(submission, review, "CONFIRMED", order.orderId(), clock.instant());
         submissions.markOrder(order.orderId(), submission);
-        submissions.append(id, "CONFIRMED", me.accountId(), me.nickname(), Map.of("orderId", order.orderId(), "source", "CUSTOMER_SUBMITTED",
-                "creditedEmployeeId", review.creditedEmployeeId(), "creditedEmployeeName", order.creditedEmployee().nickname()), clock.instant());
+        var confirmation = new LinkedHashMap<String, Object>();
+        confirmation.put("orderId", order.orderId()); confirmation.put("source", "CUSTOMER_SUBMITTED");
+        confirmation.put("creditedEmployeeId", review.creditedEmployeeId()); confirmation.put("creditedEmployeeName", order.creditedEmployee().nickname());
+        if (requiresAcknowledgement) {
+            confirmation.put("duplicateReview", Map.of("decision", "CONFIRMED_INDEPENDENT_ORDER", "records", duplicates));
+        }
+        submissions.append(id, "CONFIRMED", me.accountId(), me.nickname(), confirmation, clock.instant());
         return view(require(id, false), true);
     }
     @Transactional public void delete(UUID id, Number expectedVersion) {
@@ -145,8 +153,14 @@ public class CustomerSubmissionService {
         var submission = submissions.find(id, lock); if (submission == null) throw new OrderFailure("SUBMISSION_NOT_FOUND"); return submission;
     }
     private SubmissionViews.Detail view(CustomerSubmission submission, boolean history) {
-        return new SubmissionViews.Detail(convert(submission, SubmissionViews.Submission.class), "PENDING".equals(submission.status()) ? submissions.newer(submission) : null,
+        var duplicates = "PENDING".equals(submission.status()) ? submissions.duplicates(submission) : List.<CustomerSubmissions.Duplicate>of();
+        return new SubmissionViews.Detail(convert(submission, SubmissionViews.Submission.class),
+                duplicates.stream().map(record -> convert(record, SubmissionViews.Duplicate.class)).toList(),
+                "PENDING".equals(submission.status()) ? duplicateCheckToken(submission, duplicates) : null,
                 history ? submissions.activities(submission.id()).stream().map(a -> convert(a, SubmissionViews.Activity.class)).toList() : List.of());
+    }
+    private String duplicateCheckToken(CustomerSubmission submission, List<CustomerSubmissions.Duplicate> duplicates) {
+        return fingerprint(List.of(submission.id(), submission.version(), duplicates));
     }
     private <T> T convert(Object value, Class<T> type) { return json.read(json.write(value), type); }
     @SuppressWarnings("unchecked") private Map<String, Object> snapshot(Object value) { return convert(value, Map.class); }
