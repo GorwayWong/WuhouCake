@@ -10,7 +10,7 @@ public final class SubmissionCommands {
     public record Price(Number unitPriceCents, Number memberPriceCents) { }
     public record Review(Content content, List<Price> prices, Number totalAmountCents, UUID creditedEmployeeId, Instant plannedHandoffAt) { }
     public record Save(Number expectedVersion, Review review) { }
-    public record Confirm(Number expectedVersion, UUID acknowledgedNewerSubmissionId) { }
+    public record Confirm(Number expectedVersion, String duplicateCheckToken, UUID acknowledgedNewerSubmissionId) { }
     public record Delete(Number expectedVersion) { }
     public record EntryChange(String action) { }
 }
