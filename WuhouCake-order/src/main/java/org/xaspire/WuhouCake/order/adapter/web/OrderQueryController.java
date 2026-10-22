@@ -4,6 +4,9 @@ import java.time.LocalDate;
 import java.util.List;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.security.core.Authentication;
+import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
+import org.xaspire.WuhouCake.order.application.service.OrderViewAccess;
 import org.xaspire.WuhouCake.order.api.dto.OrderQueryViews;
 import org.xaspire.WuhouCake.order.application.service.OrderQueryService;
 import org.xaspire.WuhouCake.shared.response.ApiResponse;
@@ -17,14 +20,16 @@ public class OrderQueryController {
     @GetMapping("/calendar")
     public ApiResponse<List<OrderQueryViews.CalendarOrder>> calendar(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
-        return ApiResponse.success(queries.calendar(from, to));
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to, Authentication authentication) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        return ApiResponse.success(OrderViewAccess.calendar(queries.calendar(from, to), account.access()));
     }
 
     @GetMapping("/workbench")
     public ApiResponse<OrderQueryViews.Workbench> workbench(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
-            @RequestParam(defaultValue = "true") boolean includeMetrics) {
-        return ApiResponse.success(queries.workbench(date, includeMetrics));
+            @RequestParam(defaultValue = "true") boolean includeMetrics, Authentication authentication) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        return ApiResponse.success(OrderViewAccess.workbench(queries.workbench(date, includeMetrics), account.access()));
     }
 }

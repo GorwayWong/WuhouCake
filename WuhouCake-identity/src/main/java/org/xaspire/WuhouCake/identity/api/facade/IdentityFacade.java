@@ -9,10 +9,14 @@ import org.xaspire.WuhouCake.shared.response.Page;
 public interface IdentityFacade {
     record AccountView(UUID accountId, String employeeNumber, String nickname, Set<String> jobRoles,
             String systemRole, String status, boolean passwordChangeRequired, long credentialVersion,
-            Instant createdAt, Instant archivedAt, long version) {
+            Instant createdAt, Instant archivedAt, long version, EmployeeAccess access) {
+        public AccountView {
+            jobRoles = Set.copyOf(jobRoles);
+            access = java.util.Objects.requireNonNull(access);
+        }
         public AccountView(UUID accountId, String employeeNumber, String nickname, Set<String> jobRoles, String systemRole,
                 String status, boolean passwordChangeRequired, long credentialVersion, Instant createdAt, Instant archivedAt) {
-            this(accountId, employeeNumber, nickname, jobRoles, systemRole, status, passwordChangeRequired, credentialVersion, createdAt, archivedAt, 0);
+            this(accountId, employeeNumber, nickname, jobRoles, systemRole, status, passwordChangeRequired, credentialVersion, createdAt, archivedAt, 0, EmployeeAccess.none());
         }
     }
     record EmployeeOption(UUID accountId, String employeeNumber, String nickname, String status) { }

@@ -4,7 +4,7 @@
 
 ## 员工管理与订单归属
 
-管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、随机重置密码、指定新密码和归档。工号固定，岗位不等于系统权限；归档代替物理删除，保留历史身份。账号响应增加 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。
+管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、随机重置密码、指定新密码和归档。工号固定，业务岗位与系统管理身份独立；归档代替物理删除，保留历史身份。账号响应包含 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。账号视图的 access 返回当前有效权限及派生 UI 能力，契约和岗位配置见[员工权限说明](authorization.md)。
 
 | 接口 | 契约 |
 | --- | --- |
@@ -78,7 +78,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 
 同一工号的失败次数与正在校验的登录尝试合计最多 5 次，准入通过 Redis 原子占用；超过时返回 LOGIN_THROTTLED。失败转为计数，累计第 5 次失败后锁定 10 分钟；成功清除失败次数但保留其他在途占用，基础设施异常仅释放本次占用。未完成的占用最长保留 10 分钟，避免进程中断后永久占用配额。
 
-每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配。岗位不是权限：MANAGER 不等于 SUPER_ADMIN。所有完成改密的员工共享订单、查询统计及导出权限，包括 GET /api/admin/orders 和 GET /api/admin/orders/export；员工账号管理及其身份审计仍仅管理员可用，其余 /api/admin 路径不因此放开。
+每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配，并按当前岗位配置重新计算操作权限。MANAGER 不等于 SUPER_ADMIN；多岗位业务权限取并集，员工管理及身份审计只由系统管理员身份授予。未覆盖岗位配置时，完成改密的员工保留共享订单、查询统计及导出权限；可通过 `wuhoucake.authorization.job-permissions` 收窄具体岗位。HTTP 方法和路径显式映射权限，未映射路由拒绝；敏感字段、导出、活动记录和 SSE 的边界见[员工权限说明](authorization.md)。
 
 新建、重置或恢复的账号须首次改密。改密前只允许 GET /api/me 和 POST /api/me/password，其他业务请求返回 PASSWORD_CHANGE_REQUIRED；认证端点仍可用于退出。新密码必须与当前密码不同，改密成功会撤销旧凭证，前端需重新登录。
 
@@ -98,7 +98,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 | POST /api/auth/login | employeeNumber、password | CSRF；返回令牌视图并设置刷新 Cookie |
 | POST /api/auth/refresh | 刷新 Cookie，无 JSON 必填字段 | CSRF；绝对会话到期不延长 |
 | POST /api/auth/logout | 刷新 Cookie | CSRF；撤销该 session，清除刷新/CSRF Cookie |
-| GET /api/me | Bearer | 当前账号，可在首次改密前调用 |
+| GET /api/me | Bearer | 当前账号及 access 权限/UI 能力，可在首次改密前调用；改密前 access 为空集合 |
 | PATCH /api/me/nickname | nickname | 改名，不改变固定工号 |
 | POST /api/me/password | currentPassword、newPassword | 改密、清除刷新 Cookie，旧凭证失效 |
 | GET /api/admin/employees | 可选 employeeNumber、nickname、status、jobRole、page、size | SUPER_ADMIN；分页查询 |

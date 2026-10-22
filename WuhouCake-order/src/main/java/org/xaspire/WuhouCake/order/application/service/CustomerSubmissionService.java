@@ -7,6 +7,7 @@ import java.util.*;
 import org.springframework.transaction.annotation.Transactional;
 import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
+import org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission;
 import org.xaspire.WuhouCake.order.api.command.*;
 import org.xaspire.WuhouCake.order.api.dto.SubmissionViews;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
@@ -15,6 +16,7 @@ import org.xaspire.WuhouCake.order.domain.port.CustomerSubmissions;
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
 import org.xaspire.WuhouCake.shared.response.Page;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.*;
 
 public class CustomerSubmissionService {
     private final CustomerSubmissions submissions; private final IdentityFacade identity; private final OrderService orders;
@@ -26,11 +28,11 @@ public class CustomerSubmissionService {
         this.publicOrigin = publicOrigin.replaceAll("/+$", "");
     }
     @Transactional(readOnly = true) public SubmissionViews.Entry entry(UUID ownerId) {
-        var me = staff(); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
+        var me = staff(CUSTOMER_ENTRY_MANAGE); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
         return entryView(submissions.entryForOwner(owner));
     }
     @Transactional public SubmissionViews.Entry changeEntry(UUID ownerId, String action, String requestId) {
-        var me = staff(); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
+        var me = staff(CUSTOMER_ENTRY_MANAGE); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
         var employee = identity.selectEmployee(owner); var old = submissions.entryForOwner(owner);
         if (action == null || !Set.of("CREATE", "RESET", "ENABLE", "DISABLE").contains(action)) throw invalid();
         if (old == null && (!owner.equals(me.accountId()) || !"CREATE".equals(action))) throw invalid();
@@ -86,7 +88,7 @@ public class CustomerSubmissionService {
         return view(require(id, false), true);
     }
     @Transactional public SubmissionViews.Detail confirm(UUID id, SubmissionCommands.Confirm command) {
-        var me = staff(); var submission = require(id, true);
+        var me = staff(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_CREATE); var submission = require(id, true);
         long expected = nonNegativeInteger(command.expectedVersion());
         // A lost confirmation response can be retried without creating another order.
         if ("CONFIRMED".equals(submission.status())) return view(submission, true);
@@ -119,7 +121,7 @@ public class CustomerSubmissionService {
         return view(require(id, false), true);
     }
     @Transactional public void delete(UUID id, Number expectedVersion) {
-        var me = staff(); var submission = require(id, true); submission.requirePending(nonNegativeInteger(expectedVersion));
+        var me = staff(CUSTOMER_SUBMISSION_PROCESS); var submission = require(id, true); submission.requirePending(nonNegativeInteger(expectedVersion));
         submissions.update(submission, submission.reviewed(), "DELETED", null, clock.instant());
         submissions.append(id, "DELETED", me.accountId(), me.nickname(), Map.of("before", "PENDING", "after", "DELETED"), clock.instant());
     }
@@ -139,12 +141,16 @@ public class CustomerSubmissionService {
         return entry;
     }
     private IdentityFacade.AccountView staff() {
+        return staff(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ);
+    }
+    private IdentityFacade.AccountView staff(Permission... required) {
         var me = identity.me();
-        if (!"ACTIVE".equals(me.status()) || !(me.jobRoles().contains("FRONT_DESK") || me.jobRoles().contains("MANAGER"))) throw new OrderFailure("SUBMISSION_FORBIDDEN");
+        if (!"ACTIVE".equals(me.status()) || me.passwordChangeRequired()
+                || !Arrays.stream(required).allMatch(me.access()::allows)) throw new OrderFailure("SUBMISSION_FORBIDDEN");
         return me;
     }
     private static void manage(IdentityFacade.AccountView me, UUID owner) {
-        if (!me.accountId().equals(owner) && !me.jobRoles().contains("MANAGER")) throw new OrderFailure("SUBMISSION_FORBIDDEN");
+        if (!me.accountId().equals(owner) && !me.access().allows(CUSTOMER_ENTRY_MANAGE_ALL)) throw new OrderFailure("SUBMISSION_FORBIDDEN");
     }
     private SubmissionViews.Entry entryView(CustomerSubmissions.Entry entry) {
         return entry == null ? null : new SubmissionViews.Entry(entry.ownerId(), entry.ownerName(), publicOrigin + "/#/fill/" + entry.token(), entry.enabled());

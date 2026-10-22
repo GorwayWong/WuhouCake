@@ -8,6 +8,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_READ;
 
 @RestController
 @RequestMapping("/api/orders")
@@ -25,7 +26,7 @@ public final class OrderStreamController {
             var accountId = UUID.fromString(jwt.getSubject()); var sessionId = UUID.fromString(jwt.getClaimAsString("sid"));
             return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("X-Accel-Buffering", "no")
                     .body(streams.subscribe(accountId, version.longValue(), jwt.getExpiresAt(),
-                            () -> !identity.authenticate(accountId, sessionId, version.longValue()).passwordChangeRequired()));
+                            () -> identity.authenticate(accountId, sessionId, version.longValue()).access().allows(ORDER_READ)));
         } catch (IllegalArgumentException failure) { return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build(); }
         catch (RejectedExecutionException failure) { return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build(); }
     }

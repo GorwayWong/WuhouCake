@@ -40,6 +40,7 @@ class IdentityIT {
         registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("spring.datasource.hikari.schema", () -> SCHEMA);
         registry.add("wuhoucake.identity.redis-namespace", () -> NAMESPACE);
+        registry.add("wuhoucake.authorization.job-permissions.PASTRY_CHEF", () -> "ORDER_READ,ORDER_PRODUCTION_UPDATE,ORDER_NOTE_CREATE");
     }
     @LocalServerPort int port;
     @Autowired ObjectMapper json;
@@ -313,11 +314,64 @@ class IdentityIT {
         assertEquals(403, admin.request("GET", "/api/admin/employees", null).status);
         assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM identity_account", Long.class));
     }
-    @Test void unknownResourcesAndUnsupportedMethodsHaveStandardErrors() throws Exception {
+    @Test void unmappedRoutesAreDeniedAndKnownRoutesRetainBusinessErrors() throws Exception {
         Browser admin = administrator();
-        assertEquals(404, admin.request("GET", "/api/admin/missing", null).status);
-        assertEquals(405, admin.request("DELETE", "/api/admin/employees", null).status);
+        assertEquals(403, admin.request("GET", "/api/admin/missing", null).status);
+        assertEquals(403, admin.request("DELETE", "/api/admin/employees", null).status);
         assertEquals(404, admin.request("POST", "/api/admin/employees/" + UUID.randomUUID() + "/archive", null).status);
+    }
+    @Test void jobChangesRecomputePermissionsForExistingSessionsAndProtectActualOrderData() throws Exception {
+        var admin = administrator(); var created = provision(admin, "ACCESS01", "STAFF");
+        String accountId = created.at("/data/account/accountId").asText();
+        String temporary = created.at("/data/temporaryPassword").asText();
+        var staff = new Browser(); staff.login("ACCESS01", temporary);
+        assertEquals(0, staff.request("GET", "/api/me", null).body.at("/data/access/permissions").size());
+        staff.changePassword(temporary, PASSWORD); staff.login("ACCESS01", PASSWORD);
+        String existingToken = staff.token;
+        var before = staff.request("GET", "/api/me", null).body.path("data");
+        assertTrue(before.path("access").path("permissions").toString().contains("ORDER_PAYMENT_UPDATE"));
+        var input = Map.of("customer", Map.of("customerName", "权限测试客户", "phone", "13900000000", "memberPhone", "13800000000"),
+                "creditedEmployeeId", accountId, "totalAmountCents", 20000,
+                "fulfillment", Map.of("type", "DELIVERY", "address", "权限测试地址", "requestedReceiveDate", "2026-10-22", "plannedHandoffAt", "2026-10-22T10:00:00Z"),
+                "items", List.of(Map.of("name", "权限测试蛋糕", "productType", "CAKE", "quantity", 1, "unitPriceCents", 20000,
+                        "memberPriceCents", 18000, "attributes", Map.of("base", "原味", "size", "6"))));
+        var orderResponse = staff.request("POST", "/api/orders", input);
+        assertEquals(201, orderResponse.status, orderResponse.body.toString());
+        String orderId = orderResponse.body.at("/data/orderId").asText();
+        var revised = admin.request("PATCH", "/api/admin/employees/" + accountId,
+                Map.of("expectedVersion", before.path("version").asLong(), "nickname", "制作员工", "jobRoles", List.of("PASTRY_CHEF")));
+        assertEquals(200, revised.status, revised.body.toString());
+        assertEquals(existingToken, staff.token);
+        var after = staff.request("GET", "/api/me", null).body.path("data");
+        assertEquals(before.path("credentialVersion"), after.path("credentialVersion"));
+        assertEquals(Set.of("ORDER_READ", "ORDER_PRODUCTION_UPDATE", "ORDER_NOTE_CREATE"),
+                json.convertValue(after.at("/access/permissions"), Set.class));
+        assertFalse(after.at("/access/uiCapabilities").toString().contains("ORDER_AMOUNTS"));
+        assertFalse(after.at("/access/uiCapabilities").toString().contains("EMPLOYEE_MANAGEMENT"));
+        var restricted = staff.request("GET", "/api/orders/" + orderId, null);
+        assertEquals(200, restricted.status);
+        assertTrue(restricted.body.at("/data/customer").isNull());
+        assertTrue(restricted.body.at("/data/fulfillment/address").isNull());
+        assertTrue(restricted.body.at("/data/totalAmountCents").isNull());
+        assertTrue(restricted.body.at("/data/items/0/unitPriceCents").isNull());
+        assertEquals("原味", restricted.body.at("/data/items/0/attributes/base").asText());
+        long activities = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
+        long audit = jdbc.queryForObject("SELECT count(*) FROM audit_operation", Long.class);
+        var denied = staff.request("PATCH", "/api/orders/" + orderId + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID"));
+        assertEquals(403, denied.status); assertEquals("FORBIDDEN", denied.body.path("code").asText());
+        assertEquals(403, staff.request("GET", "/api/admin/orders", null).status);
+        assertEquals(403, staff.request("GET", "/api/orders/" + orderId + "/activities", null).status);
+        assertEquals(403, staff.request("POST", "/api/orders/" + orderId + "/exports/xlsx", null).status);
+        assertEquals(403, staff.request("GET", "/api/customer-submissions", null).status);
+        assertEquals(activities, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
+        assertEquals(audit, jdbc.queryForObject("SELECT count(*) FROM audit_operation", Long.class));
+        assertEquals("UNPAID", admin.request("GET", "/api/orders/" + orderId, null).body.at("/data/paymentStatus").asText());
+        var restored = admin.request("PATCH", "/api/admin/employees/" + accountId,
+                Map.of("expectedVersion", after.path("version").asLong(), "nickname", "兼任员工", "jobRoles", List.of("PASTRY_CHEF", "FRONT_DESK")));
+        assertEquals(200, restored.status);
+        assertEquals(existingToken, staff.token);
+        assertEquals(200, staff.request("PATCH", "/api/orders/" + orderId + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
+        assertEquals(403, staff.request("GET", "/api/admin/employees", null).status);
     }
     private Browser administrator() throws Exception {
         identity.initializeAdministrator("0001", "店长", INITIAL);

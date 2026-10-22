@@ -27,7 +27,13 @@ class CustomerSubmissionServiceTest {
             new JsonCodec(new ObjectMapper().findAndRegisterModules()), Clock.fixed(NOW, ZoneOffset.UTC), "https://example.test", mock(AuditFacade.class));
 
     @BeforeEach void setup() {
-        when(identity.me()).thenReturn(new IdentityFacade.AccountView(owner, "0001", "客服", Set.of("FRONT_DESK"), "STAFF", "ACTIVE", false, 0, NOW, null));
+        when(identity.me()).thenReturn(new IdentityFacade.AccountView(owner, "0001", "客服", Set.of("FRONT_DESK"), "STAFF", "ACTIVE", false, 0, NOW, null, 0,
+                org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.of(Set.of(
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.CUSTOMER_SUBMISSION_PROCESS,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.CUSTOMER_ENTRY_MANAGE,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_CUSTOMER_READ,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_AMOUNT_READ,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_CREATE))));
         var content = new CustomerSubmission.Content("13800000000", null, "PICKUP", null, NOW,
                 List.of(new CustomerSubmission.Product("蛋糕", "CAKE", 1, Map.of("size", "8"))));
         var submission = new CustomerSubmission(id, UUID.randomUUID(), owner, "客服", 1, "PENDING", content,

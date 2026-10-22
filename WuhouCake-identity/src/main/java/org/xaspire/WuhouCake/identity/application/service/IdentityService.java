@@ -39,16 +39,24 @@ public class IdentityService implements IdentityFacade {
     private final Duration accessLifetime;
     private final Duration sessionLifetime;
     private final ApplicationEventPublisher events;
+    private final EmployeeAccessPolicy accessPolicy;
     private final String dummyHash;
     private final AtomicLong auditFailures = new AtomicLong();
 
     public IdentityService(Accounts accounts, Credentials credentials, Sessions sessions, Attempts attempts,
             AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock,
             Duration accessLifetime, Duration sessionLifetime, ApplicationEventPublisher events) {
+        this(accounts, credentials, sessions, attempts, tokens, actors, audit, ids, clock, accessLifetime, sessionLifetime,
+                events, new EmployeeAccessPolicy(java.util.Map.of()));
+    }
+    public IdentityService(Accounts accounts, Credentials credentials, Sessions sessions, Attempts attempts,
+            AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock,
+            Duration accessLifetime, Duration sessionLifetime, ApplicationEventPublisher events, EmployeeAccessPolicy accessPolicy) {
         this.accounts = accounts; this.credentials = credentials; this.sessions = sessions; this.attempts = attempts;
         this.tokens = tokens; this.actors = actors; this.audit = audit; this.ids = ids; this.clock = clock;
         this.accessLifetime = accessLifetime; this.sessionLifetime = sessionLifetime;
         this.events = events;
+        this.accessPolicy = accessPolicy;
         this.dummyHash = credentials.encode(credentials.temporaryPassword());
     }
     @Override public Login login(String number, String password, String requestId) {
@@ -147,7 +155,7 @@ public class IdentityService implements IdentityFacade {
         var search = new Accounts.Search(query.employeeNumber() == null ? null : AccountValues.employeeNumber(query.employeeNumber()),
                 query.nickname(), query.status() == null ? null : Status.valueOf(query.status()),
                 query.jobRole() == null ? null : JobRole.valueOf(query.jobRole()), query.page(), query.size());
-        return new Page<>(accounts.search(search).stream().map(IdentityService::view).toList(), accounts.count(search), query.page(), query.size());
+        return new Page<>(accounts.search(search).stream().map(this::view).toList(), accounts.count(search), query.page(), query.size());
     }
     @Override @Transactional
     public Provisioned resetPassword(UUID id) {
@@ -229,8 +237,8 @@ public class IdentityService implements IdentityFacade {
     public EmployeeOption lockCustomerEntryOwner(UUID id) {
         return entryOwner(accounts.lockShared(id).orElse(null));
     }
-    private static EmployeeOption entryOwner(EmployeeAccount employee) {
-        if (employee == null || employee.status() != Status.ACTIVE || employee.jobRoles().stream().noneMatch(role -> role.name().equals("FRONT_DESK") || role.name().equals("MANAGER"))) return null;
+    private EmployeeOption entryOwner(EmployeeAccount employee) {
+        if (employee == null || !accessPolicy.canOwnCustomerEntry(employee)) return null;
         return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
     }
     @Transactional
@@ -319,9 +327,9 @@ public class IdentityService implements IdentityFacade {
         }
     }
     public long auditFailureCount() { return auditFailures.get(); }
-    private static AccountView view(EmployeeAccount account) {
+    private AccountView view(EmployeeAccount account) {
         return new AccountView(account.id(), account.employeeNumber(), account.nickname(),
                 account.jobRoles().stream().map(Enum::name).collect(Collectors.toUnmodifiableSet()), account.systemRole().name(),
-                account.status().name(), account.passwordChangeRequired(), account.credentialVersion(), account.createdAt(), account.archivedAt(), account.version());
+                account.status().name(), account.passwordChangeRequired(), account.credentialVersion(), account.createdAt(), account.archivedAt(), account.version(), accessPolicy.access(account));
     }
 }

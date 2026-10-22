@@ -15,8 +15,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.xaspire.WuhouCake.bootstrap.configuration.*;
 import org.xaspire.WuhouCake.bootstrap.security.*;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
+import org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.*;
 import org.xaspire.WuhouCake.order.adapter.web.*;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands;
+import org.xaspire.WuhouCake.order.api.dto.OrderViews;
+import org.xaspire.WuhouCake.order.api.dto.OrderQueryViews;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
@@ -57,7 +61,8 @@ class OrderStreamWebTest {
         when(identity.authenticate(accountId, sessionId, 0)).thenReturn(account(false));
     }
     private IdentityFacade.AccountView account(boolean passwordChangeRequired) {
-        return new IdentityFacade.AccountView(accountId, "0002", "员工", Set.of("FRONT_DESK"), "STAFF", "ACTIVE", passwordChangeRequired, 0, Instant.now(), null);
+        return new IdentityFacade.AccountView(accountId, "0002", "员工", Set.of("FRONT_DESK"), "STAFF", "ACTIVE", passwordChangeRequired, 0, Instant.now(), null, 0,
+                passwordChangeRequired ? EmployeeAccess.none() : EmployeeAccess.of(Set.of(ORDER_READ, ORDER_FULFILLMENT_UPDATE, ORDER_CANCEL)));
     }
     @Test void anonymousAndInvalidBearerAreRejectedByExistingSecurityChain() throws Exception {
         mvc.perform(get("/api/orders/stream")).andExpect(status().isUnauthorized());
@@ -134,5 +139,105 @@ class OrderStreamWebTest {
         doThrow(new OrderFailure("ORDER_NOT_CANCELLABLE")).when(orders).cancel(eq(id), any(), any());
         mvc.perform(post(cancel).header("Authorization", "Bearer valid").contentType("application/json").content("{\"expectedVersion\":5,\"reason\":\"取消\"}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_NOT_CANCELLABLE"));
+    }
+
+    @Test void operationPermissionsRejectWritesExportsAndSensitiveReadsBeforeCallingServices() throws Exception {
+        withPermissions(Set.of(ORDER_READ, ORDER_PRODUCTION_UPDATE));
+        String id = UUID.randomUUID().toString(), item = UUID.randomUUID().toString();
+        for (var route : List.of(
+                "POST /api/orders", "PATCH /api/orders/" + id, "PATCH /api/orders/" + id + "/information",
+                "PATCH /api/orders/" + id + "/payment-status", "POST /api/orders/" + id + "/cancel",
+                "POST /api/orders/" + id + "/fulfillment-actions", "POST /api/orders/" + id + "/notes",
+                "POST /api/orders/" + id + "/items", "POST /api/orders/" + id + "/items/" + item + "/remove",
+                "POST /api/orders/" + id + "/images", "DELETE /api/orders/" + id + "/images/" + item,
+                "POST /api/orders/" + id + "/exports/xlsx", "POST /api/orders/exports/zip",
+                "POST /api/orders/recognition/parse", "POST /api/orders/recognition/assist",
+                "GET /api/orders/" + id + "/activities", "GET /api/orders/" + id + "/customer-origin",
+                "GET /api/admin/orders", "GET /api/admin/orders/export", "GET /api/admin/employees",
+                "GET /api/admin/audit-logs", "GET /api/customer-submissions", "GET /api/customer-submissions/entry",
+                "POST /api/orders/" + id + "/future-operation")) {
+            String[] parts = route.split(" ", 2);
+            mvc.perform(request(org.springframework.http.HttpMethod.valueOf(parts[0]), parts[1])
+                    .header("Authorization", "Bearer valid").contentType("application/json").content("{}"))
+                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        }
+        verifyNoInteractions(orders, creations, images, exports, management, queries);
+    }
+
+    @Test void detailAndProductionResponsesRedactStructuredCustomerAndFinancialData() throws Exception {
+        withPermissions(Set.of(ORDER_READ, ORDER_PRODUCTION_UPDATE));
+        var detail = sensitiveOrder();
+        when(orders.detail(detail.orderId())).thenReturn(detail);
+        when(orders.productionAction(eq(detail.orderId()), any(), any())).thenReturn(detail);
+        for (var request : List.of(get("/api/orders/" + detail.orderId()),
+                post("/api/orders/" + detail.orderId() + "/production-actions").contentType("application/json")
+                        .content("{\"expectedVersion\":0,\"action\":\"CONFIRM_LAYER\"}"))) {
+            mvc.perform(request.header("Authorization", "Bearer valid"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.orderNo").value("TEST001"))
+                    .andExpect(jsonPath("$.data.customer").isEmpty()).andExpect(jsonPath("$.data.fulfillment.address").isEmpty())
+                    .andExpect(jsonPath("$.data.totalAmountCents").isEmpty()).andExpect(jsonPath("$.data.paymentStatus").isEmpty())
+                    .andExpect(jsonPath("$.data.items[0].unitPriceCents").isEmpty()).andExpect(jsonPath("$.data.items[0].memberPriceCents").isEmpty())
+                    .andExpect(jsonPath("$.data.items[0].attributes.base").value("原味"));
+        }
+        withPermissions(Set.of(ORDER_READ, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
+        mvc.perform(get("/api/orders/" + detail.orderId()).header("Authorization", "Bearer valid"))
+                .andExpect(jsonPath("$.data.customer.phone").value("13900000000"))
+                .andExpect(jsonPath("$.data.totalAmountCents").value(20000));
+        assertNotNull(detail.customer());
+        assertEquals(20000L, detail.totalAmountCents());
+    }
+
+    @Test void calendarAndWorkbenchUseTheSameDataPermissions() throws Exception {
+        withPermissions(Set.of(ORDER_READ));
+        var detail = sensitiveOrder(); var date = LocalDate.of(2026, 10, 22);
+        when(queries.calendar(null, null)).thenReturn(List.of(new OrderQueryViews.CalendarOrder(detail.orderId(), "TEST001", date,
+                "CREATED", "WAITING", "PAID", "DELIVERY", Instant.now(), List.of())));
+        var item = new OrderQueryViews.Item(UUID.randomUUID(), "蛋糕", "CAKE", 1, 20000L, 18000L, Map.of("base", "原味"), List.of());
+        when(queries.workbench(null, true)).thenReturn(new OrderQueryViews.Workbench(date, new OrderQueryViews.Metrics(1, 1, 1),
+                List.of(new OrderQueryViews.PendingOrder(detail.orderId(), "TEST001", date, "CREATED", "WAITING", "PAID", "DELIVERY",
+                        Instant.now(), detail.customer(), "客户地址", Instant.now(), List.of(item)))));
+        mvc.perform(get("/api/orders/calendar").header("Authorization", "Bearer valid"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].paymentStatus").isEmpty());
+        mvc.perform(get("/api/orders/workbench").header("Authorization", "Bearer valid"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.pendingOrders[0].customer").isEmpty())
+                .andExpect(jsonPath("$.data.pendingOrders[0].address").isEmpty())
+                .andExpect(jsonPath("$.data.pendingOrders[0].items[0].unitPriceCents").isEmpty())
+                .andExpect(jsonPath("$.data.pendingOrders[0].items[0].memberPriceCents").isEmpty());
+    }
+
+    @Test void sensitiveEndpointsRequireDataGrantsEvenWhenTheOperationGrantExists() throws Exception {
+        withPermissions(Set.of(ORDER_READ, ORDER_EXPORT, ORDER_MANAGEMENT_READ, ORDER_ACTIVITY_READ));
+        for (var path : List.of("/api/admin/orders", "/api/admin/orders/export", "/api/orders/" + UUID.randomUUID() + "/activities")) {
+            mvc.perform(get(path).header("Authorization", "Bearer valid")).andExpect(status().isForbidden());
+        }
+        mvc.perform(post("/api/orders/exports/zip").header("Authorization", "Bearer valid").contentType("application/json").content("{}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(orders, exports, management);
+    }
+
+    @Test void revokingReadPermissionClosesExistingStreamsAndRejectsFurtherRequests() throws Exception {
+        var result = mvc.perform(get("/api/orders/stream").header("Authorization", "Bearer valid"))
+                .andExpect(request().asyncStarted()).andReturn();
+        withPermissions(Set.of());
+        streams.changed(new OrderChanged(UUID.randomUUID(), null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED, 1, "TEST001"));
+        assertNull(result.getAsyncResult(3000));
+        assertFalse(result.getResponse().getContentAsString().contains("event:order.changed"));
+        mvc.perform(get("/api/orders/stream").header("Authorization", "Bearer valid")).andExpect(status().isForbidden());
+    }
+
+    private void withPermissions(Set<EmployeeAccess.Permission> permissions) {
+        when(identity.authenticate(accountId, sessionId, 0)).thenReturn(new IdentityFacade.AccountView(accountId, "0002", "制作员工",
+                Set.of("PASTRY_CHEF"), "STAFF", "ACTIVE", false, 0, Instant.now(), null, 0, EmployeeAccess.of(permissions)));
+    }
+
+    private OrderViews.Detail sensitiveOrder() {
+        var now = Instant.now(); var id = UUID.randomUUID();
+        var item = new OrderViews.Item(UUID.randomUUID(), "蛋糕", "CAKE", 1, 20000L, 18000L, Map.of("base", "原味"),
+                "WAITING", "WAITING", now, now, List.of());
+        return new OrderViews.Detail(id, "TEST001", 0, "CREATED", "PAID", "WAITING",
+                new OrderCommands.Customer("客户", "13900000000", "13800000000", "购买人"),
+                new OrderCommands.Fulfillment("DELIVERY", "客户地址", LocalDate.of(2026, 10, 22), now, now),
+                20000L, accountId, now, now, now, List.of(item), null);
     }
 }

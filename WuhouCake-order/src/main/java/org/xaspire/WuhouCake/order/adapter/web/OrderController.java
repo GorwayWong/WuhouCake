@@ -10,6 +10,7 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.application.service.OrderCreationService;
+import org.xaspire.WuhouCake.order.application.service.OrderViewAccess;
 import org.xaspire.WuhouCake.shared.response.*;
 
 @RestController
@@ -22,14 +23,14 @@ public class OrderController {
     @PostMapping @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderViews.Detail> create(@Valid @RequestBody OrderCommands.Create command, Authentication authentication,
             @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId) {
-        return ApiResponse.success(orders.detail(creations.create(command, operator(authentication), requestId)));
+        return visible(orders.detail(creations.create(command, operator(authentication), requestId)), authentication);
     }
     @GetMapping("/{id}")
-    public ApiResponse<OrderViews.Detail> detail(@PathVariable UUID id) { return ApiResponse.success(orders.detail(id)); }
+    public ApiResponse<OrderViews.Detail> detail(@PathVariable UUID id, Authentication authentication) { return visible(orders.detail(id), authentication); }
 
     @PatchMapping("/{id}")
     public ApiResponse<OrderViews.Detail> revise(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Revise command, Authentication authentication) {
-        return ApiResponse.success(orders.revise(id, command, operator(authentication)));
+        return visible(orders.revise(id, command, operator(authentication)), authentication);
     }
     @PostMapping("/{id}/notes") @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderViews.Activity> note(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Note command, Authentication authentication) {
@@ -38,27 +39,27 @@ public class OrderController {
     @PostMapping("/{id}/items/{itemId}/remove")
     public ApiResponse<OrderViews.Detail> removeItem(@PathVariable UUID id, @PathVariable UUID itemId,
             @Valid @RequestBody OrderCommands.RemoveItem command, Authentication authentication) {
-        return ApiResponse.success(orders.removeItem(id, itemId, command, operator(authentication)));
+        return visible(orders.removeItem(id, itemId, command, operator(authentication)), authentication);
     }
     @PostMapping("/{id}/items") @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderViews.Detail> addItem(@PathVariable UUID id, @Valid @RequestBody OrderCommands.AddItem command,
             Authentication authentication) {
-        return ApiResponse.success(orders.addItem(id, command, operator(authentication)));
+        return visible(orders.addItem(id, command, operator(authentication)), authentication);
     }
     @PatchMapping("/{id}/information")
     public ApiResponse<OrderViews.Detail> reviseInformation(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Information command,
             Authentication authentication) {
-        return ApiResponse.success(orders.reviseInformation(id, command, operator(authentication)));
+        return visible(orders.reviseInformation(id, command, operator(authentication)), authentication);
     }
     @PatchMapping("/{id}/payment-status")
     public ApiResponse<OrderViews.Detail> changePaymentStatus(@PathVariable UUID id, @Valid @RequestBody OrderCommands.PaymentStatus command,
             Authentication authentication) {
-        return ApiResponse.success(orders.changePaymentStatus(id, command, operator(authentication)));
+        return visible(orders.changePaymentStatus(id, command, operator(authentication)), authentication);
     }
     @PostMapping("/{id}/production-actions")
     public ApiResponse<OrderViews.Detail> productionAction(@PathVariable UUID id, @Valid @RequestBody OrderCommands.ProductionAction command,
             Authentication authentication) {
-        return ApiResponse.success(orders.productionAction(id, command, operator(authentication)));
+        return visible(orders.productionAction(id, command, operator(authentication)), authentication);
     }
     @GetMapping("/{id}/activities")
     public ApiResponse<Page<OrderViews.Activity>> activities(@PathVariable UUID id, @RequestParam(required = false) UUID itemId,
@@ -68,11 +69,15 @@ public class OrderController {
     @PostMapping("/{id}/fulfillment-actions")
     public ApiResponse<OrderViews.Detail> fulfillmentAction(@PathVariable UUID id, @Valid @RequestBody OrderCommands.FulfillmentAction command,
             Authentication authentication) {
-        return ApiResponse.success(orders.fulfillmentAction(id, command, operator(authentication)));
+        return visible(orders.fulfillmentAction(id, command, operator(authentication)), authentication);
     }
     @PostMapping("/{id}/cancel")
     public ApiResponse<OrderViews.Detail> cancel(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Cancel command, Authentication authentication) {
-        return ApiResponse.success(orders.cancel(id, command, operator(authentication)));
+        return visible(orders.cancel(id, command, operator(authentication)), authentication);
+    }
+    private static ApiResponse<OrderViews.Detail> visible(OrderViews.Detail detail, Authentication authentication) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        return ApiResponse.success(OrderViewAccess.detail(detail, account.access()));
     }
     private static OrderCommands.Operator operator(Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
