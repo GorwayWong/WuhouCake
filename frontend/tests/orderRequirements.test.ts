@@ -8,8 +8,8 @@ test('下单备注只读取当前商品其他要求，不混入工作沟通记�
   assert.equal(orderRequirements([{ ...item, attributes: { requirements: '顾客已改为正常糖' } }])[0].text, '顾客已改为正常糖');
 });
 
-test('多商品分别标识，空值显示无，清空后的规范字段不回退旧要求', () => {
+test('多商品分别标识，空值不展示，清空后的规范字段不回退旧要求', () => {
   const make = (itemId: string, attributes: Record<string, unknown>) => ({ itemId, name: itemId, attributes });
-  assert.deepEqual(orderRequirements([make('a', {}), make('b', { requirements: '  \n' }), make('c', { otherRequirements: '单独包装' }), make('d', { requirements: '', otherRequirements: '旧要求' })]).map(item => item.text), ['无', '无', '单独包装', '无']);
+  assert.deepEqual(orderRequirements([make('a', {}), make('b', { requirements: '  \n' }), make('c', { otherRequirements: '单独包装' }), make('d', { requirements: '', otherRequirements: '旧要求' })]).map(item => item.text), ['单独包装']);
   assert.deepEqual(orderRequirements([]), []);
 });

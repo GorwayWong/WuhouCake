@@ -113,7 +113,7 @@ public class CustomerSubmissionService {
             items.add(new OrderCommands.Item(item.name(), item.productType(), item.quantity(), price.unitPriceCents(), price.memberPriceCents(), new LinkedHashMap<>(item.attributes())));
         }
         var create = new OrderCommands.Create(new OrderCommands.Customer(null, content.phone(), content.memberPhone(), null),
-                new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), null, content.requestedReceiveAt()),
+                new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), review.plannedFinishAt(), content.requestedReceiveAt()),
                 items, review.totalAmountCents(), review.creditedEmployeeId());
         var order = orders.createCustomer(create, new OrderCommands.Operator(me.accountId(), me.nickname()), id);
         submissions.update(submission, review, "CONFIRMED", order.orderId(), clock.instant());

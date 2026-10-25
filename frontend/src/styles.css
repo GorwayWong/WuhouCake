@@ -1,4 +1,33 @@
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+.date-block.has-overdue .date-select{color:#a12a28;font-weight:700}
+.date-block.has-overdue{border-color:#ba5049;background:#fff5f3}
+.date-block.has-overdue.selected{border:2px solid #a12a28;background:#fff0db}
+.date-overdue{display:block;color:#a12a28;font-size:12px;font-weight:600;line-height:1.5;white-space:normal}
+.calendar-panel.week .date-overdue{font-size:11px;max-width:100%;overflow-wrap:anywhere}
+.daily-statistics>summary,.entry-settings>summary{cursor:pointer;font-weight:600;padding:4px 0;line-height:1.7}
+.daily-statistics[open]>summary,.entry-settings[open]>summary{margin-bottom:20px}
+.daily-statistics .panel,.entry-settings .entry-manager{border:0;box-shadow:none;padding:16px 0;margin:0}
+.order-partition>h3{font-size:16px;margin:16px 0;color:var(--ink)}
+.order-partition>h3>span{font-size:13px;color:#4a5650;font-weight:400}
+.production-times{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:16px 0 24px;padding-bottom:20px;border-bottom:1px solid #e4e7e2}
+.production-times dt{font-size:13px;color:#4a5650;margin-bottom:6px}
+.production-times dd{font-size:16px;font-weight:600;line-height:1.6;margin:0;overflow-wrap:anywhere}
+.production-checklist-heading{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:20px}
+.production-checklist-heading h3{font-size:16px;margin:0}
+.production-checklist-heading>span{font-size:13px;color:#4a5650}
+.production-checklist-heading>button{margin-left:auto}
+.production-checklist{list-style:none;margin:8px 0 16px;padding:0}
+.production-checklist li{border-top:1px solid #e4e7e2}
+.production-summary .production-checklist label{display:flex;flex-direction:row;text-align:left;align-items:center;gap:12px;min-height:48px;padding:10px 0;cursor:pointer}
+.production-checklist input{width:20px;height:20px;min-height:20px;flex:none;margin:0}
+.production-checklist label>span{flex:1;min-width:0;overflow-wrap:anywhere;font-size:14px;font-weight:500;line-height:1.6;color:var(--ink)}
+.production-checklist strong{font-size:14px;white-space:nowrap}
+.production-checklist small{font-size:12px;color:#4a5650;white-space:nowrap}
+.production-checklist .is-complete small{color:#28623d}
+.production-summary .order-requirements{padding:12px 0;border-top:1px solid #e4e7e2;margin:0}
+.production-summary .order-requirements h2{font-size:15px}
+.optional-time-help{display:flex;align-items:center;gap:12px;color:#4a5650;font-size:13px;grid-column:1/-1}
+@media(max-width:600px){.production-summary .order-progress{grid-auto-flow:row;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 8px}.production-summary .progress-label{font-size:12px;white-space:nowrap}.production-summary .progress-step:nth-child(4n)::after{display:none}.production-times{grid-template-columns:1fr;gap:12px}.production-times>div{display:grid;grid-template-columns:100px 1fr;gap:12px;align-items:baseline}.production-times dt{margin:0}.production-times dd{font-size:15px}.production-checklist label{gap:8px}.production-checklist small{font-size:12px}}
 .customer-page{max-width:800px;margin:0 auto;padding:24px;min-width:0}
 .customer-header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0 24px;border-bottom:1px solid #dce2db}
 .customer-header>span{color:#445248;font-size:14px;white-space:nowrap}

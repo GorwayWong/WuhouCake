@@ -108,11 +108,12 @@ class CustomerSubmissionIT {
     @Test void optionalHandoffSurvivesConfirmationQueriesExportAndLaterEdits() throws Exception {
         var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
-        var review = new LinkedHashMap<>(review(input, staff.id, 12300)); review.put("plannedHandoffAt", null);
+        var review = new LinkedHashMap<>(review(input, staff.id, 12300)); review.put("plannedHandoffAt", null); review.put("plannedFinishAt", "2026-11-02T15:00:00+08:00");
         staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review));
         String orderId = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
         var order = staff.data("GET", "/api/orders/" + orderId, null);
         assertTrue(order.at("/fulfillment/plannedHandoffAt").isNull());
+        assertEquals("2026-11-02T07:00:00Z", order.at("/fulfillment/plannedFinishAt").asText());
         assertEquals("2026-11-02T10:00:00Z", order.at("/fulfillment/requestedReceiveAt").asText());
         assertNull(jdbc.queryForObject("SELECT planned_handoff_at FROM cake_order WHERE id=?::uuid", java.sql.Timestamp.class, orderId));
         var calendar = staff.data("GET", "/api/orders/calendar?from=2026-11-02&to=2026-11-03", null).get(0);

@@ -1,6 +1,7 @@
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
 import { cakeDefaults, numericSize } from './productRules.ts';
 import { randomUUID } from './uuid.ts';
+import { normalizeProductType, productTypes } from './productTypes.ts';
 
 export const specificationFields = [
   ['size', '尺寸'], ['flavor', '奶油'], ['filling', '夹馅'],
@@ -16,11 +17,12 @@ export interface ItemDraft {
   unitPrice: string; memberPrice: string; attributes: Record<Specification, string>;
   defaultSpecifications?: ('base' | 'filling')[];
   requiresTypeConfirmation?: boolean;
+  preservedAttributes?: Record<string, unknown>;
 }
 export interface OrderDraft {
   creditedEmployeeId?: string;
   customerName: string; phone: string; memberPhone: string; buyerName: string;
-  fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveDate: string;
+  fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveDate: string; requestedReceiveAt: string;
   plannedHandoffAt: string; plannedFinishAt: string; totalAmount: string; items: ItemDraft[];
 }
 export function newItem(): ItemDraft {
@@ -45,7 +47,7 @@ export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, e
 }
 export function newDraft(date: string): OrderDraft {
   return { customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', address: '',
-    requestedReceiveDate: date, plannedHandoffAt: '', plannedFinishAt: '', totalAmount: '', items: [newItem()] };
+    requestedReceiveDate: date, requestedReceiveAt: date, plannedHandoffAt: '', plannedFinishAt: '', totalAmount: '', items: [newItem()] };
 }
 export function moneyToCents(input: string): number | null {
   const value = input.trim();
@@ -61,16 +63,16 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
   if (!draft.name.trim()) errors.name = '请填写商品名称。';
   else if (draft.name.length > 128) errors.name = '商品名称最多填写 128 个字符。';
   if (draft.productType.length > 32) errors.productType = '商品类型最多填写 32 个字符。';
-  else if (draft.requiresTypeConfirmation && !draft.productType.trim()) errors.productType = '此商品类型未识别，请人工确认后填写。';
+  else if (!draft.productType.trim() || !Object.hasOwn(productTypes, normalizeProductType(draft.productType)) && draft.requiresTypeConfirmation) errors.productType = '请选择商品类型。';
   const quantity = Number(draft.quantity);
   if (!/^\d+$/.test(draft.quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) errors.quantity = '数量须为 1–2147483647 之间的整数。';
   const amount = (field: 'unitPrice' | 'memberPrice') => {
     try { return moneyToCents(draft[field]); }
     catch (error) { errors[field] = (error as Error).message; return null; }
   };
-  const item: ItemInput = { name: draft.name.trim(), productType: draft.productType.trim() || 'CAKE', quantity,
+  const item: ItemInput = { name: draft.name.trim(), productType: normalizeProductType(draft.productType), quantity,
     unitPriceCents: amount('unitPrice'), memberPriceCents: amount('memberPrice'),
-    attributes: Object.fromEntries(fieldsForProduct(draft.productType || 'CAKE').flatMap(([key]) => (draft.attributes[key] || '').trim() ? [[key, draft.attributes[key].trim()]] : [])) };
+    attributes: { ...Object.fromEntries(Object.entries(draft.preservedAttributes || {}).filter(([key]) => !fieldsForProduct(draft.productType).some(([visible]) => visible === key))), ...Object.fromEntries(fieldsForProduct(draft.productType || 'CAKE').flatMap(([key]) => (draft.attributes[key] || '').trim() ? [[key, draft.attributes[key].trim()]] : [])) } };
   if (item.productType?.toUpperCase() === 'CAKE') {
     item.attributes.base ||= cakeDefaults.base; item.attributes.filling ||= cakeDefaults.filling;
     if (validateSize && draft.attributes.size.trim()) { try { item.attributes.size = numericSize(draft.attributes.size); } catch (error) { errors.size = (error as Error).message; } }
@@ -80,8 +82,8 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
 export function textSpecification(value: unknown): boolean { return value == null || typeof value === 'string'; }
 export function itemDraft(item: Item): ItemDraft {
   const amount = (value: number | null) => value == null ? '' : `${BigInt(value) / 100n}.${String(BigInt(value) % 100n).padStart(2, '0')}`;
-  return { key: item.itemId, name: item.name, productType: item.productType || '', quantity: String(item.quantity),
-    unitPrice: amount(item.unitPriceCents), memberPrice: amount(item.memberPriceCents),
+  return { key: item.itemId, name: item.name, productType: normalizeProductType(item.productType || ''), quantity: String(item.quantity),
+    unitPrice: amount(item.unitPriceCents), memberPrice: amount(item.memberPriceCents), preservedAttributes: item.attributes,
     attributes: Object.fromEntries(specificationFields.map(([key]) => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
 }
 export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && ['WAITING_PRODUCTION', 'PROCESSING'].includes(order.status); }
@@ -121,6 +123,12 @@ export function storeTime(value: string): string {
   }
   return `${value}:00+08:00`;
 }
+export function receiptInstant(value: string, date: string): string | null {
+  if (!validDate(date)) throw new Error('请选择客户收货日期。');
+  if (!value || value === date) return null;
+  if (value.slice(0, 10) !== date) throw new Error('客户收货日期与时刻不一致。');
+  return storeTime(value);
+}
 export function createOrderRequest(draft: OrderDraft): { request: CreateOrderRequest | null; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
   const text = (value: string, field: string, label: string, maximum: number, required = false) => {
@@ -150,6 +158,7 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       type: draft.fulfillmentType,
       address: text(draft.address, 'address', '配送地址', Number.MAX_SAFE_INTEGER, draft.fulfillmentType === 'DELIVERY'),
       requestedReceiveDate: draft.requestedReceiveDate,
+      requestedReceiveAt: (() => { try { return receiptInstant(draft.requestedReceiveAt, draft.requestedReceiveDate); } catch (error) { errors.requestedReceiveAt = (error as Error).message; return null; } })(),
       plannedHandoffAt: dateTime(draft.plannedHandoffAt, 'plannedHandoffAt'),
       plannedFinishAt: dateTime(draft.plannedFinishAt, 'plannedFinishAt'),
     },
@@ -175,7 +184,7 @@ export function informationDraft(order: Detail): InformationDraft {
   const cents = order.totalAmountCents == null ? null : BigInt(order.totalAmountCents);
   return { customerName: order.customer?.customerName || '', phone: order.customer?.phone || '', memberPhone: order.customer?.memberPhone || '', buyerName: order.customer?.buyerName || '',
     fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: order.fulfillment.requestedReceiveDate,
-    requestedReceiveAt: localStoreTime(order.fulfillment.requestedReceiveAt || null),
+    requestedReceiveAt: localStoreTime(order.fulfillment.requestedReceiveAt || null) || order.fulfillment.requestedReceiveDate,
     plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt),
     totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`, creditedEmployeeId: order.creditedEmployee?.accountId || '' };
 }
@@ -199,13 +208,11 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   else if (draft.fulfillmentType !== initial.fulfillmentType && draft.fulfillmentType !== current.fulfillmentType) changes.fulfillmentType = draft.fulfillmentType;
   const receiveDateChanged = draft.requestedReceiveDate !== initial.requestedReceiveDate && draft.requestedReceiveDate !== current.requestedReceiveDate;
   const receiveTimeChanged = draft.requestedReceiveAt !== initial.requestedReceiveAt && draft.requestedReceiveAt !== current.requestedReceiveAt;
-  if (receiveTimeChanged) {
+  if (receiveTimeChanged || receiveDateChanged) {
     try {
-      changes.requestedReceiveAt = storeTime(draft.requestedReceiveAt);
-      if (receiveDateChanged && draft.requestedReceiveDate !== draft.requestedReceiveAt.slice(0, 10)) errors.requestedReceiveAt = '收货日期与期望收货时间不一致。';
+      changes.requestedReceiveAt = receiptInstant(draft.requestedReceiveAt, draft.requestedReceiveDate);
+      if (receiveDateChanged) changes.requestedReceiveDate = draft.requestedReceiveDate;
     } catch (error) { errors.requestedReceiveAt = (error as Error).message; }
-  } else if (receiveDateChanged) {
-    errors.requestedReceiveAt = '改期时请明确完整的期望收货日期和时刻。';
   }
   for (const field of ['plannedHandoffAt', 'plannedFinishAt'] as const) {
     // 未改动的分钟输入不回写，保留服务端秒与微秒精度。

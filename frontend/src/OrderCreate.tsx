@@ -75,18 +75,18 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
           </div></section>
           <section className="panel create-group"><h2><Truck />交接信息</h2><div className="create-grid">
             <Field label="交接方式" name="fulfillmentType"><Select label="交接方式" disabled={busy || unknownResult} {...inputProps('fulfillmentType')} value={draft.fulfillmentType} onChange={value => change({ ...draft, fulfillmentType: value as OrderDraft['fulfillmentType'] })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></Select></Field>
-            <Field label="收货日期 *" name="requestedReceiveDate" error={errors.requestedReceiveDate}><DateInput label="收货日期" disabled={busy || unknownResult} {...inputProps('requestedReceiveDate')} value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} required /></Field>
-            <Field label="取货时间（选填）" name="plannedHandoffAt" error={errors.plannedHandoffAt} wide><DateInput label="取货时间" disabled={busy || unknownResult} {...inputProps('plannedHandoffAt')} type="datetime-local" value={draft.plannedHandoffAt} onChange={value => change({ ...draft, plannedHandoffAt: value })} /></Field>
+            <Field label="客户收货时间 *" name="requestedReceiveAt" error={errors.requestedReceiveAt || errors.requestedReceiveDate} wide><DateInput label="客户收货时间" disabled={busy || unknownResult} {...inputProps('requestedReceiveAt')} type="datetime-local" timeOptional resetTimeOnDateChange value={draft.requestedReceiveAt} onChange={(value, parts) => change({ ...draft, requestedReceiveAt: value, requestedReceiveDate: parts?.date || '' })} required /><span className="form-help">客户希望收到商品的时间，日期必填，时刻可待定。</span></Field>
+            <Field label="到店取货时间（选填）" name="plannedHandoffAt" error={errors.plannedHandoffAt} wide><DateInput label="到店取货时间" disabled={busy || unknownResult} {...inputProps('plannedHandoffAt')} type="datetime-local" value={draft.plannedHandoffAt} onChange={value => change({ ...draft, plannedHandoffAt: value })} /></Field>
             <Field label="计划出品时间" name="plannedFinishAt" error={errors.plannedFinishAt} wide><DateInput label="计划出品时间" disabled={busy || unknownResult} {...inputProps('plannedFinishAt')} type="datetime-local" value={draft.plannedFinishAt} onChange={value => change({ ...draft, plannedFinishAt: value })} /></Field>
             <Field label={draft.fulfillmentType === 'DELIVERY' ? '配送地址 *' : '地址（自提可留空）'} name="address" error={errors.address} wide><textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} required={draft.fulfillmentType === 'DELIVERY'} /></Field>
-          </div><p className="form-help">取货时间为客户或配送员到店时间（北京时间）。</p></section>
+          </div><p className="form-help">到店取货时间为客户或配送员到店时间（北京时间）。</p></section>
         </div>
         <section className="panel create-group"><div className="section-heading"><h2><Cake />商品信息</h2><span className="muted">{draft.items.length} 项</span></div>
           <OrderPackagePicker items={draft.items} onChange={items => change({ ...draft, items })} disabled={busy || unknownResult} />
           {draft.items.map((item, index) => <div className="create-item" key={item.key}>
             <div className="create-item-heading"><h3>商品 {index + 1}</h3><button type="button" className="text-button danger" aria-label={`移除商品 ${index + 1}`} disabled={draft.items.length === 1} onClick={() => change({ ...draft, items: draft.items.filter(other => other.key !== item.key) })}><Trash />移除</button></div>
             <div className="create-grid">
-              {((item.productType === 'CAKE' ? ['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] : ['name', 'productType', 'quantity']) as ('name' | 'productType' | 'quantity' | 'unitPrice' | 'memberPrice')[]).map(field => {
+              {((['name', 'productType', 'quantity', 'unitPrice', 'memberPrice']) as ('name' | 'productType' | 'quantity' | 'unitPrice' | 'memberPrice')[]).map(field => {
                 const name = `items.${index}.${field}`;
                 const confirmType = field === 'productType' && item.requiresTypeConfirmation;
                 const label = { name: '商品名称 *', productType: confirmType ? '商品类型 *' : '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[field];
@@ -100,7 +100,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
         <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid"><Field label="订单约定总金额（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field></div><p className="form-help">留空为未报价，0 为零元。</p></section>
       </fieldset>
       {Object.keys(errors).length > 0 && <div className="notice error" role="alert">请检查标出的内容后再创建订单。</div>}
-      {error ? unknownResult ? <div className="notice error create-result" role="alert"><p>创建结果未确认，输入已保留。请先核对出货日期 <strong>{submittedDate}</strong>、电话 <strong>{submittedPhone}</strong>；也可重试确认原订单，不会重复建单。</p><a className="text-button" href={`#/?date=${submittedDate}`} target="_blank" rel="noreferrer">打开 {submittedDate} 工作台核对（新标签页）</a></div> : <div className="notice error" role="alert">本次请求未新增订单。{errorText(error)}</div> : null}
+      {error ? unknownResult ? <div className="notice error create-result" role="alert"><p>创建结果未确认，输入已保留。请先核对客户收货日期 <strong>{submittedDate}</strong>、电话 <strong>{submittedPhone}</strong>；也可重试确认原订单，不会重复建单。</p><a className="text-button" href={`#/?date=${submittedDate}`} target="_blank" rel="noreferrer">打开 {submittedDate} 工作台核对（新标签页）</a></div> : <div className="notice error" role="alert">本次请求未新增订单。{errorText(error)}</div> : null}
       <div className="create-submit"><button className="primary" disabled={busy}>{busy ? '正在创建订单…' : unknownResult ? '重试确认原订单' : '创建订单'}<ArrowRight /></button></div>
     </form>
   </div>;

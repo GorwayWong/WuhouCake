@@ -11,10 +11,18 @@ test('fixed packages create editable independent items and preserve existing cus
   const second = appendPackage(result, value); assert.equal(second.length, 4);
   assert.notEqual(second[0].key, second[2].key);
   second[2].quantity = '12'; assert.equal(value.items[0].quantity, 6);
-  assert.deepEqual(packageItems(result), value.items);
+  assert.deepEqual(packageItems(result), value.items.map(item => ({ ...item, productType: item.productType === 'BREAD' ? 'READY_BAKERY' : item.productType })));
 });
+test('历史非蛋糕规格在普通编辑后仍保留，清空可见规格能生效', () => {
+  const [draft] = appendPackage([], { items: [{ name: '旧纸杯', productType: 'CUPCAKE', quantity: 6, attributes: { flavor: '原有奶油', specification: '六只装', requirements: '少糖' } }] });
+  draft.name = '改名纸杯'; draft.attributes.requirements = '';
+  const saved = packageItems([draft])[0];
+  assert.equal(saved.productType, 'TEA_BREAK');
+  assert.deepEqual(saved.attributes, { flavor: '原有奶油', specification: '六只装' });
+});
+
 test('simple product forms expose specification without cake fields', () => {
-  for (const type of ['BREAD', 'DONUT', 'CUPCAKE', 'DRINK']) assert.deepEqual(fieldsForProduct(type).map(([key]) => key), ['specification', 'requirements']);
+  for (const type of ['TEA_BREAK', 'COOKIE', 'SNACK', 'DRINK', 'READY_BAKERY']) assert.deepEqual(fieldsForProduct(type).map(([key]) => key), ['specification', 'requirements']);
   assert.ok(fieldsForProduct('CAKE').some(([key]) => key === 'size'));
 });
 test('package specifications remain optional and never include prices or customer data', () => {

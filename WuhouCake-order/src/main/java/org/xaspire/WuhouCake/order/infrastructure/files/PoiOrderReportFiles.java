@@ -7,6 +7,7 @@ import java.util.Map;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.*;
 import org.xaspire.WuhouCake.order.domain.port.OrderReportFiles;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 
 public final class PoiOrderReportFiles implements OrderReportFiles {
     @Override public byte[] generate(Filter filter, List<Row> rows, Totals totals, List<SizeSummary> sizes, List<EmployeeSummary> employees, List<ProductRow> products) {
@@ -46,7 +47,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                     r.matchingQuantity(), r.cakeQuantity(), r.products());
             var productSheet = book.createSheet("商品明细");
             row(productSheet, "订单号", "商品名称", "商品类型", "数量", "尺寸原值（寸）", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "商品单价（元）", "会员单价（元）");
-            for (var r : products) row(productSheet, r.orderNo(), r.name(), r.productType(), r.quantity(), r.size(), r.flavor(), r.base(), r.filling(), r.message(), r.requirements(),
+            for (var r : products) row(productSheet, r.orderNo(), r.name(), ProductCategories.label(r.productType()), r.quantity(), r.size(), r.flavor(), r.base(), r.filling(), r.message(), r.requirements(),
                     r.unitPriceCents() == null ? "" : yuan(r.unitPriceCents().toString()), r.memberPriceCents() == null ? "" : yuan(r.memberPriceCents().toString()));
             var header = book.createCellStyle(); var font = book.createFont(); font.setBold(true); header.setFont(font);
             for (var s : List.of(summary, sizeSheet, employeeSheet, sheet, productSheet)) {

@@ -21,7 +21,7 @@ export function canHandleSubmissions(account?: Account): boolean {
 }
 function ContentSummary({ content }: { content: SubmissionContent }) {
   const labels: Record<string, string> = { size: '尺寸（寸）', base: '内胚', filling: '夹心／口味', flavor: '奶油', message: '祝福语', requirements: '其他要求', specification: '规格' };
-  return <div className="submission-summary"><p><strong>{content.phone}</strong>{content.memberPhone && ` · 会员 ${content.memberPhone}`}</p><p>{content.fulfillmentType === 'PICKUP' ? '自提' : '配送'} · {time(content.requestedReceiveAt, true)}</p>{content.address && <p>{content.address}</p>}
+  return <div className="submission-summary"><p><strong>{content.phone}</strong>{content.memberPhone && ` · 会员 ${content.memberPhone}`}</p><p>客户收货时间：{time(content.requestedReceiveAt, true)} · {content.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{content.address && <p>{content.address}</p>}
     <ul>{content.items.map((item, index) => <li key={index}><strong>{item.name} × {item.quantity}</strong><p>{Object.entries(item.attributes).filter(([, value]) => value).map(([key, value]) => `${labels[key] || key}：${value}`).join('；')}</p></li>)}</ul>
   </div>;
 }
@@ -36,7 +36,7 @@ export function SubmissionHistory({ data }: { data: SubmissionDetail }) {
 }
 function ReviewSummary({ value }: { value: unknown }) {
   const review = value as (Partial<SubmissionReview> & { creditedEmployeeName?: string }) | null;
-  return review?.content ? <><ContentSummary content={review.content} /><p>整单金额：{review.totalAmountCents == null ? '未填写' : `${exactYuan(review.totalAmountCents)} 元`}</p><p>{review.content.fulfillmentType === 'PICKUP' ? '到店自提时间' : '配送员取货时间'}：{time(review.plannedHandoffAt || null, true)}</p><p>业绩归属：{review.creditedEmployeeName || '未填写'}</p></> : <p>未填写</p>;
+  return review?.content ? <><ContentSummary content={review.content} /><p>整单金额：{review.totalAmountCents == null ? '未填写' : `${exactYuan(review.totalAmountCents)} 元`}</p><p>到店取货时间：{review.plannedHandoffAt ? time(review.plannedHandoffAt, true) : '待定'}</p><p>计划出品时间：{review.plannedFinishAt ? time(review.plannedFinishAt, true) : '待定'}</p><p>业绩归属：{review.creditedEmployeeName || '未填写'}</p></> : <p>未填写</p>;
 }
 function DuplicateRecords({ records }: { records: SubmissionDuplicate[] }) {
   return <ul className="duplicate-records">{records.map(record => <li key={`${record.kind}:${record.id}`}>
@@ -83,11 +83,11 @@ export function CustomerSubmissions({ account, onWritingChange }: { account: Acc
   const [mine, setMine] = useState(false); const [status, setStatus] = useState('PENDING'); const [page, setPage] = useState(1);
   const query = useQuery({ queryKey: ['customer-submissions', mine, status, page], queryFn: ({ signal }) => api<Page<SubmissionDetail>>(`/customer-submissions?mine=${mine}&status=${status}&page=${page}`, { signal }), refetchInterval: 15000, enabled: canHandleSubmissions(account) });
   if (!canHandleSubmissions(account)) return <Empty>前台和管理人员可以处理客户填单。</Empty>;
-  return <div className="management-page"><div className="page-heading"><div><h1>客户填单</h1></div></div><EntryManager account={account} onWritingChange={onWritingChange} />
+  return <div className="management-page"><div className="page-heading"><div><h1>客户填单</h1></div></div>
     <section className="panel"><div className="submission-filters"><label>查看范围<Select label="查看范围" value={mine ? 'mine' : 'all'} onChange={value => { setMine(value === 'mine'); setPage(1); }}><option value="mine">我的二维码收到的</option><option value="all">全部客服的</option></Select></label><label>处理状态<Select label="处理状态" value={status} onChange={value => { setStatus(value); setPage(1); }}><option value="PENDING">待确认</option><option value="CONFIRMED">已确认</option></Select></label><button className="secondary" disabled={query.isFetching} onClick={() => void client.invalidateQueries({ queryKey: ['customer-submissions'] })}>刷新列表</button></div>
-      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending ? <Loading /> : !query.data?.items.length ? <Empty>暂无{mine ? '我的' : ''}{status === 'PENDING' ? '待确认' : '已确认'}填单。</Empty> : <ul className="submission-list">{query.data.items.map(({ submission: s, duplicates }) => <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><time>{time(s.createdAt, true)}</time></div><p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始期望收货 {time(s.original.requestedReceiveAt, true)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{duplicates.some(record => record.requiresAcknowledgement) && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>)}</ul>}
+      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending ? <Loading /> : !query.data?.items.length ? <Empty>暂无{mine ? '我的' : ''}{status === 'PENDING' ? '待确认' : '已确认'}填单。</Empty> : <ul className="submission-list">{query.data.items.map(({ submission: s, duplicates }) => <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><time>{time(s.createdAt, true)}</time></div><p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始客户收货 {time(s.original.requestedReceiveAt, true)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{duplicates.some(record => record.requiresAcknowledgement) && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>)}</ul>}
       {query.data && query.data.total > 20 && <div className="pagination"><button className="secondary" disabled={page === 1} onClick={() => setPage(page - 1)}>上一页</button><span>第 {page} 页 · {query.data.total} 份</span><button className="secondary" disabled={page * 20 >= query.data.total} onClick={() => setPage(page + 1)}>下一页</button></div>}
-    </section>
+    </section><details className="panel entry-settings"><summary>填单二维码管理</summary><EntryManager account={account} onWritingChange={onWritingChange} /></details>
   </div>;
 }
 export function CustomerSubmissionDetail({ id, onDirtyChange, onWritingChange }: { id: string; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {

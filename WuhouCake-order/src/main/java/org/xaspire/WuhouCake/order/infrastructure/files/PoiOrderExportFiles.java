@@ -12,6 +12,7 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.Units;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import org.xaspire.WuhouCake.order.domain.port.*;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.*;
 
@@ -114,8 +115,8 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             row(info, "付款状态", label(order.paymentStatus()));
             row(info, "客户姓名", customer.customerName()); row(info, "客户手机号", customer.phone()); row(info, "会员手机号", customer.memberPhone());
             row(info, "客户订购人", customer.buyerName()); row(info, "交付方式", label(plan.type().name())); row(info, "配送地址", plan.address());
-            row(info, "收货日期", plan.requestedReceiveDate()); row(info, "取货时间", time(plan.plannedHandoffAt()));
-            row(info, "期望收货时间", time(plan.requestedReceiveAt()));
+            row(info, "客户收货时间", plan.requestedReceiveAt() == null ? plan.requestedReceiveDate() + " · 时刻待定" : time(plan.requestedReceiveAt()));
+            row(info, "到店取货时间", plan.plannedHandoffAt() == null ? "待定" : time(plan.plannedHandoffAt()));
             row(info, "计划出品时间", time(plan.plannedFinishAt())); row(info, "约定总金额（元）", money(order.totalAmountCents()));
             row(info, "录单时间", time(order.createdAt()));
             row(info, "下单员工工号", order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber());
@@ -212,8 +213,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             case "LAYER_DONE" -> "已夹层"; case "FROSTING_DONE" -> "已抹面"; case "OTHER_DONE" -> "其他已确认";
             case "PAID" -> "已付款"; case "UNPAID" -> "未付款";
             case "DELIVERY" -> "配送上门"; case "PICKUP" -> "门店自提";
-            case "CAKE" -> "蛋糕"; case "DONUT" -> "甜甜圈"; case "CUPCAKE" -> "纸杯蛋糕";
-            case "BREAD" -> "面包"; case "DRINK" -> "饮品"; case "OTHER" -> "其他茶歇";
+case "CAKE", "DONUT", "CUPCAKE", "BREAD", "DRINK", "OTHER", "TEA_BREAK", "COOKIE", "SNACK", "READY_BAKERY" -> ProductCategories.label(code);
             case "NOT_STARTED" -> "未开始"; case "IN_PROGRESS" -> "制作中";
             default -> code;
         };

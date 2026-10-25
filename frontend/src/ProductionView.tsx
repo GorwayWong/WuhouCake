@@ -3,10 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import type { Item, OrderImage } from './types';
 import { api } from './api';
 import { loadImagePreview } from './imagePreview';
-import { productionFields } from './productionFields';
+import { historicalProductionFields, productionFields } from './productionFields';
 
-export function ProductionFields({ item }: { item: Item }) {
-  return <dl className="production-fields">{productionFields(item).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
+export function ProductionFields({ item, includeHistorical = false }: { item: Item; includeHistorical?: boolean }) {
+  const historical = includeHistorical ? historicalProductionFields(item) : [];
+  return <><dl className="production-fields">{productionFields(item).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>{historical.length > 0 && <details><summary>历史规格</summary><dl className="production-fields">{historical.map(([label, value], index) => <div key={index}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></details>}</>;
 }
 
 export function ProductionThumbnail({ orderId }: { orderId: string }) {

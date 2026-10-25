@@ -11,7 +11,7 @@ import type { CalendarFilters } from './calendarFilters';
 import { exportOptions } from './exportFiles';
 import { DateInput } from './DateInput';
 import { Select } from './Select';
-import { compareCalendarOrders, jumpCalendarDate, selectCalendarDate, shiftCalendarPeriod, toggleCalendarMode } from './calendarView';
+import { overdueOrderCount, compareCalendarOrders, jumpCalendarDate, selectCalendarDate, shiftCalendarPeriod, toggleCalendarMode } from './calendarView';
 import type { CalendarView } from './calendarView';
 import { OrderTimeline } from './OrderTimeline';
 import { orderAccess } from './access';
@@ -23,12 +23,14 @@ import { visibleCalendarFilters } from './shippingPayment';
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 function MonthDayCell({ date, orders, view, onSelect }: { date: string; orders: CalendarOrder[]; view: CalendarView; onSelect: (date: string) => void }) {
   const first = orders[0];
-  return <button type="button" className={`date-block ${date === view.date ? 'selected' : ''} ${view.mode === 'month' && date.slice(0, 7) !== view.month ? 'outside-month' : ''}`}
-    aria-label={`${date}${date === today() ? ' 今天' : ''}，${orders.length} 笔订单`}
+  const overdue = overdueOrderCount(date, orders, today());
+  return <button type="button" className={`date-block ${overdue ? 'has-overdue' : ''} ${date === view.date ? 'selected' : ''} ${view.mode === 'month' && date.slice(0, 7) !== view.month ? 'outside-month' : ''}`}
+    aria-label={`${date}${date === today() ? ' 今天' : ''}，${orders.length} 笔订单${overdue ? `，未完成 ${overdue} 单` : ''}`}
     aria-pressed={date === view.date} aria-current={date === today() ? 'date' : undefined}
     aria-expanded={view.mode === 'month' ? view.expanded && date === view.date : undefined}
     aria-controls={view.mode === 'month' ? `month-orders-${weekStart(date)}` : undefined} onClick={() => onSelect(date)}>
     <span className="date-select"><span>{Number(date.slice(8))}</span>{date === today() && <small>今</small>}</span>
+    {overdue > 0 && <span className="date-overdue">未完成 {overdue} 单</span>}
     {view.mode === 'month' ? first && <span className="month-day-summary"><strong>{first.items[0]?.name || '订单'}</strong><span>{first.customerPhoneLast4}</span>{orders.length > 1 && <span className="month-more" aria-label={`还有 ${orders.length - 1} 笔订单`}>…</span>}</span>
       : <span className={`day-order-dot ${orders.length ? 'has-orders' : ''}`} aria-hidden="true" />}
   </button>;
@@ -89,18 +91,17 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
       {calendar.error && calendar.data && <p className="notice" role="status">刷新失败，当前显示上次数据。</p>}
       {calendar.isPending && !calendar.error ? <Loading /> : !calendar.data ? null : <div className="calendar-scroll" ref={calendarElement}><div className="calendar-weekdays">{weekdays.map(day => <span key={day}>周{day}</span>)}</div><div className="calendar-weeks">{weeks.map(week => <Fragment key={week[0]}>
         <div className="calendar-grid" data-week={week[0]}>{week.map(date => <MonthDayCell key={date} date={date} orders={ordersByDay.get(date) || []} view={view} onSelect={selectDate} />)}</div>
-        {mode === 'month' && <section id={`month-orders-${week[0]}`} className="month-expanded" aria-label={`${selected} 出货订单`} hidden={!view.expanded || !week.includes(selected)}>
-          {view.expanded && week.includes(selected) && <><div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日出货订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" onClick={collapseMonthPanel} aria-expanded="true" aria-controls={`month-orders-${week[0]}`}><CaretUp />收起</button></div>{filtersControl}{timeline}</>}
+        {mode === 'month' && <section id={`month-orders-${week[0]}`} className="month-expanded" aria-label={`${selected} 当日订单`} hidden={!view.expanded || !week.includes(selected)}>
+          {view.expanded && week.includes(selected) && <><div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" onClick={collapseMonthPanel} aria-expanded="true" aria-controls={`month-orders-${week[0]}`}><CaretUp />收起</button></div>{filtersControl}{timeline}</>}
         </section>}
       </Fragment>)}</div></div>}
       <button type="button" className="calendar-toggle" onClick={() => onViewChange(toggleCalendarMode(view))}>{mode === 'week' ? '展开本月日历' : '切换周历工作台'}{mode === 'week' ? <CaretDown /> : <CaretUp />}</button>
     </section>
     {mode === 'month' && !view.expanded && <div className="calendar-filter-bar">{filtersControl}</div>}
     {mode === 'week' && <>
-      <DayShippingSummary date={selected} canReadAmounts={access.amounts} orders={workbench.data?.pendingOrders} />
-      <DayPreparationSummary date={selected} canReadAmounts={access.amounts} />
-      <div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日出货订单 <span>{workbench.data ? daily.length : '—'}</span></h2></div>
+      <div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日订单 <span>{workbench.data ? daily.length : '—'}</span></h2></div>
       {filtersControl}{timeline}
     </>}
+    {(mode === 'week' || view.expanded) && <details className="panel daily-statistics"><summary>当日统计 · 按收货日期／付款日期查看</summary><DayShippingSummary date={selected} canReadAmounts={access.amounts} orders={workbench.data?.pendingOrders} /><DayPreparationSummary date={selected} canReadAmounts={access.amounts} /></details>}
   </>;
 }

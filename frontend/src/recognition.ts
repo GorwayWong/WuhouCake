@@ -1,19 +1,20 @@
 import type { OrderDraft, ItemDraft } from './orderForm.ts';
 import { moneyToCents, storeTime, validDate, newItem } from './orderForm.ts';
 import { normalizeSize } from './productRules.ts';
+import { normalizeProductType } from './productTypes.ts';
 import { randomUUID } from './uuid.ts';
 import type { RecognitionDraft, RecognitionField } from './types.ts';
 
 export const recognitionLimit = 12000;
 export const recognitionLabels: Record<string, string> = {
   customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '客户订购人',
-  fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '收货日期',
-  plannedHandoffAt: '取货时间', plannedFinishAt: '计划出品时间', totalAmountCents: '约定总金额（元）',
-  name: '商品名称', productType: '商品类型', quantity: '数量', size: '尺寸', flavor: '奶油', base: '内胚',
+  fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '客户收货日期', requestedReceiveAt: '客户收货时间',
+  plannedHandoffAt: '到店取货时间', plannedFinishAt: '计划出品时间', totalAmountCents: '约定总金额（元）',
+  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '规格', size: '尺寸', flavor: '奶油', base: '内胚',
   filling: '夹馅', message: '祝福语', requirements: '其他要求', unitPriceCents: '商品单价（元）', memberPriceCents: '会员单价（元）',
 };
-const rootFields = new Set(['customerName', 'phone', 'memberPhone', 'buyerName', 'fulfillmentType', 'address', 'requestedReceiveDate', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmountCents']);
-const specificationKeys = new Set(['size', 'flavor', 'base', 'filling', 'message', 'requirements']);
+const rootFields = new Set(['customerName', 'phone', 'memberPhone', 'buyerName', 'fulfillmentType', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmountCents']);
+const specificationKeys = new Set(['specification', 'size', 'flavor', 'base', 'filling', 'message', 'requirements']);
 const moneyFields: Record<string, string> = { totalAmountCents: 'totalAmount', unitPriceCents: 'unitPrice', memberPriceCents: 'memberPrice' };
 export function recognitionValue(field: string, value: string | null): string {
   if (value == null) return '';
@@ -27,10 +28,11 @@ export function validateCandidate(field: string, value: string): string {
   const text = value.trim();
   if (!text) throw new Error('该字段待填写。');
   if (moneyFields[field]) { moneyToCents(text); return text; }
+  if (field === 'productType') return normalizeProductType(text);
   if (field === 'size') return normalizeSize(text);
   if (field === 'quantity' && (!/^\d+$/.test(text) || BigInt(text) < 1n || BigInt(text) > 2147483647n)) throw new Error('数量需要有效正整数。');
   if (field === 'requestedReceiveDate' && !validDate(text)) throw new Error('需要带年份的有效收货日期。');
-  if (field === 'plannedHandoffAt' || field === 'plannedFinishAt') storeTime(text);
+  if (field === 'requestedReceiveAt' || field === 'plannedHandoffAt' || field === 'plannedFinishAt') storeTime(text);
   if (field === 'fulfillmentType' && text !== 'DELIVERY' && text !== 'PICKUP') throw new Error('请选择 DELIVERY 或 PICKUP。');
   const maximum = field === 'customerName' || field === 'buyerName' ? 80 : field === 'phone' || field === 'memberPhone' || field === 'productType' ? 32 : field === 'name' ? 128 : 12000;
   if (text.length > maximum) throw new Error('字段过长，请手工核对。');
@@ -57,7 +59,11 @@ export function setCandidate(draft: OrderDraft, field: string, value: string, it
       Object.assign(item, { [key]: text }); if (key === 'productType') item.requiresTypeConfirmation = false;
     }
     else throw new Error('不支持的商品字段。');
-  } else if (rootFields.has(field)) Object.assign(next, { [key]: text });
+  } else if (rootFields.has(field)) {
+    Object.assign(next, { [key]: text });
+    if (field === 'requestedReceiveDate') next.requestedReceiveAt = text;
+    if (field === 'requestedReceiveAt') next.requestedReceiveDate = text.slice(0, 10);
+  }
   else throw new Error('不支持的订单字段。');
   return next;
 }
@@ -155,8 +161,8 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   const write = (field: string, candidate: RecognitionField, id?: string) => {
     const value = edits[recognitionRowKey(field, id)] ?? '';
     if (!only && !id && field === 'requestedReceiveDate' && candidate.value === null && !value.trim() && recognizable) {
-      if (next.requestedReceiveDate && !manualFields.has(field) && next.requestedReceiveDate === initial.requestedReceiveDate) {
-        next.requestedReceiveDate = ''; cleared++;
+      if (next.requestedReceiveDate && !manualFields.has(field) && !manualFields.has('requestedReceiveAt') && next.requestedReceiveDate === initial.requestedReceiveDate) {
+        next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared++;
       } else if (next.requestedReceiveDate) skipped++;
       return;
     }
@@ -165,7 +171,8 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     if (selected === 'choose') { skipped++; return; }
     const current = selected === 'new' ? '' : currentValue(next, field, selected);
     if (current === value && !(selected && selected !== 'new' && pristine(selected))) return;
-    const manual = manualFields.has(id ? selected + '.' + field : field);
+    const manual = manualFields.has(id ? selected + '.' + field : field)
+      || !id && (field === 'requestedReceiveDate' && manualFields.has('requestedReceiveAt') || field === 'requestedReceiveAt' && manualFields.has('requestedReceiveDate'));
     const untouchedDefault = id ? selected !== 'new' && pristine(selected!) : current === currentValue(initial, field);
     if (!only && (manual || (current && current !== value && !untouchedDefault))) { skipped++; return; }
     try {

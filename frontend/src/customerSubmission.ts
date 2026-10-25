@@ -1,7 +1,7 @@
 import { itemInput, newItem, moneyToCents } from './orderForm.ts';
 import type { ItemDraft } from './orderForm.ts';
 import { randomUUID } from './uuid.ts';
-import { productTypes } from './productTypes.ts';
+import { normalizeProductType, productTypes } from './productTypes.ts';
 import { exactYuan } from './money.ts';
 
 export interface SubmissionContent {
@@ -10,7 +10,7 @@ export interface SubmissionContent {
 }
 export interface SubmissionReview {
   content: SubmissionContent; prices: { unitPriceCents: number | null; memberPriceCents: number | null }[];
-  totalAmountCents: number | null; creditedEmployeeId: string | null; plannedHandoffAt: string | null;
+  totalAmountCents: number | null; creditedEmployeeId: string | null; plannedHandoffAt: string | null; plannedFinishAt?: string | null;
 }
 export interface Submission {
   id: string; entryId: string; ownerId: string; ownerName: string; version: number; status: 'PENDING' | 'CONFIRMED' | 'DELETED';
@@ -30,14 +30,14 @@ export interface EntryLink { ownerId: string; ownerName: string; url: string; en
 export interface SubmissionOrigin { submissionId: string; entryOwnerName: string; submittedAt: string; requestedReceiveAt: string }
 export interface SubmissionDraft {
   phone: string; memberPhone: string; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveAt: string;
-  items: ItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string;
+  items: ItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string; plannedFinishAt: string;
 }
 export function localTime(instant: string | null): string {
   if (!instant) return '';
   return new Date(Date.parse(instant) + 8 * 3600000).toISOString().slice(0, 16);
 }
 export function newSubmissionDraft(): SubmissionDraft {
-  return { phone: '', memberPhone: '', fulfillmentType: 'DELIVERY', address: '', requestedReceiveAt: '', items: [{ ...newItem(), name: '蛋糕' }], totalAmount: '', creditedEmployeeId: '', plannedHandoffAt: '' };
+  return { phone: '', memberPhone: '', fulfillmentType: 'DELIVERY', address: '', requestedReceiveAt: '', items: [{ ...newItem(), name: '蛋糕' }], totalAmount: '', creditedEmployeeId: '', plannedHandoffAt: '', plannedFinishAt: '' };
 }
 export function submissionDirty(draft: SubmissionDraft, initial: SubmissionDraft): boolean {
   return JSON.stringify(draft) !== JSON.stringify(initial);
@@ -47,8 +47,8 @@ export function draftFromSubmission(submission: Submission): SubmissionDraft {
   const amount = (value: number | null | undefined) => value == null ? '' : exactYuan(value);
   return { ...newSubmissionDraft(), ...content, memberPhone: content.memberPhone || '', address: content.address || '',
     requestedReceiveAt: localTime(content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
-    creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null),
-    items: content.items.map((item, i) => ({ ...newItem(), ...item, key: randomUUID(), quantity: String(item.quantity),
+    creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null), plannedFinishAt: localTime(review?.plannedFinishAt || null),
+    items: content.items.map((item, i) => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: randomUUID(), quantity: String(item.quantity),
       attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: item.attributes.specification || (item.productType !== 'CAKE' ? item.attributes.filling || '' : ''), ...item.attributes },
       defaultSpecifications: [], unitPrice: amount(review?.prices[i]?.unitPriceCents), memberPrice: amount(review?.prices[i]?.memberPriceCents) })) };
 }
@@ -75,8 +75,8 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
   if (!draft.items.length || draft.items.length > 30) errors.items = '请保留 1–30 项商品。';
   const items = draft.items.map((item, index) => {
     const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '' });
-    const type = item.productType.trim().toUpperCase();
-    if (!Object.hasOwn(productTypes, type) && type !== 'OTHER') errors[`items.${index}.productType`] = '请选择蛋糕、面包、甜甜圈、纸杯蛋糕或饮品。';
+    const type = normalizeProductType(item.productType);
+    if (!Object.hasOwn(productTypes, type)) errors[`items.${index}.productType`] = '请选择蛋糕、茶歇、饼干、小吃、饮品或现货面包甜点。';
     if (result.item) result.item.productType = type;
     Object.entries(result.errors).forEach(([key, value]) => { errors[`items.${index}.${key}`] = value; });
     if (item.productType === 'CAKE' && !item.attributes.size.trim()) errors[`items.${index}.size`] = '请填写蛋糕尺寸。';
@@ -91,6 +91,7 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
   if (staff) { try { totalAmountCents = moneyToCents(draft.totalAmount); } catch (error) { errors.totalAmount = (error as Error).message; } }
   const review: SubmissionReview = { content, totalAmountCents, creditedEmployeeId: draft.creditedEmployeeId || null,
     prices: items.filter(item => item !== null).map(item => ({ unitPriceCents: item.unitPriceCents, memberPriceCents: item.memberPriceCents })),
-    plannedHandoffAt: staff ? instant(draft.plannedHandoffAt, 'plannedHandoffAt', false) : null };
+    plannedHandoffAt: staff ? instant(draft.plannedHandoffAt, 'plannedHandoffAt', false) : null,
+    plannedFinishAt: staff ? instant(draft.plannedFinishAt, 'plannedFinishAt', false) : null };
   return { content, review, errors };
 }

@@ -72,6 +72,25 @@ class OrderIT {
         var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys);
     }
 
+    @Test void dateOnlyReschedulingPersistsClearingAndKeepsOtherTimesAndHistory() throws Exception {
+        var staff = staff();
+        var order = staff.request("POST", "/api/orders", create()).body.path("data");
+        String id = order.path("orderId").asText();
+        var full = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("requestedReceiveAt", "2026-10-25T18:30:00+08:00"))).body.path("data");
+        assertEquals("2026-10-25T10:30:00Z", full.at("/fulfillment/requestedReceiveAt").asText());
+        var changes = new LinkedHashMap<String, Object>(); changes.put("requestedReceiveDate", "2026-10-26"); changes.put("requestedReceiveAt", null);
+        var response = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", changes));
+        assertEquals(200, response.status, response.body.toString());
+        var reloaded = staff.request("GET", "/api/orders/" + id, null).body.path("data");
+        assertEquals("2026-10-26", reloaded.at("/fulfillment/requestedReceiveDate").asText());
+        assertTrue(reloaded.at("/fulfillment/requestedReceiveAt").isNull());
+        assertEquals(order.at("/fulfillment/plannedHandoffAt"), reloaded.at("/fulfillment/plannedHandoffAt"));
+        assertNull(jdbc.queryForObject("SELECT requested_receive_at FROM cake_order WHERE id=?::uuid", java.sql.Timestamp.class, id));
+        var log = staff.request("GET", "/api/orders/" + id + "/activities?type=ORDER_INFORMATION_CHANGED", null).body.at("/data/items/0");
+        assertEquals("2026-10-25T10:30:00Z", log.at("/details/before/requestedReceiveAt").asText());
+        assertTrue(log.at("/details/after/requestedReceiveAt").isNull());
+    }
+
     @Test void multiItemWorkflowPersistsChangesHistoryAndIndependentRecentNotes() throws Exception {
         var staff = staff();
         var start = Instant.now().truncatedTo(ChronoUnit.MILLIS);

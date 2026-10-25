@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarHref, defaultCalendarView, readCalendarView, selectCalendarDate, jumpCalendarDate, shiftCalendarPeriod, toggleCalendarMode, groupOrdersByTime, latestOrderNote, compareCalendarOrders } from '../src/calendarView.ts';
+import { calendarHref, defaultCalendarView, readCalendarView, selectCalendarDate, jumpCalendarDate, shiftCalendarPeriod, toggleCalendarMode, groupOrdersByTime, latestOrderNote, compareCalendarOrders, overdueOrderCount } from '../src/calendarView.ts';
 import { calendarOrderHref, orderHref, workspaceRoute } from '../src/routes.ts';
 import type { PendingOrder, Item, Note } from '../src/types.ts';
+
+test('只有过去日期未完成交付标红，付款不参与，取消删除和完成排除', () => {
+  const orders = ['WAITING_PRODUCTION', 'PROCESSING', 'WAITING_DELIVERY', 'WAITING_PICKUP', 'DELIVERING', 'COMPLETED', 'CANCELLED'].map(status => ({ status, paymentStatus: 'UNPAID' }));
+  assert.equal(overdueOrderCount('2026-10-24', orders, '2026-10-25'), 5);
+  assert.equal(overdueOrderCount('2026-10-25', orders, '2026-10-25'), 0);
+  assert.equal(overdueOrderCount('2026-10-26', orders, '2026-10-25'), 0);
+  assert.equal(overdueOrderCount('2026-10-24', [{ status: 'PROCESSING', deleted: true }, { status: 'DELIVERING', deletion: {} }], '2026-10-25'), 0);
+});
 
 const order = (orderNo: string, at: string | null) => ({ orderNo, plannedHandoffAt: at, items: [] }) as unknown as PendingOrder;
 test('未安排交接时间的订单列在时间待定分组，排序稳定且不生成虚假时刻', () => {

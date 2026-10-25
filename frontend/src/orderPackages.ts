@@ -1,4 +1,5 @@
 import { fieldsForProduct, itemInput, newItem } from './orderForm.ts';
+import { normalizeProductType } from './productTypes.ts';
 import type { ItemDraft } from './orderForm.ts';
 
 export interface OrderPackage {
@@ -10,10 +11,10 @@ export function packageItems(items: ItemDraft[]): OrderPackage['items'] {
     const result = itemInput({ ...draft, unitPrice: '', memberPrice: '', requiresTypeConfirmation: true });
     if (!result.item) throw new Error(`商品 ${index + 1}：${Object.values(result.errors)[0]}`);
     const { name, productType, quantity } = result.item;
-    const attributes = Object.fromEntries(fieldsForProduct(draft.productType).flatMap(([key]) => {
+    const attributes = { ...Object.fromEntries(Object.entries(draft.preservedAttributes || {}).filter(([key]) => !fieldsForProduct(draft.productType).some(([visible]) => visible === key))), ...Object.fromEntries(fieldsForProduct(draft.productType).flatMap(([key]) => {
       const text = draft.attributes[key].trim();
       return text ? [[key, key === 'size' ? result.item!.attributes.size : text]] : [];
-    }));
+    })) };
     return { name, productType: productType!, quantity, attributes };
   });
 }
@@ -24,7 +25,7 @@ export function newPackageItem(): ItemDraft {
 export function packageDraft(value: Pick<OrderPackage, 'items'>): ItemDraft[] {
   return value.items.map(item => {
     const draft = newPackageItem();
-    return { ...draft, name: item.name, productType: item.productType, quantity: String(item.quantity),
+    return { ...draft, name: item.name, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, quantity: String(item.quantity),
       attributes: Object.fromEntries(Object.keys(draft.attributes).map(key => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
   });
 }

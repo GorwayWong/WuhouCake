@@ -342,16 +342,19 @@ class OrderTest {
         assertTrue(order.reviseInformation(Map.of("requestedReceiveAt", "2026-10-17T16:30:00Z"), NOW.plusSeconds(2)).isEmpty());
         assertEquals(1, order.version());
     }
-    @Test void reschedulingRequiresFullTimeAndCannotClearOrConflictWithDate() {
+    @Test void reschedulingAllowsDateOnlyAndClearingButRejectsConflictingDates() {
         var order = order(FulfillmentType.DELIVERY, item("A", Map.of()));
-        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-18"), NOW));
+        order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-18"), NOW);
+        assertNull(order.fulfillment().requestedReceiveAt());
         order.reviseInformation(Map.of("requestedReceiveAt", "2026-10-18T19:00:00+08:00"), NOW);
         var plan = order.fulfillment();
         var clear = new LinkedHashMap<String, Object>(); clear.put("requestedReceiveAt", null);
-        assertThrows(OrderFailure.class, () -> order.reviseInformation(clear, NOW));
         assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-19"), NOW));
         assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-19", "requestedReceiveAt", "2026-10-18T20:00:00+08:00"), NOW));
-        assertEquals(plan, order.fulfillment()); assertEquals(1, order.version());
+        assertEquals(plan, order.fulfillment()); assertEquals(2, order.version());
+        order.reviseInformation(clear, NOW); assertNull(order.fulfillment().requestedReceiveAt());
+        order.reviseInformation(Map.of("requestedReceiveDate", "2026-10-19"), NOW);
+        assertEquals(LocalDate.of(2026, 10, 19), order.fulfillment().requestedReceiveDate());
     }
     @Test void legacyDateOnlyOrdersAllowUnrelatedEditsAndCreationRejectsMismatchedFullTime() {
         var order = order(FulfillmentType.PICKUP, item("A", Map.of()));
@@ -491,7 +494,7 @@ class OrderTest {
         assertThrows(OrderFailure.class, () -> order.applyProductionAction("COMPLETE_PRODUCTION", NOW));
         order.applyProductionAction("COMPLETE_OTHER", NOW);
         for (var change : List.of(Map.<String, Object>of("name", "生日蛋糕"), Map.<String, Object>of("quantity", 2),
-                Map.<String, Object>of("attributes", Map.of("size", "8")), Map.<String, Object>of("productType", "CUSTOM"))) {
+                Map.<String, Object>of("attributes", Map.of("size", "8")), Map.<String, Object>of("productType", "SNACK"))) {
             order.reviseItem(cake.itemId(), change, NOW);
             assertEquals("IN_PROGRESS", order.requireActiveItem(cake.itemId()).productionStatus());
             assertEquals("FROSTING_DONE", order.currentStageCode());

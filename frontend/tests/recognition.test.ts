@@ -118,10 +118,13 @@ test('缺失或冲突日期清空未手改初始日期，手动日期保留，�
   const initial = newDraft('2026-10-16'), result = candidate();
   result.fields.requestedReceiveDate = field(null, 'RULE', true);
   let filled = applyRecognition(initial, initial, result, candidateEdits(result).values, { 'item-1': initial.items[0].key }, new Set());
-  assert.equal(filled.draft.requestedReceiveDate, ''); assert.equal(filled.cleared, 1);
+  assert.equal(filled.draft.requestedReceiveDate, ''); assert.equal(filled.draft.requestedReceiveAt, ''); assert.equal(filled.cleared, 1);
   const manual = structuredClone(initial); manual.requestedReceiveDate = '2026-10-17';
   filled = applyRecognition(manual, initial, result, candidateEdits(result).values, { 'item-1': 'choose' }, new Set(['requestedReceiveDate']));
   assert.equal(filled.draft.requestedReceiveDate, '2026-10-17');
+  const manualTime = { ...initial, requestedReceiveAt: '2026-10-16T18:30' };
+  const preserved = applyRecognition(manualTime, initial, result, candidateEdits(result).values, { 'item-1': 'choose' }, new Set(['requestedReceiveAt'])).draft;
+  assert.equal(preserved.requestedReceiveDate, initial.requestedReceiveDate); assert.equal(preserved.requestedReceiveAt, manualTime.requestedReceiveAt);
   const unrelated: RecognitionDraft = { fields: { requestedReceiveDate: field(null) }, items: [], issues: ['非订单'], fragments: [], unmappedText: [], assistAvailable: false };
   assert.deepEqual(applyRecognition(initial, initial, unrelated, candidateEdits(unrelated).values, {}, new Set()).draft, initial);
 });

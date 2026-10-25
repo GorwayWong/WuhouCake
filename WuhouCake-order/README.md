@@ -29,7 +29,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 | GET /api/orders/calendar | from/to，按收货日期查询 [from,to)，最多 42 天 |
 | GET /api/orders/workbench | date，指定门店日期的统计与未完成/未取消待办 |
 | GET /api/orders/workbench/receipt-summary | date，按北京时间付款日汇总订单数和金额 |
-| GET /api/orders/workbench/cake-bases | date，按出货日汇总蛋糕尺寸、胚口味及数量 |
+| GET /api/orders/workbench/cake-bases | date，按收货日期汇总蛋糕尺寸、胚口味及数量 |
 | GET /api/order-packages | keyword 名称子串搜索、page 默认 1、size 默认 20/最大 50，返回 Page |
 | GET /api/order-packages/{id} | 有效套餐详情，包含 version 和 updatedAt |
 | POST /api/order-packages | name + items，必须带 UUID Idempotency-Key，返回 201 |
@@ -86,8 +86,9 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 - phone、requestedReceiveDate 和至少一件有名称/数量的商品必填；DELIVERY 必须有非空地址，PICKUP 可空。客户姓名、会员电话、客户侧下单人、交接时间 plannedHandoffAt、计划出品时间、报价和总额可选。交接时间留空保存为 null，之后可补填或清空。正式 API 的 phone 是最长 32 字符的非空文本，不提供电话真实性验证。
 - 数量为 1–2147483647 的整数；订单总额、商品单价和会员价为 0–9007199254740991 的 Long 整数分，与前端 JavaScript 安全整数上限一致，超限、浮点小数或负数返回 400 VALIDATION_FAILED。前端以元输入；空值与 0 不同，不按商品报价自动计算订单总额。汇总金额不受单笔上限限制，以精确整数分字符串返回。
 - productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling 缺失、null、空白时，写入和读取均使用原味/芒果，读取不写库。奶油仍存 flavor。新建、追加及明确修改的蛋糕 size 只接受正数、最多两位小数、整数部分最多九位，存为无单位数值文本；非法值返回 400。旧规格可读，未改尺寸时不会因旧尺寸异常阻止其他字段更正。
+- 商品分类统一为 CAKE、TEA_BREAK、COOKIE、SNACK、DRINK、READY_BAKERY。V22 归并订单商品、套餐、待确认核对数据中的旧分类，保留 attributes、原始填单和历史快照。写入时归一化 DONUT/CUPCAKE/OTHER→TEA_BREAK、BREAD→READY_BAKERY；未知历史类型保留读取。蛋糕统计仍只统计 CAKE。
 - 时间以 ISO 8601 带偏移输入、UTC 输出，前端按北京时间展示。requestedReceiveAt 是当前期望收货时刻，可空以兼容历史日期型订单；非空时其北京时间日期必须与 requestedReceiveDate 一致。客户填单确认时写入核对后的值，交接时间不替代期望收货时间。
-- 改期必须更正完整 requestedReceiveAt，服务端同步日历日期；同时传入冲突日期、只改日期或清空已知时刻均拒绝。历史缺失具体时刻不阻止其他资料更正，不从交接时间推算。新迁移仅从已确认填单的核对时间回填日期一致的客户订单，日期冲突保留未知时刻。订单详情与 XLSX 统一读取正式订单当前值，来源记录保留原始时间。
+- 员工新建及改期允许仅日期。PATCH 可用 requestedReceiveDate 与 requestedReceiveAt:null 显式改为时刻待定；未清除已有时刻时，只改成冲突日期仍拒绝。无关编辑不清除原时刻；非空 requestedReceiveAt 的北京时间日期必须与日历日期一致。客户填单 Review 新增可空 plannedFinishAt，确认接单时与 plannedHandoffAt 一并保存。界面及 XLSX 统一使用客户收货时间、到店取货时间、计划出品时间；来源记录保留原始时间。
 - 创建可传 creditedEmployeeId，省略时归属当前员工；需为在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
 - 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、requestedReceiveAt、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling 回落默认），结构值整体替换。
 - 所有状态都能更正资料和约定金额；商品仅在 WAITING_PRODUCTION/PROCESSING 可增删改，待交接须先退回其他已确认。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。

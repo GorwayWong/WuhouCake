@@ -40,10 +40,10 @@ test('核对信息保留客户期望时间和内部时间，空报价与零元�
   assert.deepEqual(result.errors, {}); assert.equal(result.review.plannedHandoffAt, null);
   draft.plannedHandoffAt = '2026-11-02T16:';
   assert.ok(submissionRequest(draft, true).errors.plannedHandoffAt);
-  draft.totalAmount = '0'; draft.plannedHandoffAt = '2026-11-02T16:00'; draft.creditedEmployeeId = 'employee';
+  draft.totalAmount = '0'; draft.plannedHandoffAt = '2026-11-02T16:00'; draft.plannedFinishAt = '2026-11-02T15:00'; draft.creditedEmployeeId = 'employee';
   result = submissionRequest(draft, true); assert.equal(result.review.totalAmountCents, 0); assert.notEqual(result.content.requestedReceiveAt, result.review.plannedHandoffAt);
   const roundtrip = draftFromSubmission({ original: result.content, reviewed: result.review } as Submission);
-  assert.equal(roundtrip.totalAmount, '0.00'); assert.equal(roundtrip.requestedReceiveAt, draft.requestedReceiveAt); assert.equal(roundtrip.plannedHandoffAt, draft.plannedHandoffAt);
+  assert.equal(roundtrip.totalAmount, '0.00'); assert.equal(roundtrip.requestedReceiveAt, draft.requestedReceiveAt); assert.equal(roundtrip.plannedHandoffAt, draft.plannedHandoffAt); assert.equal(roundtrip.plannedFinishAt, draft.plannedFinishAt);
   assert.equal(localTime('2026-11-01T16:30:00Z'), '2026-11-02T00:30');
 });
 test('仅改会员电话、商品数量或祝福语也属于未提交输入，电话格式与服务端一致', () => {

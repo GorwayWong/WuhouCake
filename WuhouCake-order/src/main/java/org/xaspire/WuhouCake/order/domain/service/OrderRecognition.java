@@ -10,8 +10,8 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.RecognitionDraft.*;
 public final class OrderRecognition {
     public static final int MAX_TEXT = 12000;
     public static final List<String> ORDER_FIELDS = List.of("customerName", "phone", "memberPhone", "buyerName", "fulfillmentType",
-            "address", "requestedReceiveDate", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents");
-    public static final List<String> ITEM_FIELDS = List.of("name", "productType", "quantity", "size", "flavor", "base", "filling", "message", "requirements", "unitPriceCents", "memberPriceCents");
+            "address", "requestedReceiveDate", "requestedReceiveAt", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents");
+    public static final List<String> ITEM_FIELDS = List.of("name", "productType", "quantity", "specification", "size", "flavor", "base", "filling", "message", "requirements", "unitPriceCents", "memberPriceCents");
     private static final Map<String, String> LABELS = labels();
     private static final Pattern LABEL = Pattern.compile("(?<![\\p{L}\\p{N}])(" + String.join("|", LABELS.keySet().stream().sorted(Comparator.comparingInt(String::length).reversed()).map(Pattern::quote).toList())
             + ")([（(][^）)\\n]{0,80}[）)])?\\s*[:：]\\s*");
@@ -72,7 +72,7 @@ public final class OrderRecognition {
                 if (key.equals("unmapped")) { unmapped.add(evidence); continue; }
                 if (key.equals("receiveTime")) {
                     assign(fields, "requestedReceiveDate", value, evidence);
-                    if (RecognitionValues.containsTime(value)) times.computeIfAbsent("plannedHandoffAt", k -> new ArrayList<>()).add(value);
+                    if (RecognitionValues.containsTime(value)) times.computeIfAbsent("requestedReceiveAt", k -> new ArrayList<>()).add(value);
                     continue;
                 }
                 if (key.equals("plannedHandoffAt") || key.equals("plannedFinishAt")) { if (!value.isBlank()) times.computeIfAbsent(key, k -> new ArrayList<>()).add(value); continue; }
@@ -149,8 +149,9 @@ public final class OrderRecognition {
                     default -> throw new IllegalArgumentException("交接方式不明确，请保留原选择并核对");
                 };
                 case "productType" -> switch (value.toUpperCase(Locale.ROOT)) {
-                    case "蛋糕", "CAKE" -> "CAKE"; case "杯子蛋糕", "纸杯蛋糕", "CUPCAKE" -> "CUPCAKE";
-                    case "甜甜圈", "DONUT" -> "DONUT"; default -> RecognitionValues.text(value, 32);
+case "蛋糕", "CAKE" -> "CAKE"; case "杯子蛋糕", "纸杯蛋糕", "甜甜圈", "茶歇", "其他茶歇", "CUPCAKE", "DONUT", "OTHER", "TEA_BREAK" -> "TEA_BREAK";
+                    case "饼干", "COOKIE" -> "COOKIE"; case "小吃", "SNACK" -> "SNACK"; case "饮品", "DRINK" -> "DRINK";
+                    case "面包", "现货面包甜点", "BREAD", "READY_BAKERY" -> "READY_BAKERY"; default -> RecognitionValues.text(value, 32);
                 };
                 case "filling" -> RecognitionValues.text(value, 1000).replaceAll("[,，、]\\s*", "、");
                 default -> RecognitionValues.text(value, key.equals("customerName") || key.equals("buyerName") ? 80 : key.equals("name") ? 128 : 2000);
@@ -162,8 +163,11 @@ public final class OrderRecognition {
         if (value.isBlank()) return;
         String name = value.split("[，,]", 2)[0].strip();
         if (!SIZE.matcher(name).find() && !QUANTITY.matcher(name).find()) assign(item.fields, "name", name, evidence);
-        if (value.contains("杯子蛋糕") || value.contains("纸杯蛋糕")) put(item.fields, "productType", field("CUPCAKE", evidence));
-        else if (value.contains("甜甜圈")) put(item.fields, "productType", field("DONUT", evidence));
+if (value.contains("杯子蛋糕") || value.contains("纸杯蛋糕") || value.contains("甜甜圈") || value.contains("茶歇")) put(item.fields, "productType", field("TEA_BREAK", evidence));
+        else if (value.contains("饼干")) put(item.fields, "productType", field("COOKIE", evidence));
+        else if (value.contains("面包") || value.contains("现货甜点")) put(item.fields, "productType", field("READY_BAKERY", evidence));
+        else if (value.contains("饮品") || value.contains("饮料")) put(item.fields, "productType", field("DRINK", evidence));
+        else if (value.contains("小吃")) put(item.fields, "productType", field("SNACK", evidence));
         else if (value.contains("蛋糕")) put(item.fields, "productType", field("CAKE", evidence));
         inline(item, value);
     }
@@ -231,11 +235,11 @@ public final class OrderRecognition {
         add(map, "customerName", "客户姓名", "收货人", "收件人", "联系人", "姓名"); add(map, "phone", "联系电话", "收货电话", "收件电话", "手机号", "电话");
         add(map, "memberPhone", "会员手机号", "会员手机", "会员电话"); add(map, "buyerName", "客户下单人", "下单人");
         add(map, "address", "配送地址", "收货地址", "地址"); add(map, "fulfillmentType", "配送方式", "交接方式", "交付方式", "取货方式");
-        add(map, "requestedReceiveDate", "收货日期", "取货日期", "配送日期", "日期"); add(map, "receiveTime", "收货时间", "取货时间");
-        add(map, "plannedHandoffAt", "计划交接时间", "交接时间"); add(map, "plannedFinishAt", "计划出品时间", "出品时间");
+        add(map, "requestedReceiveDate", "收货日期", "取货日期", "配送日期", "日期"); add(map, "receiveTime", "客户收货时间", "收货时间", "期望收货时间");
+        add(map, "plannedHandoffAt", "到店取货时间", "取货时间", "计划交接时间", "交接时间"); add(map, "plannedFinishAt", "计划出品时间", "出品时间");
         add(map, "totalAmountCents", "订单总金额", "约定总金额", "订单总价", "总金额", "总价", "合计");
         add(map, "name", "商品名称", "蛋糕名称", "小产品名称", "商品"); add(map, "productType", "商品类型", "类型"); add(map, "quantity", "数量");
-        add(map, "size", "蛋糕尺寸", "尺寸"); add(map, "flavor", "奶油类型", "奶油"); add(map, "base", "蛋糕胚", "内胚");
+        add(map, "specification", "规格"); add(map, "size", "蛋糕尺寸", "尺寸"); add(map, "flavor", "奶油类型", "奶油"); add(map, "base", "蛋糕胚", "内胚");
         add(map, "filling", "夹馅", "夹层", "馅料"); add(map, "legacyFlavor", "蛋糕口味", "口味");
         add(map, "message", "祝福语", "蛋糕写字"); add(map, "requirements", "其他要求", "特殊要求", "备注");
         add(map, "unitPriceCents", "商品单价", "单价"); add(map, "memberPriceCents", "会员单价", "会员价");

@@ -177,9 +177,36 @@ class OrderPackageIT {
             jdbc.update("UPDATE " + schema + ".cake_order_package SET name='旧套餐二' WHERE name=' 旧套餐 '");
             upgrade.migrate();
             assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_package WHERE version=0 AND updated_at=created_at AND deleted_at IS NULL", Integer.class));
-            assertEquals(true, jdbc.queryForObject("SELECT items=?::jsonb FROM " + schema + ".cake_order_package WHERE id=?::uuid", Boolean.class, content, originalId));
+            assertEquals(true, jdbc.queryForObject("SELECT items=?::jsonb FROM " + schema + ".cake_order_package WHERE id=?::uuid", Boolean.class, content.replace("BREAD", "READY_BAKERY"), originalId));
         } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
     }
+    @Test void categoryMigrationPreservesOriginalsAttributesAndHistoricalSnapshots() throws Exception {
+        String schema = "category_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            org.flywaydb.core.Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").schemas(schema).defaultSchema(schema).target("21").load().migrate();
+            String order = UUID.randomUUID().toString(), actor = UUID.randomUUID().toString(), entry = UUID.randomUUID().toString(), submission = UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO " + schema + ".cake_order(id,order_no,status,customer_phone,fulfillment_type,requested_receive_date,created_by,created_at,confirmed_at,updated_at) VALUES (?::uuid,'0000001','PROCESSING','13800000000','PICKUP',DATE '2026-10-25',?::uuid,now(),now(),now())", order, actor);
+            String attributes = "{\"flavor\":\"旧奶油\",\"filling\":\"香草\",\"specification\":\"六只装\"}";
+            for (var type : List.of("DONUT", "CUPCAKE", "OTHER", "BREAD", "CUSTOM")) jdbc.update("INSERT INTO " + schema + ".cake_order_item(id,order_id,name,product_type,quantity,attributes,created_at,updated_at) VALUES (?::uuid,?::uuid,?,?,6,?::jsonb,now(),now())", UUID.randomUUID().toString(), order, type, type, attributes);
+            String items = "[{\"name\":\"纸杯\",\"productType\":\"CUPCAKE\",\"quantity\":6,\"attributes\":" + attributes + "}]";
+            jdbc.update("INSERT INTO " + schema + ".cake_order_package(id,name,items,updated_at) VALUES (?::uuid,'旧套餐',?::jsonb,now())", UUID.randomUUID().toString(), items);
+            jdbc.update("INSERT INTO " + schema + ".customer_order_entry(id,owner_id,owner_name,token,enabled) VALUES (?::uuid,?::uuid,'客服','synthetic-category-token',true)", entry, actor);
+            String original = "{\"items\":" + items + "}", reviewed = "{\"content\":" + original + "}";
+            jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,reviewed,original_phone,requested_date,status,created_at,updated_at) VALUES (?::uuid,?::uuid,?::uuid,'客服',?::uuid,'synthetic',?::jsonb,?::jsonb,'13800000000',DATE '2026-10-25','PENDING',now(),now())", submission, entry, actor, UUID.randomUUID().toString(), original, reviewed);
+            jdbc.update("INSERT INTO " + schema + ".cake_order_activity(order_id,type,content,details,actor_id,actor_name_snapshot,created_at) VALUES (?::uuid,'CREATED','创建订单',?::jsonb,?::uuid,'客服',now())", order, original, actor);
+            org.flywaydb.core.Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").schemas(schema).defaultSchema(schema).load().migrate();
+            assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='TEA_BREAK'", Integer.class));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='READY_BAKERY'", Integer.class));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='CUSTOM'", Integer.class));
+            assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE attributes=?::jsonb", Integer.class, attributes));
+            assertEquals("TEA_BREAK", jdbc.queryForObject("SELECT items->0->>'productType' FROM " + schema + ".cake_order_package", String.class));
+            assertTrue(jdbc.queryForObject("SELECT items->0->'attributes'=?::jsonb FROM " + schema + ".cake_order_package", Boolean.class, attributes));
+            assertEquals("TEA_BREAK", jdbc.queryForObject("SELECT reviewed->'content'->'items'->0->>'productType' FROM " + schema + ".customer_order_submission", String.class));
+            assertTrue(jdbc.queryForObject("SELECT original=?::jsonb FROM " + schema + ".customer_order_submission", Boolean.class, original));
+            assertTrue(jdbc.queryForObject("SELECT details=?::jsonb FROM " + schema + ".cake_order_activity", Boolean.class, original));
+        } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
+    }
+
     private void assertCode(String code, HttpResponse<String> response) throws Exception {
         assertEquals(409, response.statusCode(), response.body()); assertEquals(code, json.readTree(response.body()).path("code").asText());
     }

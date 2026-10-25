@@ -1,8 +1,8 @@
 import type { Item } from './types.ts';
 
 export function orderRequirements(items: Pick<Item, 'itemId' | 'name' | 'attributes'>[]) {
-  return items.map(item => {
+  return items.flatMap(item => {
     const value = item.attributes.requirements ?? item.attributes.otherRequirements;
-    return { itemId: item.itemId, name: item.name, text: typeof value === 'string' && value.trim() ? value.trim() : '无' };
+    return typeof value === 'string' && value.trim() ? [{ itemId: item.itemId, name: item.name, text: value.trim() }] : [];
   });
 }

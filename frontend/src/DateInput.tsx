@@ -9,10 +9,10 @@ import { Select } from './Select';
 interface Props {
   label: string; id?: string; name?: string; type?: 'date' | 'datetime-local';
   value: string; onChange: (value: string, parts?: { date: string; time: string }) => void; required?: boolean; disabled?: boolean;
-  resetTimeOnDateChange?: boolean;
+  resetTimeOnDateChange?: boolean; timeOptional?: boolean;
   'aria-invalid'?: boolean; 'aria-describedby'?: string;
 }
-function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, ...aria }: Props) {
+function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, timeOptional = false, ...aria }: Props) {
   const split = (source: string) => {
     const [date = '', time = ''] = source.split('T'), [hour = '', minute = ''] = time.split(':');
     return { source, date, hour, minute };
@@ -24,24 +24,25 @@ function DateTimeInput({ value, onChange, label, name, id, required, disabled, r
     if (patch.date === '') { next.hour = ''; next.minute = ''; }
     if (resetTimeOnDateChange && patch.date !== undefined && patch.date !== draft.date) { next.hour = ''; next.minute = ''; }
     const time = next.hour && next.minute ? `${next.hour}:${next.minute}` : '';
-    const text = completeDateTime(next.date, time) || (next.date || next.hour || next.minute ? `${next.date}T${next.hour}:${next.minute}` : '');
+    const text = completeDateTime(next.date, time) || (timeOptional && !next.hour && !next.minute ? next.date : '') || (next.date || next.hour || next.minute ? `${next.date}T${next.hour}:${next.minute}` : '');
     setDraft({ ...next, source: text }); onChange(text, { date: next.date, time });
   };
   return <div className="date-time-field" data-field-name={name} data-control-label={label}>
     <DateInput label={`${label}日期`} id={id} value={draft.date} onChange={date => update({ date })} required={required} disabled={disabled} {...aria} />
     <div className="time-field" role="group" aria-label={`${label}时刻`}>
-      <Select label={`${label}小时`} value={draft.hour} onChange={hour => update({ hour })} required={required} disabled={disabled} {...aria}>
+      <Select label={`${label}小时`} value={draft.hour} onChange={hour => update({ hour })} required={required && !timeOptional} disabled={disabled} {...aria}>
         <option value="">小时</option>{Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0')).map(hour => <option key={hour} value={hour}>{hour} 时</option>)}
       </Select>
-      <Select label={`${label}分钟`} value={draft.minute} onChange={minute => update({ minute })} required={required} disabled={disabled} {...aria}>
+      <Select label={`${label}分钟`} value={draft.minute} onChange={minute => update({ minute })} required={required && !timeOptional} disabled={disabled} {...aria}>
         <option value="">分钟</option>{Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0')).map(minute => <option key={minute} value={minute}>{minute} 分</option>)}
       </Select>
     </div>
+    {timeOptional && <div className="optional-time-help"><span>{!draft.hour && !draft.minute ? '时刻待定' : '时刻选填'}</span>{(draft.hour || draft.minute) && <button type="button" className="text-button" disabled={disabled} onClick={() => update({ hour: '', minute: '' })}>清除时刻</button>}</div>}
     <input type="hidden" name={name} value={value} />
   </div>;
 }
-export function DateInput({ label, type = 'date', value, onChange, required, disabled, id, name, resetTimeOnDateChange, ...aria }: Props) {
-  if (type === 'datetime-local') return <DateTimeInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} resetTimeOnDateChange={resetTimeOnDateChange} {...aria} />;
+export function DateInput({ label, type = 'date', value, onChange, required, disabled, id, name, resetTimeOnDateChange, timeOptional, ...aria }: Props) {
+  if (type === 'datetime-local') return <DateTimeInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} timeOptional={timeOptional} resetTimeOnDateChange={resetTimeOnDateChange} {...aria} />;
   return <CalendarInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} {...aria} />;
 }
 function CalendarInput({ label, value, onChange, required, disabled, id, name, ...aria }: Props) {

@@ -4,17 +4,18 @@ import java.time.*;
 import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 /** Customer requirements are immutable; reviewed requirements remain separate until acceptance. */
 public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String ownerName, long version, String status,
         Content original, Review reviewed, UUID orderId, Instant createdAt, Instant updatedAt) {
     public static final Set<String> ATTRIBUTES = Set.of("size", "base", "filling", "flavor", "message", "requirements", "specification");
-    public static final Set<String> PRODUCT_TYPES = Set.of("CAKE", "BREAD", "DONUT", "CUPCAKE", "DRINK", "OTHER");
+    public static final Set<String> PRODUCT_TYPES = ProductCategories.TYPES;
     public record Product(String name, String productType, int quantity, Map<String, String> attributes) {
         public Product {
             name = requiredText(name, 128);
-            if (productType == null || !PRODUCT_TYPES.contains(productType)) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
+            if (productType == null || !PRODUCT_TYPES.contains(ProductCategories.normalize(productType))) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
             if (quantity < 1) throw new OrderFailure("SUBMISSION_QUANTITY_INVALID");
             var values = new TreeMap<String, String>();
             if (attributes != null) attributes.forEach((key, value) -> {
@@ -50,9 +51,14 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
     public record Price(Long unitPriceCents, Long memberPriceCents) {
         public Price { money(unitPriceCents); money(memberPriceCents); }
     }
-    public record Review(Content content, List<Price> prices, Long totalAmountCents, UUID creditedEmployeeId, Instant plannedHandoffAt) {
+    public record Review(Content content, List<Price> prices, Long totalAmountCents, UUID creditedEmployeeId, Instant plannedHandoffAt, Instant plannedFinishAt) {
+        public Review(Content content, List<Price> prices, Long totalAmountCents, UUID creditedEmployeeId, Instant plannedHandoffAt) {
+            this(content, prices, totalAmountCents, creditedEmployeeId, plannedHandoffAt, null);
+        }
         public Review {
             Objects.requireNonNull(content); money(totalAmountCents);
+            content = new Content(content.phone(), content.memberPhone(), content.fulfillmentType(), content.address(), content.requestedReceiveAt(),
+                    content.items().stream().map(item -> new Product(item.name(), ProductCategories.normalize(item.productType()), item.quantity(), item.attributes())).toList());
             if (prices == null) prices = Collections.nCopies(content.items().size(), new Price(null, null));
             if (prices.size() != content.items().size() || prices.stream().anyMatch(Objects::isNull)) throw new OrderFailure("SUBMISSION_PRICES_INVALID");
             prices = List.copyOf(prices);

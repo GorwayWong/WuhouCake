@@ -79,7 +79,7 @@ export function OrderImages({ order, blocked, onDraftChange, onWritingChange, pr
   const busy = blocked || saving;
   const full = (query.data?.length || 0) >= 8;
   const invalidItem = Boolean(itemId && !order.items.some(item => item.itemId === itemId));
-  return <section className="panel reference-images" aria-labelledby="reference-images-title">
+  return <section id="order-reference-images" tabIndex={-1} className="panel reference-images" aria-labelledby="reference-images-title">
     <div className="section-heading"><h2 id="reference-images-title"><Images />{productionView ? '款式图片' : '参考图片'}</h2><div className="item-heading-actions"><span className="muted">{query.data?.length ?? '—'} / 8 张</span>{!adding && <button className="secondary compact" disabled={busy || full || !query.data} onClick={() => { setFailure(null); setNotice(''); setAdding(true); }}><Plus />添加图片</button>}</div></div>
     {adding && <p className="form-help">JPG / PNG · 每张不超过 5 MB</p>}
     <ErrorNotice error={query.error} retry={() => void query.refetch()} />

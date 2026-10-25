@@ -2,6 +2,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createOrderRequest, moneyToCents, newDraft, newItem, storeTime, validDate } from '../src/orderForm.ts';
 
+test('客户收货日期必填、时刻可待定，完整时刻不改变到店取货或出品时间', () => {
+  const draft = newDraft('2026-10-25');
+  draft.phone = '13800000000'; draft.fulfillmentType = 'PICKUP'; draft.items[0].name = '测试蛋糕';
+  assert.equal(createOrderRequest(draft).request?.fulfillment.requestedReceiveAt, null);
+  draft.requestedReceiveAt = '2026-10-25T18:30';
+  assert.equal(createOrderRequest(draft).request?.fulfillment.requestedReceiveAt, '2026-10-25T18:30:00+08:00');
+  assert.equal(createOrderRequest(draft).request?.fulfillment.plannedHandoffAt, null);
+  draft.requestedReceiveAt = '2026-10-25T18:';
+  assert.ok(createOrderRequest(draft).errors.requestedReceiveAt);
+});
+
 test('人民币元准确转换整数分，空金额与零金额不同，非法金额不截断或舍入', () => {
   for (const [input, expected] of [['', null], ['  ', null], ['0', 0], ['0.00', 0], ['0.29', 29], ['12.3', 1230], ['001.01', 101], ['90071992547409.91', Number.MAX_SAFE_INTEGER]] as const) {
     assert.equal(moneyToCents(input), expected);

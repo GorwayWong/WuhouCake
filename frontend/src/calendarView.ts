@@ -39,6 +39,12 @@ export function shiftCalendarPeriod(view: CalendarView, delta: number): Calendar
 export function toggleCalendarMode(view: CalendarView): CalendarView {
   return { ...view, mode: view.mode === 'week' ? 'month' : 'week', month: view.date.slice(0, 7), expanded: false };
 }
+export function isUnfinishedOrder(order: { status: string; deletion?: unknown; deleted?: boolean }): boolean {
+  return !order.deletion && !order.deleted && ['WAITING_PRODUCTION', 'PROCESSING', 'WAITING_DELIVERY', 'WAITING_PICKUP', 'DELIVERING'].includes(order.status);
+}
+export function overdueOrderCount(date: string, orders: { status: string; deletion?: unknown; deleted?: boolean }[], storeToday: string): number {
+  return date < storeToday ? orders.filter(isUnfinishedOrder).length : 0;
+}
 export function compareCalendarOrders(a: { plannedHandoffAt: string | null; orderNo: string }, b: { plannedHandoffAt: string | null; orderNo: string }): number {
   const first = a.plannedHandoffAt ? Date.parse(a.plannedHandoffAt) : Infinity;
   const second = b.plannedHandoffAt ? Date.parse(b.plannedHandoffAt) : Infinity;

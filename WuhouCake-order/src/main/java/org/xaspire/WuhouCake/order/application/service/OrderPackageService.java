@@ -10,6 +10,7 @@ import org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.model.valobj.JsonSnapshot;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import org.xaspire.WuhouCake.order.domain.port.OrderPackages;
 import org.xaspire.WuhouCake.order.api.dto.OrderPackageViews;
 import org.xaspire.WuhouCake.order.application.event.OrderPackageChanged;
@@ -86,10 +87,9 @@ public class OrderPackageService {
         if (items == null || items.isEmpty()) throw invalid();
         return items.stream().map(item -> {
             if (item == null) throw invalid();
-            String type = requiredText(item.productType(), 32).toUpperCase(Locale.ROOT);
-            if (!Set.of("CAKE", "BREAD", "DONUT", "CUPCAKE", "DRINK", "OTHER").contains(type)) throw invalid();
+String type = ProductCategories.requireKnown(requiredText(item.productType(), 32));
             var attributes = new LinkedHashMap<String, Object>();
-            Set<String> allowed = type.equals("CAKE") ? Set.of("size", "flavor", "filling", "base", "message", "requirements") : Set.of("specification", "requirements");
+Set<String> allowed = Set.of("size", "flavor", "filling", "base", "message", "requirements", "specification");
             if (item.attributes() != null) item.attributes().forEach((field, content) -> {
                 if (!allowed.contains(field) || content != null && !(content instanceof String)) throw invalid();
                 if (content instanceof String text && !text.isBlank()) attributes.put(field, text.strip());

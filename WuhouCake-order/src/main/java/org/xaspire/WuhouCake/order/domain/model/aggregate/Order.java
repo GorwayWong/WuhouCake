@@ -167,12 +167,11 @@ public final class Order {
         catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
         var requestedDate = date(merged.get("requestedReceiveDate"));
         var requestedAt = changes.containsKey("requestedReceiveAt") ? instant(changes.get("requestedReceiveAt")) : fulfillment.requestedReceiveAt();
-        if (changes.containsKey("requestedReceiveAt") && requestedAt == null && fulfillment.requestedReceiveAt() != null) throw invalid();
         if (changes.containsKey("requestedReceiveAt") && requestedAt != null) {
             var derivedDate = receiveDate(requestedAt);
             if (changes.containsKey("requestedReceiveDate") && !derivedDate.equals(requestedDate)) throw invalid();
             requestedDate = derivedDate;
-        } else if (!Objects.equals(requestedDate, fulfillment.requestedReceiveDate())) throw invalid();
+        } else if (requestedAt != null && !Objects.equals(requestedDate, fulfillment.requestedReceiveDate())) throw invalid();
         var plan = new FulfillmentPlan(type, text(merged.get("address")), requestedDate,
                 changes.containsKey("plannedHandoffAt") ? instant(changes.get("plannedHandoffAt")) : fulfillment.plannedHandoffAt(),
                 changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt(), requestedAt);
