@@ -49,6 +49,7 @@ class OrderStreamWebTest {
     @MockitoBean OrderService orders;
     @MockitoBean org.xaspire.WuhouCake.order.application.service.OrderCreationService creations;
     @MockitoBean OrderQueryService queries;
+    @MockitoBean org.xaspire.WuhouCake.order.application.service.OrderPackageService packages;
     @MockitoBean OrderImageService images;
     @MockitoBean OrderExportService exports;
     @MockitoBean org.xaspire.WuhouCake.order.application.service.OrderManagementService management;

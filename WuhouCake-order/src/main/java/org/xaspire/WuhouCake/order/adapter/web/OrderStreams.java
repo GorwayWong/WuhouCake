@@ -10,6 +10,7 @@ import org.slf4j.*;
 import org.springframework.transaction.event.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
+import org.xaspire.WuhouCake.order.application.event.OrderPackageChanged;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.CredentialsRevoked;
 
 public final class OrderStreams implements AutoCloseable {
@@ -64,6 +65,10 @@ public final class OrderStreams implements AutoCloseable {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public synchronized void changed(OrderChanged event) {
         for (var connection : connections) connection.enqueue(SseEmitter.event().name("order.changed").data(event));
+    }
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public synchronized void packageChanged(OrderPackageChanged event) {
+        for (var connection : connections) connection.enqueue(SseEmitter.event().name("package.changed").data(event));
     }
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void credentialsRevoked(CredentialsRevoked event) {

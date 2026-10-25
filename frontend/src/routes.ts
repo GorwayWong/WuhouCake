@@ -6,6 +6,7 @@ export function workspaceRoute(hash: string, systemRole?: string) {
   if (order) return { kind: order[2] ? 'history' : 'order', id: order[1], type: order[3] };
   if (hash === '#/orders/new') return { kind: 'create' };
   if (hash === '#/admin/orders') return { kind: 'orders' };
+  if (hash === '#/admin/order-packages') return { kind: 'packages' };
   if (hash === '#/admin/employees' && systemRole === 'SUPER_ADMIN') return { kind: 'employees' };
   return { kind: 'calendar' };
 }

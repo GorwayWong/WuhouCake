@@ -15,6 +15,7 @@ import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class OrderWebComposition {
+    @Bean OrderPackageController orderPackageController(org.xaspire.WuhouCake.order.application.service.OrderPackageService service) { return new OrderPackageController(service); }
     @Bean org.xaspire.WuhouCake.order.adapter.web.OrderManagementController orderManagementController(org.xaspire.WuhouCake.order.application.service.OrderManagementService service) {
         return new org.xaspire.WuhouCake.order.adapter.web.OrderManagementController(service);
     }

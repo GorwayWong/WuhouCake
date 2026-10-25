@@ -2,8 +2,9 @@ import { useCallback, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Cake, Plus, Trash, UserCircle, Truck, CurrencyCny } from '@phosphor-icons/react';
 import { creationResultUnknown, errorText } from './api';
-import { changeItemDraft, createOrderRequest, newItem, specificationFields } from './orderForm';
+import { changeItemDraft, createOrderRequest, newItem, fieldsForProduct } from './orderForm';
 import { OrderRecognition } from './OrderRecognition';
+import { OrderPackagePicker } from './OrderPackagePicker';
 import { EmployeeSelect } from './EmployeeSelect';
 import { DateInput } from './DateInput';
 import { ProductTypeSelect } from './ProductTypeSelect';
@@ -81,6 +82,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
           </div><p className="form-help">北京时间；取货指客户自提或配送员到店取走。</p></section>
         </div>
         <section className="panel create-group"><div className="section-heading"><h2><Cake />商品信息</h2><span className="muted">{draft.items.length} 项</span></div>
+          <OrderPackagePicker items={draft.items} onChange={items => change({ ...draft, items })} disabled={busy || unknownResult} />
           {draft.items.map((item, index) => <div className="create-item" key={item.key}>
             <div className="create-item-heading"><h3>商品 {index + 1}</h3><button type="button" className="text-button danger" aria-label={`移除商品 ${index + 1}`} disabled={draft.items.length === 1} onClick={() => change({ ...draft, items: draft.items.filter(other => other.key !== item.key) })}><Trash />移除</button></div>
             <div className="create-grid">
@@ -90,7 +92,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
                 const label = { name: '商品名称 *', productType: confirmType ? '商品类型 *' : '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[field];
                 return <Field key={field} label={label} name={name} error={errors[name]} wide={field === 'name'}>{field === 'productType' ? <ProductTypeSelect disabled={busy || unknownResult} {...inputProps(name)} value={item.productType} onChange={value => updateItem(item.key, { productType: value })} required={confirmType} /> : <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} onChange={event => updateItem(item.key, { [field]: event.target.value })} required={field === 'name' || field === 'quantity'} maxLength={field === 'name' ? 128 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} />}</Field>;
               })}
-              {specificationFields.map(([key, label]) => { const name = `items.${index}.${key}`; return <Field key={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} name={name} error={errors[name]} wide={key === 'requirements'}>{key === 'requirements' ? <textarea id={name} name={name} rows={2} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} /> : <input {...inputProps(name)} inputMode={key === 'size' ? 'decimal' : undefined} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} />}</Field>; })}
+              {fieldsForProduct(item.productType).map(([key, label]) => { const name = `items.${index}.${key}`; return <Field key={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} name={name} error={errors[name]} wide={key === 'requirements'}>{key === 'requirements' ? <textarea id={name} name={name} rows={2} value={item.attributes[key] || ''} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} /> : <input {...inputProps(name)} inputMode={key === 'size' ? 'decimal' : undefined} value={item.attributes[key] || ''} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} />}</Field>; })}
             </div>
           </div>)}
           <button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}><Plus />添加商品</button>

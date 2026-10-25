@@ -8,6 +8,7 @@ import type { Activity } from '../src/types.ts';
 test('员工共享订单统计与日志路由，员工管理仅管理员可见', () => {
   const id = '11111111-1111-4111-8111-111111111111';
   assert.equal(workspaceRoute('#/admin/orders', 'STAFF').kind, 'orders');
+  assert.equal(workspaceRoute('#/admin/order-packages', 'STAFF').kind, 'packages');
   assert.equal(workspaceRoute('#/admin/employees', 'STAFF').kind, 'calendar');
   assert.equal(workspaceRoute('#/admin/employees', 'SUPER_ADMIN').kind, 'employees');
   assert.deepEqual(workspaceRoute(`#/orders/${id}/activities?type=NOTE`, 'STAFF'), { kind: 'history', id, type: 'NOTE' });

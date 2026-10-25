@@ -1,6 +1,7 @@
 import type { OrderDraft, ItemDraft } from './orderForm.ts';
 import { moneyToCents, storeTime, validDate, newItem } from './orderForm.ts';
 import { normalizeSize } from './productRules.ts';
+import { randomUUID } from './uuid.ts';
 import type { RecognitionDraft, RecognitionField } from './types.ts';
 
 export const recognitionLimit = 12000;
@@ -67,9 +68,9 @@ export function pristineItem(item: ItemDraft): boolean {
     && item.defaultSpecifications?.length === initial.defaultSpecifications?.length
     && initial.defaultSpecifications!.every(key => item.defaultSpecifications?.includes(key));
 }
-export function emptyRecognitionItem(key: string = crypto.randomUUID()): ItemDraft {
+export function emptyRecognitionItem(key: string = randomUUID()): ItemDraft {
   return { key, name: '', productType: '', quantity: '', unitPrice: '', memberPrice: '',
-    attributes: { size: '', flavor: '', base: '', filling: '', message: '', requirements: '' }, defaultSpecifications: [], requiresTypeConfirmation: true };
+    attributes: { size: '', flavor: '', base: '', filling: '', message: '', requirements: '', specification: '' }, defaultSpecifications: [], requiresTypeConfirmation: true };
 }
 /** Undo only unchanged values written by this fill, preserving later manual edits/removals. */
 export function undoRecognition(current: OrderDraft, before: OrderDraft, after: OrderDraft): OrderDraft {

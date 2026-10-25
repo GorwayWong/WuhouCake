@@ -19,6 +19,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
+import org.xaspire.WuhouCake.order.application.event.OrderPackageChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.application.service.OrderImageService;
 import org.xaspire.WuhouCake.order.domain.port.OrderImages;
@@ -87,6 +88,28 @@ class OrderStreamTransactionsTest {
         verify(connection, times(2)).rollback();
         doThrow(new SQLException("commit failed")).when(connection).commit();
         assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event())));
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @Test void packageEventUsesTheExistingStreamOnlyAfterCommit() throws Exception {
+        var event = new OrderPackageChanged(UUID.randomUUID(), 3, true);
+        context.publishEvent(event);
+        new TransactionTemplate(manager).executeWithoutResult(status -> {
+            context.publishEvent(event);
+            try { verify(emitter).send(any(SseEmitter.SseEventBuilder.class)); }
+            catch (IOException failure) { throw new AssertionError(failure); }
+        });
+        var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        var sequence = inOrder(connection, emitter);
+        sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+        sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
+        assertTrue(sent.getValue().build().stream().anyMatch(value -> value.getData() instanceof String text && text.contains("event:package.changed")));
+        assertTrue(sent.getValue().build().stream().anyMatch(value -> value.getData().equals(event)));
+    }
+    @Test void rolledBackOrFailedPackageCommitNeverNotifies() throws Exception {
+        var event = new OrderPackageChanged(UUID.randomUUID(), 2, false);
+        new TransactionTemplate(manager).executeWithoutResult(status -> { context.publishEvent(event); status.setRollbackOnly(); });
+        doThrow(new SQLException("commit failed")).when(connection).commit();
+        assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event)));
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
     }
     @Test void credentialRevocationClosesOnlyAfterCommit() throws Exception {

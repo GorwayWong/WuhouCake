@@ -46,7 +46,7 @@ export function draftFromSubmission(submission: Submission): SubmissionDraft {
     requestedReceiveAt: localTime(content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
     creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null),
     items: content.items.map((item, i) => ({ ...newItem(), ...item, key: crypto.randomUUID(), quantity: String(item.quantity),
-      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', ...item.attributes },
+      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: '', ...item.attributes },
       defaultSpecifications: [], unitPrice: amount(review?.prices[i]?.unitPriceCents), memberPrice: amount(review?.prices[i]?.memberPriceCents) })) };
 }
 export function submissionRequest(draft: SubmissionDraft, staff = false) {

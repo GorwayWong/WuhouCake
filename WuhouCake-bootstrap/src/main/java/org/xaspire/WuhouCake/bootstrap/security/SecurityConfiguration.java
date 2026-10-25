@@ -79,6 +79,10 @@ public class SecurityConfiguration {
             authorize.requestMatchers(GET, "/api/orders/{id}/customer-origin").access(permissions(ORDER_READ, ORDER_CUSTOMER_READ));
             authorize.requestMatchers(GET, "/api/orders/calendar", "/api/orders/workbench", "/api/orders/stream", "/api/orders/{id}",
                     "/api/orders/{id}/images", "/api/orders/{id}/images/{imageId}").access(permissions(ORDER_READ));
+            authorize.requestMatchers(GET, "/api/order-packages", "/api/order-packages/{id}").access(packageAccess(false));
+            authorize.requestMatchers(POST, "/api/order-packages").access(packageAccess(true));
+            authorize.requestMatchers(PUT, "/api/order-packages/{id}").access(packageAccess(true));
+            authorize.requestMatchers(DELETE, "/api/order-packages/{id}").access(packageAccess(true));
             authorize.requestMatchers(POST, "/api/orders", "/api/orders/recognition/parse", "/api/orders/recognition/assist").access(permissions(ORDER_CREATE));
             authorize.requestMatchers(PATCH, "/api/orders/{id}", "/api/orders/{id}/information").access(permissions(ORDER_EDIT));
             authorize.requestMatchers(POST, "/api/orders/{id}/items", "/api/orders/{id}/items/{itemId}/remove").access(permissions(ORDER_EDIT));
@@ -125,6 +129,14 @@ public class SecurityConfiguration {
             var granted = current.getAuthorities().stream().map(org.springframework.security.core.GrantedAuthority::getAuthority).collect(java.util.stream.Collectors.toSet());
             return new AuthorizationDecision(current.isAuthenticated()
                     && java.util.Arrays.stream(required).allMatch(permission -> granted.contains(permission.authority())));
+        };
+    }
+    private static AuthorizationManager<RequestAuthorizationContext> packageAccess(boolean write) {
+        return (authentication, context) -> {
+            var current = authentication.get();
+            boolean allowed = current.getDetails() instanceof IdentityFacade.AccountView account
+                    && (account.jobRoles().contains("MANAGER") || !write && account.access().allows(ORDER_CREATE));
+            return new AuthorizationDecision(current.isAuthenticated() && allowed);
         };
     }
     private static void stateless(HttpSecurity http) throws Exception {

@@ -1,10 +1,15 @@
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
 import { cakeDefaults, numericSize } from './productRules.ts';
+import { randomUUID } from './uuid.ts';
 
 export const specificationFields = [
   ['size', '尺寸'], ['flavor', '奶油'], ['filling', '夹馅'],
-  ['base', '内胚'], ['message', '祝福语'], ['requirements', '特殊要求'],
+  ['base', '内胚'], ['message', '祝福语'], ['requirements', '特殊要求'], ['specification', '规格'],
 ] as const;
+export function fieldsForProduct(type: string) {
+  return type.trim().toUpperCase() === 'CAKE' ? specificationFields.filter(([key]) => key !== 'specification')
+    : [specificationFields.find(([key]) => key === 'specification')!, specificationFields.find(([key]) => key === 'requirements')!];
+}
 type Specification = typeof specificationFields[number][0];
 export interface ItemDraft {
   key: string; name: string; productType: string; quantity: string;
@@ -19,8 +24,8 @@ export interface OrderDraft {
   plannedHandoffAt: string; plannedFinishAt: string; totalAmount: string; items: ItemDraft[];
 }
 export function newItem(): ItemDraft {
-  return { key: crypto.randomUUID(), name: '', productType: 'CAKE', quantity: '1', unitPrice: '', memberPrice: '',
-    attributes: { size: '', flavor: '', filling: cakeDefaults.filling, base: cakeDefaults.base, message: '', requirements: '' },
+  return { key: randomUUID(), name: '', productType: 'CAKE', quantity: '1', unitPrice: '', memberPrice: '',
+    attributes: { size: '', flavor: '', filling: cakeDefaults.filling, base: cakeDefaults.base, message: '', requirements: '', specification: '' },
     defaultSpecifications: ['base', 'filling'] };
 }
 export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, editedSpecification?: string): ItemDraft {

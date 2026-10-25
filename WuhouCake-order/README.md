@@ -24,6 +24,11 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 | GET /api/orders/{id}/activities | 可选 itemId/type，page 从 1 起、size 默认 20/最大 100 |
 | GET /api/orders/calendar | from/to，按收货日期查询 [from,to)，最多 42 天 |
 | GET /api/orders/workbench | date，指定门店日期的统计与未完成/未取消待办 |
+| GET /api/order-packages | keyword 名称子串搜索、page 默认 1、size 默认 20/最大 50，返回 Page |
+| GET /api/order-packages/{id} | 有效套餐详情，包含 version 和 updatedAt |
+| POST /api/order-packages | name + items，必须带 UUID Idempotency-Key，返回 201 |
+| PUT /api/order-packages/{id} | expectedVersion + name + items，保存修改，返回 200 |
+| DELETE /api/order-packages/{id}?expectedVersion=版本号 | 软删除套餐，返回 200 JSON；不影响已带入订单的商品 |
 | GET /api/orders/stream | Bearer + Fetch SSE |
 | POST /api/orders/{id}/images | multipart file、可选有效 itemId |
 | GET /api/orders/{id}/images | 图片元数据，不读取二进制 |
@@ -37,6 +42,23 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 当前业务安全链允许所有已改密员工访问订单接口，包括批量导出；不提供管理员专属订单数据查询或导出授权。
 
 ## 录单、修改与一致性
+
+### 套餐填写模板
+
+首页“套餐管理”与“订单查询与统计”同级，仅具有 MANAGER 岗位的员工可维护；SUPER_ADMIN 系统角色本身不授予套餐维护资格。套餐列表和详情允许 MANAGER 或具有 ORDER_CREATE 权限的员工读取，写接口与应用服务均校验店长岗位。
+
+套餐名称去掉首尾空白后为 1–80 个字符，有效套餐名称区分大小写且唯一，已删除套餐的名称可重新使用。套餐总数不设上限，列表按 updatedAt 降序和 ID 稳定分页；keyword 按普通文本子串匹配，不把 `%`、`_` 当通配符。
+
+每个套餐至少一项商品，保存名称、类型、正整数数量及按类型显示的文本规格，不保存客户、价格、金额或图片。规格可留空，不为套餐自动补齐蛋糕内胚和夹馅；填写的蛋糕尺寸仍须满足现有数值格式。员工新建订单时逐份追加，只有初始空白商品行会被替换，同名商品不合并。带入前重新读取有效详情；带入后为独立订单草稿，修改、删除套餐均不回写草稿或历史订单。
+
+PUT 与 DELETE 以 expectedVersion 条件更新，旧版本返回 409 CONCURRENT_MODIFICATION；已删除套餐详情返回 404 PACKAGE_NOT_FOUND。有效套餐同名写入由数据库唯一索引保证，返回 409 PACKAGE_NAME_CONFLICT。店长核对最新版本后可继续保存保留的输入，前端不会自动覆盖。
+
+创建请求携带 UUID Idempotency-Key，相同标识和相同内容返回原套餐，不增加套餐及审计记录；同标识并发请求在现有事务内串行核实，避免误报名称冲突。原套餐已被修改或删除时分别返回 409 PACKAGE_CREATION_CONFLICT 或 404 PACKAGE_NOT_FOUND。前端在结果未确认时锁住输入，按原标识确认创建；修改、删除先读取详情核实，必要时按原版本重试。新建、修改、删除与 order.package_created / order.package_updated / order.package_deleted 审计同事务提交。完整 before/after 保存在 cake_order_package_change，审计 details.changeId 关联快照，并含名称、版本和商品项数摘要，避免通用审计单字段长度限制影响套餐保存。
+
+套餐创建、修改和删除成功提交后，通过现有 `/api/orders/stream` 连接发送 `package.changed`，仅携带 packageId、version、deleted，不包含套餐名称或商品内容。前端取消旧的列表读取和目标套餐在途带入读取，再重新查询所有活动套餐列表；ready、网络恢复和页面回到前台时补读，进入新建订单时也重新核对。已删除或移出当前筛选的选项清空，当前分页失效时回到有效页。刷新只更新套餐候选，不重建订单草稿或套餐编辑表单；在途带入取消后提示核对，迟到响应不追加旧商品。回滚、旧版本冲突、幂等创建重试及重复删除不发送变更通知。通知沿用现有单实例 SSE 会话与权限边界，不增加连接或轮询。
+
+V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版本、修改时间。启用唯一索引前检查去空格后重名，发现重名即停止，不自动改名或删除；应由店长确认名称调整后重试迁移。可在升级前只读检查：`SELECT btrim(name), count(*) FROM cake_order_package GROUP BY btrim(name) HAVING count(*) > 1;`。
+
 
 ~~~json
 {

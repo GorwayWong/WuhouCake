@@ -1,5 +1,5 @@
 import { createParser } from 'eventsource-parser';
-import type { QueryClient } from '@tanstack/react-query';
+import type { QueryClient, QueryFilters } from '@tanstack/react-query';
 import { authenticatedFetch } from './api.ts';
 
 export function synchronize(client: QueryClient, orderId?: string) {
@@ -9,7 +9,17 @@ export function synchronize(client: QueryClient, orderId?: string) {
     client.invalidateQueries({ queryKey: ['workbench'] }),
     client.invalidateQueries({ queryKey: ['management-orders'] }),
     client.invalidateQueries({ queryKey: orderId ? ['order', orderId] : ['order'] }),
+    ...(orderId ? [] : [synchronizePackages(client)]),
   ]);
+}
+export async function synchronizePackages(client: QueryClient, packageId?: string) {
+  const lists: QueryFilters = { queryKey: ['order-packages'], predicate: query => query.queryKey[1] !== 'detail' };
+  // 首次列表读取也必须取消，否则失效操作可能复用通知之前的旧请求。
+  await Promise.all([
+    client.cancelQueries(lists),
+    client.cancelQueries({ queryKey: packageId ? ['order-packages', 'detail', packageId] : ['order-packages', 'detail'] }),
+  ]);
+  return client.invalidateQueries(lists);
 }
 export const changeLabels: Record<string, string> = { CREATED: '新订单', ITEM_CHANGED: '商品资料已更新', NOTE: '新增协作备注', PAYMENT_STATUS_CHANGED: '付款状态已更新',
   ORDER_PRODUCTION_CHANGED: '制作进度已更新', ORDER_FULFILLMENT_CHANGED: '交付状态已更新', ORDER_CANCELLED: '订单已取消', ORDER_INFORMATION_CHANGED: '订单资料已更新',
@@ -20,6 +30,15 @@ export function collectUpdate(updates: OrderUpdate[], change: OrderUpdate): Orde
 }
 export function receiveEvent(client: QueryClient, event: { event?: string; data: string }, notify?: (change: OrderUpdate) => void) {
   if (event.event === 'ready') synchronize(client);
+  if (event.event === 'package.changed') {
+    let packageId: string | undefined;
+    try {
+      const change = JSON.parse(event.data);
+      if (typeof change?.packageId === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.packageId)) packageId = change.packageId;
+    } catch { /* 无法识别目标时重新核对全部套餐读取。 */ }
+    void synchronizePackages(client, packageId);
+    return;
+  }
   if (event.event !== 'order.changed') return;
   try {
     const change = JSON.parse(event.data);

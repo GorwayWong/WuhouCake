@@ -1997,3 +1997,25 @@ button,a{
   .choice-option{min-height:48px}
   .date-time-field .date-segments{font-size:16px}
 }
+
+.package-picker { padding: 1rem; margin: 1rem 0; border: 1px solid var(--border, #ddd6ca); border-radius: 12px; background: var(--surface-soft, #faf8f3); }
+.package-actions { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
+.package-actions label { display: grid; gap: .4rem; flex: 1 1 220px; }
+.package-summary { line-height: 1.7; overflow-wrap: anywhere; }
+.package-name { display: grid; gap: .5rem; max-width: 560px; }
+.package-management fieldset.package-actions { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+.package-management .page-heading p { margin: .6rem 0 0; }
+.package-list { padding-top: 0; padding-bottom: 0; }
+.package-list-item { display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; padding: 1.5rem 0; }
+.package-list-item + .package-list-item { border-top: 1px solid var(--border, #ddd6ca); }
+.package-list-content { min-width: 0; }
+.package-list-content h2 { font-size: 19px; margin: 0 0 .5rem; }
+.package-list-content p { margin: .4rem 0; }
+.package-pagination { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.package-empty-action { display: flex; justify-content: center; padding-bottom: 1.5rem; }
+.package-conflict { margin-top: 1rem; border-color: var(--accent, #a66d47); }
+@media(max-width:600px) {
+  .package-list-item { align-items: start; flex-direction: column; gap: .75rem; }
+  .package-pagination { align-items: start; flex-direction: column; }
+  .package-management .page-heading { align-items: start; }
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { isCancelledError, QueryClient, QueryObserver } from '@tanstack/react-query';
 import { collectUpdate, connectOrders, receiveEvent } from '../src/realtime.ts';
 import type { OrderUpdate } from '../src/realtime.ts';
 import { api, session, forgetSession, ApiError } from '../src/api.ts';
@@ -9,6 +9,58 @@ const waitFor = async (condition: () => boolean) => {
   for (let i = 0; i < 200 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(condition(), 'condition was not reached');
 };
+test('套餐通知刷新所有搜索分页，不触碰订单数据或产生订单通知', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+  const reads = [0, 0, 0]; let notifications = 0;
+  const keys = [['order-packages', 'keyword=蛋糕&page=1'], ['order-packages', 'page=2'], ['order', 'saved-order', 'detail']];
+  const stops = keys.map((queryKey, index) => new QueryObserver(client, { queryKey, queryFn: async () => ++reads[index] }).subscribe(() => {}));
+  try {
+    await waitFor(() => reads.every(value => value === 1) && client.isFetching() === 0);
+    receiveEvent(client, { event: 'package.changed', data: JSON.stringify({ packageId: '00000000-0000-4000-8000-000000000001', version: 2, deleted: true }) }, () => notifications++);
+    await waitFor(() => reads[0] === 2 && reads[1] === 2 && client.isFetching() === 0);
+    assert.equal(reads[2], 1); assert.equal(notifications, 0);
+    receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: 'saved-order', changeType: 'NOTE', version: 1 }) });
+    await waitFor(() => reads[2] === 2 && client.isFetching() === 0);
+    assert.equal(reads[0], 2); assert.equal(reads[1], 2);
+  } finally { stops.forEach(stop => stop()); client.clear(); }
+});
+test('ready 补读套餐列表，缓存尚未过期也核对断线期间的变化', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } }); let reads = 0;
+  const stop = new QueryObserver(client, { queryKey: ['order-packages', 'page=1'], queryFn: async () => ++reads }).subscribe(() => {});
+  try {
+    await waitFor(() => reads === 1 && client.isFetching() === 0);
+    receiveEvent(client, { event: 'ready', data: '{}' });
+    await waitFor(() => reads === 2 && client.isFetching() === 0);
+  } finally { stop(); client.clear(); }
+});
+test('套餐通知取消首次在途列表，迟到的旧响应不能覆盖新列表', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const key = ['order-packages', 'page=1']; let reads = 0, firstSignal: AbortSignal | undefined, release: (value: string) => void = () => {};
+  const stop = new QueryObserver(client, { queryKey: key, queryFn: ({ signal }) => {
+    if (++reads === 1) { firstSignal = signal; return new Promise<string>(resolve => { release = resolve; }); }
+    return Promise.resolve('新版套餐');
+  } }).subscribe(() => {});
+  try {
+    await waitFor(() => reads === 1);
+    receiveEvent(client, { event: 'package.changed', data: '{}' });
+    await waitFor(() => client.getQueryData(key) === '新版套餐');
+    assert.equal(firstSignal?.aborted, true); release('旧名称');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(client.getQueryData(key), '新版套餐');
+  } finally { stop(); client.clear(); }
+});
+test('变更通知取消目标套餐的在途带入读取，其他套餐读取保持有效', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const id = '00000000-0000-4000-8000-000000000001'; let signalA: AbortSignal | undefined, signalB: AbortSignal | undefined;
+  let resolveA: (value: string) => void = () => {}, resolveB: (value: string) => void = () => {};
+  const a = client.fetchQuery({ queryKey: ['order-packages', 'detail', id], queryFn: ({ signal }) => { signalA = signal; return new Promise<string>(resolve => { resolveA = resolve; }); } }).then(value => value, failure => { assert.ok(isCancelledError(failure)); return 'cancelled'; });
+  const b = client.fetchQuery({ queryKey: ['order-packages', 'detail', 'other'], queryFn: ({ signal }) => { signalB = signal; return new Promise<string>(resolve => { resolveB = resolve; }); } });
+  try {
+    receiveEvent(client, { event: 'package.changed', data: JSON.stringify({ packageId: id, version: 3, deleted: true }) });
+    assert.equal(await a, 'cancelled'); assert.equal(signalA?.aborted, true); assert.equal(signalB?.aborted, false);
+    resolveA('迟到的已删除套餐'); resolveB('其他套餐'); assert.equal(await b, '其他套餐');
+  } finally { resolveA('cleanup'); resolveB('cleanup'); client.clear(); }
+});
 test('站内更新保留同版本备注，合并同一订单、限制数量，坏事件只同步不产生可点击通知', () => {
   const client = new QueryClient(); let updates: OrderUpdate[] = [];
   const notify = (change: OrderUpdate) => { updates = collectUpdate(updates, change); };
