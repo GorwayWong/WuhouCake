@@ -57,7 +57,7 @@ public final class RecognitionValues {
         String value = text.strip().replaceFirst("^(?:人民币|RMB|￥|¥)\\s*", "").replaceFirst("\\s*元$", "").strip();
         if (!value.matches("\\d+(?:\\.\\d{1,2})?")) throw new IllegalArgumentException("金额需要明确的非负数，最多两位小数");
         var cents = new BigDecimal(value).movePointRight(2).toBigIntegerExact();
-        if (cents.compareTo(BigInteger.valueOf(9007199254740991L)) > 0) throw new IllegalArgumentException("金额超出表单安全范围");
+        if (cents.compareTo(BigInteger.valueOf(org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.MAX_MONEY_CENTS)) > 0) throw new IllegalArgumentException("金额超出表单安全范围");
         return cents.toString();
     }
     public static String text(String value, int limit) {

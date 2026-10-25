@@ -1,6 +1,6 @@
 # 员工身份领域
 
-维护员工账号、固定工号、可修改昵称、多岗位、独立系统身份、凭证与登录资格。公开契约为 `api.facade.IdentityFacade`，领域模型为不可变 `EmployeeAccount` 和有绝对截止时间的 `LoginSession`。
+维护员工账号、固定工号、可修改昵称、六种可兼任岗位、凭证与登录资格。店长岗位同时具有超级管理员身份，移除店长时同步撤销该身份，并保护最后一位管理员；旧岗位需逐人确认后迁移。公开契约为 `api.facade.IdentityFacade`，领域模型为不可变 `EmployeeAccount` 和有绝对截止时间的 `LoginSession`。
 
 `api.facade.EmployeeAccess` 定义操作权限和派生 UI 能力，`EmployeeAccessPolicy` 组合多岗位权限与系统管理权限。账号视图包含当前有效的 `access`，每次认证重新计算；首次改密前与归档账号无有效能力。bootstrap 将权限装配到 HTTP 授权，业务模块通过 identity.api 使用权限契约。默认授权、岗位覆盖配置及敏感字段边界见[员工权限说明](../docs/authorization.md)。
 

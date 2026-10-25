@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Button, Calendar, CalendarCell, CalendarGrid, CalendarGridBody, CalendarGridHeader, CalendarHeaderCell, DateInput as Segments, DatePicker, DateSegment, Dialog, FieldError, Group, Heading, Popover, TimeField } from 'react-aria-components';
-import { CalendarBlank, CaretLeft, CaretRight, Clock, X } from '@phosphor-icons/react';
+import { Button, Calendar, CalendarCell, CalendarGrid, CalendarGridBody, CalendarGridHeader, CalendarHeaderCell, DateInput as Segments, DatePicker, DateSegment, Dialog, FieldError, Group, Heading, Popover } from 'react-aria-components';
+import { CalendarBlank, CaretLeft, CaretRight, X } from '@phosphor-icons/react';
 import { today } from './dates';
 import { completeDateTime, pickerDate, pickerText } from './dateControls';
-import { parseDate, parseTime } from '@internationalized/date';
+import { parseDate } from '@internationalized/date';
+import { Select } from './Select';
 
 interface Props {
   label: string; id?: string; name?: string; type?: 'date' | 'datetime-local';
@@ -11,27 +12,31 @@ interface Props {
   resetTimeOnDateChange?: boolean;
   'aria-invalid'?: boolean; 'aria-describedby'?: string;
 }
-function closeOnEnter(event: React.KeyboardEvent<HTMLElement>) {
-  if (event.key === 'Enter' && (event.target as HTMLElement).matches('[role="spinbutton"]')) { event.preventDefault(); (event.target as HTMLElement).blur(); }
-}
 function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, ...aria }: Props) {
-  const split = (source: string) => ({ source, date: source.slice(0, 10), time: source.slice(11, 16) });
+  const split = (source: string) => {
+    const [date = '', time = ''] = source.split('T'), [hour = '', minute = ''] = time.split(':');
+    return { source, date, hour, minute };
+  };
   const [draft, setDraft] = useState(() => split(value));
   if (draft.source !== value) setDraft(split(value));
-  const update = (patch: Partial<Pick<typeof draft, 'date' | 'time'>>) => {
+  const update = (patch: Partial<Pick<typeof draft, 'date' | 'hour' | 'minute'>>) => {
     const next = { ...draft, ...patch };
-    if (resetTimeOnDateChange && patch.date !== undefined && patch.date !== draft.date) next.time = '';
-    const text = completeDateTime(next.date, next.time);
-    setDraft({ ...next, source: text }); onChange(text, { date: next.date, time: next.time });
+    if (patch.date === '') { next.hour = ''; next.minute = ''; }
+    if (resetTimeOnDateChange && patch.date !== undefined && patch.date !== draft.date) { next.hour = ''; next.minute = ''; }
+    const time = next.hour && next.minute ? `${next.hour}:${next.minute}` : '';
+    const text = completeDateTime(next.date, time) || (next.date || next.hour || next.minute ? `${next.date}T${next.hour}:${next.minute}` : '');
+    setDraft({ ...next, source: text }); onChange(text, { date: next.date, time });
   };
-  let clock = null;
-  try { if (draft.time) clock = parseTime(draft.time); } catch { /* 无效输入保持待填写，交由表单校验。 */ }
   return <div className="date-time-field" data-field-name={name} data-control-label={label}>
     <DateInput label={`${label}日期`} id={id} value={draft.date} onChange={date => update({ date })} required={required} disabled={disabled} {...aria} />
-    <TimeField className="time-field" aria-label={`${label}时刻`} value={clock} onChange={time => update({ time: time?.toString().slice(0, 5) || '' })}
-      hourCycle={24} granularity="minute" shouldForceLeadingZeros isRequired={required} isDisabled={disabled} isInvalid={aria['aria-invalid']} aria-describedby={aria['aria-describedby']}>
-      <Group className="date-control" onKeyDownCapture={closeOnEnter}><Segments className="date-segments">{segment => <DateSegment segment={segment} className="date-segment" />}</Segments><Clock aria-hidden="true" size={18} /></Group><FieldError className="field-error" />
-    </TimeField>
+    <div className="time-field" role="group" aria-label={`${label}时刻`}>
+      <Select label={`${label}小时`} value={draft.hour} onChange={hour => update({ hour })} required={required} disabled={disabled} {...aria}>
+        <option value="">小时</option>{Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0')).map(hour => <option key={hour} value={hour}>{hour} 时</option>)}
+      </Select>
+      <Select label={`${label}分钟`} value={draft.minute} onChange={minute => update({ minute })} required={required} disabled={disabled} {...aria}>
+        <option value="">分钟</option>{Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0')).map(minute => <option key={minute} value={minute}>{minute} 分</option>)}
+      </Select>
+    </div>
     <input type="hidden" name={name} value={value} />
   </div>;
 }

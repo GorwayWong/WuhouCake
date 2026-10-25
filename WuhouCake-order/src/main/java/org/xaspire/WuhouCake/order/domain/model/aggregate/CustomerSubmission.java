@@ -9,12 +9,13 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 /** Customer requirements are immutable; reviewed requirements remain separate until acceptance. */
 public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String ownerName, long version, String status,
         Content original, Review reviewed, UUID orderId, Instant createdAt, Instant updatedAt) {
-    public static final Set<String> ATTRIBUTES = Set.of("size", "base", "filling", "flavor", "message", "requirements");
-    public static final Set<String> PRODUCT_TYPES = Set.of("CAKE", "DONUT", "CUPCAKE", "OTHER");
+    public static final Set<String> ATTRIBUTES = Set.of("size", "base", "filling", "flavor", "message", "requirements", "specification");
+    public static final Set<String> PRODUCT_TYPES = Set.of("CAKE", "BREAD", "DONUT", "CUPCAKE", "DRINK", "OTHER");
     public record Product(String name, String productType, int quantity, Map<String, String> attributes) {
         public Product {
             name = requiredText(name, 128);
-            if (productType == null || !PRODUCT_TYPES.contains(productType) || quantity < 1) throw invalid();
+            if (productType == null || !PRODUCT_TYPES.contains(productType)) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
+            if (quantity < 1) throw new OrderFailure("SUBMISSION_QUANTITY_INVALID");
             var values = new TreeMap<String, String>();
             if (attributes != null) attributes.forEach((key, value) -> {
                 if (!ATTRIBUTES.contains(key)) throw invalid();
@@ -22,7 +23,7 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
             });
             if ("CAKE".equals(productType)) {
                 String size = CakeSpecifications.size(values.get("size"));
-                if (size == null) throw invalid();
+                if (size == null) throw new OrderFailure("SUBMISSION_CAKE_SIZE_REQUIRED");
                 values.put("size", size); values.putIfAbsent("base", "原味"); values.putIfAbsent("filling", "芒果");
             }
             attributes = Collections.unmodifiableMap(values);
@@ -53,11 +54,12 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
         public Review {
             Objects.requireNonNull(content); money(totalAmountCents);
             if (prices == null) prices = Collections.nCopies(content.items().size(), new Price(null, null));
-            if (prices.size() != content.items().size() || prices.stream().anyMatch(Objects::isNull)) throw invalid();
+            if (prices.size() != content.items().size() || prices.stream().anyMatch(Objects::isNull)) throw new OrderFailure("SUBMISSION_PRICES_INVALID");
             prices = List.copyOf(prices);
         }
         public void requireConfirmation() {
-            if (totalAmountCents == null || creditedEmployeeId == null || plannedHandoffAt == null) throw invalid();
+            if (totalAmountCents == null) throw new OrderFailure("SUBMISSION_TOTAL_REQUIRED");
+            if (creditedEmployeeId == null) throw new OrderFailure("SUBMISSION_EMPLOYEE_REQUIRED");
         }
     }
     public void requirePending(long expected) {

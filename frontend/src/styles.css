@@ -3,10 +3,8 @@
 .customer-header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0 24px;border-bottom:1px solid #dce2db}
 .customer-header>span{color:#445248;font-size:14px;white-space:nowrap}
 .customer-brand{width:112px;height:56px;object-fit:contain}
-.customer-intro{padding:32px 0 16px;max-width:65ch}
+.customer-intro{padding:24px 0 8px;max-width:65ch}
 .customer-intro h1{font-size:28px;line-height:1.4;margin:0 0 12px}
-.customer-intro p{color:#445248;line-height:1.8}
-.customer-footer{text-align:center;padding:40px 0 12px;color:#445248;font-size:14px}
 .customer-page .create-fields{margin-top:24px}
 .customer-page .create-submit{position:static}
 .submission-fields input,.submission-fields textarea{font-size:16px;min-width:0}
@@ -52,8 +50,6 @@
 .check-label{display:flex;align-items:center;gap:8px;align-self:center}
 .check-label input[type=checkbox]{width:18px;height:18px;min-height:18px;flex:none;margin:0}
 .table-scroll{overflow:auto;padding:0!important}
-.table-help{display:none}
-@media(max-width:600px){.table-help{display:block}}
 .management-table{width:100%;border-collapse:collapse;font-size:14px;text-align:left}
 .management-table th,.management-table td{padding:16px;border-bottom:1px solid #e4e7e2;vertical-align:top;min-width:120px;max-width:360px;overflow-wrap:anywhere}
 .management-table th{font-weight:600;white-space:nowrap}
@@ -369,12 +365,6 @@ small{
   color:var(--muted);
   font-size:13px;
 }
-.eyebrow{
-  font-size:12px;
-  letter-spacing:1.8px;
-  color:#8b7645;
-  margin-bottom:8px;
-}
 .panel{
   background:#fff;
   border:1px solid var(--line);
@@ -597,9 +587,6 @@ small{
   color:#8b8f88;
   font-size:11px;
 }
-.app-footer span:last-child{
-  margin-left:auto;
-}
 .calendar-panel{
   padding:22px 22px 12px;
 }
@@ -637,94 +624,57 @@ small{
 .calendar-grid{
   align-items:stretch;
 }
+.calendar-weeks{display:flex;flex-direction:column;gap:8px;min-width:0}
 .date-block{
-  min-height:174px;
-  border:1px solid transparent;
-  border-radius:10px;
-  background:#f5f7f5;
-  padding:6px;
-  min-width:0;
+  height:72px;min-height:0;display:flex;flex-direction:column;align-items:stretch;
+  border:1px solid transparent;border-radius:10px;background:#f5f7f5;padding:8px;min-width:0;
+  text-align:left;overflow:hidden;color:var(--ink);
 }
-.date-block.selected{
-  background:#fff9e8;
-  border-color:#f1bc27;
-  box-shadow:inset 0 0 0 1px #f1bc27;
-}
-.date-block.outside-month{
-  background:#f9faf8;
-}
-.date-block.outside-month .date-select{
-  color:#929990;
-}
-.date-select{
-  width:100%;
-  text-align:left;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:7px 6px;
-  margin-bottom:6px;
-  border-radius:6px;
-}
-.date-select span{
-  font-size:21px;
-  font-weight:500;
-}
-.date-select small{
-  color:#87620b;
-  background:#f9dd82;
-  border-radius:4px;
-  padding:2px 4px;
-}
-.date-select:hover{
-  background:#eee9d9;
-}
-.date-orders{
-  display:flex;
-  flex-direction:column;
-  gap:7px;
-}
-.calendar-order{
-  display:flex;
-  flex-wrap:wrap;
-  gap:5px;
-  padding:9px 7px;
-  background:white;
-  border:1px solid #eeeee8;
-  border-radius:7px;
-  min-width:0;
-}
-.calendar-order:hover{
-  border-color:#cca857;
-  box-shadow:0 3px 8px #28261c08;
-}
-.calendar-order strong{
-  font-size:12px;
-  width:100%;
-  line-height:1.6;
-  overflow-wrap:anywhere;
-  font-weight:600;
-}
-.calendar-number{
-  width:100%;
-  font-size:10px;
-  color:#899089;
-  overflow-wrap:anywhere;
-}
-.calendar-order .badge{
-  font-size:10px;
-  padding:3px 5px;
-  gap:3px;
-  white-space:normal;
-}
-.calendar-order .badge svg{
-  width:12px;
-}
-.no-orders{
-  text-align:center;
-  color:#c9ccc5;
-  padding:26px 0;
-}
+.date-block:hover{background:var(--soft)}
+.date-block.selected{background:var(--soft);border-color:var(--yellow)}
+.date-block.outside-month{background:#f9faf8;color:var(--muted)}
+.date-block.outside-month.selected{background:var(--soft)}
+.date-select{display:flex;align-items:center;justify-content:space-between;gap:2px;min-width:0}
+.date-select>span{font-size:21px;font-weight:500}
+.date-select small{color:#765509;background:#f9dd82;border-radius:4px;padding:1px 3px;font-size:10px}
+.date-block[aria-current="date"] .date-select>span{text-decoration:underline;text-decoration-color:var(--yellow);text-underline-offset:5px}
+.day-order-dot{width:5px;height:5px;border-radius:50%;margin:10px auto 0;background:transparent}
+.day-order-dot.has-orders{background:#ad9a6b}
+.month-day-summary{display:flex;flex-direction:column;gap:2px;min-width:0;margin-top:8px;font-size:12px;line-height:1.35}
+.month-day-summary>strong,.month-day-summary>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.month-day-summary>strong{font-weight:500}
+.month-day-summary>span{color:var(--muted)}
+.month-day-summary .month-more{line-height:8px;font-size:16px}
+.calendar-filters{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:0 0 18px;min-width:0}
+.calendar-filters .calendar-filter{flex:0 1 180px;min-width:0;gap:4px}
+.calendar-filter-bar{margin-top:20px}
+.calendar-filter-bar p{font-size:13px}
+.month-expanded{padding:20px 16px;background:#f8f8f2;border:1px solid var(--line);border-radius:12px;min-width:0;animation:calendar-reveal 140ms ease-out}
+.month-expanded[hidden]{display:none}
+.month-expanded .section-heading{gap:12px;margin-bottom:16px}
+.month-expanded .section-heading h2{font-size:18px}
+.month-expanded .section-heading>button{flex:none}
+.order-timeline{display:flex;flex-direction:column;gap:18px;min-width:0}
+.timeline-group{display:grid;grid-template-columns:54px minmax(0,1fr);gap:14px;align-items:start;min-width:0}
+.timeline-time{padding-top:17px;font-size:14px;font-variant-numeric:tabular-nums;color:var(--muted)}
+.timeline-orders{display:flex;flex-direction:column;gap:12px;min-width:0}
+.order-summary-card{display:flex;flex-direction:column;gap:12px;padding:18px 20px;background:#fff;border:1px solid var(--line);border-radius:14px;min-width:0;color:var(--ink);text-decoration:none;transition:border-color 140ms ease,box-shadow 140ms ease}
+.order-summary-card:hover{border-color:#d4b665;box-shadow:0 3px 12px #292b2b08}
+.order-summary-card:focus-visible,.date-block:focus-visible{outline:2px solid #946a0c;outline-offset:3px}
+.order-summary-title{display:flex;align-items:start;justify-content:space-between;gap:12px;min-width:0}
+.order-summary-title h3{font-size:19px;line-height:1.5;margin:0;overflow-wrap:anywhere}
+.order-summary-title>svg{flex:none;margin-top:4px;color:var(--muted)}
+.order-summary-meta{display:flex;flex-wrap:wrap;gap:5px 12px;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.order-summary-number{font-size:12px}
+.order-summary-card .badges{flex-wrap:wrap;justify-content:flex-start}
+.order-summary-products{display:flex;flex-wrap:wrap;gap:6px 18px;list-style:none;padding:12px 0 0;margin:0;border-top:1px solid var(--line);font-size:14px;line-height:1.7;min-width:0}
+.order-summary-products li{overflow-wrap:anywhere;min-width:0;max-width:100%}
+.order-summary-products li span{white-space:nowrap;color:var(--muted)}
+.order-summary-note{display:flex;align-items:baseline;gap:8px;margin:0;padding:10px 12px;background:var(--soft);border-radius:8px;font-size:14px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.order-summary-note>span{flex:none;font-size:12px;color:#765509}
+.calendar-metrics{margin:18px 0 24px;padding:14px 0}
+@keyframes calendar-reveal{from{opacity:.5}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.month-expanded{animation:none}.order-summary-card{transition:none}}
 .calendar-toggle{
   width:100%;
   min-height:40px;
@@ -741,7 +691,7 @@ small{
   background:#f8f8f2;
 }
 .month .date-block{
-  min-height:142px;
+  height:112px;
 }
 .metrics{
   margin:22px 0 30px;
@@ -850,6 +800,11 @@ small{
   align-items:center;
   margin-bottom:13px;
 }
+.product-heading-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:13px}
+.product-heading-row .product-heading{min-width:0;flex:1;margin-bottom:0}
+.product-title{min-width:0;overflow-wrap:anywhere}
+.product-title h3{text-wrap:balance}
+.product-heading-row .product-mark{flex-shrink:0}
 .product-mark{
   display:flex;
   width:44px;
@@ -1249,18 +1204,6 @@ input::placeholder,textarea::placeholder{
   letter-spacing:1px;
   margin:10px 0 25px;
 }
-.login-story>p:last-of-type{
-  font-size:14px;
-  color:#9b8b63;
-  line-height:2;
-}
-.story-footer{
-  font-size:11px;
-  color:#b3a27b;
-  margin-top:auto;
-  padding-top:70px;
-  letter-spacing:2px;
-}
 .login-form-wrap{
   display:flex;
   align-items:center;
@@ -1344,9 +1287,6 @@ input::placeholder,textarea::placeholder{
 }
 .calendar-weekdays,.calendar-grid{
   gap:5px;
-}
-.calendar-order{
-  padding:7px 4px;
 }
 .date-block{
   padding:4px;
@@ -1442,30 +1382,22 @@ h1{
   height:34px;
 }
 .calendar-scroll{
-  overflow-x:auto;
+  min-width:0;
   padding:2px 1px 8px;
 }
 .calendar-weekdays,.calendar-grid{
-  min-width:590px;
+  min-width:0;
   gap:5px;
 }
 .date-block{
-  min-height:165px;
+  height:64px;
+  padding:5px 3px;
 }
 .month .date-block{
-  min-height:135px;
+  height:88px;
 }
 .date-select span{
   font-size:18px;
-}
-.calendar-order .badge{
-  font-size:10px;
-}
-.calendar-order strong{
-  font-size:11px;
-}
-.calendar-number{
-  font-size:9px;
 }
 .calendar-toggle{
   font-size:11px;
@@ -1623,7 +1555,7 @@ h1{
   width:150px;
   margin:5px 0 -20px;
 }
-.login-story>.eyebrow,.login-story h1,.login-story>p,.story-footer{
+.login-story h1{
   display:none;
 }
 .login-form-wrap{
@@ -1982,10 +1914,7 @@ button,a{
 .date-jump{min-width:175px}
 .date-time-field{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
 .date-time-field>.date-field{flex:1 1 160px;width:auto}
-.time-field{flex:1 1 100px;min-width:0;font-weight:400}
-.time-field .date-control{padding-right:12px}
-.time-field[data-disabled]{opacity:.55}
-.time-field[data-invalid] .date-control{border-color:#ab3d27}
+.time-field{display:flex;flex:1 1 192px;gap:8px;min-width:0;font-weight:400}
 @media(max-width:600px){
   .detail-page>.page-heading h1,.history-page h1{font-size:24px}
   .history-entry{padding:16px}
@@ -1998,6 +1927,115 @@ button,a{
   .date-time-field .date-segments{font-size:16px}
 }
 
+@media(max-width:640px){
+  .calendar-filters{gap:8px}
+  .calendar-filters .calendar-filter{flex:1 1 110px;font-size:12px}
+  .calendar-filters .text-button{font-size:12px;min-height:36px}
+  .calendar-weeks{gap:6px}
+  .calendar-weekdays{font-size:10px}
+  .date-select>span{font-size:17px}
+  .date-select small{font-size:9px;padding:0 2px}
+  .month-day-summary{font-size:10px;margin-top:7px;gap:3px}
+  .timeline-group{grid-template-columns:44px minmax(0,1fr);gap:6px}
+  .timeline-time{font-size:12px;padding-top:14px}
+  .order-summary-card{padding:12px;gap:10px;border-radius:11px}
+  .order-summary-title h3{font-size:16px}
+  .order-summary-meta{font-size:12px;gap:4px 8px}
+  .order-summary-products{font-size:13px;gap:4px 12px}
+  .order-summary-note{display:block;font-size:13px;padding:8px 10px}
+  .order-summary-note>span{margin-right:8px}
+  .month-expanded{padding:14px 8px}
+  .month-expanded .section-heading h2{font-size:15px}
+  .month-expanded .section-heading>button{font-size:12px}
+  .calendar-metrics .metric{gap:5px}
+}
+
+.shipping-summary{margin:20px 0}
+.preparation-summaries{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:16px;margin:20px 0}
+.receipt-amount{font-size:28px;font-variant-numeric:tabular-nums}
+.summary-date-basis{display:inline-flex;flex-shrink:0;align-items:center;border-radius:6px;padding:5px 9px;background:#faf0ce;color:#654b0c;font-size:12px;font-weight:600;white-space:nowrap}
+.receipt-summary .summary-date-basis{background:#eaf2f8;color:#28516e}
+.summary-data-warning{margin:16px 0 0;padding:12px 14px;border:1px solid #e0c789;border-radius:8px;background:#fff8e7;color:#63480b;font-size:14px;line-height:1.7}
+.summary-data-warning strong{display:block;margin-bottom:3px}
+.summary-source-note{margin:16px 0 0;padding-top:12px;border-top:1px solid #e2e7e1;color:#536252;font-size:12px;line-height:1.7}
+.receipt-amount-label{display:block;margin:18px 0 6px;color:#46564d;font-size:13px}
+.receipt-empty{margin:12px 0 0;color:#46564d;font-size:14px;line-height:1.7}
+.product-completion{display:inline-flex;flex-direction:row;align-items:center;gap:8px;flex-shrink:0;min-height:44px;padding:8px 10px;border:1px solid #d5ddd2;border-radius:8px;background:#f6f8f4;color:#40503c;font-size:13px;font-weight:600;line-height:1.4;cursor:pointer;white-space:nowrap}
+.product-completion input[type=checkbox]{appearance:auto;width:20px;height:20px;margin:0;accent-color:#527344;cursor:inherit;flex-shrink:0}
+.product-completion.is-complete{background:#edf5e8;border-color:#b9cdb0;color:#35542b}
+.product-completion:has(input:disabled){cursor:default}
+.detail-products{display:block}
+.detail-products .product,.detail-products .product:first-child,.detail-products .product:last-child{padding:20px 0}
+.detail-products .product+.product{border-left:0;border-top:1px solid var(--line)}
+.detail-products :is(.attributes,.production-fields){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;margin:8px 0 18px}
+.detail-products :is(.attributes,.production-fields)>div{display:flex;flex-direction:column;gap:5px;min-width:0;padding:12px 0;border-bottom:1px solid #e2e7df;align-items:flex-start}
+.detail-products :is(.attributes,.production-fields) dt{color:#53634d;font-size:13px;font-weight:500;line-height:1.5}
+.detail-products :is(.attributes,.production-fields) dd{margin:0;color:#263323;font-size:16px;font-weight:600;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:400px){
+  .detail-products .product-mark{display:none}
+  .detail-products .product-heading{gap:0}
+  .detail-products .product-heading-row{gap:10px}
+}
+.confirmation-missing{color:#8a3024;line-height:1.7}
+.pending-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;margin-left:6px;border-radius:10px;background:#b33b2e;color:white;font-size:12px;font-weight:700;line-height:1}
+.history-unpaid-action{margin:12px 0 18px;flex-wrap:wrap}
+#management-advanced-filters[hidden]{display:none}
+.order-requirements{background:#fff8e6;border:1px solid #d4b66e;box-shadow:none}
+.order-requirements h2{display:flex;align-items:center;gap:10px;font-size:20px;color:#59400b;margin:0}
+.order-requirements dl{margin:0;display:flex;flex-direction:column;gap:16px}
+.order-requirements dl>div{display:grid;grid-template-columns:minmax(120px,200px) minmax(0,1fr);gap:20px;align-items:baseline}
+.order-requirements dt{font-size:15px;font-weight:600;overflow-wrap:anywhere;color:#59400b}
+.order-requirements dd,.requirement-empty{margin:0;font-size:20px;font-weight:600;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;color:#352a12}
+.detail-summary .detail-status{width:100%}
+.detail-page>.payment-panel{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.detail-page>.payment-panel h2{margin-right:auto}
+.payment-panel .amount-editor{flex-basis:100%;width:100%}
+.detail-page>.payment-panel{flex-direction:row}
+.payment-panel .payment-heading{flex-basis:100%;width:100%;margin-bottom:0}
+.order-category-list{display:block;font-weight:600;margin-bottom:6px;color:#324b3b}
+.order-result-date,.order-result-phone{font-variant-numeric:tabular-nums}
+@media(max-width:600px){.order-requirements dl>div{grid-template-columns:1fr;gap:4px}.order-requirements dd{font-size:18px}.detail-page>.payment-panel{gap:16px}.detail-page>.payment-panel h2{width:100%}}
+.shipping-summary .section-heading,.receipt-summary .section-heading{align-items:baseline;flex-wrap:wrap;gap:8px}
+.summary-scope{font-size:13px;color:#46564d;margin:0}
+.shipping-counts{display:flex;gap:40px;margin:20px 0;flex-wrap:wrap}
+.shipping-counts>div{display:flex;align-items:baseline;gap:12px}
+.shipping-counts dt{font-size:14px;color:#46564d}
+.shipping-counts dd{margin:0;font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.shipping-counts dd span{font-size:14px;font-weight:400}
+.payment-summary-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.payment-summary-table th,.payment-summary-table td{padding:14px 12px;border-top:1px solid #dce2db;text-align:left}
+.payment-summary-table thead th{font-size:13px;color:#46564d;font-weight:500}
+.payment-summary-table tbody th{font-size:16px;font-weight:500}
+.payment-summary-table td:last-child,.payment-summary-table th:last-child{text-align:right}
+.payment-summary-table strong{font-size:22px;overflow-wrap:anywhere}
+.payment-summary-table small{display:block;color:#79500c;font-size:13px;line-height:1.6;margin-top:4px}
+.summary-skeleton{padding:20px 0;color:#46564d;background:#f1f4f1}
+.production-deadline{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;margin-bottom:20px}
+.production-deadline>span{font-size:16px;color:#46564d}
+.production-deadline>strong{font-size:24px;color:#194b34}
+.production-fields{display:flex;flex-direction:column;gap:0;margin:16px 0 0}
+.production-fields>div{display:grid;grid-template-columns:108px minmax(0,1fr);gap:16px;padding:10px 0;border-bottom:1px solid #e5e9e5;align-items:start}
+.production-fields dt{font-size:15px;color:#46564d;line-height:1.7}
+.production-fields dd{margin:0;font-size:20px;font-weight:500;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.production-detail .image-grid{grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr))}
+.production-detail .image-thumbnail{height:300px}
+.production-detail .image-thumbnail img{object-fit:contain}
+.note-panel>summary,.operation-history>summary{font-size:18px;font-weight:600;cursor:pointer;padding:4px 0}
+.note-panel[open]>summary,.operation-history[open]>summary{margin-bottom:20px}
+.production-thumbnail{height:180px;background:#f1f4f1;display:flex;align-items:center;justify-content:center;margin-bottom:16px;border-radius:8px;overflow:hidden;color:#46564d;font-size:14px}
+.production-thumbnail img{width:100%;height:100%;object-fit:contain}
+.production-card .order-summary-products{display:block}
+.production-card .order-summary-products>li{display:block;padding:12px 0}
+.production-card .production-fields dt{font-size:13px}
+.production-card .production-fields dd{font-size:17px}
+.production-card .order-summary-meta{font-size:14px}
+@media(max-width:600px){
+  .shipping-counts{gap:12px 24px}.shipping-counts>div{gap:8px}.shipping-counts dd{font-size:20px}
+  .payment-summary-table th,.payment-summary-table td{padding:12px 5px}.payment-summary-table strong{font-size:18px}
+  .payment-summary-table small{max-width:180px;margin-left:auto}.summary-scope{font-size:12px}
+  .production-fields>div{grid-template-columns:88px minmax(0,1fr);gap:12px}.production-fields dd{font-size:18px}
+  .production-deadline>strong{font-size:22px}.production-detail .image-thumbnail{height:250px}
+}
 .package-picker { padding: 1rem; margin: 1rem 0; border: 1px solid var(--border, #ddd6ca); border-radius: 12px; background: var(--surface-soft, #faf8f3); }
 .package-actions { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
 .package-actions label { display: grid; gap: .4rem; flex: 1 1 220px; }

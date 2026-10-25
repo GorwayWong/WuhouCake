@@ -63,6 +63,10 @@ class OrderExportIT {
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
     @Autowired Changes changes;
+    @Autowired org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderImageMaintenanceMapper maintenance;
+    @Autowired OrderImageValidator validator;
+    @Autowired org.xaspire.WuhouCake.order.application.service.OrderExportSnapshotService snapshots;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @MockitoSpyBean OrderImages images;
     @MockitoSpyBean OrderActivities activities;
     @MockitoSpyBean OrderExportFiles files;
@@ -83,7 +87,7 @@ class OrderExportIT {
         var png = picture("png"); var jpeg = picture("jpeg");
         var upload = staff.upload(id, null, png, "../fake.exe"); assertEquals(201, upload.statusCode(), text(upload));
         var image = data(upload); String imageId = image.path("imageId").asText();
-        assertEquals("image/png", image.path("contentType").asText()); assertEquals("fake.exe", image.path("filename").asText());
+        assertEquals("image/png", image.path("contentType").asText()); assertEquals("fake.exe.png", image.path("filename").asText());
         assertEquals(staff.accountId, image.path("uploadedBy").asText()); assertEquals("前台员工", image.path("uploaderNameSnapshot").asText());
         assertEquals(201, staff.upload(id, item, jpeg, "cake.jpg").statusCode());
         assertArrayEquals(png, jdbc.queryForObject("SELECT content FROM cake_order_image WHERE id=?::uuid", byte[].class, imageId));
@@ -113,8 +117,8 @@ class OrderExportIT {
         assertEquals(200, exported.statusCode(), text(exported)); assertEquals("no-store", header(exported, "Cache-Control"));
         assertTrue(header(exported, "Content-Type").contains("spreadsheetml")); assertTrue(header(exported, "Content-Disposition").startsWith("attachment;"));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(exported.body()))) {
-            assertEquals(2, book.getAllPictures().size()); assertEquals(3, book.getSheet("商品").getPhysicalNumberOfRows());
-            assertEquals(3, book.getSheet("备注").getPhysicalNumberOfRows());
+            assertEquals(2, book.getAllPictures().size()); assertEquals(3, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            assertEquals(3, book.getSheet("工作备注").getPhysicalNumberOfRows());
         }
         assertEquals(before, data(staff.request("GET", "/api/orders/" + id, null))); assertTrue(changes.events.isEmpty());
         var history = data(staff.request("GET", "/api/orders/" + id + "/activities?type=ORDER_EXPORTED", null));
@@ -146,7 +150,7 @@ class OrderExportIT {
         assertEquals(200, staff.request("GET", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
         var response = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, response.statusCode(), text(response));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
-            assertTrue(book.getAllPictures().isEmpty()); assertEquals(2, book.getSheet("商品").getPhysicalNumberOfRows());
+            assertTrue(book.getAllPictures().isEmpty()); assertEquals(2, book.getSheet("商品明细").getPhysicalNumberOfRows());
         }
     }
     @Test void imageRemovalIsScopedIdempotentReleasesQuotaAndPreservesSnapshots() throws Exception {
@@ -252,7 +256,11 @@ class OrderExportIT {
                 .when(activities).append(argThat(activity -> activity.type().equals("ORDER_EXPORTED")));
         var result = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, result.statusCode(), text(result));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(result.body()))) {
-            assertEquals("UNPAID", book.getSheet("订单").getRow(5).getCell(1).getStringCellValue());
+            boolean found = false;
+            for (var row : book.getSheet("订单信息")) if (row.getCell(0).getStringCellValue().equals("付款状态")) {
+                assertEquals("未付款", row.getCell(1).getStringCellValue()); found = true;
+            }
+            assertTrue(found);
         }
         assertEquals("PAID", data(staff.request("GET", "/api/orders/" + id, null)).path("paymentStatus").asText());
         assertEquals(0, exportCount());
@@ -485,6 +493,63 @@ class OrderExportIT {
             assertEquals(1 + notes, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Integer.class));
         } finally { root.detachAppender(logs); logs.stop(); logger.setLevel(previous); reset(streams, activities); }
     }
+    @Test void rolledBackSnapshotTransactionReleasesEveryCapturedImage() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        staff.upload(id, null, picture("png"), "rollback.png");
+        var before = temporaryFiles();
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
+        transaction.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        assertThrows(IllegalStateException.class, () -> transaction.executeWithoutResult(status -> {
+            snapshots.single(UUID.fromString(id));
+            throw new IllegalStateException("synthetic snapshot rollback");
+        }));
+        assertEquals(before, temporaryFiles());
+    }
+    @Test void imageMetadataAndBytesStayInOneSnapshotDuringHistoricalRecompression() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String id = order.path("orderId").asText(); byte[] png = picture("png"), jpeg = picture("jpeg");
+        String image = data(staff.upload(id, null, png, "snapshot.png")).path("imageId").asText();
+        var readStarted = new CountDownLatch(1); var resume = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            readStarted.countDown();
+            if (!resume.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("image read did not resume");
+            return invocation.callRealMethod();
+        }).when(images).content(UUID.fromString(id), UUID.fromString(image));
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var exported = executor.submit(() -> staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null));
+            try {
+                assertTrue(readStarted.await(10, TimeUnit.SECONDS));
+                jdbc.update("UPDATE cake_order_image SET content=?,content_type='image/jpeg',filename='snapshot.jpg',size=? WHERE id=?::uuid", jpeg, jpeg.length, image);
+            } finally { resume.countDown(); }
+            var result = exported.get(15, TimeUnit.SECONDS); assertEquals(200, result.statusCode(), text(result));
+            try (var book = new XSSFWorkbook(new ByteArrayInputStream(result.body()))) {
+                assertEquals(1, book.getAllPictures().size()); assertArrayEquals(png, book.getAllPictures().getFirst().getData());
+                assertEquals("image/png", book.getAllPictures().getFirst().getMimeType());
+            }
+        } finally { reset(images); }
+        assertEquals("image/jpeg", header(staff.request("GET", "/api/orders/" + id + "/images/" + image, null), "Content-Type"));
+    }
+    @Test void historicalProcessingIncludesRemovedImagesIsResumableAndLeavesBusinessHistoryUntouched() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        String image = data(staff.upload(id, null, picture("png"), "historical.png")).path("imageId").asText();
+        staff.request("DELETE", "/api/orders/" + id + "/images/" + image, null);
+        jdbc.update("UPDATE cake_order_image SET processing_version=0 WHERE id=?::uuid", image);
+        var before = data(staff.request("GET", "/api/orders/" + id, null));
+        long activitiesBefore = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
+        var uploadedAt = jdbc.queryForObject("SELECT uploaded_at FROM cake_order_image WHERE id=?::uuid", java.sql.Timestamp.class, image);
+        var service = new org.xaspire.WuhouCake.order.application.service.OrderImageMaintenanceService(
+                new org.xaspire.WuhouCake.order.infrastructure.persistence.repository.PostgresOrderImageMaintenance(maintenance), validator);
+        var result = service.recompress(); assertEquals(1, result.processed()); assertEquals(0, result.failed());
+        assertEquals(0, service.recompress().processed());
+        assertEquals(before, data(staff.request("GET", "/api/orders/" + id, null)));
+        assertEquals(activitiesBefore, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
+        assertEquals(uploadedAt, jdbc.queryForObject("SELECT uploaded_at FROM cake_order_image WHERE id=?::uuid", java.sql.Timestamp.class, image));
+        assertEquals(Boolean.TRUE, jdbc.queryForObject("SELECT is_removed FROM cake_order_image WHERE id=?::uuid", Boolean.class, image));
+        byte[] invalid = "synthetic corrupt image".getBytes(StandardCharsets.UTF_8);
+        jdbc.update("UPDATE cake_order_image SET processing_version=0,content=?,size=? WHERE id=?::uuid", invalid, invalid.length, image);
+        assertEquals(1, service.recompress().failed());
+        assertArrayEquals(invalid, jdbc.queryForObject("SELECT content FROM cake_order_image WHERE id=?::uuid", byte[].class, image));
+    }
     private static String nextStreamFrame(BufferedReader reader) throws Exception {
         var next = CompletableFuture.supplyAsync(() -> {
             try { return streamFrame(reader); } catch (IOException failure) { return null; }
@@ -511,7 +576,7 @@ class OrderExportIT {
         }
         return result;
     }
-    private static String filename(JsonNode order) { return "订单-" + order.path("orderNo").asText() + ".xlsx"; }
+    private static String filename(JsonNode order) { return order.path("orderNo").asText() + ".xlsx"; }
     private static Map<String, Object> range() { return Map.of("from", "2026-10-01", "to", "2026-11-01"); }
     private static Map<String, Object> create(String date) {
         return Map.of("customer", Map.of("customerName", "客户", "phone", "13800000000"), "totalAmountCents", 12345,

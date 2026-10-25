@@ -49,6 +49,7 @@ class CustomerSubmissionIT {
     @MockitoSpyBean Operations auditOperations;
     @Autowired DataSource dataSource;
     @Autowired PlatformTransactionManager transactions;
+    @Autowired org.xaspire.WuhouCake.order.application.service.OrderRetentionService retention;
     @BeforeEach void clean() {
         reset(store, auditOperations); jdbc.execute("TRUNCATE customer_order_entry,customer_order_submission,customer_submission_activity,cake_order,identity_account,audit_operation CASCADE");
         clearRedis();
@@ -56,10 +57,30 @@ class CustomerSubmissionIT {
     @AfterAll void cleanup() { reset(store, auditOperations); clearRedis(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE"); }
     private void clearRedis() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
+    @Test void deletedCustomerOrderPurgeScrubsTheSubmissionButRetainsItsIdempotentReceipt() throws Exception {
+        var staff = admin(); String token = entry(staff); UUID key = UUID.randomUUID();
+        var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String submission = submit(token, input, key).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        String order = staff.data("POST", "/api/customer-submissions/" + submission + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
+        staff.data("POST", "/api/orders/" + order + "/delete", Map.of("expectedVersion", 0, "reason", "测试清理"));
+        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE id=?::uuid", order);
+        assertEquals(404, staff.request("GET", "/api/customer-submissions/" + submission, null).status);
+        assertEquals(0, staff.data("GET", "/api/customer-submissions?status=CONFIRMED", null).path("total").asInt());
+        assertEquals(1, retention.purgeExpired().purged());
+        assertEquals(0, count("cake_order")); assertEquals(0, count("customer_submission_activity")); assertEquals(1, count("customer_order_entry"));
+        var kept = jdbc.queryForMap("SELECT status,original::text,reviewed,original_phone,requested_date,order_id FROM customer_order_submission WHERE id=?::uuid", submission);
+        assertEquals("PURGED", kept.get("status")); assertEquals("{}", kept.get("original")); assertNull(kept.get("reviewed"));
+        assertEquals("", kept.get("original_phone")); assertNull(kept.get("requested_date")); assertNull(kept.get("order_id"));
+        assertEquals(404, new Client().request("POST", submitPath(token), input, key.toString()).status);
+        assertEquals(1, count("customer_order_submission")); assertEquals(0, count("cake_order"));
+    }
+
     @Test void anonymousMultiProductRequirementsRemainOutsideOrdersUntilExplicitConfirmation() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         var receipt = submit(token, input, UUID.randomUUID()); String id = receipt.at("/data/submissionId").asText();
         assertEquals(0, count("cake_order")); assertEquals(1, count("customer_order_submission"));
+        assertEquals(1, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
         var detail = staff.data("GET", "/api/customer-submissions/" + id, null);
         assertEquals("客户（手机号未验证）", detail.at("/activities/0/actorName").asText());
         assertTrue(detail.at("/activities/0/actorId").isNull()); assertEquals("CUSTOMER", detail.at("/activities/0/actorType").asText());
@@ -70,6 +91,7 @@ class CustomerSubmissionIT {
         staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review));
         var confirmed = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
         String orderId = confirmed.at("/submission/orderId").asText(); assertEquals(1, count("cake_order"));
+        assertEquals(0, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
         var order = staff.data("GET", "/api/orders/" + orderId, null);
         assertEquals(staff.id, order.at("/creditedEmployee/accountId").asText()); assertEquals(staff.id, order.path("createdBy").asText());
         assertEquals("WAITING_PRODUCTION", order.path("status").asText()); assertEquals("UNPAID", order.path("paymentStatus").asText());
@@ -83,6 +105,56 @@ class CustomerSubmissionIT {
         assertEquals(orderId, staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText());
         assertEquals(409, staff.request("DELETE", "/api/customer-submissions/" + id, Map.of("expectedVersion", 2)).status);
     }
+    @Test void optionalHandoffSurvivesConfirmationQueriesExportAndLaterEdits() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        var review = new LinkedHashMap<>(review(input, staff.id, 12300)); review.put("plannedHandoffAt", null);
+        staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review));
+        String orderId = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
+        var order = staff.data("GET", "/api/orders/" + orderId, null);
+        assertTrue(order.at("/fulfillment/plannedHandoffAt").isNull());
+        assertEquals("2026-11-02T10:00:00Z", order.at("/fulfillment/requestedReceiveAt").asText());
+        assertNull(jdbc.queryForObject("SELECT planned_handoff_at FROM cake_order WHERE id=?::uuid", java.sql.Timestamp.class, orderId));
+        var calendar = staff.data("GET", "/api/orders/calendar?from=2026-11-02&to=2026-11-03", null).get(0);
+        assertEquals(orderId, calendar.path("orderId").asText()); assertTrue(calendar.path("plannedHandoffAt").isNull());
+        var pending = staff.data("GET", "/api/orders/workbench?date=2026-11-02", null).at("/pendingOrders/0");
+        assertEquals(orderId, pending.path("orderId").asText()); assertTrue(pending.path("plannedHandoffAt").isNull());
+        var export = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/orders/" + orderId + "/exports/xlsx"))
+                .header("Authorization", "Bearer " + staff.token).POST(HttpRequest.BodyPublishers.noBody()).build();
+        var download = staff.http.send(export, HttpResponse.BodyHandlers.ofByteArray()); assertEquals(200, download.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(download.body()))) { assertTrue(book.getNumberOfSheets() > 0); }
+        var filled = staff.data("PATCH", "/api/orders/" + orderId + "/information", Map.of("expectedVersion", 0, "changes", Map.of("plannedHandoffAt", "2026-11-02T16:00:00+08:00")));
+        assertEquals("2026-11-02T08:00:00Z", filled.at("/fulfillment/plannedHandoffAt").asText());
+        var clear = new LinkedHashMap<String, Object>(); clear.put("plannedHandoffAt", null);
+        staff.data("PATCH", "/api/orders/" + orderId + "/information", Map.of("expectedVersion", 1, "changes", clear));
+        var cleared = staff.data("GET", "/api/orders/" + orderId, null);
+        assertTrue(cleared.at("/fulfillment/plannedHandoffAt").isNull());
+        assertEquals("2026-11-02T10:00:00Z", cleared.at("/fulfillment/requestedReceiveAt").asText());
+    }
+
+    @Test void orderingRequirementsStaySeparateFromWorkNotesAndReflectCurrentOrderEdits() throws Exception {
+        var staff = admin();
+        var input = Map.of("phone", "13800000000", "fulfillmentType", "PICKUP", "requestedReceiveAt", "2026-11-02T18:00:00+08:00",
+                "items", List.of(Map.of("name", "生日蛋糕", "productType", "CAKE", "quantity", 1,
+                        "attributes", Map.of("size", "8", "requirements", "少糖\n不放坚果"))));
+        String submission = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12000)));
+        String id = staff.data("POST", "/api/customer-submissions/" + submission + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
+        var order = staff.data("GET", "/api/orders/" + id, null);
+        assertEquals("少糖\n不放坚果", order.at("/items/0/attributes/requirements").asText());
+        assertEquals(0, staff.data("GET", "/api/orders/" + id + "/notes", null).path("total").asLong());
+        staff.data("POST", "/api/orders/" + id + "/notes", Map.of("content", "工作交接：由晚班制作"));
+        assertEquals("少糖\n不放坚果", staff.data("GET", "/api/orders/" + id, null).at("/items/0/attributes/requirements").asText());
+        var attributes = new LinkedHashMap<String, Object>(json.convertValue(order.at("/items/0/attributes"), Map.class));
+        attributes.put("requirements", "顾客改为正常糖");
+        var revised = staff.data("PATCH", "/api/orders/" + id, Map.of("expectedVersion", order.path("version").asLong(),
+                "itemId", order.at("/items/0/itemId").asText(), "changes", Map.of("attributes", attributes)));
+        assertEquals("顾客改为正常糖", revised.at("/items/0/attributes/requirements").asText());
+        var history = staff.data("GET", "/api/orders/" + id + "/activities?type=ITEM_CHANGED", null);
+        assertEquals(staff.id, history.at("/items/0/actorId").asText());
+        assertTrue(history.toString().contains("顾客改为正常糖"));
+        assertEquals("工作交接：由晚班制作", staff.data("GET", "/api/orders/" + id + "/notes", null).at("/items/0/content").asText());
+    }
     @Test void publicRequestsRejectInternalFieldsAndExposeNoReadOrModificationCapabilities() throws Exception {
         var staff = admin(); String token = entry(staff); var client = new Client(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         for (String field : List.of("totalAmountCents", "creditedEmployeeId", "source", "status")) {
@@ -94,6 +166,7 @@ class CustomerSubmissionIT {
         assertTrue(client.request("GET", submitPath(token) + "/" + id, null).status >= 400);
         assertEquals(400, client.request("POST", submitPath(token), input).status);
         assertEquals(0, count("cake_order")); assertEquals(1, count("customer_order_submission"));
+        assertEquals(1, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
     }
     @Test void sameRequestIsIdempotentButNewRequestsNeedFullDuplicateAcknowledgement() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00"); var key = UUID.randomUUID();
@@ -256,6 +329,26 @@ class CustomerSubmissionIT {
         assertEquals(400, staff.request("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 1, "review", fractional)).status);
         var stats = staff.data("GET", "/api/admin/orders?from=2026-11-01&to=2026-11-04", null);
         assertEquals(0, stats.at("/totals/orderCount").asInt());
+    }
+
+    @Test void reviewMoneyUsesTheSameSafeLimitAsFormalOrders() throws Exception {
+        long maximum = 9_007_199_254_740_991L;
+        var staff = admin(); var original = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), original, UUID.randomUUID()).at("/data/submissionId").asText();
+        var draft = new LinkedHashMap<>(review(original, staff.id, maximum));
+        draft.put("prices", List.of(Map.of("unitPriceCents", maximum, "memberPriceCents", maximum), Map.of()));
+        var saved = staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", draft));
+        assertEquals(maximum, saved.at("/submission/reviewed/totalAmountCents").asLong());
+        for (String field : List.of("totalAmountCents", "unitPriceCents", "memberPriceCents")) {
+            var invalid = new LinkedHashMap<>(draft);
+            if (field.equals("totalAmountCents")) invalid.put(field, maximum + 1);
+            else invalid.put("prices", List.of(Map.of(field, maximum + 1), Map.of()));
+            assertEquals(400, staff.request("PATCH", "/api/customer-submissions/" + id,
+                    Map.of("expectedVersion", 1, "review", invalid)).status);
+        }
+        var unchanged = staff.data("GET", "/api/customer-submissions/" + id, null);
+        assertEquals(1, unchanged.at("/submission/version").asLong());
+        assertEquals(maximum, unchanged.at("/submission/reviewed/totalAmountCents").asLong());
     }
     @Test void concurrentIdenticalAnonymousRequestsHaveOneReceiptAndOneSubmissionActivity() throws Exception {
         var staff = admin(); String token = entry(staff); String key = UUID.randomUUID().toString(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");

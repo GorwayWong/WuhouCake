@@ -1,5 +1,8 @@
 import { itemInput, newItem, moneyToCents } from './orderForm.ts';
 import type { ItemDraft } from './orderForm.ts';
+import { randomUUID } from './uuid.ts';
+import { productTypes } from './productTypes.ts';
+import { exactYuan } from './money.ts';
 
 export interface SubmissionContent {
   phone: string; memberPhone: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string | null;
@@ -41,12 +44,12 @@ export function submissionDirty(draft: SubmissionDraft, initial: SubmissionDraft
 }
 export function draftFromSubmission(submission: Submission): SubmissionDraft {
   const review = submission.reviewed, content = review?.content || submission.original;
-  const amount = (value: number | null | undefined) => value == null ? '' : (value / 100).toFixed(2);
+  const amount = (value: number | null | undefined) => value == null ? '' : exactYuan(value);
   return { ...newSubmissionDraft(), ...content, memberPhone: content.memberPhone || '', address: content.address || '',
     requestedReceiveAt: localTime(content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
     creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null),
-    items: content.items.map((item, i) => ({ ...newItem(), ...item, key: crypto.randomUUID(), quantity: String(item.quantity),
-      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: '', ...item.attributes },
+    items: content.items.map((item, i) => ({ ...newItem(), ...item, key: randomUUID(), quantity: String(item.quantity),
+      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: item.attributes.specification || (item.productType !== 'CAKE' ? item.attributes.filling || '' : ''), ...item.attributes },
       defaultSpecifications: [], unitPrice: amount(review?.prices[i]?.unitPriceCents), memberPrice: amount(review?.prices[i]?.memberPriceCents) })) };
 }
 export function submissionRequest(draft: SubmissionDraft, staff = false) {
@@ -72,6 +75,9 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
   if (!draft.items.length || draft.items.length > 30) errors.items = '请保留 1–30 项商品。';
   const items = draft.items.map((item, index) => {
     const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '' });
+    const type = item.productType.trim().toUpperCase();
+    if (!Object.hasOwn(productTypes, type) && type !== 'OTHER') errors[`items.${index}.productType`] = '请选择蛋糕、面包、甜甜圈、纸杯蛋糕或饮品。';
+    if (result.item) result.item.productType = type;
     Object.entries(result.errors).forEach(([key, value]) => { errors[`items.${index}.${key}`] = value; });
     if (item.productType === 'CAKE' && !item.attributes.size.trim()) errors[`items.${index}.size`] = '请填写蛋糕尺寸。';
     Object.entries(item.attributes).forEach(([key, value]) => { if (value.length > 2000) errors[`items.${index}.${key}`] = '最多填写 2000 个字符。'; });

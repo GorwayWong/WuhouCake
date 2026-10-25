@@ -1,4 +1,5 @@
 import type { OrderImage, Token } from './types';
+import { hasUnsafeMoneyNumber } from './money.ts';
 
 export class ApiError extends Error {
   status: number;
@@ -13,12 +14,16 @@ export function errorText(error: unknown): string {
   return ({
     AUTHENTICATION_FAILED: '工号或密码有误，或登录已过期。',
     CURRENT_PASSWORD_INCORRECT: '当前密码不正确，新密码尚未保存。请填写初始化或重置时使用的旧密码后重试。',
-    CONCURRENT_MODIFICATION: '资料已被其他同事更新，请核对最新内容后重试；未保存输入已保留。',
+    CONCURRENT_MODIFICATION: '资料已更新，输入已保留。核对后再保存。',
     IDEMPOTENCY_KEY_CONFLICT: '本次录单标识已有其他提交，请先核对原订单，再从详情中修改。',
+    OTHER_ITEMS_INCOMPLETE: '还有商品未勾选完成，请先逐项核对（含主蛋糕）。',
     INVALID_PRODUCTION_TRANSITION: '制作状态已变化，请核对最新状态后操作。',
     INVALID_FULFILLMENT_TRANSITION: '当前订单不能执行此交付操作，请核对最新状态。',
     ORDER_NOT_CANCELLABLE: '此订单当前不能取消。',
     ORDER_NOT_FOUND: '订单或商品不存在。',
+    ORDER_DELETED: '订单已删除，输入已保留。保留期内只可查询，不可修改或恢复。',
+    ORDER_DELETED_FORBIDDEN: '当前岗位不能查看已删除订单。',
+    DELETED_REPORT_UNAVAILABLE: '已删除订单不参与经营统计，请导出逐单 Excel ZIP。',
     PACKAGE_NOT_FOUND: '套餐已删除或不存在，请重新选择。当前填写内容已保留。',
     PACKAGE_FORBIDDEN: '仅店长可以管理套餐。',
     PACKAGE_NAME_CONFLICT: '套餐名称已存在，请使用可区分的名称。',
@@ -30,7 +35,7 @@ export function errorText(error: unknown): string {
     IMAGE_DIMENSIONS_EXCEEDED: '图片尺寸过大，请选择较小的 JPG/PNG 图片。',
     ORDER_IMAGE_LIMIT_EXCEEDED: '每张订单最多保留 8 张图片，请先移除误传图片。',
     EXPORT_EMPTY: '这些条件下没有订单，请调整日期或筛选条件。',
-    EXPORT_LIMIT_EXCEEDED: '导出超过 42 天或 100 张订单，请缩小日期范围或增加筛选条件。',
+    EXPORT_LIMIT_EXCEEDED: '导出超过当前入口的日期限制或 100 张订单，请缩小范围或增加筛选条件。',
     EXPORT_FILE_TOO_LARGE: '导出文件过大，请缩小筛选范围；单张订单请联系管理员核对。',
     EXPORT_CONTENT_TOO_LARGE: '订单内容或记录过多，请缩小筛选范围；单张订单请联系管理员核对。',
     INVALID_EXPORT_RESPONSE: '未收到完整的导出文件，请核对下载记录后重试。',
@@ -41,6 +46,7 @@ export function errorText(error: unknown): string {
     SELF_ARCHIVE_FORBIDDEN: '不能归档当前登录账号。',
     LAST_ADMINISTRATOR: '必须至少保留一位在职超级管理员。',
     VALIDATION_FAILED: '填写内容不符合要求，请检查后重试。',
+    UNSAFE_MONEY_AMOUNT: '金额超出可安全处理范围，请联系管理员核对。',
     FORBIDDEN: '当前账号不能执行此操作。',
     PASSWORD_CHANGE_REQUIRED: '请先修改初始密码。',
     PASSWORD_REUSE_FORBIDDEN: '新密码不能与当前密码相同。',
@@ -49,6 +55,13 @@ export function errorText(error: unknown): string {
     SUBMISSION_NOT_FOUND: '填单不存在，请返回列表重新查看。',
     SUBMISSION_NOT_PENDING: '填单已确认或删除，请读取最新记录。',
     DUPLICATE_REVIEW_REQUIRED: '疑似重复记录尚未核实或已发生变化，请核对最新记录后再确认接单。',
+    SUBMISSION_PRODUCT_TYPE_INVALID: '商品类型不支持，请选择蛋糕、面包、甜甜圈、纸杯蛋糕或饮品。',
+    SUBMISSION_QUANTITY_INVALID: '商品数量必须为正整数，请核对每一项商品。',
+    SUBMISSION_CAKE_SIZE_REQUIRED: '蛋糕尺寸未填写，请补充蛋糕尺寸。',
+    SUBMISSION_TOTAL_REQUIRED: '整单约定金额未填写，请填写并保存核对结果。',
+    SUBMISSION_EMPLOYEE_REQUIRED: '尚未选择业绩归属员工，请选择后保存。',
+    SUBMISSION_PRICES_INVALID: '商品数量与报价行不一致，请重新读取并保存核对结果。',
+    SUBMISSION_REVIEW_REQUIRED: '请先保存核对结果，再确认接单。',
     SUBMISSION_FORBIDDEN: '仅前台和管理人员可以处理客户填单。',
     SUBMISSION_TOO_LARGE: '填写内容过长，请精简商品需求后再提交。',
     SUBMISSION_THROTTLED: '提交过于频繁，请稍后再试。',
@@ -57,6 +70,7 @@ export function errorText(error: unknown): string {
 async function decode<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok || !body?.success) throw new ApiError(response.status, body?.code || `HTTP_${response.status}`);
+  if (hasUnsafeMoneyNumber(body.data)) throw new ApiError(502, 'UNSAFE_MONEY_AMOUNT');
   return body.data;
 }
 async function authPost<T>(path: string, body?: unknown): Promise<T> {

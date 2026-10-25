@@ -16,6 +16,27 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 public class OrderQueryController {
     private final OrderQueryService queries;
     public OrderQueryController(OrderQueryService queries) { this.queries = queries; }
+    @GetMapping("/workbench/payment-orders")
+    public ApiResponse<OrderQueryViews.PaymentOrders> paymentOrders(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam String kind, @RequestParam(defaultValue = "1") int page, Authentication authentication) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        return ApiResponse.success(OrderViewAccess.paymentOrders(queries.paymentOrders(date, kind, page), account.access()));
+    }
+    @GetMapping("/workbench/receipt-summary")
+    public ApiResponse<OrderQueryViews.ReceiptSummary> receiptSummary(@RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        return ApiResponse.success(queries.receiptSummary(date));
+    }
+    @GetMapping("/workbench/cake-bases")
+    public ApiResponse<OrderQueryViews.CakeBaseSummary> cakeBases(@RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        return ApiResponse.success(queries.cakeBases(date));
+    }
+
+    @GetMapping("/workbench/payment-summary")
+    public ApiResponse<OrderQueryViews.PaymentSummary> paymentSummary(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        return ApiResponse.success(queries.paymentSummary(date));
+    }
 
     @GetMapping("/calendar")
     public ApiResponse<List<OrderQueryViews.CalendarOrder>> calendar(

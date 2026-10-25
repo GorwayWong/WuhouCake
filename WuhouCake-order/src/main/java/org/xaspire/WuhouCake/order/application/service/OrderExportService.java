@@ -24,9 +24,25 @@ public class OrderExportService {
                 + filter.to().minusDays(1).format(format) + ".zip");
     }
     private Download generate(List<OrderExportFiles.Snapshot> data, boolean batch, String filename) {
-        var file = files.generate(data, filename, batch);
-        return new Download(file.path(), file.filename(), file.contentType(), file.size());
+        OrderExportFiles.File file = null; Throwable failure = null;
+        try {
+            file = files.generate(data, filename, batch);
+            return new Download(file.path(), file.filename(), file.contentType(), file.size());
+        } catch (RuntimeException | Error problem) { failure = problem; throw problem; }
+        finally {
+            try { files.releaseImages(data); }
+            catch (RuntimeException cleanup) {
+                if (failure != null) failure.addSuppressed(cleanup);
+                else {
+                    if (file != null) try { files.delete(file); } catch (RuntimeException extra) { cleanup.addSuppressed(extra); }
+                    throw cleanup;
+                }
+            }
+        }
     }
     public void delete(Download file) { files.delete(new OrderExportFiles.File(file.path(), file.filename(), file.contentType(), file.size())); }
+    public Download management(org.xaspire.WuhouCake.order.api.query.OrderManagementQuery query, Operator operator) {
+        return generate(snapshots.management(query), true, query.deleted() ? "deleted-orders.zip" : "orders.zip");
+    }
     public record Download(String path, String filename, String contentType, long size) { }
 }

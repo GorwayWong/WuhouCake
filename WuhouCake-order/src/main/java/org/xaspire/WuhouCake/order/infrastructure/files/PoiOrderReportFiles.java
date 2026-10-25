@@ -21,7 +21,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
         }
         try (var book = new XSSFWorkbook(); var output = new ByteArrayOutputStream()) {
             var summary = book.createSheet("统计");
-            row(summary, "日期口径", filter.dateBasis().equals("CREATED") ? "录单日期（北京时间）" : "收货日期"); row(summary, "开始日期", filter.from()); row(summary, "结束日期（含当天）", filter.to().minusDays(1));
+            row(summary, "日期口径", filter.allUnpaid() ? "所有历史未付款" : filter.dateBasis().equals("CREATED") ? "录单日期（北京时间）" : "收货日期"); row(summary, "开始日期", filter.from()); row(summary, "结束日期（含当天）", filter.to() == null ? "不限日期" : filter.to().minusDays(1));
             row(summary, "订单状态", label(filter.status())); row(summary, "付款状态", label(filter.paymentStatus())); row(summary, "交接方式", label(filter.fulfillmentType()));
             row(summary, "蛋糕尺寸（寸）", filter.size()); row(summary, "归属员工 ID", filter.creditedEmployeeId());
             row(summary, "仅未归属", filter.unassigned()); row(summary, "包含已取消", filter.includeCancelled()); row(summary, "搜索", filter.keyword());
@@ -63,7 +63,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
     private static String yuan(String cents) { return new BigDecimal(cents).movePointLeft(2).toPlainString(); }
     private static String label(String value) {
         if (value == null) return "全部";
-        return Map.ofEntries(Map.entry("WAITING_PRODUCTION", "待制作"), Map.entry("PROCESSING", "制作中"), Map.entry("WAITING_DELIVERY", "待配送"),
+        return Map.ofEntries(Map.entry("WAITING_PRODUCTION", "待制作"), Map.entry("PROCESSING", "生胚中"), Map.entry("WAITING_DELIVERY", "待配送"),
                 Map.entry("WAITING_PICKUP", "待自提"), Map.entry("DELIVERING", "配送中"), Map.entry("COMPLETED", "已完成"), Map.entry("CANCELLED", "已取消"),
                 Map.entry("PAID", "已付款"), Map.entry("UNPAID", "未付款"), Map.entry("PICKUP", "自提"), Map.entry("DELIVERY", "配送")).getOrDefault(value, value);
     }

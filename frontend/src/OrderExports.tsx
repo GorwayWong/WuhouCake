@@ -46,7 +46,7 @@ export function BatchOrderExport({ selected, onPendingChange }: { selected: stri
   return <section className="batch-export" aria-label="筛选批量导出">
     {!open ? <button className="secondary compact" aria-expanded={false} onClick={() => { setDraft({ from: selected, through: selected, status: '', fulfillmentType: '', paymentStatus: '' }); setValidation(''); state.reset(); setOpen(true); }}><DownloadSimple />批量导出 ZIP</button> : <div className="panel export-panel">
       <div className="section-heading"><h2>筛选批量导出</h2><button className="icon-button" disabled={state.busy} aria-label="收起批量导出" onClick={() => setOpen(false)}><X size={22} /></button></div>
-      <p className="form-help">按收货日期筛选，包含开始和结束当天。最多 42 天、100 张订单，每张订单生成一份 XLSX。</p>
+      <p className="form-help">按收货日期导出，每单一份 XLSX，最多 42 天、100 单。</p>
       <form onSubmit={event => { event.preventDefault(); if (state.busy) return; const result = exportFilters(draft); setValidation(result.error || ''); if (result.filters) void state.download({ filters: result.filters }); }}>
         <fieldset className="export-filters" disabled={state.busy}>
           <label>开始日期<DateInput label="开始日期" disabled={state.busy} value={draft.from} onChange={value => change('from', value)} required /></label>
@@ -54,7 +54,7 @@ export function BatchOrderExport({ selected, onPendingChange }: { selected: stri
           {([['status', '订单状态'], ['fulfillmentType', '交接方式'], ['paymentStatus', '付款状态']] as const).map(([key, label]) => <label key={key}>{label}<Select label={label} disabled={state.busy} value={draft[key]} onChange={value => change(key, value)}><option value="">全部</option>{Object.entries(exportOptions[key]).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</Select></label>)}
         </fieldset>
         {validation && <p className="field-error" role="alert">{validation}</p>}
-        <div className="export-submit"><p className="form-help">未筛选状态时包含已完成、已取消订单；只导出已保存内容。</p><button className="primary" disabled={state.busy}><DownloadSimple />{state.busy ? '正在生成 ZIP…' : '下载筛选结果 ZIP'}</button></div>
+        <div className="export-submit"><p className="form-help">不筛选状态时，含已完成和已取消订单。</p><button className="primary" disabled={state.busy}><DownloadSimple />{state.busy ? '正在生成 ZIP…' : '下载筛选结果 ZIP'}</button></div>
       </form>
       <ExportFeedback error={state.error} notice={state.notice} />
     </div>}

@@ -69,7 +69,7 @@ public class OrderService {
         return detail(order, List.of());
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
-    public OrderViews.Detail detail(UUID id) { return detail(requireOrder(id), activities.recentItemNotes(id)); }
+    public OrderViews.Detail detail(UUID id) { return detail(readOrder(id), activities.recentItemNotes(id)); }
 
     @Transactional
     public OrderViews.Detail revise(UUID id, OrderCommands.Revise command, Operator operator) {
@@ -167,6 +167,21 @@ public class OrderService {
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
+    public OrderViews.Detail restartCancelled(UUID id, OrderCommands.Restart command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var previousItems = order.activeItems(); var now = now();
+        var changed = order.restartCancelled(now);
+        var changedItemIds = previousItems.stream()
+                .filter(item -> !Objects.equals(item.productionStatus(), order.requireActiveItem(item.itemId()).productionStatus()))
+                .map(OrderItem::itemId).toList();
+        orders.changeProduction(order, expected, changedItemIds);
+        activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "恢复已取消订单至待制作", changed, actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
     public OrderViews.Detail fulfillmentAction(UUID id, OrderCommands.FulfillmentAction command, Operator operator) {
         var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
         var order = requireOrder(id);
@@ -175,6 +190,21 @@ public class OrderService {
         orders.changeStatus(order, expected);
         activities.append(OrderActivity.append(id, null, "ORDER_FULFILLMENT_CHANGED", "修改整单交接状态", changed, actor, now));
         changed(order, null, OrderChanged.Type.ORDER_FULFILLMENT_CHANGED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail completeSimpleItem(UUID id, UUID itemId, OrderCommands.SimpleItemCompletion command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (command.completed() == null) throw invalid();
+        var now = now(); var details = order.completeSimpleItem(itemId, command.completed(), now);
+        if (details.isEmpty()) orders.verifyVersion(id, expected);
+        else {
+            orders.changeProduction(order, expected, List.of(itemId));
+            activities.append(OrderActivity.append(id, itemId, "ORDER_PRODUCTION_CHANGED", "更新商品制作确认", details, actor, now));
+            changed(order, itemId, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
+        }
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
@@ -189,8 +219,28 @@ public class OrderService {
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
+    public OrderViews.Detail delete(UUID id, OrderCommands.Delete command, Operator operator) {
+        if (!identity.me().access().allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_DELETE))
+            throw new OrderFailure("ORDER_DELETED_FORBIDDEN");
+        long expected = nonNegativeInteger(command.expectedVersion());
+        var actor = actor(operator);
+        var order = orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        if (order.deletion() != null) {
+            if (order.deletion().expired(now())) throw new OrderFailure("ORDER_NOT_FOUND");
+            return detail(order, activities.recentItemNotes(id));
+        }
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now(); order.delete(command.reason(), actor, now);
+        orders.delete(order, expected);
+        activities.append(OrderActivity.append(id, null, "ORDER_DELETED", order.deletion().reason(), Map.of(), actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_DELETED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
     public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator) {
-        var actor = actor(operator); var order = requireOrder(id);
+        var actor = actor(operator);
+        orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        var order = requireOrder(id);
         if (command.itemId() != null) order.requireActiveItem(command.itemId());
         var note = activities.append(OrderActivity.append(id, command.itemId(), "NOTE", command.content(), Map.of(), actor, now()));
         changed(order, command.itemId(), OrderChanged.Type.NOTE);
@@ -199,12 +249,22 @@ public class OrderService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Page<OrderViews.Activity> activities(UUID id, UUID itemId, String type, int page, int size) {
         if (page < 1 || size < 1 || size > 100 || (type != null && !OrderActivity.TYPES.contains(type))) throw invalid();
-        var order = requireOrder(id);
+        var order = readOrder(id);
         if (itemId != null) order.requireItem(itemId);
         return new Page<>(activities.search(id, itemId, type, size, (long) (page - 1) * size).stream().map(OrderService::activity).toList(),
                 activities.count(id, itemId, type), page, size);
     }
-    private Order requireOrder(UUID id) { return orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND")); }
+    private Order requireOrder(UUID id) {
+        var order = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        if (order.deletion() != null && order.deletion().expired(now())) throw new OrderFailure("ORDER_NOT_FOUND");
+        order.requireWritable();
+        return order;
+    }
+    private Order readOrder(UUID id) {
+        var order = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        OrderReadAccess.requireReadable(order, clock, identity);
+        return order;
+    }
     private void changed(Order order, UUID itemId, OrderChanged.Type type) {
         events.publishEvent(new OrderChanged(order.id(), itemId, type, order.version(), order.orderNo()));
     }
@@ -230,6 +290,8 @@ public class OrderService {
                 new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt()),
                 order.totalAmountCents(), order.createdBy(), order.createdAt(), order.confirmedAt(), order.updatedAt(), items,
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
-                        order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()));
+                        order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()), order.paidAt(),
+                order.deletion() == null ? null : new OrderViews.Deletion(order.deletion().deletedAt(), order.deletion().deletedBy(),
+                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()));
     }
 }

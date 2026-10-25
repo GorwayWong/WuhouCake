@@ -11,7 +11,7 @@ import { Select } from './Select';
 
 type ImageAction = { type: 'upload'; file: File; itemId: string } | { type: 'remove'; imageId: string };
 
-function ImageTile({ image, scope, blocked, remove }: { image: OrderImage; scope: string; blocked: boolean; remove: () => void }) {
+function ImageTile({ image, scope, blocked, remove, productionView }: { image: OrderImage; scope: string; blocked: boolean; remove: () => void; productionView?: boolean }) {
   const [url, setUrl] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
@@ -22,15 +22,16 @@ function ImageTile({ image, scope, blocked, remove }: { image: OrderImage; scope
   }, [image.orderId, image.imageId, attempt]);
   return <li className="reference-image">
     {url ? <button className="image-thumbnail" aria-label={`查看大图：${image.filename}`} onClick={() => dialog.current?.showModal()}><img src={url} alt={image.filename} /></button> : <div className="image-placeholder">{error ? <><span>{errorText(error)}</span><button className="text-button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></> : '正在读取图片…'}</div>}
-    <div className="image-caption"><strong className="image-scope">{scope}</strong><span className="image-filename" title={image.filename}>{image.filename}</span><span>{image.uploaderNameSnapshot} · <time dateTime={image.uploadedAt}>{time(image.uploadedAt, true)}</time></span><button className="text-button danger" disabled={blocked} aria-label={`移除图片：${image.filename}`} onClick={remove}><Trash />移除</button></div>
+    <div className="image-caption"><strong className="image-scope">{scope}</strong><span className="image-filename" title={image.filename}>{image.filename}</span>{!productionView && <span>{image.uploaderNameSnapshot} · <time dateTime={image.uploadedAt}>{time(image.uploadedAt, true)}</time></span>}<button className="text-button danger" disabled={blocked} aria-label={`移除图片：${image.filename}`} onClick={remove}><Trash />移除</button></div>
     <dialog ref={dialog} className="image-dialog" aria-label={`参考图片：${image.filename}`} onClick={event => { if (event.target === dialog.current) dialog.current.close(); }}>
-      <div className="image-dialog-heading"><div><strong>{scope}</strong><p>{image.filename} · {image.uploaderNameSnapshot} · {time(image.uploadedAt, true)}</p></div><button className="icon-button" aria-label="关闭大图" onClick={() => dialog.current?.close()}><X size={24} /></button></div>
+      <div className="image-dialog-heading"><div><strong>{scope}</strong><p>{image.filename}{!productionView && ` · ${image.uploaderNameSnapshot} · ${time(image.uploadedAt, true)}`}</p></div><button className="icon-button" aria-label="关闭大图" onClick={() => dialog.current?.close()}><X size={24} /></button></div>
       {url && <img src={url} alt={image.filename} />}
     </dialog>
   </li>;
 }
 
-export function OrderImages({ order, blocked, onDraftChange, onWritingChange }: {
+export function OrderImages({ order, blocked, onDraftChange, onWritingChange, productionView = false }: {
+  productionView?: boolean;
   order: Detail; blocked: boolean; onDraftChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void;
 }) {
   const client = useQueryClient();
@@ -79,11 +80,11 @@ export function OrderImages({ order, blocked, onDraftChange, onWritingChange }: 
   const full = (query.data?.length || 0) >= 8;
   const invalidItem = Boolean(itemId && !order.items.some(item => item.itemId === itemId));
   return <section className="panel reference-images" aria-labelledby="reference-images-title">
-    <div className="section-heading"><h2 id="reference-images-title"><Images />参考图片</h2><div className="item-heading-actions"><span className="muted">{query.data?.length ?? '—'} / 8 张</span>{!adding && <button className="secondary compact" disabled={busy || full || !query.data} onClick={() => { setFailure(null); setNotice(''); setAdding(true); }}><Plus />添加图片</button>}</div></div>
+    <div className="section-heading"><h2 id="reference-images-title"><Images />{productionView ? '款式图片' : '参考图片'}</h2><div className="item-heading-actions"><span className="muted">{query.data?.length ?? '—'} / 8 张</span>{!adding && <button className="secondary compact" disabled={busy || full || !query.data} onClick={() => { setFailure(null); setNotice(''); setAdding(true); }}><Plus />添加图片</button>}</div></div>
     {adding && <p className="form-help">JPG / PNG · 每张不超过 5 MB</p>}
     <ErrorNotice error={query.error} retry={() => void query.refetch()} />
-    {query.isPending ? <Loading /> : query.data?.length === 0 ? null : <ul className="image-grid">{query.data?.map(image => <ImageTile key={`${id}/${image.imageId}`} image={image} scope={image.itemId ? order.items.find(item => item.itemId === image.itemId)?.name || '历史商品图片' : '整张订单'} blocked={busy || adding} remove={() => { if (window.confirm(`移除参考图片「${image.filename}」？历史记录会保留。`)) submit({ type: 'remove', imageId: image.imageId }); }} />)}</ul>}
-    {full && <p className="form-help">已达 8 张上限，可移除误传图片后再添加。</p>}
+    {query.isPending ? <Loading /> : query.data?.length === 0 ? <p className="form-help">暂无款式图片。</p> : <ul className="image-grid">{query.data?.map(image => <ImageTile productionView={productionView} key={`${id}/${image.imageId}`} image={image} scope={image.itemId ? order.items.find(item => item.itemId === image.itemId)?.name || '历史商品图片' : '整张订单'} blocked={busy || adding} remove={() => { if (window.confirm(`移除参考图片「${image.filename}」？历史记录会保留。`)) submit({ type: 'remove', imageId: image.imageId }); }} />)}</ul>}
+    {full && <p className="form-help">已达 8 张上限，移除后可继续添加。</p>}
     {adding && <form className="image-upload" onSubmit={event => { event.preventDefault(); if (file && !imageFileError(file) && !invalidItem && !full) submit({ type: 'upload', file, itemId }); }}>
       <fieldset disabled={busy}><legend>添加参考图片</legend>
         <label>图片文件<input ref={input} type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" onChange={event => { const selected = event.target.files?.[0] || null; const error = selected ? imageFileError(selected) : ''; setValidation(error); setFile(error ? null : selected); }} /></label>
@@ -93,7 +94,7 @@ export function OrderImages({ order, blocked, onDraftChange, onWritingChange }: 
         <div className="actions"><button className="primary" disabled={busy || !file || invalidItem || full}>{saving ? '正在保存…' : '确认上传'}</button><button type="button" className="secondary" onClick={() => { clear(); setFailure(null); }} disabled={busy}>取消</button></div>
       </fieldset>
     </form>}
-    {failure && <div className="notice error" role="alert">{failure.type === 'upload' && creationResultUnknown(failure.error) ? '上传结果暂时无法确认，图片选择已保留。请先刷新图片列表，核对图片和上传记录后再决定是否重新上传，避免重复。' : errorText(failure.error)}<button className="text-button" disabled={busy || query.isFetching} onClick={() => void query.refetch()}>刷新图片列表</button></div>}
+    {failure && <div className="notice error" role="alert">{failure.type === 'upload' && creationResultUnknown(failure.error) ? '上传结果未确认，图片选择已保留。请先刷新核对，避免重复上传。' : errorText(failure.error)}<button className="text-button" disabled={busy || query.isFetching} onClick={() => void query.refetch()}>刷新图片列表</button></div>}
     <div aria-live="polite">{notice && <p className="form-help">{notice}</p>}</div>
   </section>;
 }

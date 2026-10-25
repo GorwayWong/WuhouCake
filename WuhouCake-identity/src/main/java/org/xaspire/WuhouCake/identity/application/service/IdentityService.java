@@ -202,15 +202,17 @@ public class IdentityService implements IdentityFacade {
     }
     @Override @Transactional
     public AccountView reviseEmployee(UUID id, Profile command) {
+        accounts.lockAdministratorLifecycle();
         var actor = administrator();
         var account = accounts.lock(id).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
         if (command.expectedVersion() < 0 || command.expectedVersion() != account.version()) throw new IdentityFailure("CONCURRENT_MODIFICATION");
         if (command.jobRoles() == null || command.jobRoles().isEmpty() || command.jobRoles().stream().anyMatch(java.util.Objects::isNull))
             throw new IdentityFailure("VALIDATION_FAILED");
         var roles = command.jobRoles().stream().map(JobRole::valueOf).collect(Collectors.toSet());
-        var changed = account.reviseProfile(command.nickname(), roles, clock.instant());
+        var changed = account.reviseProfile(command.nickname(), roles, accounts.activeAdministrators(), clock.instant());
         if (changed != account) {
             accounts.update(changed);
+            if (changed.credentialVersion() != account.credentialVersion()) events.publishEvent(new CredentialsRevoked(changed.id(), changed.credentialVersion()));
             accountChange("identity.profile_changed", actor, account, changed);
         }
         return view(changed);
@@ -246,10 +248,32 @@ public class IdentityService implements IdentityFacade {
         AccountValues.password(password);
         accounts.lockAdministratorLifecycle();
         if (accounts.administrators() != 0) throw new IdentityFailure("ADMINISTRATOR_ALREADY_INITIALIZED");
-        var account = EmployeeAccount.create(ids.nextId(), number, nickname, Set.of(JobRole.MANAGER), SystemRole.SUPER_ADMIN, credentials.encode(password), clock.instant());
+        var account = EmployeeAccount.create(ids.nextId(), number, nickname, Set.of(JobRole.STORE_MANAGER), SystemRole.SUPER_ADMIN, credentials.encode(password), clock.instant());
         accounts.insert(account);
         accountChange("identity.admin_initialized", null, null, account);
         return view(account);
+    }
+    /** 仅供本地运维命令使用：按已确认清单迁移旧岗位，整批失败时全部回滚。 */
+    @Transactional
+    public java.util.List<AccountView> migrateLegacyJobs(String administratorNumber, java.util.Map<String, java.util.Set<String>> assignments) {
+        accounts.lockAdministratorLifecycle();
+        var actor = accounts.findByNumber(AccountValues.employeeNumber(administratorNumber)).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
+        actor.requireAdministrator();
+        var results = new java.util.ArrayList<AccountView>();
+        for (var entry : new java.util.TreeMap<>(assignments).entrySet()) {
+            var found = accounts.findByNumber(AccountValues.employeeNumber(entry.getKey())).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
+            var before = accounts.lock(found.id()).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
+            var roles = entry.getValue().stream().map(JobRole::valueOf).collect(Collectors.toSet());
+            if (roles.isEmpty() || roles.stream().anyMatch(JobRole::legacy)) throw new IdentityFailure("VALIDATION_FAILED");
+            if (before.jobRoles().equals(roles)) { results.add(view(before)); continue; }
+            if (before.jobRoles().stream().anyMatch(role -> !role.legacy())) throw new IdentityFailure("CONCURRENT_MODIFICATION");
+            var after = before.reviseProfile(before.nickname(), roles, accounts.activeAdministrators(), clock.instant());
+            accounts.update(after);
+            if (after.credentialVersion() != before.credentialVersion()) events.publishEvent(new CredentialsRevoked(after.id(), after.credentialVersion()));
+            accountChange("identity.roles_migrated", actor, before, after, UUID.randomUUID().toString());
+            results.add(view(after));
+        }
+        return java.util.List.copyOf(results);
     }
     @Transactional
     public Provisioned recoverAdministrator(String number) {
@@ -297,6 +321,9 @@ public class IdentityService implements IdentityFacade {
     }
     private void accountChange(String action, EmployeeAccount actor, EmployeeAccount before, EmployeeAccount after) {
         String requestId = actor == null ? UUID.randomUUID().toString() : actors.current().requestId();
+        accountChange(action, actor, before, after, requestId);
+    }
+    private void accountChange(String action, EmployeeAccount actor, EmployeeAccount before, EmployeeAccount after, String requestId) {
         var details = new java.util.LinkedHashMap<String, String>();
         snapshot(details, "before", before); snapshot(details, "after", after);
         audit.appendChange(new AuditFacade.Command(clock.instant(), action, "SUCCESS", actor == null ? null : actor.id(),

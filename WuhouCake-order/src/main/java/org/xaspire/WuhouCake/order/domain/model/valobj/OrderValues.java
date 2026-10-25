@@ -7,6 +7,8 @@ import java.util.UUID;
 
 public final class OrderValues {
     private OrderValues() { }
+    /** Largest integer cent value that remains exact in numeric JSON browser clients. */
+    public static final long MAX_MONEY_CENTS = 9_007_199_254_740_991L;
 
     public enum FulfillmentType { DELIVERY, PICKUP }
 
@@ -24,7 +26,7 @@ public final class OrderValues {
             this(type, address, requestedReceiveDate, plannedHandoffAt, plannedFinishAt, null);
         }
         public FulfillmentPlan {
-            if (type == null || requestedReceiveDate == null || plannedHandoffAt == null) throw invalid();
+            if (type == null || requestedReceiveDate == null) throw invalid();
             if (requestedReceiveAt != null && !requestedReceiveDate.equals(receiveDate(requestedReceiveAt))) throw invalid();
             address = type == FulfillmentType.DELIVERY ? requiredText(address, Integer.MAX_VALUE) : optionalText(address, Integer.MAX_VALUE);
         }
@@ -60,7 +62,12 @@ public final class OrderValues {
             return result;
         } catch (ArithmeticException | NumberFormatException failure) { throw invalid(); }
     }
-    public static Long money(Object value) { return value == null ? null : nonNegativeInteger(value); }
+    public static Long money(Object value) {
+        if (value == null) return null;
+        long cents = nonNegativeInteger(value);
+        if (cents > MAX_MONEY_CENTS) throw invalid();
+        return cents;
+    }
     public static int quantity(Object value) {
         long result = nonNegativeInteger(value);
         if (result == 0 || result > Integer.MAX_VALUE) throw invalid();

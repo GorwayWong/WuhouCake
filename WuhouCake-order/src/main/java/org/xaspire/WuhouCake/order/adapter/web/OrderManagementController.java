@@ -14,11 +14,21 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 @RequestMapping("/api/admin/orders")
 public class OrderManagementController {
     private final OrderManagementService service;
-    public OrderManagementController(OrderManagementService service) { this.service = service; }
+    private final org.xaspire.WuhouCake.order.application.service.OrderExportService exports;
+    public OrderManagementController(OrderManagementService service, org.xaspire.WuhouCake.order.application.service.OrderExportService exports) {
+        this.service = service; this.exports = exports;
+    }
     public record Query(@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to, String status, String paymentStatus,
-            String fulfillmentType, String sizeInches, UUID creditedEmployeeId, Boolean unassigned, Boolean includeCancelled, String keyword, String dateBasis) {
-        OrderManagementQuery command() { return new OrderManagementQuery(from, to, status, paymentStatus, fulfillmentType, sizeInches, creditedEmployeeId, Boolean.TRUE.equals(unassigned), Boolean.TRUE.equals(includeCancelled), keyword, dateBasis); }
+            String fulfillmentType, String sizeInches, UUID creditedEmployeeId, Boolean unassigned, Boolean includeCancelled, String keyword, String dateBasis, Boolean allUnpaid, Boolean deleted) {
+        OrderManagementQuery command() {
+            LocalDate start = from, end = to;
+            if (Boolean.TRUE.equals(deleted) && start == null && end == null) {
+                end = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).plusDays(1); start = end.minusDays(30);
+            }
+            return new OrderManagementQuery(start, end, status, paymentStatus, fulfillmentType, sizeInches, creditedEmployeeId,
+                    Boolean.TRUE.equals(unassigned), Boolean.TRUE.equals(includeCancelled), keyword, dateBasis, Boolean.TRUE.equals(allUnpaid), Boolean.TRUE.equals(deleted));
+        }
     }
     @GetMapping
     public ApiResponse<OrderManagementViews.Result> search(@ModelAttribute Query query,
@@ -31,5 +41,12 @@ public class OrderManagementController {
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=order-report.xlsx")
                 .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .body(service.export(query.command()));
+    }
+    @PostMapping("/exports/zip")
+    public void zip(@RequestBody Query query, org.springframework.security.core.Authentication authentication,
+            jakarta.servlet.http.HttpServletResponse response) throws java.io.IOException {
+        var account = (org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.AccountView) authentication.getDetails();
+        OrderFileController.download(exports.management(query.command(),
+                new org.xaspire.WuhouCake.order.api.command.OrderCommands.Operator(account.accountId(), account.nickname())), response, exports);
     }
 }

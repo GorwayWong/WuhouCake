@@ -25,9 +25,9 @@ public class IdentityController {
         @Override public String toString() { return "PasswordRequest"; }
     }
     public record CreateRequest(@NotBlank @Size(max = 32) String employeeNumber, @NotNull @Size(max = 160) String nickname,
-            @NotEmpty @Size(max = 3) Set<@NotBlank @Size(max = 20) String> jobRoles, String systemRole) { }
+            @NotEmpty @Size(max = 6) Set<@NotBlank @Size(max = 32) String> jobRoles, String systemRole) { }
     public record ProfileRequest(@NotNull @PositiveOrZero Long expectedVersion, @NotNull @Size(max = 160) String nickname,
-            @NotEmpty @Size(max = 3) Set<@NotBlank @Size(max = 20) String> jobRoles) { }
+            @NotEmpty @Size(max = 6) Set<@NotBlank @Size(max = 32) String> jobRoles) { }
     public record EmployeePasswordRequest(@NotNull @PositiveOrZero Long expectedVersion, @NotNull @Size(max = 256) String newPassword) {
         @Override public String toString() { return "EmployeePasswordRequest"; }
     }

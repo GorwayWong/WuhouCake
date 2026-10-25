@@ -17,9 +17,9 @@ public interface OrderImageMapper {
     @Select("SELECT count(*) FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed")
     int count(String id);
     @Insert("INSERT INTO cake_order_image (id, order_id, item_id, content_type, filename, size, width, height, uploaded_by,"
-            + " uploader_name_snapshot, uploaded_at, content) VALUES (CAST(#{image.imageId} AS uuid), CAST(#{image.orderId} AS uuid),"
+            + " uploader_name_snapshot, uploaded_at, content, processing_version) VALUES (CAST(#{image.imageId} AS uuid), CAST(#{image.orderId} AS uuid),"
             + " CAST(#{image.itemId} AS uuid), #{image.contentType}, #{image.filename}, #{image.size}, #{image.width}, #{image.height},"
-            + " CAST(#{image.uploadedBy} AS uuid), #{image.uploaderNameSnapshot}, #{image.uploadedAt}, #{content})")
+            + " CAST(#{image.uploadedBy} AS uuid), #{image.uploaderNameSnapshot}, #{image.uploadedAt}, #{content}, 1)")
     void insert(@Param("image") Row image, @Param("content") byte[] content);
     @Select("SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed ORDER BY uploaded_at, id")
     List<Row> list(String id);

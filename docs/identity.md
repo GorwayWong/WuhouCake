@@ -4,7 +4,7 @@
 
 ## 员工管理与订单归属
 
-管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、随机重置密码、指定新密码和归档。工号固定，业务岗位与系统管理身份独立；归档代替物理删除，保留历史身份。账号响应包含 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。账号视图的 access 返回当前有效权限及派生 UI 能力，契约和岗位配置见[员工权限说明](authorization.md)。
+管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、随机重置密码、指定新密码和归档。工号固定，店长岗位同时具有超级管理员身份，撤销店长时同步撤销该身份，并保护最后一位管理员；归档代替物理删除，保留历史身份。账号响应包含 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。账号视图的 access 返回当前有效权限及派生 UI 能力，契约和岗位配置见[员工权限说明](authorization.md)。
 
 | 接口 | 契约 |
 | --- | --- |
@@ -78,7 +78,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 
 同一工号的失败次数与正在校验的登录尝试合计最多 5 次，准入通过 Redis 原子占用；超过时返回 LOGIN_THROTTLED。失败转为计数，累计第 5 次失败后锁定 10 分钟；成功清除失败次数但保留其他在途占用，基础设施异常仅释放本次占用。未完成的占用最长保留 10 分钟，避免进程中断后永久占用配额。
 
-每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配，并按当前岗位配置重新计算操作权限。MANAGER 不等于 SUPER_ADMIN；多岗位业务权限取并集，员工管理及身份审计只由系统管理员身份授予。未覆盖岗位配置时，完成改密的员工保留共享订单、查询统计及导出权限；可通过 `wuhoucake.authorization.job-permissions` 收窄具体岗位。HTTP 方法和路径显式映射权限，未映射路由拒绝；敏感字段、导出、活动记录和 SSE 的边界见[员工权限说明](authorization.md)。
+每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配，并按当前岗位配置重新计算操作权限。店长 STORE_MANAGER 同时具有 SUPER_ADMIN 身份；多岗位业务权限取并集，员工管理及身份审计只由系统管理员身份授予。默认店长、前厅主管和前厅店员可读取完整业务及财务资料；裱花主管、裱花师、烘焙师仅读取客户手机号及必要时间，不读取其他客户、金额和下单资料，制作操作权限保留。可通过 `wuhoucake.authorization.job-permissions` 覆盖具体岗位。HTTP 方法和路径显式映射权限，未映射路由拒绝；敏感字段、导出、活动记录和 SSE 的边界见[员工权限说明](authorization.md)。
 
 新建、重置或恢复的账号须首次改密。改密前只允许 GET /api/me 和 POST /api/me/password，其他业务请求返回 PASSWORD_CHANGE_REQUIRED；认证端点仍可用于退出。新密码必须与当前密码不同，改密成功会撤销旧凭证，前端需重新登录。
 
@@ -112,7 +112,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 
 - 工号为 1–32 个字母、数字、下划线或短横线，规范化为大写且不可改；归档不释放工号。
 - 昵称去除两端空白后为 1–40 个 Unicode 码点，不允许控制字符；新密码为 8–128 个合法 Unicode 码点。
-- jobRoles 至少一项，取 MANAGER、FRONT_DESK、PASTRY_CHEF；systemRole 为 STAFF（省略时默认）或 SUPER_ADMIN；status 为 ACTIVE/ARCHIVED。
+- jobRoles 至少一项、最多六项，新岗位取 STORE_MANAGER、PASTRY_SUPERVISOR、FRONT_DESK_SUPERVISOR、DECORATOR、BAKER、FRONT_DESK_CLERK。含 STORE_MANAGER 时 systemRole 为 SUPER_ADMIN，其他新岗位为 STAFF；旧 MANAGER、FRONT_DESK、PASTRY_CHEF 保留用于待确认账号与历史解释。status 为 ACTIVE/ARCHIVED。
 - page 从 1 开始，最大 1,000,000；size 为 1–100，默认 20。分页和枚举非法返回 VALIDATION_FAILED。
 - 禁止自行归档；至少保留一位 ACTIVE 超管。归档不物理删除账号，没有取消归档接口，也没有在线解锁/改工号接口。
 

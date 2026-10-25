@@ -66,6 +66,7 @@ class OrderStreamTransactionsTest {
                 new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
                 null, List.of(OrderItem.create(UUID.randomUUID(), "蛋糕", null, 1, null, null, Map.of(), NOW)), operator.accountId(), NOW);
         when(orders.find(order.id())).thenReturn(Optional.of(order));
+        when(orders.lock(any())).thenAnswer(invocation -> orders.find(invocation.getArgument(0)));
         when(activities.append(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
     @AfterEach void close() { context.close(); }
@@ -266,7 +267,12 @@ class OrderStreamTransactionsTest {
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
     }
     private long prepare(boolean fulfillment) {
-        if (fulfillment) { order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW); }
+        if (fulfillment) {
+            order.applyProductionAction("START_PRODUCTION", NOW);
+            order.applyProductionAction("COMPLETE_LAYER", NOW); order.applyProductionAction("COMPLETE_FROSTING", NOW);
+            for (var item : order.activeItems()) order.completeSimpleItem(item.itemId(), true, NOW);
+            order.applyProductionAction("COMPLETE_OTHER", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+        }
         return order.version();
     }
     private OrderViews.Detail change(boolean fulfillment, long expected) {

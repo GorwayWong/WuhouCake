@@ -16,6 +16,8 @@ springdoc:
     enabled: true
 
 wuhoucake:
+  customer-entry:
+    public-origin: ${CUSTOMER_ENTRY_PUBLIC_ORIGIN:auto}
   identity:
     secure-cookie: false
   security:

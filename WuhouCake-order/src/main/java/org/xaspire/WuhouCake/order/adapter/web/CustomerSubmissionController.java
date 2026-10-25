@@ -12,6 +12,9 @@ import org.xaspire.WuhouCake.shared.response.*;
 public class CustomerSubmissionController {
     private final CustomerSubmissionService service;
     public CustomerSubmissionController(CustomerSubmissionService service) { this.service = service; }
+    @GetMapping("/pending-count") public ApiResponse<java.util.Map<String, Long>> pendingCount() {
+        return ApiResponse.success(java.util.Map.of("count", service.pendingCount()));
+    }
     @GetMapping public ApiResponse<Page<SubmissionViews.Detail>> search(@RequestParam(defaultValue = "true") boolean mine,
             @RequestParam(defaultValue = "PENDING") String status, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.success(service.search(mine, status, page, size));

@@ -1,9 +1,12 @@
 package org.xaspire.WuhouCake.bootstrap.configuration;
 
+import java.net.URI;
 import java.time.Clock;
+import java.util.List;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.*;
+import org.springframework.core.env.Environment;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.xaspire.WuhouCake.bootstrap.security.*;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
@@ -26,8 +29,18 @@ public class CustomerEntryComposition {
     }
     @Bean CustomerSubmissions customerSubmissions(CustomerSubmissionMapper mapper, JsonCodec json) { return new PostgresCustomerSubmissions(mapper, json); }
     @Bean CustomerSubmissionService customerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders,
-            JsonCodec json, Clock clock, CustomerEntryProperties properties, org.xaspire.WuhouCake.audit.api.facade.AuditFacade audit) {
-        return new CustomerSubmissionService(submissions, identity, orders, json, clock, properties.publicOrigin(), audit);
+            JsonCodec json, Clock clock, CustomerEntryProperties properties, org.xaspire.WuhouCake.audit.api.facade.AuditFacade audit, Environment environment) {
+        var publicOrigin = properties.publicOrigin();
+        if ("auto".equals(publicOrigin)) {
+            if (!environment.matchesProfiles("dev") || environment.matchesProfiles("prod"))
+                throw new IllegalArgumentException("Automatic customer entry origin is only available in dev without prod");
+            publicOrigin = DevCustomerEntryOrigin.resolve();
+        }
+        var origin = URI.create(publicOrigin);
+        if ("http".equals(origin.getScheme()) && (environment.matchesProfiles("prod")
+                || !environment.matchesProfiles("dev") && !List.of("localhost", "127.0.0.1", "[::1]").contains(origin.getHost())))
+            throw new IllegalArgumentException("Customer entry requires HTTPS in prod; non-local HTTP origins require the dev profile");
+        return new CustomerSubmissionService(submissions, identity, orders, json, clock, publicOrigin, audit);
     }
     @Bean @org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication
     FilterRegistrationBean<CustomerEntryProtection> customerEntryProtection(StringRedisTemplate redis, CustomerEntryProperties properties,

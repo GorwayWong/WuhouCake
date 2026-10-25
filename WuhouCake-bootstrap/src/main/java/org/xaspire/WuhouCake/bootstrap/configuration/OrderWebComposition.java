@@ -16,8 +16,8 @@ import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class OrderWebComposition {
     @Bean OrderPackageController orderPackageController(org.xaspire.WuhouCake.order.application.service.OrderPackageService service) { return new OrderPackageController(service); }
-    @Bean org.xaspire.WuhouCake.order.adapter.web.OrderManagementController orderManagementController(org.xaspire.WuhouCake.order.application.service.OrderManagementService service) {
-        return new org.xaspire.WuhouCake.order.adapter.web.OrderManagementController(service);
+    @Bean org.xaspire.WuhouCake.order.adapter.web.OrderManagementController orderManagementController(org.xaspire.WuhouCake.order.application.service.OrderManagementService service, OrderExportService exports) {
+        return new org.xaspire.WuhouCake.order.adapter.web.OrderManagementController(service, exports);
     }
     @Bean OrderFileController orderFileController(OrderImageService images, OrderExportService exports) { return new OrderFileController(images, exports); }
     @Bean OrderController orderController(OrderService orders, org.xaspire.WuhouCake.order.application.service.OrderCreationService creations) { return new OrderController(orders, creations); }

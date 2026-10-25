@@ -56,6 +56,9 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   assert.equal(createOrderRequest(draft).request?.totalAmountCents, 0);
   draft.totalAmount = '320.50';
   assert.equal(createOrderRequest(draft).request?.totalAmountCents, 32050);
+  draft.plannedHandoffAt = '';
+  assert.deepEqual(createOrderRequest(draft).errors, {});
+  assert.equal(createOrderRequest(draft).request?.fulfillment.plannedHandoffAt, null);
 });
 
 test('空白必填项、无商品、非法数量与可选出品时间在提交前被阻止', () => {

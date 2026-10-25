@@ -66,6 +66,16 @@ public class OrderController {
             @RequestParam(required = false) String type, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.success(orders.activities(id, itemId, type, page, size));
     }
+    @PatchMapping("/{id}/items/{itemId}/production-status")
+    public ApiResponse<OrderViews.Detail> completeSimpleItem(@PathVariable UUID id, @PathVariable UUID itemId,
+            @Valid @RequestBody OrderCommands.SimpleItemCompletion command, Authentication authentication) {
+        return visible(orders.completeSimpleItem(id, itemId, command, operator(authentication)), authentication);
+    }
+    @GetMapping("/{id}/notes")
+    public ApiResponse<Page<OrderViews.Activity>> notes(@PathVariable UUID id,
+            @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(orders.activities(id, null, "NOTE", page, size));
+    }
     @PostMapping("/{id}/fulfillment-actions")
     public ApiResponse<OrderViews.Detail> fulfillmentAction(@PathVariable UUID id, @Valid @RequestBody OrderCommands.FulfillmentAction command,
             Authentication authentication) {
@@ -74,6 +84,14 @@ public class OrderController {
     @PostMapping("/{id}/cancel")
     public ApiResponse<OrderViews.Detail> cancel(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Cancel command, Authentication authentication) {
         return visible(orders.cancel(id, command, operator(authentication)), authentication);
+    }
+    @PostMapping("/{id}/restart")
+    public ApiResponse<OrderViews.Detail> restart(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Restart command, Authentication authentication) {
+        return visible(orders.restartCancelled(id, command, operator(authentication)), authentication);
+    }
+    @PostMapping("/{id}/delete")
+    public ApiResponse<OrderViews.Detail> delete(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Delete command, Authentication authentication) {
+        return visible(orders.delete(id, command, operator(authentication)), authentication);
     }
     private static ApiResponse<OrderViews.Detail> visible(OrderViews.Detail detail, Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();

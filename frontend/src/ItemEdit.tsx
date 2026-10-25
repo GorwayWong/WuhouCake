@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ApiError, creationResultUnknown } from './api';
-import { canEditItems, changeItemDraft, itemChangeRequest, itemDraft, itemInput, newItem, specificationFields, textSpecification } from './orderForm';
+import { canEditItems, changeItemDraft, itemChangeRequest, itemDraft, itemInput, newItem, fieldsForProduct, textSpecification } from './orderForm';
 import type { Detail, ItemAddRequest, ItemChangeRequest } from './types';
 import { ErrorNotice, Product, valueText } from './ui';
 import { ProductTypeSelect } from './ProductTypeSelect';
@@ -14,6 +14,7 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
   initial: Detail; itemId?: string; latest: Detail; reopened?: Detail; busy: boolean; error: unknown;
   onSave: (request: ItemChangeRequest | ItemAddRequest) => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
 }) {
+  busy = busy || Boolean(latest.deletion || latest.deleted);
   const original = initial.items.find(item => item.itemId === itemId);
   const [initialDraft] = useState(() => original ? itemDraft(original) : newItem());
   const [draft, setDraft] = useState(initialDraft);
@@ -57,17 +58,17 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
   }}>
     <fieldset className="create-fields" disabled={busy}>
       <div className="create-grid">
-        {(['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const).map((name, index) => <Field key={name} name={name} label={{ name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[name]} error={errors[name]} wide={name === 'name'}>{name === 'productType' ? <ProductTypeSelect disabled={busy} {...props(name)} value={draft.productType} onChange={value => change(changeItemDraft(draft, { productType: value }))} /> : <input {...props(name)} autoFocus={index === 0} value={draft[name]} inputMode={name === 'quantity' ? 'numeric' : name.endsWith('Price') ? 'decimal' : undefined} maxLength={name === 'name' ? 128 : undefined} required={name === 'name' || name === 'quantity'} placeholder={name.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [name]: event.target.value }))} />}</Field>)}
-        {specificationFields.map(([key, label]) => {
+        {((draft.productType === 'CAKE' ? ['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] : ['name', 'productType', 'quantity']) as ('name' | 'productType' | 'quantity' | 'unitPrice' | 'memberPrice')[]).map((name, index) => <Field key={name} name={name} label={{ name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[name]} error={errors[name]} wide={name === 'name'}>{name === 'productType' ? <ProductTypeSelect disabled={busy} {...props(name)} value={draft.productType} onChange={value => change(changeItemDraft(draft, { productType: value }))} /> : <input {...props(name)} autoFocus={index === 0} value={draft[name]} inputMode={name === 'quantity' ? 'numeric' : name.endsWith('Price') ? 'decimal' : undefined} maxLength={name === 'name' ? 128 : undefined} required={name === 'name' || name === 'quantity'} placeholder={name.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [name]: event.target.value }))} />}</Field>)}
+        {fieldsForProduct(draft.productType).map(([key, label]) => {
           const structured = !textSpecification(original?.attributes[key]) || !textSpecification((baseline || latest).items.find(item => item.itemId === itemId)?.attributes[key]);
-          return <Field key={key} name={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} error={errors[key]} wide={key === 'requirements'}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[key] ?? original?.attributes[key])}<small>此规格保留原值。</small></span> : key === 'requirements' ? <textarea {...props(key)} rows={2} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} /> : <input {...props(key)} inputMode={key === 'size' ? 'decimal' : undefined} value={draft.attributes[key]} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} />}</Field>;
+          return <Field key={key} name={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} error={errors[key]} wide={key === 'requirements'}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[key] ?? original?.attributes[key])}<small>此规格保留原值。</small></span> : key === 'requirements' ? <textarea {...props(key)} rows={2} value={draft.attributes[key] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} /> : <input {...props(key)} inputMode={key === 'size' ? 'decimal' : undefined} value={draft.attributes[key] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} />}</Field>;
         })}
       </div>
       <p className="form-help">商品报价不改变订单总额。{!itemId && latest.status === 'PROCESSING' && '追加商品后需重新确认制作进度。'}</p>
       <ErrorNotice error={unknownAddition ? null : error} />
-      {unknownAddition && <p className="notice error" role="alert">追加结果暂时无法确认，商品可能已成功保存，输入已保留。请先核对上方最新商品列表及修改日志，确认是否已追加，再决定是否重新保存。</p>}
-      {unavailable && <p className="notice" role="status">{itemId && !current ? '此商品已被同事移除，草稿已保留，请取消编辑并核对订单。' : ['WAITING_DELIVERY', 'WAITING_PICKUP'].includes(latest.status) ? '订单已进入待交接，草稿已保留。请先执行上方「重新制作」，再核对订单并保存。' : '订单状态已变化，当前不能修改商品。草稿已保留，请取消编辑并核对状态。'}</p>}
-      {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已有新版本，你的输入已保留。请先核对最新商品与整单状态。' : '已核对最新版本，请检查自己的修改后保存。'}只提交你改过的字段。{!baseline && !canReview && '最新订单尚未读取，请重试顶部的数据读取。'}</p><h3>最新订单（用于核对）</h3><p>{latest.items.length} 件商品 · {canEditItems(latest) ? '允许修改商品' : '当前不允许修改商品'}</p>{itemId ? current && <Product item={current} prices /> : latest.items.map(item => <Product key={item.itemId} item={item} prices />)}{stale && <button type="button" className="secondary" disabled={!canReview || unavailable} onClick={() => { setBaseline(latest); setConflict(true); }}>已核对最新版本，继续编辑</button>}</div>}
+      {unknownAddition && <p className="notice error" role="alert">追加结果未确认，输入已保留。请先核对商品列表和记录，再决定是否重试。</p>}
+      {unavailable && <p className="notice" role="status">{itemId && !current ? '商品已移除，输入已保留。请取消编辑并核对订单。' : ['WAITING_DELIVERY', 'WAITING_PICKUP'].includes(latest.status) ? '订单已待交接，输入已保留。请先退回“其他已确认”，核对后保存。' : '订单状态已变，暂不能编辑。输入已保留，请核对状态。'}</p>}
+      {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已更新，输入已保留。核对最新内容后再保存。' : '已核对，请确认修改后保存。'}{!baseline && !canReview && '请先刷新订单。'}</p><h3>最新订单（用于核对）</h3><p>{latest.items.length} 件商品 · {canEditItems(latest) ? '允许修改商品' : '当前不允许修改商品'}</p>{itemId ? current && <Product item={current} prices /> : latest.items.map(item => <Product key={item.itemId} item={item} prices />)}{stale && <button type="button" className="secondary" disabled={!canReview || unavailable} onClick={() => { setBaseline(latest); setConflict(true); }}>已核对最新版本，继续编辑</button>}</div>}
       <div className="actions"><button className="primary" disabled={busy || stale || unavailable}>{busy ? '正在保存…' : '保存'}</button><button type="button" className="secondary" onClick={onCancel}>取消</button></div>
     </fieldset>
   </form>;

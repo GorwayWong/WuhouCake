@@ -16,7 +16,9 @@ public interface OrderManagementMapper {
             + " string_agg(i.name || ' ×' || i.quantity || CASE WHEN i.attributes->>'size' IS NULL THEN '' ELSE '（' || (i.attributes->>'size') || '）' END, '、' ORDER BY i.created_at,i.id) AS products"
             + " FROM cake_order_item i WHERE i.order_id=o.id AND NOT i.is_removed"
             + ITEM_MATCH + ") p ON TRUE WHERE "
-            + "<choose><when test='filter.dateBasis == \"CREATED\"'>o.created_at &gt;= (CAST(#{filter.from} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai') AND o.created_at &lt; (CAST(#{filter.to} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')</when>"
+            + "<choose><when test='filter.deleted'>o.deleted_at IS NOT NULL AND o.deleted_at &gt; CURRENT_TIMESTAMP - INTERVAL '720 hours' AND o.deleted_at &gt;= (CAST(#{filter.from} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai') AND o.deleted_at &lt; (CAST(#{filter.to} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')</when>"
+            + "<otherwise>o.deleted_at IS NULL</otherwise></choose> AND "
+            + "<choose><when test='filter.deleted or filter.allUnpaid'>1=1</when><when test='filter.dateBasis == \"CREATED\"'>o.created_at &gt;= (CAST(#{filter.from} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai') AND o.created_at &lt; (CAST(#{filter.to} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')</when>"
             + "<otherwise>o.requested_receive_date &gt;= #{filter.from} AND o.requested_receive_date &lt; #{filter.to}</otherwise></choose>"
             + "<if test='filter.status != null'> AND o.status=#{filter.status}</if>"
             + "<if test='filter.status == null and !filter.includeCancelled'> AND o.status&lt;&gt;'CANCELLED'</if>"
@@ -28,9 +30,13 @@ public interface OrderManagementMapper {
             + "<if test='filter.keyword != null'> AND (position(#{filter.keyword} IN o.order_no)&gt;0 OR position(#{filter.keyword} IN o.customer_phone)&gt;0 OR position(#{filter.keyword} IN COALESCE(o.customer_name,''))&gt;0)</if>";
     @Select("<script>SELECT o.id::text AS order_id,o.order_no,o.requested_receive_date AS receive_date,o.status,o.payment_status,"
             + " o.customer_phone AS phone,o.customer_name,o.credited_employee_number AS employee_number,o.credited_employee_name AS employee_name,"
-            + " o.created_by::text,o.total_amount_cents,p.quantity AS matching_quantity,p.cakes AS cake_quantity,p.products" + SOURCE
-            + " ORDER BY o.requested_receive_date,o.planned_handoff_at,o.order_no,o.id LIMIT #{limit} OFFSET #{offset}</script>")
+            + " o.created_by::text,o.total_amount_cents,p.quantity AS matching_quantity,p.cakes AS cake_quantity,p.products,"
+            + " (SELECT COALESCE(jsonb_agg(DISTINCT upper(COALESCE(category.product_type,'')) ORDER BY upper(COALESCE(category.product_type,''))),'[]'::jsonb)::text"
+            + " FROM cake_order_item category WHERE category.order_id=o.id AND NOT category.is_removed) AS product_types" + SOURCE
+            + "<choose><when test='filter.allUnpaid'> ORDER BY o.created_at ASC,o.order_no ASC,o.id ASC</when><otherwise> ORDER BY o.requested_receive_date,o.planned_handoff_at,o.order_no,o.id</otherwise></choose> LIMIT #{limit} OFFSET #{offset}</script>")
     List<Row> search(@Param("filter") Filter filter, @Param("limit") int limit, @Param("offset") long offset);
+    @Select("<script>SELECT count(*)" + SOURCE + "</script>")
+    long count(@Param("filter") Filter filter);
     @Select("<script>SELECT count(*) AS order_count,COALESCE(sum(p.quantity),0) AS matching_quantity,COALESCE(sum(p.cakes),0) AS cake_quantity,"
             + " COALESCE(sum(p.unknown_size),0) AS unclassified_cake_quantity," + AMOUNTS + SOURCE + "</script>")
     Totals totals(@Param("filter") Filter filter);

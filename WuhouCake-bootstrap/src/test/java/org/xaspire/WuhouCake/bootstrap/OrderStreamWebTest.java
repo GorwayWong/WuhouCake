@@ -178,6 +178,8 @@ class OrderStreamWebTest {
                     .andExpect(jsonPath("$.data.customer").isEmpty()).andExpect(jsonPath("$.data.fulfillment.address").isEmpty())
                     .andExpect(jsonPath("$.data.totalAmountCents").isEmpty()).andExpect(jsonPath("$.data.paymentStatus").isEmpty())
                     .andExpect(jsonPath("$.data.items[0].unitPriceCents").isEmpty()).andExpect(jsonPath("$.data.items[0].memberPriceCents").isEmpty())
+                    .andExpect(jsonPath("$.data.createdAt").isEmpty()).andExpect(jsonPath("$.data.createdBy").isEmpty())
+                    .andExpect(jsonPath("$.data.items[0].createdAt").isEmpty())
                     .andExpect(jsonPath("$.data.items[0].attributes.base").value("原味"));
         }
         withPermissions(Set.of(ORDER_READ, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
@@ -192,19 +194,35 @@ class OrderStreamWebTest {
         withPermissions(Set.of(ORDER_READ));
         var detail = sensitiveOrder(); var date = LocalDate.of(2026, 10, 22);
         when(queries.calendar(null, null)).thenReturn(List.of(new OrderQueryViews.CalendarOrder(detail.orderId(), "TEST001", date,
-                "CREATED", "WAITING", "PAID", "DELIVERY", Instant.now(), List.of())));
+                "CREATED", "WAITING", "PAID", "DELIVERY", Instant.now(), "0000", List.of())));
         var item = new OrderQueryViews.Item(UUID.randomUUID(), "蛋糕", "CAKE", 1, 20000L, 18000L, Map.of("base", "原味"), List.of());
         when(queries.workbench(null, true)).thenReturn(new OrderQueryViews.Workbench(date, new OrderQueryViews.Metrics(1, 1, 1),
                 List.of(new OrderQueryViews.PendingOrder(detail.orderId(), "TEST001", date, "CREATED", "WAITING", "PAID", "DELIVERY",
-                        Instant.now(), detail.customer(), "客户地址", Instant.now(), List.of(item)))));
+                        Instant.now(), detail.customer(), "客户地址", Instant.now(), List.of(item), null))));
         mvc.perform(get("/api/orders/calendar").header("Authorization", "Bearer valid"))
-                .andExpect(status().isOk())
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].customerPhoneLast4").isEmpty())
                 .andExpect(jsonPath("$.data[0].paymentStatus").isEmpty());
         mvc.perform(get("/api/orders/workbench").header("Authorization", "Bearer valid"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.pendingOrders[0].customer").isEmpty())
                 .andExpect(jsonPath("$.data.pendingOrders[0].address").isEmpty())
                 .andExpect(jsonPath("$.data.pendingOrders[0].items[0].unitPriceCents").isEmpty())
                 .andExpect(jsonPath("$.data.pendingOrders[0].items[0].memberPriceCents").isEmpty());
+    }
+
+    @Test void paymentListRequiresAmountsAndProjectsCreationTime() throws Exception {
+        String path = "/api/orders/workbench/payment-orders?date=2026-10-23&kind=RECEIPT";
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        withPermissions(Set.of(ORDER_READ));
+        mvc.perform(get(path).header("Authorization", "Bearer valid")).andExpect(status().isForbidden());
+        withPermissions(Set.of(ORDER_READ, ORDER_AMOUNT_READ));
+        var date = LocalDate.of(2026, 10, 23);
+        when(queries.paymentOrders(date, "RECEIPT", 1)).thenReturn(new OrderQueryViews.PaymentOrders(date, "RECEIPT", 1, 1,
+                List.of(new OrderQueryViews.PaymentOrder(UUID.randomUUID(), "TEST001", Instant.now(), date,
+                        Instant.now(), "12345", "PAID", "CANCELLED", null))));
+        mvc.perform(get(path).header("Authorization", "Bearer valid")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.orders[0].createdAt").isEmpty())
+                .andExpect(jsonPath("$.data.orders[0].amountCents").value("12345"))
+                .andExpect(jsonPath("$.data.orders[0].paidAt").isNotEmpty());
     }
 
     @Test void sensitiveEndpointsRequireDataGrantsEvenWhenTheOperationGrantExists() throws Exception {
@@ -225,6 +243,34 @@ class OrderStreamWebTest {
         assertNull(result.getAsyncResult(3000));
         assertFalse(result.getResponse().getContentAsString().contains("event:order.changed"));
         mvc.perform(get("/api/orders/stream").header("Authorization", "Bearer valid")).andExpect(status().isForbidden());
+    }
+
+    @Test void summaryRequiresFinancialReadAndNotesCannotSelectSensitiveActivityTypes() throws Exception {
+        var date = LocalDate.of(2026, 10, 23); String path = "/api/orders/workbench/payment-summary?date=" + date;
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        withPermissions(Set.of(ORDER_READ));
+        mvc.perform(get(path).header("Authorization", "Bearer valid")).andExpect(status().isForbidden());
+        var id = UUID.randomUUID();
+        mvc.perform(get("/api/orders/" + id + "/notes?type=CREATED").header("Authorization", "Bearer valid")).andExpect(status().isOk());
+        verify(orders).activities(id, null, "NOTE", 1, 20);
+        withPermissions(Set.of(ORDER_READ, ORDER_AMOUNT_READ));
+        when(queries.paymentSummary(date)).thenReturn(new OrderQueryViews.PaymentSummary(date, 2, 0,
+                new OrderQueryViews.PaymentGroup(1, "10000", 0), new OrderQueryViews.PaymentGroup(1, "0", 1), 0));
+        mvc.perform(get(path + "&status=CANCELLED&paymentStatus=PAID").header("Authorization", "Bearer valid"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalOrderCount").value(2))
+                .andExpect(jsonPath("$.data.unpaid.missingAmountOrderCount").value(1));
+        for (var invalid : List.of("", "?date=invalid", "?date=2026-02-30"))
+            mvc.perform(get("/api/orders/workbench/payment-summary" + invalid).header("Authorization", "Bearer valid")).andExpect(status().isBadRequest());
+        verify(queries).paymentSummary(date); verifyNoMoreInteractions(queries);
+    }
+
+    @Test void hiddenBusinessMetadataCannotBeRecoveredThroughHistoryReportsOrExports() throws Exception {
+        withPermissions(Set.of(ORDER_READ, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_ACTIVITY_READ, ORDER_MANAGEMENT_READ, ORDER_EXPORT));
+        for (var path : List.of("/api/admin/orders", "/api/admin/orders/export", "/api/orders/" + UUID.randomUUID() + "/activities"))
+            mvc.perform(get(path).header("Authorization", "Bearer valid")).andExpect(status().isForbidden());
+        mvc.perform(post("/api/orders/exports/zip").header("Authorization", "Bearer valid").contentType("application/json").content("{}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(orders, management, exports);
     }
 
     private void withPermissions(Set<EmployeeAccess.Permission> permissions) {

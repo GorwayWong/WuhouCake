@@ -32,21 +32,22 @@ public class OrderComposition {
         return new PostgresOrderManagementQueries(mapper);
     }
     @Bean OrderReportFiles orderReportFiles() { return new PoiOrderReportFiles(); }
-    @Bean OrderManagementService orderManagementService(OrderManagementQueries queries, OrderReportFiles files) { return new OrderManagementService(queries, files); }
+    @Bean OrderManagementService orderManagementService(OrderManagementQueries queries, OrderReportFiles files, JsonCodec json, IdentityFacade identity) { return new OrderManagementService(queries, files, json, identity); }
     @Bean OrderImages orderImages(OrderImageMapper mapper) { return new PostgresOrderImages(mapper); }
     @Bean OrderImageValidator orderImageValidator() { return new JavaOrderImageValidator(); }
     @Bean OrderImageService orderImageService(Orders orders, OrderImages images, OrderImageValidator validator,
-            PlatformTransactionManager transactions, IdGenerator ids, Clock clock, OrderActivities activities, ApplicationEventPublisher events) {
+            PlatformTransactionManager transactions, IdGenerator ids, Clock clock, OrderActivities activities, ApplicationEventPublisher events, IdentityFacade identity) {
         var writes = new TransactionTemplate(transactions);
         writes.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
-        return new OrderImageService(orders, images, validator, writes, ids, clock, activities, events);
+        return new OrderImageService(orders, images, validator, writes, ids, clock, activities, events, identity);
     }
     @Bean OrderExportQueries orderExportQueries(OrderQueryMapper queries, OrderActivityMapper activities, JsonCodec json) {
         return new PostgresOrderExportQueries(queries, activities, json);
     }
-    @Bean OrderExportFiles orderExportFiles(OrderImages images, JsonCodec json) { return new PoiOrderExportFiles(images, json); }
-    @Bean OrderExportSnapshotService orderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images) {
-        return new OrderExportSnapshotService(orders, activities, queries, images);
+    @Bean OrderExportFiles orderExportFiles(OrderImages images) { return new PoiOrderExportFiles(images); }
+    @Bean OrderExportSnapshotService orderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images,
+            OrderManagementQueries management, IdentityFacade identity, Clock clock, OrderExportFiles files) {
+        return new OrderExportSnapshotService(orders, activities, queries, images, management, identity, clock, files);
     }
     @Bean OrderExportService orderExportService(OrderExportSnapshotService snapshots, OrderExportFiles files) {
         return new OrderExportService(snapshots, files);

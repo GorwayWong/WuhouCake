@@ -20,21 +20,30 @@ public final class PostgresOrders implements Orders {
         for (var item : order.activeItems()) mapper.insertItem(row(order.id(), item));
     }
     @Override public Optional<Order> find(UUID id) {
-        var row = mapper.find(id.toString());
+        return restore(id, mapper.find(id.toString()));
+    }
+    @Override public Optional<Order> lock(UUID id) { return restore(id, mapper.lock(id.toString())); }
+    private Optional<Order> restore(UUID id, OrderMapper.Row row) {
         if (row == null) return Optional.empty();
         var items = mapper.items(id.toString()).stream().map(this::item).toList();
         return Optional.of(new Order(id, row.orderNo(), row.version(), row.status(), row.paymentStatus(), row.currentStageCode(),
                 new CustomerContact(row.customerName(), row.customerPhone(), row.memberPhone(), row.buyerName()),
                 new FulfillmentPlan(FulfillmentType.valueOf(row.fulfillmentType()), row.deliveryAddress(), row.requestedReceiveDate(), row.plannedHandoffAt(), row.plannedFinishAt(), row.requestedReceiveAt()),
                 row.totalAmountCents(), UUID.fromString(row.createdBy()), row.createdAt(), row.confirmedAt(), row.updatedAt(), items,
-                row.creditedEmployeeId() == null ? null : new Attribution(UUID.fromString(row.creditedEmployeeId()), row.creditedEmployeeNumber(), row.creditedEmployeeName())));
+                row.creditedEmployeeId() == null ? null : new Attribution(UUID.fromString(row.creditedEmployeeId()), row.creditedEmployeeNumber(), row.creditedEmployeeName()), row.paidAt(),
+                row.deletedAt() == null ? null : new OrderDeletion(row.deletedAt(), UUID.fromString(row.deletedBy()), row.deletedByName(), row.deletionReason())));
+    }
+    @Override public void delete(Order order, long expectedVersion) {
+        var row = row(order);
+        if (mapper.delete(row, expectedVersion) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        mapper.auditDeletion(row);
     }
     @Override public void reviseItem(Order order, long expectedVersion, UUID itemId) {
-        if (mapper.advanceVersion(order.id().toString(), expectedVersion, order.updatedAt()) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (mapper.updateProduction(order.id().toString(), expectedVersion, order.status(), order.currentStageCode(), order.updatedAt()) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
         if (mapper.updateItem(row(order.id(), order.requireActiveItem(itemId))) != 1) throw new OrderFailure("ORDER_NOT_FOUND");
     }
     @Override public void changePaymentStatus(Order order, long expectedVersion) {
-        if (mapper.updatePaymentStatus(order.id().toString(), expectedVersion, order.paymentStatus(), order.updatedAt()) != 1)
+        if (mapper.updatePaymentStatus(order.id().toString(), expectedVersion, order.paymentStatus(), order.updatedAt(), order.paidAt()) != 1)
             throw new OrderFailure("CONCURRENT_MODIFICATION");
     }
     @Override public void reviseInformation(Order order, long expectedVersion) {
@@ -46,7 +55,7 @@ public final class PostgresOrders implements Orders {
         mapper.insertItem(row(order.id(), order.requireActiveItem(itemId)));
     }
     @Override public void removeItem(Order order, long expectedVersion, UUID itemId) {
-        if (mapper.advanceVersion(order.id().toString(), expectedVersion, order.updatedAt()) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (mapper.updateProduction(order.id().toString(), expectedVersion, order.status(), order.currentStageCode(), order.updatedAt()) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
         if (mapper.removeItem(order.id().toString(), itemId.toString(), order.updatedAt()) != 1) throw new OrderFailure("ORDER_NOT_FOUND");
     }
     @Override public void changeProduction(Order order, long expectedVersion, List<UUID> changedItemIds) {
@@ -71,7 +80,11 @@ public final class PostgresOrders implements Orders {
                 order.createdBy().toString(), order.createdAt(), order.confirmedAt(), order.updatedAt(),
                 order.creditedEmployee() == null ? null : order.creditedEmployee().accountId().toString(),
                 order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber(),
-                order.creditedEmployee() == null ? null : order.creditedEmployee().nickname(), fulfillment.requestedReceiveAt());
+                order.creditedEmployee() == null ? null : order.creditedEmployee().nickname(), fulfillment.requestedReceiveAt(), order.paidAt(),
+                order.deletion() == null ? null : order.deletion().deletedAt(),
+                order.deletion() == null ? null : order.deletion().deletedBy().toString(),
+                order.deletion() == null ? null : order.deletion().employeeName(),
+                order.deletion() == null ? null : order.deletion().reason());
     }
     private OrderMapper.ItemRow row(UUID orderId, OrderItem item) {
         return new OrderMapper.ItemRow(item.itemId().toString(), orderId.toString(), item.name(), item.productType(), item.quantity(),

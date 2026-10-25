@@ -17,12 +17,22 @@ class EmployeeAccessPolicyTest {
         var policy = new EmployeeAccessPolicy(Map.of());
         for (var role : JobRole.values()) {
             var access = policy.access(account(Set.of(role), SystemRole.STAFF));
+            boolean production = Set.of(JobRole.PASTRY_CHEF, JobRole.PASTRY_SUPERVISOR, JobRole.DECORATOR, JobRole.BAKER).contains(role);
             assertTrue(access.allows(ORDER_EXPORT));
             assertTrue(access.allows(ORDER_PAYMENT_UPDATE));
-            assertFalse(access.allows(EMPLOYEE_MANAGE));
-            assertFalse(access.allows(AUDIT_READ));
-            assertEquals(role != JobRole.PASTRY_CHEF, access.allows(CUSTOMER_SUBMISSION_PROCESS));
-            assertEquals(role == JobRole.MANAGER, access.allows(CUSTOMER_ENTRY_MANAGE_ALL));
+            assertEquals(!production, access.allows(ORDER_AMOUNT_READ));
+            assertEquals(!production, access.allows(ORDER_CUSTOMER_READ));
+            assertEquals(!production, access.allows(ORDER_BUSINESS_DETAILS_READ));
+            assertTrue(access.allows(ORDER_PHONE_READ));
+            assertEquals(!production, access.allows(ORDER_DELETE));
+            assertEquals(!production, access.allows(ORDER_DELETED_READ));
+            assertTrue(access.allows(ORDER_PRODUCTION_UPDATE));
+            assertTrue(access.allows(ORDER_NOTE_CREATE));
+            assertTrue(access.allows(ORDER_IMAGE_UPLOAD));
+            assertEquals(role == JobRole.STORE_MANAGER, access.allows(EMPLOYEE_MANAGE));
+            assertEquals(role == JobRole.STORE_MANAGER, access.allows(AUDIT_READ));
+            assertEquals(!production, access.allows(CUSTOMER_SUBMISSION_PROCESS));
+            assertEquals(role == JobRole.MANAGER || role == JobRole.STORE_MANAGER, access.allows(CUSTOMER_ENTRY_MANAGE_ALL));
         }
     }
 
@@ -58,5 +68,16 @@ class EmployeeAccessPolicyTest {
     private static EmployeeAccount account(Set<JobRole> roles, SystemRole systemRole) {
         return EmployeeAccount.create(UUID.randomUUID(), "EMP001", "测试员工", roles, systemRole, "initial-hash", NOW)
                 .replacePassword("permanent-hash", false, NOW);
+    }
+
+    @Test void frontDeskAndManagerJobsRestoreBusinessVisibilityForMultiJobProductionStaff() {
+        var policy = new EmployeeAccessPolicy(Map.of());
+        for (var role : Set.of(JobRole.FRONT_DESK, JobRole.MANAGER, JobRole.STORE_MANAGER, JobRole.FRONT_DESK_CLERK, JobRole.FRONT_DESK_SUPERVISOR)) {
+            var access = policy.access(account(Set.of(role, JobRole.DECORATOR), SystemRole.STAFF));
+            assertTrue(access.allows(ORDER_AMOUNT_READ));
+            assertTrue(access.allows(ORDER_CUSTOMER_READ));
+            assertTrue(access.allows(ORDER_BUSINESS_DETAILS_READ));
+            assertEquals(role == JobRole.STORE_MANAGER, access.allows(EMPLOYEE_MANAGE));
+        }
     }
 }

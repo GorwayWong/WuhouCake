@@ -18,15 +18,23 @@ public final class EmployeeAccessPolicy {
         var configured = new EnumMap<JobRole, Set<Permission>>(JobRole.class);
         var shared = Set.of(ORDER_READ, ORDER_CREATE, ORDER_EDIT, ORDER_CANCEL, ORDER_PAYMENT_UPDATE,
                 ORDER_PRODUCTION_UPDATE, ORDER_FULFILLMENT_UPDATE, ORDER_NOTE_CREATE, ORDER_IMAGE_UPLOAD,
-                ORDER_IMAGE_DELETE, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_ACTIVITY_READ,
+                ORDER_IMAGE_DELETE, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ, ORDER_ACTIVITY_READ,
                 ORDER_MANAGEMENT_READ, ORDER_EXPORT, EMPLOYEE_DIRECTORY_READ);
-        for (var role : Set.of(JobRole.MANAGER, JobRole.FRONT_DESK, JobRole.PASTRY_CHEF)) {
+        for (var role : JobRole.values()) {
             var permissions = EnumSet.copyOf(shared);
-            if (role == JobRole.FRONT_DESK || role == JobRole.MANAGER) {
+            boolean production = Set.of(JobRole.PASTRY_CHEF, JobRole.PASTRY_SUPERVISOR, JobRole.DECORATOR, JobRole.BAKER).contains(role);
+            boolean manager = role == JobRole.MANAGER || role == JobRole.STORE_MANAGER;
+            if (production) {
+                permissions.removeAll(Set.of(ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
+            }
+            permissions.add(ORDER_PHONE_READ);
+            if (!production) {
                 permissions.add(CUSTOMER_SUBMISSION_PROCESS);
                 permissions.add(CUSTOMER_ENTRY_MANAGE);
+                permissions.add(ORDER_DELETE);
+                permissions.add(ORDER_DELETED_READ);
             }
-            if (role == JobRole.MANAGER) permissions.add(CUSTOMER_ENTRY_MANAGE_ALL);
+            if (manager) permissions.add(CUSTOMER_ENTRY_MANAGE_ALL);
             configured.put(role, Set.copyOf(permissions));
         }
         overrides.forEach((role, permissions) -> {

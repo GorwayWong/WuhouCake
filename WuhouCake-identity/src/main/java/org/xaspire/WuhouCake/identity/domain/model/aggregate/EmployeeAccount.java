@@ -21,6 +21,7 @@ public record EmployeeAccount(UUID id, String employeeNumber, String nickname, S
     }
     public static EmployeeAccount create(UUID id, String number, String nickname, Set<JobRole> roles,
             SystemRole role, String hash, Instant now) {
+        role = systemRoleForJobs(roles, role);
         return new EmployeeAccount(id, number, nickname, roles, role, Status.ACTIVE, hash, true, 0, 0, now, now, null, null);
     }
     public void requireActive() {
@@ -40,12 +41,17 @@ public record EmployeeAccount(UUID id, String employeeNumber, String nickname, S
         return changed(nickname, hash, temporary, status, credentialVersion + 1, now, archivedAt, archivedBy);
     }
     public EmployeeAccount reviseProfile(String name, Set<JobRole> roles, Instant now) {
+        return reviseProfile(name, roles, Long.MAX_VALUE, now);
+    }
+    public EmployeeAccount reviseProfile(String name, Set<JobRole> roles, long activeAdministrators, Instant now) {
         if (status != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
         name = AccountValues.nickname(name);
         if (roles == null || roles.isEmpty() || roles.stream().anyMatch(java.util.Objects::isNull)) throw new IdentityFailure("VALIDATION_FAILED");
-        if (nickname.equals(name) && jobRoles.equals(roles)) return this;
-        return new EmployeeAccount(id, employeeNumber, name, roles, systemRole, status, passwordHash, passwordChangeRequired,
-                credentialVersion, version + 1, createdAt, now, archivedAt, archivedBy);
+        SystemRole assigned = systemRoleForJobs(roles, systemRole);
+        if (systemRole == SystemRole.SUPER_ADMIN && assigned != systemRole && activeAdministrators <= 1) throw new IdentityFailure("LAST_ADMINISTRATOR");
+        if (nickname.equals(name) && jobRoles.equals(roles) && assigned == systemRole) return this;
+        return new EmployeeAccount(id, employeeNumber, name, roles, assigned, status, passwordHash, passwordChangeRequired,
+                credentialVersion + (assigned == systemRole ? 0 : 1), version + 1, createdAt, now, archivedAt, archivedBy);
     }
     public EmployeeAccount archive(UUID actor, long activeAdministrators, Instant now) {
         if (id.equals(actor)) throw new IdentityFailure("SELF_ARCHIVE_FORBIDDEN");
@@ -57,6 +63,11 @@ public record EmployeeAccount(UUID id, String employeeNumber, String nickname, S
             Instant now, Instant archived, UUID actor) {
         return new EmployeeAccount(id, employeeNumber, name, jobRoles, systemRole, state, hash, required,
                 credentials, version + 1, createdAt, now, archived, actor);
+    }
+    private static SystemRole systemRoleForJobs(Set<JobRole> roles, SystemRole legacyRole) {
+        if (roles == null) return legacyRole;
+        if (roles.contains(JobRole.STORE_MANAGER)) return SystemRole.SUPER_ADMIN;
+        return roles.stream().anyMatch(role -> role != null && !role.legacy()) ? SystemRole.STAFF : legacyRole;
     }
     @Override public String toString() { return "EmployeeAccount[id=" + id + ", status=" + status + "]"; }
 }

@@ -4,7 +4,7 @@ import { shiftDate } from './dates.ts';
 import { exportOptions } from './exportFiles.ts';
 
 export interface ManagementDraft { from: string; through: string; status: string; paymentStatus: string; fulfillmentType: string;
-  sizeInches: string; creditedEmployeeId: string; unassigned: boolean; includeCancelled: boolean; keyword: string; dateBasis: string }
+  sizeInches: string; creditedEmployeeId: string; unassigned: boolean; includeCancelled: boolean; keyword: string; dateBasis: string; allUnpaid?: boolean; deleted?: boolean }
 export interface ManagementView { draft: ManagementDraft; applied: ManagementDraft; page: number }
 export const orderPageSize = 10;
 export function orderPagination(total: number, page: number) {
@@ -24,10 +24,12 @@ export function defaultManagementDraft(date: string): ManagementDraft {
     sizeInches: '', creditedEmployeeId: '', unassigned: false, includeCancelled: false, keyword: '', dateBasis: 'CREATED' };
 }
 export function managementQuery(draft: ManagementDraft): string {
+  if (draft.allUnpaid && !draft.deleted) return new URLSearchParams({ allUnpaid: 'true' }).toString();
   if (!validDate(draft.from) || !validDate(draft.through) || draft.from > draft.through) throw new Error('请填写有效的开始和结束日期，结束日期不能早于开始日期。');
   const to = shiftDate(draft.through, 1);
   if ((Date.parse(to) - Date.parse(draft.from)) / 86400000 > 366) throw new Error('一次最多查询 366 天，请缩小日期范围。');
   const query = new URLSearchParams({ from: draft.from, to, includeCancelled: String(draft.includeCancelled), unassigned: String(draft.unassigned) });
+  if (draft.deleted) query.set('deleted', 'true');
   if (!['RECEIVE', 'CREATED'].includes(draft.dateBasis)) throw new Error('请选择有效的日期口径。');
   query.set('dateBasis', draft.dateBasis);
   for (const key of ['status', 'paymentStatus', 'fulfillmentType'] as const) if (draft[key]) {
@@ -42,6 +44,4 @@ export function managementQuery(draft: ManagementDraft): string {
   if (draft.keyword.trim()) query.set('keyword', draft.keyword.trim());
   return query.toString();
 }
-export function exactYuan(cents: string): string {
-  const value = BigInt(cents); return `${value / 100n}.${String(value % 100n).padStart(2, '0')}`;
-}
+export { exactYuan } from './money.ts';

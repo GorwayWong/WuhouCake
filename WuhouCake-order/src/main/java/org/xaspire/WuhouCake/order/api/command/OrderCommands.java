@@ -11,7 +11,7 @@ public final class OrderCommands {
 
     public record Customer(String customerName, @NotBlank String phone, String memberPhone, String buyerName) { }
     public record Fulfillment(@NotNull String type, String address, @NotNull LocalDate requestedReceiveDate,
-            @NotNull Instant plannedHandoffAt, Instant plannedFinishAt, Instant requestedReceiveAt) {
+            Instant plannedHandoffAt, Instant plannedFinishAt, Instant requestedReceiveAt) {
         public Fulfillment(String type, String address, LocalDate requestedReceiveDate, Instant plannedHandoffAt, Instant plannedFinishAt) {
             this(type, address, requestedReceiveDate, plannedHandoffAt, plannedFinishAt, null);
         }
@@ -30,8 +30,11 @@ public final class OrderCommands {
     public record RemoveItem(@NotNull Number expectedVersion) { }
     public record PaymentStatus(@NotNull Number expectedVersion, @NotBlank String paymentStatus) { }
     public record ProductionAction(@NotNull Number expectedVersion, @NotBlank String action) { }
+    public record SimpleItemCompletion(@NotNull Number expectedVersion, @NotNull Boolean completed) { }
     public record FulfillmentAction(@NotNull Number expectedVersion, @NotBlank String action) { }
     public record Cancel(@NotNull Number expectedVersion, @NotBlank String reason) { }
+    public record Delete(@NotNull Number expectedVersion, @NotBlank @Size(max = 1000) String reason) { }
+    public record Restart(@NotNull Number expectedVersion) { }
     public record Note(UUID itemId, @NotBlank String content) { }
     public record Operator(UUID accountId, String nickname) { }
 }

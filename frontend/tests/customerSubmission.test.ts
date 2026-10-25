@@ -8,6 +8,19 @@ function complete() {
   const draft = newSubmissionDraft(); draft.phone = '13800000000'; draft.memberPhone = '13800000088'; draft.address = '合成地址';
   draft.requestedReceiveAt = '2026-11-02T18:00'; draft.items[0].attributes.size = '8'; return draft;
 }
+test('核对草稿的总额、单价和会员价经过展示与保存仍逐分一致', () => {
+  const draft = complete();
+  draft.totalAmount = '90071992547409.90';
+  draft.items[0].unitPrice = '90071992547409.71';
+  draft.items[0].memberPrice = '0.29';
+  const saved = submissionRequest(draft, true);
+  assert.deepEqual(saved.errors, {});
+  const reopened = draftFromSubmission({ original: saved.content, reviewed: saved.review } as Submission);
+  assert.equal(reopened.totalAmount, draft.totalAmount);
+  assert.equal(reopened.items[0].unitPrice, draft.items[0].unitPrice);
+  assert.equal(reopened.items[0].memberPrice, draft.items[0].memberPrice);
+  assert.deepEqual(submissionRequest(reopened, true).review, saved.review);
+});
 test('客户请求不含价格、归属和内部交接时间，蛋糕默认规格映射正确', () => {
   const draft = complete(); draft.totalAmount = '123'; draft.creditedEmployeeId = 'employee'; draft.plannedHandoffAt = '2026-11-02T16:00'; draft.items[0].unitPrice = '123';
   const result = submissionRequest(draft);
@@ -24,6 +37,9 @@ test('日期和时刻、配送地址及蛋糕尺寸必填，自提和非蛋糕�
 });
 test('核对信息保留客户期望时间和内部时间，空报价与零元有区别', () => {
   const draft = complete(); let result = submissionRequest(draft, true); assert.equal(result.review.totalAmountCents, null); assert.equal(result.review.creditedEmployeeId, null);
+  assert.deepEqual(result.errors, {}); assert.equal(result.review.plannedHandoffAt, null);
+  draft.plannedHandoffAt = '2026-11-02T16:';
+  assert.ok(submissionRequest(draft, true).errors.plannedHandoffAt);
   draft.totalAmount = '0'; draft.plannedHandoffAt = '2026-11-02T16:00'; draft.creditedEmployeeId = 'employee';
   result = submissionRequest(draft, true); assert.equal(result.review.totalAmountCents, 0); assert.notEqual(result.content.requestedReceiveAt, result.review.plannedHandoffAt);
   const roundtrip = draftFromSubmission({ original: result.content, reviewed: result.review } as Submission);

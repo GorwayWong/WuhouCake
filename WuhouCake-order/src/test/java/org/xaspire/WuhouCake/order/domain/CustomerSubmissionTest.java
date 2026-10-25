@@ -39,11 +39,27 @@ class CustomerSubmissionTest {
         assertThrows(OrderFailure.class, () -> content("abc"));
         assertThrows(OrderFailure.class, () -> content("138abc00000000"));
     }
-    @Test void reviewRequiresExplicitPriceAttributionAndInternalHandoffForConfirmation() {
+    @Test void reviewRequiresExplicitPriceAndAttributionButAllowsMissingHandoff() {
         var review = new CustomerSubmission.Review(content("13800000000"), null, null, null, null);
         assertEquals(1, review.prices().size()); assertThrows(OrderFailure.class, review::requireConfirmation);
         assertDoesNotThrow(() -> new CustomerSubmission.Review(review.content(), null, 0L, UUID.randomUUID(), Instant.now()).requireConfirmation());
+        assertDoesNotThrow(() -> new CustomerSubmission.Review(review.content(), null, 0L, UUID.randomUUID(), null).requireConfirmation());
+        assertThrows(OrderFailure.class, () -> new CustomerSubmission.Review(review.content(), null, null, UUID.randomUUID(), null).requireConfirmation());
+        assertThrows(OrderFailure.class, () -> new CustomerSubmission.Review(review.content(), null, 0L, null, null).requireConfirmation());
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Review(review.content(), List.of(), 100L, UUID.randomUUID(), Instant.now()));
+    }
+    @Test void simpleTypesAcceptNoSizeAndReportSpecificConfirmationErrors() {
+        for (var type : List.of("BREAD", "DONUT", "CUPCAKE", "DRINK")) {
+            var product = new CustomerSubmission.Product("商品", type, 2, Map.of("specification", "小份"));
+            assertFalse(product.attributes().containsKey("size"));
+        }
+        assertEquals("SUBMISSION_PRODUCT_TYPE_INVALID", assertThrows(OrderFailure.class,
+                () -> new CustomerSubmission.Product("商品", "UNKNOWN", 1, Map.of())).code());
+        assertEquals("SUBMISSION_CAKE_SIZE_REQUIRED", assertThrows(OrderFailure.class, () -> cake(Map.of())).code());
+        assertEquals("SUBMISSION_TOTAL_REQUIRED", assertThrows(OrderFailure.class,
+                () -> new CustomerSubmission.Review(content("13800000000"), null, null, UUID.randomUUID(), null).requireConfirmation()).code());
+        assertEquals("SUBMISSION_EMPLOYEE_REQUIRED", assertThrows(OrderFailure.class,
+                () -> new CustomerSubmission.Review(content("13800000000"), null, 100L, null, null).requireConfirmation()).code());
     }
     @Test void futureCustomerFieldDiffExcludesInternalEmployeePriceAndStateFields() {
         var before = content("13800000000"); var after = content("13800000002");

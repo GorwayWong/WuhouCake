@@ -25,7 +25,8 @@ test('单按钮填明确字段；不造名称、数量、时刻，默认来源�
   assert.equal(filled.draft.items[0].attributes.filling, '芒果、脆啵啵、奥利奥');
   assert.equal(filled.draft.totalAmount, '');
   const invalid = createOrderRequest(filled.draft);
-  assert(invalid.errors['items.0.name'] && invalid.errors['items.0.quantity'] && invalid.errors.plannedHandoffAt);
+  assert(invalid.errors['items.0.name'] && invalid.errors['items.0.quantity']);
+  assert.equal(invalid.errors.plannedHandoffAt, undefined);
   filled.draft.items[0].name = '人工补充蛋糕'; filled.draft.items[0].quantity = '1'; filled.draft.plannedHandoffAt = '2026-09-30T15:00';
   assert.ok(createOrderRequest(filled.draft).request);
 });

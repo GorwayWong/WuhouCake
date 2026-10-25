@@ -90,7 +90,7 @@ docker compose --env-file docs/dev-ops/env/prod.env \
 | `JAVA_TOOL_OPTIONS` | JVM 参数，含空格的 dotenv 值须加引号 |
 | `IDENTITY_KEY_DIR` | 应用 Compose 只读挂载的宿主机密钥目录，应用用户须可读 |
 | `IDENTITY_PRIVATE_KEY`、`IDENTITY_PUBLIC_KEY` | 直接运行 JVM 时的持久 RSA 密钥绝对路径 |
-| `CUSTOMER_ENTRY_PUBLIC_ORIGIN` | 客户二维码的公开 HTTPS 源站；app Compose 必填 |
+| `CUSTOMER_ENTRY_PUBLIC_ORIGIN` | dev 默认 auto，启动时探测 Wi-Fi IPv4；prod 使用配置的 HTTPS 服务器 IP 或域名源站且禁止 auto；app Compose 必填 |
 | `CUSTOMER_ENTRY_PER_MINUTE`、`CUSTOMER_ENTRY_PER_HOUR` | 每来源 IP 提交上限，默认 10／100 |
 | `CUSTOMER_ENTRY_MAX_BODY_BYTES` | 客户提交正文上限，默认 131072 字节 |
 | `CUSTOMER_ENTRY_TRUSTED_PROXIES` | 可信直连代理准确 IP，逗号分隔；默认不信任转发头 |

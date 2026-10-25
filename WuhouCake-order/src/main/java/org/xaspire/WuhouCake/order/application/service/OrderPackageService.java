@@ -75,11 +75,11 @@ public class OrderPackageService {
     }
     private void readAccess() {
         var me = identity.me();
-        if (!me.jobRoles().contains("MANAGER") && !me.access().allows(Permission.ORDER_CREATE)) throw new OrderFailure("PACKAGE_FORBIDDEN");
+        if (!me.jobRoles().contains("MANAGER") && !me.jobRoles().contains("STORE_MANAGER") && !me.access().allows(Permission.ORDER_CREATE)) throw new OrderFailure("PACKAGE_FORBIDDEN");
     }
     private IdentityFacade.AccountView manager() {
         var me = identity.me();
-        if (!me.jobRoles().contains("MANAGER")) throw new OrderFailure("PACKAGE_FORBIDDEN");
+        if (!me.jobRoles().contains("MANAGER") && !me.jobRoles().contains("STORE_MANAGER")) throw new OrderFailure("PACKAGE_FORBIDDEN");
         return me;
     }
     private List<OrderPackages.Item> normalize(List<OrderPackageViews.Item> items) {

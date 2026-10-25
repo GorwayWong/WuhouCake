@@ -67,15 +67,21 @@ public class SecurityConfiguration {
             if (properties.permitApiDocs()) {
                 authorize.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll();
             }
-            authorize.requestMatchers(GET, "/api/admin/orders").access(permissions(ORDER_MANAGEMENT_READ, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
-            authorize.requestMatchers(GET, "/api/admin/orders/export").access(permissions(ORDER_MANAGEMENT_READ, ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(GET, "/api/admin/orders").access(permissions(ORDER_MANAGEMENT_READ, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
+            authorize.requestMatchers(GET, "/api/admin/orders/export").access(permissions(ORDER_MANAGEMENT_READ, ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
+            authorize.requestMatchers(POST, "/api/admin/orders/exports/zip").access(permissions(ORDER_MANAGEMENT_READ, ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
             authorize.requestMatchers(GET, "/api/admin/audit-logs").access(permissions(AUDIT_READ));
             authorize.requestMatchers(GET, "/api/admin/employees").access(permissions(EMPLOYEE_MANAGE));
             authorize.requestMatchers(POST, "/api/admin/employees", "/api/admin/employees/{id}/reset-password", "/api/admin/employees/{id}/archive").access(permissions(EMPLOYEE_MANAGE));
             authorize.requestMatchers(PATCH, "/api/admin/employees/{id}", "/api/admin/employees/{id}/password").access(permissions(EMPLOYEE_MANAGE));
             authorize.requestMatchers("/api/me", "/api/me/**").authenticated();
             authorize.requestMatchers(GET, "/api/employees/options").access(permissions(EMPLOYEE_DIRECTORY_READ));
-            authorize.requestMatchers(GET, "/api/orders/{id}/activities").access(permissions(ORDER_READ, ORDER_ACTIVITY_READ, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(GET, "/api/orders/{id}/activities").access(permissions(ORDER_READ, ORDER_ACTIVITY_READ, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
+            authorize.requestMatchers(GET, "/api/orders/workbench/payment-summary").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(GET, "/api/orders/workbench/payment-orders").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(GET, "/api/orders/workbench/receipt-summary").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(GET, "/api/orders/workbench/cake-bases").access(permissions(ORDER_READ));
+            authorize.requestMatchers(GET, "/api/orders/{id}/notes").access(permissions(ORDER_READ));
             authorize.requestMatchers(GET, "/api/orders/{id}/customer-origin").access(permissions(ORDER_READ, ORDER_CUSTOMER_READ));
             authorize.requestMatchers(GET, "/api/orders/calendar", "/api/orders/workbench", "/api/orders/stream", "/api/orders/{id}",
                     "/api/orders/{id}/images", "/api/orders/{id}/images/{imageId}").access(permissions(ORDER_READ));
@@ -88,13 +94,17 @@ public class SecurityConfiguration {
             authorize.requestMatchers(POST, "/api/orders/{id}/items", "/api/orders/{id}/items/{itemId}/remove").access(permissions(ORDER_EDIT));
             authorize.requestMatchers(PATCH, "/api/orders/{id}/payment-status").access(permissions(ORDER_PAYMENT_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/production-actions").access(permissions(ORDER_PRODUCTION_UPDATE));
+            authorize.requestMatchers(PATCH, "/api/orders/{id}/items/{itemId}/production-status").access(permissions(ORDER_PRODUCTION_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/fulfillment-actions").access(permissions(ORDER_FULFILLMENT_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/cancel").access(permissions(ORDER_CANCEL));
+            authorize.requestMatchers(POST, "/api/orders/{id}/delete").access(permissions(ORDER_DELETE, ORDER_DELETED_READ));
+            authorize.requestMatchers(POST, "/api/orders/{id}/restart").access(permissions(ORDER_CANCEL, ORDER_PRODUCTION_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/notes").access(permissions(ORDER_NOTE_CREATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/images").access(permissions(ORDER_IMAGE_UPLOAD));
             authorize.requestMatchers(DELETE, "/api/orders/{id}/images/{imageId}").access(permissions(ORDER_IMAGE_DELETE));
-            authorize.requestMatchers(POST, "/api/orders/{id}/exports/xlsx", "/api/orders/exports/zip").access(permissions(ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(POST, "/api/orders/{id}/exports/xlsx", "/api/orders/exports/zip").access(permissions(ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
             authorize.requestMatchers(GET, "/api/customer-submissions/entry").access(permissions(CUSTOMER_ENTRY_MANAGE));
+            authorize.requestMatchers(GET, "/api/customer-submissions/pending-count").access(permissions(CUSTOMER_SUBMISSION_PROCESS));
             authorize.requestMatchers(POST, "/api/customer-submissions/entry").access(permissions(CUSTOMER_ENTRY_MANAGE));
             authorize.requestMatchers(GET, "/api/customer-submissions", "/api/customer-submissions/{id}").access(permissions(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
             authorize.requestMatchers(PATCH, "/api/customer-submissions/{id}").access(permissions(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
@@ -135,7 +145,7 @@ public class SecurityConfiguration {
         return (authentication, context) -> {
             var current = authentication.get();
             boolean allowed = current.getDetails() instanceof IdentityFacade.AccountView account
-                    && (account.jobRoles().contains("MANAGER") || !write && account.access().allows(ORDER_CREATE));
+                    && (account.jobRoles().contains("MANAGER") || account.jobRoles().contains("STORE_MANAGER") || !write && account.access().allows(ORDER_CREATE));
             return new AuthorizationDecision(current.isAuthenticated() && allowed);
         };
     }

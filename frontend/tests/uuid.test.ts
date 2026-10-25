@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from '../src/uuid.ts';
 import { newItem } from '../src/orderForm.ts';
+import { newSubmissionDraft } from '../src/customerSubmission.ts';
 import { emptyRecognitionItem } from '../src/recognition.ts';
 
 test('HTTP 环境缺少原生 randomUUID 时仍能生成提交标识并初始化表单', () => {
@@ -9,7 +10,7 @@ test('HTTP 环境缺少原生 randomUUID 时仍能生成提交标识并初始化
   const getRandomValues = crypto.getRandomValues.bind(crypto);
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { getRandomValues } });
   try {
-    const ids = [randomUUID(), newItem().key, emptyRecognitionItem().key];
+    const ids = [randomUUID(), newItem().key, newSubmissionDraft().items[0].key, emptyRecognitionItem().key];
     for (const id of ids) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.equal(new Set(ids).size, ids.length);
   } finally { Object.defineProperty(globalThis, 'crypto', original); }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { workspaceRoute, calendarOrderHref } from '../src/routes.ts';
 import { uniqueActivities } from '../src/activities.ts';
 import { workbenchDate } from '../src/dates.ts';
+import { calendarHref, defaultCalendarView, readCalendarView } from '../src/calendarView.ts';
 import type { Activity } from '../src/types.ts';
 
 test('员工共享订单统计与日志路由，员工管理仅管理员可见', () => {
@@ -13,9 +14,12 @@ test('员工共享订单统计与日志路由，员工管理仅管理员可见',
   assert.equal(workspaceRoute('#/admin/employees', 'SUPER_ADMIN').kind, 'employees');
   assert.deepEqual(workspaceRoute(`#/orders/${id}/activities?type=NOTE`, 'STAFF'), { kind: 'history', id, type: 'NOTE' });
   assert.equal(workspaceRoute(`#/orders/${id}`, 'STAFF').kind, 'order');
-  assert.equal(calendarOrderHref(true, '2026-10-17', id), '#/?date=2026-10-17');
-  assert.equal(calendarOrderHref(false, '2026-10-17', id), `#/orders/${id}`);
-  assert.equal(workbenchDate(calendarOrderHref(true, '2026-10-18', id)), '2026-10-18');
+  const view = { ...defaultCalendarView('2026-10-17'), mode: 'month' as const, expanded: true };
+  const route = workspaceRoute(calendarOrderHref(view, id));
+  assert.equal(route.kind, 'order');
+  assert.deepEqual(readCalendarView(route.returnToCalendar!), view);
+  assert.equal(route.returnToCalendar, calendarHref(view));
+  assert.equal(workbenchDate('#/?date=2026-10-18'), '2026-10-18');
 });
 
 test('日志分页遇到新记录挤动页边界时按稳定记录 ID 去重', () => {

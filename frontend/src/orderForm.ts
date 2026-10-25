@@ -70,7 +70,7 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
   };
   const item: ItemInput = { name: draft.name.trim(), productType: draft.productType.trim() || 'CAKE', quantity,
     unitPriceCents: amount('unitPrice'), memberPriceCents: amount('memberPrice'),
-    attributes: Object.fromEntries(specificationFields.flatMap(([key]) => draft.attributes[key].trim() ? [[key, draft.attributes[key].trim()]] : [])) };
+    attributes: Object.fromEntries(fieldsForProduct(draft.productType || 'CAKE').flatMap(([key]) => (draft.attributes[key] || '').trim() ? [[key, draft.attributes[key].trim()]] : [])) };
   if (item.productType?.toUpperCase() === 'CAKE') {
     item.attributes.base ||= cakeDefaults.base; item.attributes.filling ||= cakeDefaults.filling;
     if (validateSize && draft.attributes.size.trim()) { try { item.attributes.size = numericSize(draft.attributes.size); } catch (error) { errors.size = (error as Error).message; } }
@@ -84,7 +84,7 @@ export function itemDraft(item: Item): ItemDraft {
     unitPrice: amount(item.unitPriceCents), memberPrice: amount(item.memberPriceCents),
     attributes: Object.fromEntries(specificationFields.map(([key]) => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
 }
-export function canEditItems(order: Pick<Detail, 'status'>): boolean { return ['WAITING_PRODUCTION', 'PROCESSING'].includes(order.status); }
+export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && ['WAITING_PRODUCTION', 'PROCESSING'].includes(order.status); }
 export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
 export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original): { request: ItemChangeRequest | null; errors: Record<string, string> } {
   const before = original.items.find(item => item.itemId === itemId), current = baseline.items.find(item => item.itemId === itemId);
@@ -150,7 +150,7 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       type: draft.fulfillmentType,
       address: text(draft.address, 'address', '配送地址', Number.MAX_SAFE_INTEGER, draft.fulfillmentType === 'DELIVERY'),
       requestedReceiveDate: draft.requestedReceiveDate,
-      plannedHandoffAt: dateTime(draft.plannedHandoffAt, 'plannedHandoffAt', true) || '',
+      plannedHandoffAt: dateTime(draft.plannedHandoffAt, 'plannedHandoffAt'),
       plannedFinishAt: dateTime(draft.plannedFinishAt, 'plannedFinishAt'),
     },
     items: draft.items.map((item, index) => {
@@ -173,7 +173,7 @@ function localStoreTime(value: string | null): string {
 }
 export function informationDraft(order: Detail): InformationDraft {
   const cents = order.totalAmountCents == null ? null : BigInt(order.totalAmountCents);
-  return { customerName: order.customer.customerName || '', phone: order.customer.phone, memberPhone: order.customer.memberPhone || '', buyerName: order.customer.buyerName || '',
+  return { customerName: order.customer?.customerName || '', phone: order.customer?.phone || '', memberPhone: order.customer?.memberPhone || '', buyerName: order.customer?.buyerName || '',
     fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: order.fulfillment.requestedReceiveDate,
     requestedReceiveAt: localStoreTime(order.fulfillment.requestedReceiveAt || null),
     plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt),
@@ -210,7 +210,7 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   for (const field of ['plannedHandoffAt', 'plannedFinishAt'] as const) {
     // 未改动的分钟输入不回写，保留服务端秒与微秒精度。
     if (draft[field] === initial[field] || draft[field] === current[field]) continue;
-    if (field === 'plannedFinishAt' && !draft[field]) changes.plannedFinishAt = null;
+    if (!draft[field]) changes[field] = null;
     else {
       try { changes[field] = storeTime(draft[field]); }
       catch (error) { errors[field] = (error as Error).message; }
@@ -226,4 +226,13 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   const address = 'address' in changes ? changes.address : baseline.fulfillment.address;
   if (type === 'DELIVERY' && !address) errors.address = '请填写配送地址。';
   return { request: !Object.keys(errors).length && Object.keys(changes).length ? { expectedVersion: baseline.version, changes } : null, errors };
+}
+
+export function amountInformationRequest(original: Detail, amount: string, baseline = original): { request: InformationRequest | null; errors: Record<string, string> } {
+  if (amount === informationDraft(original).totalAmount) return { request: null, errors: {} };
+  try {
+    const cents = moneyToCents(amount);
+    return { request: cents === original.totalAmountCents || cents === baseline.totalAmountCents ? null
+      : { expectedVersion: baseline.version, changes: { totalAmountCents: cents } }, errors: {} };
+  } catch (error) { return { request: null, errors: { totalAmount: (error as Error).message } }; }
 }

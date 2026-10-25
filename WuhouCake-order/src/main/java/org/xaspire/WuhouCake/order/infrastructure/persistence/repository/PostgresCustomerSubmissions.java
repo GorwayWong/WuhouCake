@@ -25,7 +25,9 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
         var claim = mapper.claim(entry.id().toString(), requestId.toString());
         if (!claim.fingerprint().equals(fingerprint)) throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
         if (inserted) append(id, "SUBMITTED", null, "客户（手机号未验证）", Map.of("source", "CUSTOMER_SUBMITTED", "after", CustomerSubmission.customerFields(content)), now);
-        return find(UUID.fromString(claim.id()), false);
+        var result = find(UUID.fromString(claim.id()), false);
+        if (result == null) throw new OrderFailure("SUBMISSION_NOT_FOUND");
+        return result;
     }
     @Override public CustomerSubmission find(UUID id, boolean lock) { return submission(lock ? mapper.lock(id.toString()) : mapper.find(id.toString())); }
     @Override public CustomerSubmission findByOrder(UUID id) { return submission(mapper.byOrder(id.toString())); }

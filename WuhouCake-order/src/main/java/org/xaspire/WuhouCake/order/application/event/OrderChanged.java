@@ -5,5 +5,5 @@ import java.util.UUID;
 public record OrderChanged(UUID orderId, UUID itemId, Type changeType, long version, String orderNo) {
     public OrderChanged(UUID orderId, UUID itemId, Type changeType, long version) { this(orderId, itemId, changeType, version, null); }
     public enum Type { CREATED, ITEM_CHANGED, NOTE, PAYMENT_STATUS_CHANGED, ORDER_PRODUCTION_CHANGED, ORDER_FULFILLMENT_CHANGED, ORDER_CANCELLED,
-        ORDER_INFORMATION_CHANGED, ITEM_ADDED, ITEM_REMOVED, IMAGE_ADDED, IMAGE_REMOVED }
+        ORDER_INFORMATION_CHANGED, ITEM_ADDED, ITEM_REMOVED, IMAGE_ADDED, IMAGE_REMOVED, ORDER_DELETED }
 }

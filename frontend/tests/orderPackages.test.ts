@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendPackage, packageItems, newPackageItem, packageRequest } from '../src/orderPackages.ts';
 import { newItem, fieldsForProduct } from '../src/orderForm.ts';
+import { managementQuery, defaultManagementDraft } from '../src/management.ts';
 
 test('fixed packages create editable independent items and preserve existing custom products', () => {
   const value = { id: 'package', name: '茶歇组合', items: [{ name: '面包', productType: 'BREAD', quantity: 6, attributes: { specification: '小份' } }, { name: '饮品', productType: 'DRINK', quantity: 6, attributes: { specification: '300ml' } }] };
@@ -47,4 +48,7 @@ test('append preserves custom rows and quotes and creates independent copies on 
   assert.equal(repeated[2].attributes.size, '8');
   assert.equal(appendPackage([{ ...newItem(), productType: 'DRINK' }], value).length, 2);
   assert.equal(appendPackage([{ ...newItem(), quantity: '2' }], value).length, 2);
+});
+test('all historical unpaid ignores the current date range and filters', () => {
+  assert.equal(managementQuery({ ...defaultManagementDraft('2026-10-23'), from: '', keyword: '旧关键词', allUnpaid: true }), 'allUnpaid=true');
 });

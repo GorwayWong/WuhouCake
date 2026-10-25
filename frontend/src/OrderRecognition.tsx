@@ -56,7 +56,7 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
       setTargets(filled.targets); setErrors({ ...prepared.errors, ...filled.errors });
       if (filled.applied || filled.cleared) { onChange(filled.draft); setUndo([{ before: structuredClone(current), after: structuredClone(filled.draft) }]); }
       setReviewOpen(filled.skipped > 0 || next.issues.length > 0 || [...Object.values(next.fields), ...next.items.flatMap(item => Object.values(item.fields))].some(field => field.needsReview));
-      setNotice('已填入 ' + filled.applied + ' 个明确字段。' + (filled.cleared ? '原文日期未明确，已清空初始日期，请人工填写。' : '') + (filled.skipped ? '已有手动内容已保留，冲突可逐项选择。' : '未提供或不确定的内容留空，请在下方补充。'));
+      setNotice('已填入 ' + filled.applied + ' 项。' + (filled.cleared ? '日期未明确，已清空，请补填。' : '') + (filled.skipped ? '已有内容保留，请核对冲突。' : '缺失项请补填。'));
     } catch (error) { if (lifecycle.current.accepts(request)) setFailure(error); }
     finally { if (lifecycle.current.accepts(request)) { parseBusy.current = false; setParsing(false); } }
   };
@@ -101,31 +101,30 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
       <div className="recognition-field-title"><label htmlFor={input.id}>{recognitionLabels[field] || field}</label><span className={'recognition-source ' + (candidate.source || 'missing').toLowerCase()}>{editedFields.has(key) ? '人工修改 · 待采用' : candidate.source === 'DEFAULT' ? '系统默认 · 客户未明示' : candidate.source === 'MODEL' ? 'AI建议 · 待确认' : candidate.needsReview ? '规则候选 · 待确认' : candidate.value === null ? '待填写' : '规则识别'}</span></div>
       <div className="recognition-value">{field === 'productType' ? <ProductTypeSelect {...input} onChange={editValue} /> : field === 'fulfillmentType' ? <Select label="交接方式" {...input} onChange={editValue}><option value="">待填写</option><option value="DELIVERY">配送</option><option value="PICKUP">自提</option></Select> : ['address', 'requirements', 'message'].includes(field) ? <textarea {...input} rows={2} placeholder="待填写" /> : <input {...input} placeholder="待填写" inputMode={field.endsWith('Cents') ? 'decimal' : undefined} />}
         <button type="button" className="secondary compact" disabled={busy || !value.trim() || target === 'choose'} onClick={() => apply({ field, candidate, itemId })}>{conflict ? '改用此值' : candidate.needsReview ? '确认采用' : '采用'}</button></div>
-      {conflict && <p className="form-help">当前录单：{current}。仅点击“改用此值”才会替换此字段。</p>}
+      {conflict && <p className="form-help">当前值：{current}。采用后替换。</p>}
       {candidate.issues.map((issue, i) => <p className="field-error" key={i}>{issue}</p>)}{errors[key] && <p className="field-error" role="alert">{errors[key]}</p>}
       {candidate.evidence.length > 0 && <details className="recognition-evidence"><summary>{editedFields.has(key) ? '原始识别依据（供对照）' : '原文依据'}</summary>{candidate.evidence.map((quote, i) => <p key={i}>{quote}</p>)}</details>}
     </div>;
   };
-  return <details className="panel recognition-panel"><summary><strong>客户下单信息识别</strong><span>可选 · 随时可手工录单</span></summary>
-    <div className="recognition-content"><p className="form-help">粘贴后点击一次，将明确字段填入下方录单表单，不确定的留空。已有手动内容会保留。订购须知不作为本单事实；识别不会创建订单或确认付款。</p>
+  return <details className="panel recognition-panel"><summary><strong>客户下单信息识别</strong><span>可选</span></summary>
+    <div className="recognition-content"><p className="form-help">粘贴下单信息，识别后核对并补齐。</p>
       <label htmlFor="recognition-text">客户下单原文<textarea id="recognition-text" value={text} rows={6} autoComplete="off" disabled={busy} onChange={event => {
         lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setConsent(false); setAssistNotice(''); setResult(null); setFailure(null); setText(event.target.value); setNotice('');
       }} placeholder="粘贴微信、短信中的订单文字" /></label>
-      <p className={text.length > recognitionLimit ? 'field-error' : 'form-help'} aria-live="polite">{text.length} / {recognitionLimit} 字符{text.length > recognitionLimit && '，已超限，请缩短原文后重试；内容没有被截断。'}</p>
-      <div className="actions"><button type="button" className="secondary" disabled={busy || parsing || !text.trim() || text.length > recognitionLimit} onClick={() => void parse()}>{parsing ? '正在规则识别…' : '识别并填充'}</button>
-        {Boolean(parsing || result || failure) && <button type="button" className="text-button" disabled={busy} onClick={() => { lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setResult(null); setFailure(null); setNotice('识别已取消，现有录单内容保持。'); }}>取消识别</button>}
+      <p className={text.length > recognitionLimit ? 'field-error' : 'form-help'} aria-live="polite">{text.length} / {recognitionLimit} 字符{text.length > recognitionLimit && '，已超限，请缩短后重试。'}</p>
+      <div className="actions"><button type="button" className="secondary" disabled={busy || parsing || !text.trim() || text.length > recognitionLimit} onClick={() => void parse()}>{parsing ? '正在识别…' : '识别并填充'}</button>
+        {Boolean(parsing || result || failure) && <button type="button" className="text-button" disabled={busy} onClick={() => { lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setResult(null); setFailure(null); setNotice('已取消识别，录单内容保留。'); }}>取消识别</button>}
         {undo.length > 0 && <button type="button" className="text-button" disabled={busy} onClick={() => {
           const restored = [...undo].reverse().reduce((value, step) => undoRecognition(value, step.before, step.after), getDraft());
-          onChange(restored); setUndo([]); setNotice('已撤销识别填充；之后的手动修改已保留。');
+          onChange(restored); setUndo([]); setNotice('已撤销填充，手动修改保留。');
         }}>撤销识别填充</button>}</div>
-      {failure != null && <p className="notice error" role="alert">识别暂不可用，原文及录单内容已保留。{errorText(failure)} 可继续在下方手工录单。</p>}
+      {failure != null && <p className="notice error" role="alert">识别暂不可用，内容已保留。{errorText(failure)} 可手工填写。</p>}
       {notice && <p className="notice" role="status">{notice}</p>}
-      {result && <p className="form-help">请在下方核对联系电话、收货日期、交接时间和商品名称；缺少的信息可手动补齐。蛋糕内胚和夹馅留空时使用原味＋芒果。</p>}
       {result && <details className="recognition-results" open={reviewOpen} onToggle={event => setReviewOpen(event.currentTarget.open)}><summary>字段对照与待确认项</summary><div className="section-heading"><h2>识别候选</h2><button type="button" className="secondary" disabled={busy} onClick={() => apply()}>应用全部可用候选</button></div>
-        <p className="form-help">批量应用会跳过待确认项和冲突字段。空值保留待填写，商品名称、数量和交接时刻不会补造。</p>
+        <p className="form-help">待确认项和冲突字段不会自动填入。</p>
         <label className="check-label"><input type="checkbox" checked={showEmpty} onChange={event => setShowEmpty(event.target.checked)} />显示未提供的空字段</label>
-        {result.fragments.length > 0 && <details className="recognition-assist"><summary>可选：补充未理解的商品语义</summary>
-          <p className="form-help">手工录单不需要AI。仅下列商品片段及归属会发送至阿里百炼，不重复发送已解析的姓名、电话或地址。请核对片段仍可能包含的个人信息；第三方可能按服务协议保留调用数据。</p>
+        {result.fragments.length > 0 && <details className="recognition-assist"><summary>AI 补充（可选）</summary>
+          <p className="form-help">仅发送下列商品片段及归属至阿里百炼，不重复发送已解析的姓名、电话或地址。请核对片段中的个人信息；第三方可能保留调用数据。</p>
           {result.fragments.map((fragment, i) => <p className="recognition-quote" key={i}>{fragment.text}</p>)}
           {result.assistAvailable ? <><label className="recognition-consent"><input type="checkbox" checked={consent} disabled={busy || assisting} onChange={event => setConsent(event.target.checked)} />我确认允许发送上述片段进行本次AI补充</label>
             <button type="button" className="secondary" disabled={busy || assisting || !consent} onClick={() => void assist()}>{assisting ? '正在补充，不影响手工填写…' : '补充这些片段'}</button></> : <p className="form-help">AI补充未启用或配置不完整，请继续手工填写。</p>}
@@ -134,7 +133,7 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
         {result.issues.map((issue, i) => <p key={i} className="field-error">{issue}</p>)}
         <details className="recognition-group" open><summary>客户与交接</summary>{Object.entries(result.fields).map(([field, candidate]) => row(field, candidate))}</details>
         {result.items.map((item, i) => <details className="recognition-group" key={item.id} open><summary>商品候选 {i + 1}</summary>
-          {item.fields.quantity?.value === null && <p className="form-help">原文未提供数量，请在下方填写并核对；不会从餐具人数推算数量。</p>}
+          {item.fields.quantity?.value === null && <p className="form-help">原文未提供数量，请补填。</p>}
           <label>填入哪个商品<Select label="填入哪个商品" value={targets[item.id] || 'new'} disabled={busy} onChange={value => setTargets(values => ({ ...values, [item.id]: value }))}>
             <option value="choose">请选择，避免与手工商品串项</option><option value="new">作为新商品添加</option>{draft.items.map((existing, index) => <option key={existing.key} value={existing.key}>商品 {index + 1} · {existing.name || '尚未命名'}</option>)}
           </Select></label>{Object.entries(item.fields).map(([field, candidate]) => row(field, candidate, item.id))}</details>)}

@@ -1,6 +1,7 @@
 import { createParser } from 'eventsource-parser';
 import type { QueryClient, QueryFilters } from '@tanstack/react-query';
 import { authenticatedFetch } from './api.ts';
+import type { CalendarOrder, Detail } from './types.ts';
 
 export function synchronize(client: QueryClient, orderId?: string) {
   // 日历范围整体失效：通知不带原日期，迁日必须同时清除旧日期投影。
@@ -23,7 +24,7 @@ export async function synchronizePackages(client: QueryClient, packageId?: strin
 }
 export const changeLabels: Record<string, string> = { CREATED: '新订单', ITEM_CHANGED: '商品资料已更新', NOTE: '新增协作备注', PAYMENT_STATUS_CHANGED: '付款状态已更新',
   ORDER_PRODUCTION_CHANGED: '制作进度已更新', ORDER_FULFILLMENT_CHANGED: '交付状态已更新', ORDER_CANCELLED: '订单已取消', ORDER_INFORMATION_CHANGED: '订单资料已更新',
-  ITEM_ADDED: '新增商品', ITEM_REMOVED: '商品已移除', IMAGE_ADDED: '新增参考图片', IMAGE_REMOVED: '参考图片已移除' };
+  ITEM_ADDED: '新增商品', ITEM_REMOVED: '商品已移除', IMAGE_ADDED: '新增参考图片', IMAGE_REMOVED: '参考图片已移除', ORDER_DELETED: '订单已删除' };
 export interface OrderUpdate { orderId: string; changeType: string; version: number; receivedAt: number; orderNo?: string }
 export function collectUpdate(updates: OrderUpdate[], change: OrderUpdate): OrderUpdate[] {
   return [change, ...updates.filter(item => item.orderId !== change.orderId)].slice(0, 20);
@@ -42,6 +43,15 @@ export function receiveEvent(client: QueryClient, event: { event?: string; data:
   if (event.event !== 'order.changed') return;
   try {
     const change = JSON.parse(event.data);
+    if (change.changeType === 'ORDER_DELETED' && typeof change.orderId === 'string'
+        && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.orderId)) {
+      client.setQueryData<Detail>(['order', change.orderId, 'detail'], current => current ? { ...current, deleted: true } : current);
+      client.setQueriesData<CalendarOrder[]>({ queryKey: ['calendar'] }, current => Array.isArray(current) ? current.filter(order => order.orderId !== change.orderId) : current);
+      client.setQueriesData({ queryKey: ['workbench'] }, current => {
+        if (!current || typeof current !== 'object' || !('pendingOrders' in current) || !Array.isArray(current.pendingOrders)) return current;
+        return { ...current, pendingOrders: current.pendingOrders.filter(order => order.orderId !== change.orderId) };
+      });
+    }
     // 备注和图片变化不递增订单版本；所有合法通知都触发重新获取。
     synchronize(client, typeof change.orderId === 'string' ? change.orderId : undefined);
     if (/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.orderId) && Object.hasOwn(changeLabels, change.changeType)

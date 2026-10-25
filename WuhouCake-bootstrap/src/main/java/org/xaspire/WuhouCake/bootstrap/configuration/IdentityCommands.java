@@ -10,7 +10,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.*;
 import org.springframework.core.env.Environment;
 import org.xaspire.WuhouCake.identity.application.service.IdentityService;
-import org.xaspire.WuhouCake.identity.domain.port.IdentityPorts.AccessTokens;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnNotWebApplication
@@ -19,7 +18,6 @@ public class IdentityCommands {
     public record Input(String employeeNumber, String nickname, String password) {
         @Override public String toString() { return "IdentityCommandInput"; }
     }
-    @Bean AccessTokens commandTokens() { return (account, session, version, issued, expires) -> { throw new IllegalStateException("Commands cannot issue tokens"); }; }
     @Bean ApplicationRunner identityCommand(Environment environment, ObjectMapper json, IdentityService identity) {
         return arguments -> {
             String command = environment.getRequiredProperty("wuhoucake.identity.command");

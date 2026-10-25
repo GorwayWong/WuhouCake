@@ -46,18 +46,20 @@ public class OrderFileController {
     }
     @PostMapping("/{orderId}/exports/xlsx")
     public void single(@PathVariable UUID orderId, Authentication authentication, HttpServletResponse response) throws IOException {
-        download(exports.single(orderId, operator(authentication)), response);
+        download(exports.single(orderId, operator(authentication)), response, exports);
     }
     @PostMapping("/exports/zip")
     public void batch(@RequestBody OrderExportRequest request, Authentication authentication, HttpServletResponse response) throws IOException {
-        download(exports.batch(request, operator(authentication)), response);
+        download(exports.batch(request, operator(authentication)), response, exports);
     }
-    private void download(OrderExportService.Download file, HttpServletResponse response) throws IOException {
+    static void download(OrderExportService.Download file, HttpServletResponse response, OrderExportService exports) throws IOException {
         Throwable downloadFailure = null;
         try {
             response.setContentType(file.contentType()); response.setContentLengthLong(file.size());
             response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
-            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(file.filename(), StandardCharsets.UTF_8).build().toString());
+            String fallback = file.filename().replaceAll("[^A-Za-z0-9._-]", "_");
+            String encoded = java.net.URLEncoder.encode(file.filename(), StandardCharsets.UTF_8).replace("+", "%20");
+            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fallback + "\"; filename*=UTF-8''" + encoded);
             response.setHeader("X-Content-Type-Options", "nosniff");
             Files.copy(Path.of(file.path()), response.getOutputStream());
         } catch (IOException | RuntimeException | Error failure) {

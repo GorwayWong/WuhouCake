@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { informationDraft, informationRequest } from '../src/orderForm.ts';
+import { amountInformationRequest, informationDraft, informationRequest } from '../src/orderForm.ts';
 import type { Detail } from '../src/types.ts';
 
 const order: Detail = {
@@ -9,6 +9,21 @@ const order: Detail = {
   fulfillment: { type: 'DELIVERY', address: '合成配送地址', requestedReceiveDate: '2026-10-14', plannedHandoffAt: '2026-10-14T16:15:27.123456Z', plannedFinishAt: '2026-10-14T10:00:30.987654Z' },
   totalAmountCents: 16800, createdAt: '2026-10-14T01:00:00Z', updatedAt: '2026-10-14T01:00:00Z', items: [],
 };
+
+test('独立金额编辑只提交金额，资料被裁剪也可以修改，保留未报价和零元', () => {
+  const projected = { ...order, customer: null, fulfillment: { ...order.fulfillment, address: null } };
+  assert.deepEqual(amountInformationRequest(projected, '280'), { request: { expectedVersion: 2, changes: { totalAmountCents: 28000 } }, errors: {} });
+  assert.equal(amountInformationRequest(projected, '168').request, null);
+  assert.deepEqual(amountInformationRequest(projected, '').request?.changes, { totalAmountCents: null });
+  assert.deepEqual(amountInformationRequest(projected, '0').request?.changes, { totalAmountCents: 0 });
+  for (const value of ['-1', '1.234', 'abc']) assert.ok(amountInformationRequest(projected, value).errors.totalAmount);
+});
+test('独立金额编辑复核最新版本后仍只提交金额，不改付款及他人资料', () => {
+  const latest = { ...order, version: 3, paymentStatus: 'UNPAID', totalAmountCents: 20000 };
+  assert.deepEqual(amountInformationRequest(order, '280', latest).request, { expectedVersion: 3, changes: { totalAmountCents: 28000 } });
+  assert.equal(amountInformationRequest(order, '200', latest).request, null);
+  assert.equal(amountInformationRequest(order, '168', latest).request, null);
+});
 
 test('未修改不发送 PATCH，电话更正只提交电话，格式变化不制造修改', () => {
   const draft = informationDraft(order);
@@ -47,9 +62,9 @@ test('已有期望时刻不能清空，未更正的精度不回写，时间与�
 
 test('清空可选资料与金额使用 null，0 元独立保存，交接切换遵守地址约束', () => {
   const draft = informationDraft(order);
-  draft.customerName = ''; draft.memberPhone = ''; draft.buyerName = ''; draft.plannedFinishAt = ''; draft.totalAmount = '';
+  draft.customerName = ''; draft.memberPhone = ''; draft.buyerName = ''; draft.plannedHandoffAt = ''; draft.plannedFinishAt = ''; draft.totalAmount = '';
   draft.fulfillmentType = 'PICKUP'; draft.address = '';
-  assert.deepEqual(informationRequest(order, draft).request?.changes, { customerName: null, memberPhone: null, buyerName: null, address: null, fulfillmentType: 'PICKUP', plannedFinishAt: null, totalAmountCents: null });
+  assert.deepEqual(informationRequest(order, draft).request?.changes, { customerName: null, memberPhone: null, buyerName: null, address: null, fulfillmentType: 'PICKUP', plannedHandoffAt: null, plannedFinishAt: null, totalAmountCents: null });
   draft.totalAmount = '0';
   assert.equal(informationRequest(order, draft).request?.changes.totalAmountCents, 0);
   draft.fulfillmentType = 'DELIVERY';

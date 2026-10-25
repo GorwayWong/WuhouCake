@@ -53,7 +53,7 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
         return JsonSnapshot.object(values);
     }
     public OrderItem changeProductionStatus(String status, Instant now) {
-        if (status == null || !Set.of("IN_PROGRESS", "COMPLETED").contains(status)) throw invalid();
+        if (status == null || !Set.of("NOT_STARTED", "IN_PROGRESS", "COMPLETED").contains(status)) throw invalid();
         if (status.equals(productionStatus)) return this;
         return new OrderItem(itemId, name, productType, quantity, unitPriceCents, memberPriceCents, attributes,
                 status, currentStageCode, removed, createdAt, now);

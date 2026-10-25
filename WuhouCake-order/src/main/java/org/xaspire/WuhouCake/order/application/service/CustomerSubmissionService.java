@@ -69,6 +69,10 @@ public class CustomerSubmissionService {
         return new Page<>(submissions.search(owner, status, size, ((long) page - 1) * size).stream().map(s -> view(s, false)).toList(),
                 submissions.count(owner, status), page, size);
     }
+    @Transactional(readOnly = true) public long pendingCount() {
+        staff(CUSTOMER_SUBMISSION_PROCESS);
+        return submissions.count(null, "PENDING");
+    }
     @Transactional(readOnly = true) public SubmissionViews.Detail detail(UUID id) { staff(); return view(require(id, false), true); }
     @Transactional public SubmissionViews.Detail save(UUID id, SubmissionCommands.Save command) {
         var me = staff(); var submission = require(id, true); submission.requirePending(nonNegativeInteger(command.expectedVersion()));
@@ -91,9 +95,12 @@ public class CustomerSubmissionService {
         var me = staff(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_CREATE); var submission = require(id, true);
         long expected = nonNegativeInteger(command.expectedVersion());
         // A lost confirmation response can be retried without creating another order.
-        if ("CONFIRMED".equals(submission.status())) return view(submission, true);
+        if ("CONFIRMED".equals(submission.status())) {
+            orders.detail(submission.orderId());
+            return view(submission, true);
+        }
         submission.requirePending(expected);
-        var review = submission.reviewed(); if (review == null) throw invalid(); review.requireConfirmation();
+        var review = submission.reviewed(); if (review == null) throw new OrderFailure("SUBMISSION_REVIEW_REQUIRED"); review.requireConfirmation();
         var duplicates = submissions.duplicates(submission);
         boolean requiresAcknowledgement = duplicates.stream().anyMatch(CustomerSubmissions.Duplicate::requiresAcknowledgement);
         if ((requiresAcknowledgement || command.duplicateCheckToken() != null)
@@ -168,7 +175,13 @@ public class CustomerSubmissionService {
     private String duplicateCheckToken(CustomerSubmission submission, List<CustomerSubmissions.Duplicate> duplicates) {
         return fingerprint(List.of(submission.id(), submission.version(), duplicates));
     }
-    private <T> T convert(Object value, Class<T> type) { return json.read(json.write(value), type); }
+    private <T> T convert(Object value, Class<T> type) {
+        try { return json.read(json.write(value), type); }
+        catch (IllegalArgumentException failure) {
+            for (Throwable cause = failure; cause != null; cause = cause.getCause()) if (cause instanceof OrderFailure domain) throw domain;
+            throw failure;
+        }
+    }
     @SuppressWarnings("unchecked") private Map<String, Object> snapshot(Object value) { return convert(value, Map.class); }
     private Map<String, Object> reviewSnapshot(CustomerSubmission.Review review) {
         var result = new LinkedHashMap<>(snapshot(review));
