@@ -101,7 +101,7 @@ public class OrderQueryService {
         var pending = orders.stream().map(order -> new OrderQueryViews.PendingOrder(order.orderId(), order.orderNo(), order.calendarDate(),
                 order.status(), order.currentStageCode(), order.paymentStatus(), order.fulfillmentType(), order.plannedHandoffAt(),
                 new Customer(order.customerName(), order.phone(), order.memberPhone(), order.buyerName()), order.address(), order.plannedFinishAt(),
-                itemsByOrder.getOrDefault(order.orderId(), List.of()), latestNotes.get(order.orderId()))).toList();
+                itemsByOrder.getOrDefault(order.orderId(), List.of()), latestNotes.get(order.orderId()), order.requestedReceiveAt())).toList();
         return new OrderQueryViews.Workbench(date, metrics == null ? null
                 : new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()), pending);
     }

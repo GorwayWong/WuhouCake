@@ -1,43 +1,47 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ChangeEvent } from 'react';
 import { api, errorText } from './api';
-import { ProductTypeSelect } from './ProductTypeSelect';
-import { Select } from './Select';
 import type { OrderDraft } from './orderForm';
-import type { RecognitionAssist, RecognitionDraft, RecognitionField } from './types';
-import { RecognitionLifecycle, applyRecognition, candidateEdits, currentValue, pristineItem, recognitionLabels, recognitionLimit,
-  undoRecognition, recognitionRowKey, mergeModelFields } from './recognition';
+import type { RecognitionAssist, RecognitionDraft } from './types';
+import { RecognitionLifecycle, applyRecognition, recognitionLimit, undoRecognition, mergeModelFields } from './recognition';
+import type { RecognitionFeedbackMap } from './recognition';
 
-type UndoStep = { before: OrderDraft; after: OrderDraft };
-export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, onChange, busy, onDirtyChange }: {
-  draft: OrderDraft; onChange: (value: OrderDraft) => void; busy: boolean; onDirtyChange: (dirty: boolean) => void;
-  initialDraft: OrderDraft; getDraft: () => OrderDraft; manualFields: ReadonlySet<string>;
+type UndoStep = { before: OrderDraft; after: OrderDraft; feedback: RecognitionFeedbackMap };
+export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFields, onChange, busy, onDirtyChange }: {
+  onChange: (value: OrderDraft, feedback: RecognitionFeedbackMap, restore?: boolean) => void;
+  busy: boolean; onDirtyChange: (dirty: boolean) => void;
+  initialDraft: OrderDraft; getDraft: () => OrderDraft; getFeedback: () => RecognitionFeedbackMap; manualFields: ReadonlySet<string>;
 }) {
   const [text, setText] = useState('');
+  const [open, setOpen] = useState(false);
   const [result, setResult] = useState<RecognitionDraft | null>(null);
-  const [edits, setEdits] = useState<Record<string, string>>({});
-  const [editedFields, setEditedFields] = useState<ReadonlySet<string>>(new Set());
   const [targets, setTargets] = useState<Record<string, string>>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
   const [failure, setFailure] = useState<unknown>(null);
   const [parsing, setParsing] = useState(false);
   const [assisting, setAssisting] = useState(false);
   const [consent, setConsent] = useState(false);
   const [assistNotice, setAssistNotice] = useState('');
   const [notice, setNotice] = useState('');
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [showEmpty, setShowEmpty] = useState(false);
-  const [undo, setUndo] = useState<UndoStep[]>([]);
+  const [undo, setUndo] = useState<UndoStep | null>(null);
   const lifecycle = useRef(new RecognitionLifecycle());
-  const parsedText = useRef('');
   const parseBusy = useRef(false), assistBusy = useRef(false);
-  useEffect(() => { onDirtyChange(Boolean(text.trim() || result || undo.length)); }, [text, result, undo, onDirtyChange]);
+  const panel = useRef<HTMLDetailsElement>(null);
+  useEffect(() => { onDirtyChange(Boolean(text.trim() || result || undo)); }, [text, result, undo, onDirtyChange]);
   useEffect(() => () => { lifecycle.current.cancel(); onDirtyChange(false); }, [onDirtyChange]);
   useEffect(() => { if (busy) { lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); } }, [busy]);
-  const rowKey = recognitionRowKey;
-  const read = (next: RecognitionDraft) => {
-    const prepared = candidateEdits(next);
-    setEdits(prepared.values); setEditedFields(new Set()); setErrors(prepared.errors); setResult(next); return prepared;
+  const fill = (next: RecognitionDraft, supplement = false) => {
+    const current = getDraft(), previousFeedback = structuredClone(getFeedback());
+    const filled = applyRecognition(current, initialDraft, next, manualFields, { supplement, targets });
+    setTargets(filled.targets);
+    if (JSON.stringify(current) !== JSON.stringify(filled.draft)) {
+      setUndo({ before: structuredClone(current), after: structuredClone(filled.draft), feedback: previousFeedback });
+    }
+    onChange(filled.draft, filled.feedback);
+    const invalid = Object.values(filled.feedback).filter(mark => mark.error).length;
+    setNotice(`已填入 ${filled.applied} 项，覆盖 ${filled.overwritten} 项${filled.replacedItems ? '，已替换商品列表' : ''}${invalid ? '；标出的字段请补填' : ''}`);
+    if (filled.applied || filled.replacedItems || filled.cleared) {
+      if (document.activeElement instanceof HTMLElement && panel.current?.contains(document.activeElement)) document.activeElement.blur();
+      setOpen(false);
+    }
   };
   const parse = async () => {
     if (busy || parseBusy.current || !text.trim() || text.length > recognitionLimit) return;
@@ -46,99 +50,52 @@ export function OrderRecognition({ draft, initialDraft, getDraft, manualFields, 
     try {
       const next = await api<RecognitionDraft>('/orders/recognition/parse', { method: 'POST', body: { text }, signal: request.signal });
       if (!lifecycle.current.accepts(request)) return;
-      const prepared = read(next), current = getDraft();
-      const blankOrder = current.items.length === 1 && pristineItem(current.items[0]) && ![...manualFields].some(field => field.startsWith(current.items[0].key + '.'));
-      const initialTargets = Object.fromEntries(next.items.map((item, i) => [item.id,
-        parsedText.current === text && targets[item.id] && current.items.some(x => x.key === targets[item.id]) ? targets[item.id]
-          : blankOrder ? i === 0 ? current.items[0].key : 'new' : 'choose']));
-      parsedText.current = text;
-      const filled = applyRecognition(current, initialDraft, next, prepared.values, initialTargets, manualFields);
-      setTargets(filled.targets); setErrors({ ...prepared.errors, ...filled.errors });
-      if (filled.applied || filled.cleared) { onChange(filled.draft); setUndo([{ before: structuredClone(current), after: structuredClone(filled.draft) }]); }
-      setReviewOpen(filled.skipped > 0 || next.issues.length > 0 || [...Object.values(next.fields), ...next.items.flatMap(item => Object.values(item.fields))].some(field => field.needsReview));
-      setNotice('已填入 ' + filled.applied + ' 项。' + (filled.cleared ? '日期未明确，已清空，请补填。' : '') + (filled.skipped ? '已有内容保留，请核对冲突。' : '缺失项请补填。'));
+      setResult(next); fill(next);
     } catch (error) { if (lifecycle.current.accepts(request)) setFailure(error); }
     finally { if (lifecycle.current.accepts(request)) { parseBusy.current = false; setParsing(false); } }
   };
   const assist = async () => {
     if (!result || !consent || !result.assistAvailable || busy || assistBusy.current) return;
-    const request = lifecycle.current.request(), rules = result, originalEdits = { ...edits };
+    const request = lifecycle.current.request(), rules = result;
     assistBusy.current = true; setAssisting(true); setAssistNotice('');
     try {
       const response = await api<RecognitionAssist>('/orders/recognition/assist', { method: 'POST', body: { text, allowExternalProcessing: true }, signal: request.signal });
       if (!lifecycle.current.accepts(request)) return;
-      const merged = mergeModelFields(rules, response.suggestions), prepared = candidateEdits(merged);
-      setResult(merged); setEdits(current => {
-        const values = { ...prepared.values };
-        for (const key of Object.keys(current)) if (current[key] !== originalEdits[key]) values[key] = current[key];
-        return values;
-      });
-      setReviewOpen(true);
-      setErrors(current => ({ ...prepared.errors, ...current }));
-      setAssistNotice((response.suggestions.length ? 'AI建议仅显示为待确认候选，没有自动改动录单内容。' : '未采用AI建议，规则结果及录单内容保持。') + response.issues.join('；'));
+      const merged = mergeModelFields(rules, response.suggestions);
+      // 只应用本次补充，避免重放上一轮模型字段或替换商品列表。
+      const changes = { ...merged, fields: {}, items: merged.items.map(item => ({ ...item, fields: Object.fromEntries(Object.entries(item.fields).filter(([field, candidate]) =>
+        candidate.source === 'MODEL' && JSON.stringify(candidate) !== JSON.stringify(rules.items.find(original => original.id === item.id)?.fields[field])))})) };
+      setResult(merged); fill(changes, true);
+      setAssistNotice(response.issues.join('；') || (response.suggestions.length ? '补充内容已填入，请查看标记字段。' : '没有可填入的补充内容。'));
     } catch (error) {
-      if (lifecycle.current.accepts(request)) setAssistNotice('AI补充暂不可用，规则结果和录单内容保持。' + errorText(error));
+      if (lifecycle.current.accepts(request)) setAssistNotice('AI补充暂不可用，可继续手工填写。' + errorText(error));
     } finally { if (lifecycle.current.accepts(request)) { assistBusy.current = false; setAssisting(false); } }
   };
-  const apply = (only?: { field: string; candidate: RecognitionField; itemId?: string }) => {
-    if (!result || busy) return;
-    const current = getDraft(), filled = applyRecognition(current, initialDraft, result, edits, targets, manualFields, only);
-    setErrors(filled.errors);
-    if (filled.applied || filled.cleared) { onChange(filled.draft); setTargets(filled.targets); setUndo(steps => [...steps, { before: structuredClone(current), after: structuredClone(filled.draft) }]); }
-    setNotice('已应用 ' + filled.applied + ' 个字段。' + (filled.cleared ? '未确认的初始日期已清空。' : '') + (filled.skipped ? filled.skipped + ' 个字段已保留原值，请逐项选择。' : '仍可在下方表单修改；正式创建会继续校验。'));
-  };
-  const row = (field: string, candidate: RecognitionField, itemId?: string) => {
-    const key = rowKey(field, itemId), value = edits[key] || '';
-    if (!showEmpty && !value && !candidate.needsReview && !candidate.issues.length && !candidate.evidence.length && !errors[key]) return null;
-    const target = itemId ? targets[itemId] || 'new' : undefined;
-    const current = target === 'new' ? '' : currentValue(draft, field, target);
-    const conflict = Boolean(value && current && value !== current);
-    const editValue = (value: string) => {
-      setEdits(values => ({ ...values, [key]: value })); setEditedFields(values => new Set([...values, key])); setErrors(values => { const next = { ...values }; delete next[key]; return next; });
-    };
-    const input = { id: 'recognition-' + key, value, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => editValue(event.target.value) };
-    return <div className="recognition-field" key={key}>
-      <div className="recognition-field-title"><label htmlFor={input.id}>{recognitionLabels[field] || field}</label><span className={'recognition-source ' + (candidate.source || 'missing').toLowerCase()}>{editedFields.has(key) ? '人工修改 · 待采用' : candidate.source === 'DEFAULT' ? '系统默认 · 客户未明示' : candidate.source === 'MODEL' ? 'AI建议 · 待确认' : candidate.needsReview ? '规则候选 · 待确认' : candidate.value === null ? '待填写' : '规则识别'}</span></div>
-      <div className="recognition-value">{field === 'productType' ? <ProductTypeSelect {...input} onChange={editValue} /> : field === 'fulfillmentType' ? <Select label="交接方式" {...input} onChange={editValue}><option value="">待填写</option><option value="DELIVERY">配送</option><option value="PICKUP">自提</option></Select> : ['address', 'requirements', 'message'].includes(field) ? <textarea {...input} rows={2} placeholder="待填写" /> : <input {...input} placeholder="待填写" inputMode={field.endsWith('Cents') ? 'decimal' : undefined} />}
-        <button type="button" className="secondary compact" disabled={busy || !value.trim() || target === 'choose'} onClick={() => apply({ field, candidate, itemId })}>{conflict ? '改用此值' : candidate.needsReview ? '确认采用' : '采用'}</button></div>
-      {conflict && <p className="form-help">当前值：{current}。采用后替换。</p>}
-      {candidate.issues.map((issue, i) => <p className="field-error" key={i}>{issue}</p>)}{errors[key] && <p className="field-error" role="alert">{errors[key]}</p>}
-      {candidate.evidence.length > 0 && <details className="recognition-evidence"><summary>{editedFields.has(key) ? '原始识别依据（供对照）' : '原文依据'}</summary>{candidate.evidence.map((quote, i) => <p key={i}>{quote}</p>)}</details>}
-    </div>;
-  };
-  return <details className="panel recognition-panel"><summary><strong>客户下单信息识别</strong><span>可选</span></summary>
-    <div className="recognition-content"><p className="form-help">粘贴下单信息，识别后核对并补齐。</p>
-      <label htmlFor="recognition-text">客户下单原文<textarea id="recognition-text" value={text} rows={6} autoComplete="off" disabled={busy} onChange={event => {
-        lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setConsent(false); setAssistNotice(''); setResult(null); setFailure(null); setText(event.target.value); setNotice('');
-      }} placeholder="粘贴微信、短信中的订单文字" /></label>
-      <p className={text.length > recognitionLimit ? 'field-error' : 'form-help'} aria-live="polite">{text.length} / {recognitionLimit} 字符{text.length > recognitionLimit && '，已超限，请缩短后重试。'}</p>
-      <div className="actions"><button type="button" className="secondary" disabled={busy || parsing || !text.trim() || text.length > recognitionLimit} onClick={() => void parse()}>{parsing ? '正在识别…' : '识别并填充'}</button>
-        {Boolean(parsing || result || failure) && <button type="button" className="text-button" disabled={busy} onClick={() => { lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setResult(null); setFailure(null); setNotice('已取消识别，录单内容保留。'); }}>取消识别</button>}
-        {undo.length > 0 && <button type="button" className="text-button" disabled={busy} onClick={() => {
-          const restored = [...undo].reverse().reduce((value, step) => undoRecognition(value, step.before, step.after), getDraft());
-          onChange(restored); setUndo([]); setNotice('已撤销填充，手动修改保留。');
-        }}>撤销识别填充</button>}</div>
-      {failure != null && <p className="notice error" role="alert">识别暂不可用，内容已保留。{errorText(failure)} 可手工填写。</p>}
-      {notice && <p className="notice" role="status">{notice}</p>}
-      {result && <details className="recognition-results" open={reviewOpen} onToggle={event => setReviewOpen(event.currentTarget.open)}><summary>字段对照与待确认项</summary><div className="section-heading"><h2>识别候选</h2><button type="button" className="secondary" disabled={busy} onClick={() => apply()}>应用全部可用候选</button></div>
-        <p className="form-help">待确认项和冲突字段不会自动填入。</p>
-        <label className="check-label"><input type="checkbox" checked={showEmpty} onChange={event => setShowEmpty(event.target.checked)} />显示未提供的空字段</label>
-        {result.fragments.length > 0 && <details className="recognition-assist"><summary>AI 补充（可选）</summary>
-          <p className="form-help">仅发送下列商品片段及归属至阿里百炼，不重复发送已解析的姓名、电话或地址。请核对片段中的个人信息；第三方可能保留调用数据。</p>
-          {result.fragments.map((fragment, i) => <p className="recognition-quote" key={i}>{fragment.text}</p>)}
-          {result.assistAvailable ? <><label className="recognition-consent"><input type="checkbox" checked={consent} disabled={busy || assisting} onChange={event => setConsent(event.target.checked)} />我确认允许发送上述片段进行本次AI补充</label>
-            <button type="button" className="secondary" disabled={busy || assisting || !consent} onClick={() => void assist()}>{assisting ? '正在补充，不影响手工填写…' : '补充这些片段'}</button></> : <p className="form-help">AI补充未启用或配置不完整，请继续手工填写。</p>}
-          {assistNotice && <p className="notice" role="status">{assistNotice}</p>}
-        </details>}
-        {result.issues.map((issue, i) => <p key={i} className="field-error">{issue}</p>)}
-        <details className="recognition-group" open><summary>客户与交接</summary>{Object.entries(result.fields).map(([field, candidate]) => row(field, candidate))}</details>
-        {result.items.map((item, i) => <details className="recognition-group" key={item.id} open><summary>商品候选 {i + 1}</summary>
-          {item.fields.quantity?.value === null && <p className="form-help">原文未提供数量，请补填。</p>}
-          <label>填入哪个商品<Select label="填入哪个商品" value={targets[item.id] || 'new'} disabled={busy} onChange={value => setTargets(values => ({ ...values, [item.id]: value }))}>
-            <option value="choose">请选择，避免与手工商品串项</option><option value="new">作为新商品添加</option>{draft.items.map((existing, index) => <option key={existing.key} value={existing.key}>商品 {index + 1} · {existing.name || '尚未命名'}</option>)}
-          </Select></label>{Object.entries(item.fields).map(([field, candidate]) => row(field, candidate, item.id))}</details>)}
-        {result.unmappedText.length > 0 && <details className="recognition-evidence"><summary>未映射内容 · 请人工核对</summary>{result.unmappedText.map((line, i) => <p key={i}>{line}</p>)}</details>}
+  return <section className="recognition-section">
+    <details ref={panel} className="panel recognition-panel" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary><strong>粘贴下单信息</strong><span>可选</span></summary>
+      <div className="recognition-content">
+        <label htmlFor="recognition-text">客户下单原文<textarea id="recognition-text" value={text} rows={5} autoComplete="off" disabled={busy} onChange={event => {
+          lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setConsent(false); setAssistNotice(''); setResult(null); setFailure(null); setText(event.target.value);
+        }} placeholder="粘贴微信、短信中的订单文字" /></label>
+        <p className={text.length > recognitionLimit ? 'field-error' : 'form-help'} aria-live="polite">{text.length} / {recognitionLimit} 字符{text.length > recognitionLimit && '，请缩短后重试'}</p>
+        <div className="actions"><button type="button" className="primary" disabled={busy || parsing || !text.trim() || text.length > recognitionLimit} onClick={() => void parse()}>{parsing ? '正在识别…' : '识别并填入'}</button>
+          {parsing && <button type="button" className="text-button" disabled={busy} onClick={() => { lifecycle.current.cancel(); parseBusy.current = false; setParsing(false); }}>取消识别</button>}</div>
+        {failure != null && <p className="notice error" role="alert">识别暂不可用，原文和表单已保留。{errorText(failure)}</p>}
+      </div>
+    </details>
+    {(notice || undo) && <div className="recognition-receipt"><span role="status">{notice}</span>{undo && <button type="button" className="text-button" disabled={busy || parsing || assisting} onClick={() => {
+      const restored = undoRecognition(getDraft(), undo.before, undo.after);
+      onChange(restored, { ...getFeedback(), ...undo.feedback }, true); setUndo(null); setTargets({}); setResult(null); setConsent(false); setNotice('已撤销本次填入，手工修改保留。');
+    }}>撤销本次填入</button>}</div>}
+    {result && <>
+      {(result.unmappedText.length > 0 || result.issues.length > 0) && <details className="recognition-evidence"><summary>未识别内容</summary>{[...result.issues, ...result.unmappedText].map((line, i) => <p key={i}>{line}</p>)}</details>}
+      {result.fragments.length > 0 && <details className="recognition-assist"><summary>AI 补充（可选）</summary>
+        <p className="form-help">将下列商品片段发送至阿里百炼补充识别；请核对其中的个人信息，第三方可能保留调用数据。</p>
+        {result.fragments.map((fragment, i) => <p className="recognition-quote" key={i}>{fragment.text}</p>)}
+        {result.assistAvailable ? <><label className="recognition-consent"><input type="checkbox" checked={consent} disabled={busy || assisting || parsing} onChange={event => setConsent(event.target.checked)} />允许发送这些片段进行本次补充</label>
+          <button type="button" className="secondary" disabled={busy || assisting || parsing || !consent} onClick={() => void assist()}>{assisting ? '正在补充…' : '补充并填入'}</button></> : <p className="form-help">AI补充未启用，可直接在表单补填。</p>}
+        {assistNotice && <p className="notice" role="status">{assistNotice}</p>}
       </details>}
-    </div>
-  </details>;
+    </>}
+  </section>;
 }

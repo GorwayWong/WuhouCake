@@ -36,6 +36,12 @@ export function localTime(instant: string | null): string {
   if (!instant) return '';
   return new Date(Date.parse(instant) + 8 * 3600000).toISOString().slice(0, 16);
 }
+export function overdueSubmissionDate(submission: Submission, todayDate: string): string | null {
+  if (submission.status !== 'PENDING') return null;
+  const content = submission.reviewed?.content || submission.original;
+  const date = localTime(content.requestedReceiveAt).slice(0, 10);
+  return date < todayDate ? date : null;
+}
 export function newSubmissionDraft(): SubmissionDraft {
   return { phone: '', memberPhone: '', fulfillmentType: 'DELIVERY', address: '', requestedReceiveAt: '', items: [{ ...newItem(), name: '蛋糕' }], totalAmount: '', creditedEmployeeId: '', plannedHandoffAt: '', plannedFinishAt: '' };
 }

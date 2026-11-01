@@ -1,0 +1,32 @@
+{
+  auto_https off
+  admin localhost:2019
+  default_sni {$PUBLIC_IP}
+}
+
+http://{$PUBLIC_IP} {
+  handle /.well-known/acme-challenge/* {
+    root * /var/www/acme
+    file_server
+  }
+  handle {
+    redir https://{$PUBLIC_IP}{uri} 308
+  }
+}
+
+https://{$PUBLIC_IP} {
+  tls /etc/letsencrypt/live/{$PUBLIC_IP}/fullchain.pem /etc/letsencrypt/live/{$PUBLIC_IP}/privkey.pem
+  encode zstd gzip
+  header X-Content-Type-Options nosniff
+  header Referrer-Policy same-origin
+  handle /api/* {
+    reverse_proxy app:8080 {
+      flush_interval -1
+    }
+  }
+  handle {
+    root * /srv
+    try_files {path} /index.html
+    file_server
+  }
+}

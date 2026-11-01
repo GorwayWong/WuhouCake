@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.xaspire.WuhouCake.order.application.service.OrderQueryService;
+import org.xaspire.WuhouCake.order.application.service.OrderViewAccess;
+import org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.port.OrderQueries;
 
@@ -14,6 +16,27 @@ import static org.mockito.Mockito.*;
 class OrderQueryServiceTest {
     private final OrderQueries queries = mock(OrderQueries.class);
     private final OrderQueryService service = new OrderQueryService(queries);
+    @Test void workbenchPreservesRequestedReceiveTimeIndependentlyOfHandoffAndProductionTimes() {
+        var date = LocalDate.of(2026, 11, 2);
+        var receiveAt = Instant.parse("2026-11-02T10:00:00Z");
+        var handoffAt = Instant.parse("2026-11-02T09:00:00Z");
+        var finishAt = Instant.parse("2026-11-02T08:00:00Z");
+        var id = UUID.randomUUID();
+        when(queries.pending(date)).thenReturn(List.of(
+                new OrderQueries.PendingOrder(id, "001", date, "WAITING_PRODUCTION", null, "UNPAID", "DELIVERY",
+                        handoffAt, null, "13800000000", null, null, null, finishAt, receiveAt),
+                new OrderQueries.PendingOrder(UUID.randomUUID(), "002", date, "WAITING_PRODUCTION", null, "UNPAID", "DELIVERY",
+                        handoffAt, null, "13800000000", null, null, null, finishAt, null)));
+        var result = service.workbench(date, false);
+        var productionAccess = EmployeeAccess.of(java.util.Set.of(EmployeeAccess.Permission.ORDER_READ));
+        var projected = OrderViewAccess.workbench(result, productionAccess).pendingOrders();
+        assertEquals(receiveAt, projected.getFirst().requestedReceiveAt());
+        assertEquals(handoffAt, projected.getFirst().plannedHandoffAt());
+        assertEquals(finishAt, projected.getFirst().plannedFinishAt());
+        assertNull(projected.getFirst().customer());
+        assertNull(projected.get(1).requestedReceiveAt());
+        assertEquals(date, projected.get(1).calendarDate());
+    }
     @Test void paymentOrdersUsesShanghaiRangeAndClampsPageAfterRemoval() {
         var date = LocalDate.of(2026, 10, 23);
         var from = Instant.parse("2026-10-22T16:00:00Z");

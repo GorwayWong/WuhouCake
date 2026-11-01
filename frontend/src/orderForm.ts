@@ -152,7 +152,7 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       customerName: text(draft.customerName, 'customerName', '客户姓名', 80),
       phone: text(draft.phone, 'phone', '联系电话', 32, true) || '',
       memberPhone: text(draft.memberPhone, 'memberPhone', '会员手机', 32),
-      buyerName: text(draft.buyerName, 'buyerName', '下单人', 80),
+      buyerName: text(draft.buyerName, 'buyerName', '订购人姓名', 80),
     },
     fulfillment: {
       type: draft.fulfillmentType,
@@ -195,7 +195,7 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
     if (!draft.creditedEmployeeId || !/^[a-f\d-]{36}$/i.test(draft.creditedEmployeeId)) errors.creditedEmployeeId = '请选择下单员工。';
     else changes.creditedEmployeeId = draft.creditedEmployeeId;
   }
-  for (const [field, label, maximum] of [['customerName', '客户姓名', 80], ['phone', '联系电话', 32], ['memberPhone', '会员手机', 32], ['buyerName', '下单人', 80], ['address', '地址', 2147483647]] as const) {
+  for (const [field, label, maximum] of [['customerName', '客户姓名', 80], ['phone', '联系电话', 32], ['memberPhone', '会员手机', 32], ['buyerName', '订购人姓名', 80], ['address', '地址', 2147483647]] as const) {
     const value = draft[field].trim() || null;
     if (draft[field].length > maximum) errors[field] = `${label}最多填写 ${maximum} 个字符。`;
     if (field === 'phone' && !value) errors.phone = '请填写联系电话。';

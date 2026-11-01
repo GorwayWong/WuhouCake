@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { draftFromSubmission, localTime, newSubmissionDraft, submissionRequest, submissionDirty } from '../src/customerSubmission.ts';
+import { draftFromSubmission, localTime, newSubmissionDraft, submissionRequest, submissionDirty, overdueSubmissionDate } from '../src/customerSubmission.ts';
 import { changeItemDraft } from '../src/orderForm.ts';
 import type { Submission } from '../src/customerSubmission.ts';
 
@@ -53,4 +53,18 @@ test('仅改会员电话、商品数量或祝福语也属于未提交输入，�
   assert.equal(submissionDirty({ ...initial, items: [{ ...initial.items[0], attributes: { ...initial.items[0].attributes, message: '生日快乐' } }] }, initial), true);
   const draft = complete(); draft.phone = '138 0000-0000'; assert.equal(submissionRequest(draft).content.phone, '13800000000');
   draft.phone = 'abc'; assert.ok(submissionRequest(draft).errors.phone);
+});
+
+test('待确认填单按北京时间日期提醒，核对日期优先', () => {
+  const original = submissionRequest(complete()).content;
+  const sample = { status: 'PENDING', original: { ...original, requestedReceiveAt: '2026-11-01T15:30:00Z' }, reviewed: null } as Submission;
+  assert.equal(overdueSubmissionDate(sample, '2026-11-02'), '2026-11-01');
+  assert.equal(overdueSubmissionDate(sample, '2026-11-01'), null);
+  assert.equal(overdueSubmissionDate(sample, '2026-10-31'), null);
+  const midnight = { ...sample, original: { ...original, requestedReceiveAt: '2026-11-01T16:30:00Z' } };
+  assert.equal(overdueSubmissionDate(midnight, '2026-11-02'), null);
+  const review = submissionRequest(complete(), true).review;
+  assert.equal(overdueSubmissionDate({ ...sample, reviewed: review }, '2026-11-02'), null);
+  assert.equal(overdueSubmissionDate({ ...midnight, reviewed: { ...review, content: sample.original } }, '2026-11-02'), '2026-11-01');
+  for (const status of ['CONFIRMED', 'DELETED'] as const) assert.equal(overdueSubmissionDate({ ...sample, status }, '2026-11-02'), null);
 });

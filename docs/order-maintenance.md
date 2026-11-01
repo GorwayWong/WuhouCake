@@ -4,7 +4,7 @@
 
 取消使用 `CANCELLED` 业务状态，保留原有取消原因和恢复制作规则，不自动清理。
 
-`POST /api/orders/{id}/delete` 接收 `expectedVersion`、`reason`。店长、前厅主管、前厅店员默认具有 `ORDER_DELETE` 和 `ORDER_DELETED_READ`；所有业务状态可删除。原因必填、最多 1000 字符。删除独立于原业务状态，详情的 `deletion` 返回删除时间、员工、原因、到期时间；重复请求不改原因、不续期、不重复审计。旧版本拒绝覆盖。
+`POST /api/orders/{id}/delete` 接收 `expectedVersion`、`reason`。仅店长 `STORE_MANAGER` 默认具有 `ORDER_DELETE`；店长、前厅主管、前厅店员仍默认具有 `ORDER_DELETED_READ`；所有业务状态可删除。原因必填、最多 1000 字符。删除独立于原业务状态，详情的 `deletion` 返回删除时间、员工、原因、到期时间；重复请求不改原因、不续期、不重复审计。旧版本拒绝覆盖。
 
 删除后仅保留 30×24 小时，只读且不可恢复；备注、图片、付款、制作、交付等所有写入拒绝。日历、工作台、备料、付款汇总、经营统计、正常导出与重复订单核对均排除删除订单。查询 `GET /api/admin/orders?deleted=true` 默认按最近 30 天删除日期查询，原 `from/to` 为北京时间日期半开区间；列表及详情、单单 Excel、逐单 ZIP 可读，经营汇总导出不可用。到期立即停止读取，不等待清理任务。
 

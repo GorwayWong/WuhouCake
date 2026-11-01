@@ -14,7 +14,7 @@ export function InformationSummary({ order, includeAmount = false }: { order: De
   return <dl className="info-grid">
     <div><dt>下单员工（业绩归属）</dt><dd>{order.creditedEmployee ? `${order.creditedEmployee.nickname} · ${order.creditedEmployee.employeeNumber}` : '未归属'}</dd></div>
     <div><dt>客户姓名</dt><dd>{order.customer?.customerName || '未填写'}</dd></div><div><dt>联系电话</dt><dd><a href={`tel:${order.customer?.phone}`}>{order.customer?.phone}</a></dd></div>
-    <div><dt>会员手机</dt><dd>{order.customer?.memberPhone || '未填写'}</dd></div><div><dt>客户订购人</dt><dd>{order.customer?.buyerName || '未填写'}</dd></div>
+    <div><dt>会员手机</dt><dd>{order.customer?.memberPhone || '未填写'}</dd></div><div><dt>订购人姓名</dt><dd>{order.customer?.buyerName || '未填写'}</dd></div>
     <div><dt>到店取货时间</dt><dd>{order.fulfillment.plannedHandoffAt ? time(order.fulfillment.plannedHandoffAt, true) : '待定'}</dd></div>
     <div><dt>客户收货时间</dt><dd>{order.fulfillment.requestedReceiveAt ? time(order.fulfillment.requestedReceiveAt, true) : `${order.fulfillment.requestedReceiveDate} · 时刻待定`}</dd></div>
     <div><dt>计划出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? time(order.fulfillment.plannedFinishAt, true) : '待定'}</dd></div><div><dt>下单时间</dt><dd>{time(order.createdAt, true)}</dd></div>
@@ -63,7 +63,7 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
     <fieldset className="create-fields" disabled={busy}>
       {!amountOnly && <><div className="information-group"><h3>客户信息</h3><div className="create-grid">
         <Field name="creditedEmployeeId" label="下单员工（业绩归属）" error={errors.creditedEmployeeId}><EmployeeSelect name="creditedEmployeeId" disabled={busy} id="edit-creditedEmployeeId" value={draft.creditedEmployeeId || ''} saved={initial.creditedEmployee} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
-        {([['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '客户订购人', 80]] as const).map(([name, label, maximum], index) => <Field key={name} name={name} label={label} error={errors[name]}><input {...props(name)} autoFocus={index === 0} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} maxLength={maximum} required={name === 'phone'} onChange={event => change({ ...draft, [name]: event.target.value })} /></Field>)}
+        {([['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '订购人姓名（选填）', 80]] as const).map(([name, label, maximum], index) => <Field key={name} name={name} label={label} error={errors[name]}><input {...props(name)} autoFocus={index === 0} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} placeholder={name === 'buyerName' ? '实际向门店下单的客户' : undefined} value={draft[name]} maxLength={maximum} required={name === 'phone'} onChange={event => change({ ...draft, [name]: event.target.value })} /></Field>)}
       </div></div>
       <div className="information-group"><h3>配送／自提与交接时间</h3><div className="create-grid">
         <Field name="fulfillmentType" label="交接方式" error={errors.fulfillmentType}><Select label="交接方式" disabled={busy} {...props('fulfillmentType')} value={draft.fulfillmentType} onChange={value => change({ ...draft, fulfillmentType: value as typeof draft.fulfillmentType })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></Select></Field>

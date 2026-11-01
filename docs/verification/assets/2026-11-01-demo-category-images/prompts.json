@@ -1,0 +1,44 @@
+{
+  "mode": "built-in image_gen",
+  "purpose": "Reusable demo category images; one generation per category",
+  "tokenBudget": "Built-in tool does not expose quality or token budget controls; short prompts and no rerolls used.",
+  "uploadFormat": "640px JPEG",
+  "images": [
+    {
+      "category": "CAKE",
+      "prompt": "Square simple catalog product image for a cake-shop demo: one small white cream birthday cake topped with mango cubes on an off-white background. Soft light, centered, minimal detail. Small DEMO label. No other text.",
+      "source": "/Users/gorwaywong/.codex/generated_images/01a19520-7f95-7f10-999a-7fd2d8690cca/exec-1adeac9c-a834-4ded-820c-3ac3b96e10c7.png",
+      "filename": "cake.jpg"
+    },
+    {
+      "category": "TEA_BREAK",
+      "prompt": "Square simple catalog product image for a cake-shop demo: three small pastel cream cupcakes on an off-white background. Soft light, centered, minimal detail. Small DEMO label. No other text.",
+      "source": "/Users/gorwaywong/.codex/generated_images/01a19520-7f95-7f10-999a-7fd2d8690cca/exec-c3445686-a5a3-4adf-a54c-6006e2ced1b1.png",
+      "filename": "tea_break.jpg"
+    },
+    {
+      "category": "COOKIE",
+      "prompt": "Square simple catalog product image for a cake-shop demo: five golden butter cookies on a white plate against an off-white background. Soft light, centered, minimal detail. Small DEMO label. No other text.",
+      "source": "/Users/gorwaywong/.codex/generated_images/01a19520-7f95-7f10-999a-7fd2d8690cca/exec-0510227b-a1d1-4edf-b344-d32423af01b3.png",
+      "filename": "cookie.jpg"
+    },
+    {
+      "category": "SNACK",
+      "prompt": "Square simple catalog product image for a cake-shop demo: a small fruit platter with watermelon, melon and grapes on an off-white background. Soft light, centered, minimal detail. Small DEMO label. No other text.",
+      "source": "/Users/gorwaywong/.codex/generated_images/01a19520-7f95-7f10-999a-7fd2d8690cca/exec-0ac4600e-0031-4375-a06d-c40e63f21990.png",
+      "filename": "snack.jpg"
+    },
+    {
+      "category": "DRINK",
+      "prompt": "Square simple catalog product image for a cake-shop demo: one clear cup of iced lemon tea with lemon slices against an off-white background. Soft light, centered, minimal detail. Small DEMO label. No other text.",
+      "source": "/Users/gorwaywong/.codex/generated_images/01a19520-7f95-7f10-999a-7fd2d8690cca/exec-33384af5-586d-420e-86e0-3d13c9eeebe5.png",
+      "filename": "drink.jpg"
+    },
+    {
+      "category": "READY_BAKERY",
+      "prompt": "Square simple catalog product image for a cake-shop demo: three golden small taro bread rolls on a white plate against an off-white background. Soft light, centered, minimal detail. Small DEMO label. No other text.",
+      "source": "/Users/gorwaywong/.codex/generated_images/01a19520-7f95-7f10-999a-7fd2d8690cca/exec-08e746e9-df7f-4ea9-84fa-f59e45acd552.png",
+      "filename": "ready_bakery.jpg"
+    }
+  ]
+}

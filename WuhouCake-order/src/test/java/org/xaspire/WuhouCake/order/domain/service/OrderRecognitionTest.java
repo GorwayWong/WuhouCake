@@ -11,6 +11,12 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.RecognitionDraft;
 import static org.junit.jupiter.api.Assertions.*;
 
 class OrderRecognitionTest {
+    @ParameterizedTest @ValueSource(strings = {"订购人姓名", "订购人", "客户订购人", "客户下单人", "下单人"})
+    void buyerNameLabelsKeepTheirOwnField(String label) throws Exception {
+        var result = recognition().parse("客户姓名：李女士\n" + label + "：陈女士\n电话：13800000001");
+        assertEquals("陈女士", result.fields().get("buyerName").value());
+        assertEquals("李女士", result.fields().get("customerName").value());
+    }
     private static final ObjectMapper JSON = new ObjectMapper();
     private static OrderRecognition recognition() throws Exception {
         try (var input = OrderRecognition.class.getResourceAsStream("/order/cake-defaults.json")) {

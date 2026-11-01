@@ -1,0 +1,97 @@
+name: wuhou-ip
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: wuhou
+      POSTGRES_USER: wuhou
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=40", "-c", "work_mem=2MB"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wuhou -d wuhou"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    mem_limit: 256m
+    restart: unless-stopped
+    logging: *logging
+  redis:
+    image: redis:7-bookworm
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?required}", "--maxmemory", "48mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    mem_limit: 96m
+    restart: unless-stopped
+    logging: *logging
+  app:
+    image: ${APP_IMAGE:?required}
+    user: "${APP_UID:?required}:${APP_GID:?required}"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/wuhou
+      SPRING_DATASOURCE_USERNAME: wuhou
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+      IDENTITY_PRIVATE_KEY: /run/identity/private.pem
+      IDENTITY_PUBLIC_KEY: /run/identity/public.pem
+      CUSTOMER_ENTRY_PUBLIC_ORIGIN: https://${PUBLIC_IP:?required}
+      DB_POOL_MAX_SIZE: 5
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx256m -XX:MaxDirectMemorySize=64m -XX:MaxMetaspaceSize=160m -XX:ReservedCodeCacheSize=64m -XX:ActiveProcessorCount=2
+      TZ: Asia/Shanghai
+    volumes:
+      - ./keys:/run/identity:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 640m
+    restart: unless-stopped
+    logging: *logging
+  gateway:
+    image: ${GATEWAY_IMAGE:-caddy:2.10.2-alpine}
+    environment:
+      PUBLIC_IP: ${PUBLIC_IP:?required}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./gateway:/etc/caddy:ro
+      - ${RELEASE_DIR:?required}/dist:/srv:ro
+      - ./acme:/var/www/acme:ro
+      - ./letsencrypt:/etc/letsencrypt:ro
+    mem_limit: 64m
+    restart: unless-stopped
+    logging: *logging
+  certbot:
+    image: certbot/certbot:v5.4.0
+    profiles: ["ops"]
+    volumes:
+      - ./acme:/var/www/acme
+      - ./letsencrypt:/etc/letsencrypt
+    mem_limit: 192m
+    logging: *logging
+
+volumes:
+  postgres-data:
+  redis-data:

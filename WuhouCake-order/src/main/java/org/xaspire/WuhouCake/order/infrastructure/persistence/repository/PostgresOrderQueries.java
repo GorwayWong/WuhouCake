@@ -29,7 +29,7 @@ public final class PostgresOrderQueries implements OrderQueries {
     @Override public List<PendingOrder> pending(LocalDate date) {
         return mapper.pending(date).stream().map(row -> new PendingOrder(UUID.fromString(row.orderId()), row.orderNo(),
                 row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt(),
-                row.customerName(), row.phone(), row.memberPhone(), row.buyerName(), row.address(), row.plannedFinishAt())).toList();
+                row.customerName(), row.phone(), row.memberPhone(), row.buyerName(), row.address(), row.plannedFinishAt(), row.requestedReceiveAt())).toList();
     }
     @Override public List<CalendarItem> calendarItems(List<UUID> orderIds) {
         if (orderIds.isEmpty()) return List.of();

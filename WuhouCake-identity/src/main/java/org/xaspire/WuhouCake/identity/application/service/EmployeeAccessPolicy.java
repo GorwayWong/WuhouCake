@@ -31,15 +31,17 @@ public final class EmployeeAccessPolicy {
             if (!production) {
                 permissions.add(CUSTOMER_SUBMISSION_PROCESS);
                 permissions.add(CUSTOMER_ENTRY_MANAGE);
-                permissions.add(ORDER_DELETE);
                 permissions.add(ORDER_DELETED_READ);
             }
+            if (role == JobRole.STORE_MANAGER) permissions.add(ORDER_DELETE);
             if (manager) permissions.add(CUSTOMER_ENTRY_MANAGE_ALL);
             configured.put(role, Set.copyOf(permissions));
         }
         overrides.forEach((role, permissions) -> {
             if (permissions.contains(EMPLOYEE_MANAGE) || permissions.contains(AUDIT_READ))
                 throw new IllegalArgumentException("System permissions cannot be granted to job roles");
+            if (role != JobRole.STORE_MANAGER && permissions.contains(ORDER_DELETE))
+                throw new IllegalArgumentException("Order deletion can only be granted to STORE_MANAGER");
             configured.put(role, Set.copyOf(permissions));
         });
         grants = Map.copyOf(configured);

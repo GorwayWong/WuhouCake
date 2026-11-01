@@ -28,6 +28,22 @@ test('半小时时间轴仅包含有订单的时段，按上海时区处理边�
   assert.deepEqual(groupOrdersByTime([]), []);
   assert.equal(orders[0].orderNo, '003');
 });
+test('时间轴提供分组起止时段，准确取货时间保持不变，半小时边界进入下一组', () => {
+  const groups = groupOrdersByTime([order('001', '2026-11-01T01:20:00Z'), order('002', '2026-11-01T01:30:00Z')]);
+  assert.deepEqual(groups.map(({ date, time, endTime, endsNextDay }) => ({ date, time, endTime, endsNextDay })), [
+    { date: '2026-11-01', time: '09:00', endTime: '09:30', endsNextDay: false },
+    { date: '2026-11-01', time: '09:30', endTime: '10:00', endsNextDay: false },
+  ]);
+  assert.equal(groups[0].orders[0].plannedHandoffAt, '2026-11-01T01:20:00Z');
+});
+test('时间轴跨午夜标记次日，跨日期保留独立时段，待定时间不生成刻度', () => {
+  const groups = groupOrdersByTime([order('003', null), order('002', '2026-11-02T15:45:00Z'), order('001', '2026-11-01T15:45:00Z')]);
+  assert.deepEqual(groups.map(({ date, time, endTime, endsNextDay }) => ({ date, time, endTime, endsNextDay })), [
+    { date: '2026-11-01', time: '23:30', endTime: '00:00', endsNextDay: true },
+    { date: '2026-11-02', time: '23:30', endTime: '00:00', endsNextDay: true },
+    { date: null, time: '时间待定', endTime: null, endsNextDay: false },
+  ]);
+});
 test('卡片展示服务端选出的整单最新备注，空值不显示备注', () => {
   const note = { id: 5, itemId: null, createdAt: '2026-10-20T02:00:00Z', content: '送到前请先联系' } as Note;
   assert.equal(latestOrderNote({ items: [], latestNote: note }), note);

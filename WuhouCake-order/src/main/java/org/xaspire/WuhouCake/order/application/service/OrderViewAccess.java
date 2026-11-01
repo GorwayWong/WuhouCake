@@ -52,7 +52,7 @@ public final class OrderViewAccess {
                 order.plannedHandoffAt(), customer ? order.customer() : null, customer ? order.address() : null, order.plannedFinishAt(),
                 order.items().stream().map(item -> new OrderQueryViews.Item(item.itemId(), item.name(), item.productType(), item.quantity(),
                         amount ? item.unitPriceCents() : null, amount ? item.memberPriceCents() : null, item.attributes(), item.recentNotes())).toList(),
-                order.latestNote())).toList();
+                order.latestNote(), order.requestedReceiveAt())).toList();
         return new OrderQueryViews.Workbench(source.date(), source.metrics(), orders);
     }
 }

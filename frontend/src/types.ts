@@ -25,7 +25,7 @@ export interface CalendarOrder extends OrderStatus {
   orderId: string; orderNo: string; calendarDate: string; fulfillmentType: string;
   plannedHandoffAt: string | null; customerPhoneLast4: string | null; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
 }
-export interface PendingOrder extends Omit<CalendarOrder, 'customerPhoneLast4'> { customer: Customer | null; address: string | null; plannedFinishAt: string | null; items: Item[]; latestNote?: Note | null }
+export interface PendingOrder extends Omit<CalendarOrder, 'customerPhoneLast4'> { customer: Customer | null; address: string | null; plannedFinishAt: string | null; requestedReceiveAt?: string | null; items: Item[]; latestNote?: Note | null }
 export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number } | null; pendingOrders: PendingOrder[] }
 export interface Detail extends OrderStatus {
   deletion?: { deletedAt: string; deletedBy: string; employeeName: string; reason: string; expiresAt: string } | null;

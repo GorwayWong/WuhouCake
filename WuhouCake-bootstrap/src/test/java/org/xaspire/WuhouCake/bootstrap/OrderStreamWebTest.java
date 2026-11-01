@@ -198,7 +198,7 @@ class OrderStreamWebTest {
         var item = new OrderQueryViews.Item(UUID.randomUUID(), "蛋糕", "CAKE", 1, 20000L, 18000L, Map.of("base", "原味"), List.of());
         when(queries.workbench(null, true)).thenReturn(new OrderQueryViews.Workbench(date, new OrderQueryViews.Metrics(1, 1, 1),
                 List.of(new OrderQueryViews.PendingOrder(detail.orderId(), "TEST001", date, "CREATED", "WAITING", "PAID", "DELIVERY",
-                        Instant.now(), detail.customer(), "客户地址", Instant.now(), List.of(item), null))));
+                        Instant.now(), detail.customer(), "客户地址", Instant.now(), List.of(item), null, Instant.now()))));
         mvc.perform(get("/api/orders/calendar").header("Authorization", "Bearer valid"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].customerPhoneLast4").isEmpty())
                 .andExpect(jsonPath("$.data[0].paymentStatus").isEmpty());

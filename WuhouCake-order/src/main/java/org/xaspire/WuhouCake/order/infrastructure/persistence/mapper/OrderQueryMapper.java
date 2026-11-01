@@ -26,7 +26,7 @@ public interface OrderQueryMapper {
             String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt, String customerPhoneLast4) { }
     record PendingRow(String orderId, String orderNo, LocalDate calendarDate, String status,
             String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt,
-            String customerName, String phone, String memberPhone, String buyerName, String address, Instant plannedFinishAt) { }
+            String customerName, String phone, String memberPhone, String buyerName, String address, Instant plannedFinishAt, Instant requestedReceiveAt) { }
     record CalendarItemRow(String orderId, String itemId, String name, int quantity) { }
     record ItemRow(String orderId, String itemId, String name, String productType, int quantity,
             Long unitPriceCents, Long memberPriceCents, String attributes) { }
@@ -69,7 +69,7 @@ public interface OrderQueryMapper {
     ContentSizeRow exportContentSize(@Param("orderIds") List<String> orderIds);
 
     @Select("SELECT " + ORDER_COLUMNS + ", customer_name, customer_phone AS phone, member_phone, buyer_name,"
-            + " delivery_address AS address, planned_finish_at FROM cake_order WHERE deleted_at IS NULL AND requested_receive_date=#{date}"
+            + " delivery_address AS address, planned_finish_at, requested_receive_at FROM cake_order WHERE deleted_at IS NULL AND requested_receive_date=#{date}"
             + ORDER_SORT)
     List<PendingRow> pending(LocalDate date);
 

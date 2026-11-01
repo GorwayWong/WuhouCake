@@ -1,6 +1,6 @@
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-COPY target/WuhouCake-bootstrap-*.jar /app/application.jar
+COPY --chmod=644 target/WuhouCake-bootstrap-*.jar /app/application.jar
 USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

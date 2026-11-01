@@ -24,7 +24,7 @@ class EmployeeAccessPolicyTest {
             assertEquals(!production, access.allows(ORDER_CUSTOMER_READ));
             assertEquals(!production, access.allows(ORDER_BUSINESS_DETAILS_READ));
             assertTrue(access.allows(ORDER_PHONE_READ));
-            assertEquals(!production, access.allows(ORDER_DELETE));
+            assertEquals(role == JobRole.STORE_MANAGER, access.allows(ORDER_DELETE));
             assertEquals(!production, access.allows(ORDER_DELETED_READ));
             assertTrue(access.allows(ORDER_PRODUCTION_UPDATE));
             assertTrue(access.allows(ORDER_NOTE_CREATE));
@@ -63,6 +63,17 @@ class EmployeeAccessPolicyTest {
         assertEquals(EmployeeAccess.none(), policy.access(ready.archive(UUID.randomUUID(), 2, NOW)));
         assertTrue(policy.canOwnCustomerEntry(ready.replacePassword("temporary-hash", true, NOW)));
         assertFalse(new EmployeeAccessPolicy(Map.of(JobRole.MANAGER, Set.of(ORDER_READ))).canOwnCustomerEntry(ready));
+    }
+
+    @Test void onlyStoreManagerCanDeleteEvenWithMultipleJobsOrConfiguration() {
+        var policy = new EmployeeAccessPolicy(Map.of());
+        assertFalse(policy.access(account(Set.of(JobRole.FRONT_DESK_CLERK, JobRole.FRONT_DESK_SUPERVISOR), SystemRole.STAFF)).allows(ORDER_DELETE));
+        assertFalse(policy.access(account(Set.of(JobRole.MANAGER), SystemRole.SUPER_ADMIN)).allows(ORDER_DELETE));
+        assertTrue(policy.access(account(Set.of(JobRole.STORE_MANAGER, JobRole.DECORATOR), SystemRole.STAFF)).allows(ORDER_DELETE));
+        for (var role : JobRole.values()) {
+            if (role != JobRole.STORE_MANAGER)
+                assertThrows(IllegalArgumentException.class, () -> new EmployeeAccessPolicy(Map.of(role, Set.of(ORDER_DELETE))));
+        }
     }
 
     private static EmployeeAccount account(Set<JobRole> roles, SystemRole systemRole) {

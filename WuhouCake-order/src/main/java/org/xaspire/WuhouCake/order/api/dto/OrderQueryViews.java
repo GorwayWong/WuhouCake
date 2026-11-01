@@ -30,7 +30,7 @@ public final class OrderQueryViews {
     public record Metrics(long totalOrders, long createdOnDate, long deliveryDueOnDate) { }
     public record PendingOrder(UUID orderId, String orderNo, LocalDate calendarDate, String status,
             String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt,
-            Customer customer, String address, Instant plannedFinishAt, List<Item> items, Note latestNote) {
+            Customer customer, String address, Instant plannedFinishAt, List<Item> items, Note latestNote, Instant requestedReceiveAt) {
         public PendingOrder { items = List.copyOf(items); }
     }
     public record Item(UUID itemId, String name, String productType, int quantity, Long unitPriceCents,

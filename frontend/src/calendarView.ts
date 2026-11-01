@@ -50,14 +50,21 @@ export function compareCalendarOrders(a: { plannedHandoffAt: string | null; orde
   const second = b.plannedHandoffAt ? Date.parse(b.plannedHandoffAt) : Infinity;
   return first - second || a.orderNo.localeCompare(b.orderNo);
 }
-export function groupOrdersByTime(orders: PendingOrder[]): { key: string; time: string; orders: PendingOrder[] }[] {
+export function groupOrdersByTime(orders: PendingOrder[]): { key: string; time: string; date: string | null; endTime: string | null; endsNextDay: boolean; orders: PendingOrder[] }[] {
   const groups = new Map<number | null, PendingOrder[]>();
   for (const order of [...orders].sort(compareCalendarOrders)) {
     const slot = order.plannedHandoffAt ? Math.floor(Date.parse(order.plannedHandoffAt) / 1_800_000) * 1_800_000 : null;
     const group = groups.get(slot) || [];
     group.push(order); groups.set(slot, group);
   }
-  return Array.from(groups, ([slot, orders]) => ({ key: String(slot), time: slot === null ? '时间待定' : time(new Date(slot).toISOString()), orders }));
+  const dateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
+  return Array.from(groups, ([slot, orders]) => {
+    if (slot === null) return { key: String(slot), time: '时间待定', date: null, endTime: null, endsNextDay: false, orders };
+    const start = new Date(slot);
+    const end = new Date(slot + 1_800_000);
+    const date = dateFormat.format(start);
+    return { key: String(slot), time: time(start.toISOString()), date, endTime: time(end.toISOString()), endsNextDay: dateFormat.format(end) !== date, orders };
+  });
 }
 export function latestOrderNote(order: Pick<PendingOrder, 'items' | 'latestNote'>): Note | undefined {
   if (order.latestNote !== undefined) return order.latestNote || undefined;

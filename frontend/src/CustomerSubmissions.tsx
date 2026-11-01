@@ -6,12 +6,12 @@ import { Empty, ErrorNotice, Loading, money, statusNames } from './ui';
 import { EmployeeSelect } from './EmployeeSelect';
 import { Select } from './Select';
 import { SubmissionFields } from './SubmissionFields';
-import { draftFromSubmission, submissionRequest } from './customerSubmission';
+import { draftFromSubmission, submissionRequest, overdueSubmissionDate } from './customerSubmission';
 import type { EntryLink, SubmissionContent, SubmissionDetail, SubmissionDuplicate, SubmissionOrigin, SubmissionReview } from './customerSubmission';
 import { brandedQr } from './brandedQr';
 import { exactYuan } from './money';
 import type { Account, Page } from './types';
-import { time } from './dates';
+import { time, today } from './dates';
 import { synchronize } from './realtime';
 import { focusFormField } from './formFocus';
 import { hasPermissions, orderAccess } from './access';
@@ -85,7 +85,7 @@ export function CustomerSubmissions({ account, onWritingChange }: { account: Acc
   if (!canHandleSubmissions(account)) return <Empty>前台和管理人员可以处理客户填单。</Empty>;
   return <div className="management-page"><div className="page-heading"><div><h1>客户填单</h1></div></div>
     <section className="panel"><div className="submission-filters"><label>查看范围<Select label="查看范围" value={mine ? 'mine' : 'all'} onChange={value => { setMine(value === 'mine'); setPage(1); }}><option value="mine">我的二维码收到的</option><option value="all">全部客服的</option></Select></label><label>处理状态<Select label="处理状态" value={status} onChange={value => { setStatus(value); setPage(1); }}><option value="PENDING">待确认</option><option value="CONFIRMED">已确认</option></Select></label><button className="secondary" disabled={query.isFetching} onClick={() => void client.invalidateQueries({ queryKey: ['customer-submissions'] })}>刷新列表</button></div>
-      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending ? <Loading /> : !query.data?.items.length ? <Empty>暂无{mine ? '我的' : ''}{status === 'PENDING' ? '待确认' : '已确认'}填单。</Empty> : <ul className="submission-list">{query.data.items.map(({ submission: s, duplicates }) => <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><time>{time(s.createdAt, true)}</time></div><p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始客户收货 {time(s.original.requestedReceiveAt, true)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{duplicates.some(record => record.requiresAcknowledgement) && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>)}</ul>}
+      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending ? <Loading /> : !query.data?.items.length ? <Empty>暂无{mine ? '我的' : ''}{status === 'PENDING' ? '待确认' : '已确认'}填单。</Empty> : <ul className="submission-list">{query.data.items.map(({ submission: s, duplicates }) => { const overdueDate = overdueSubmissionDate(s, today()); return <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><time>{time(s.createdAt, true)}</time></div><p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始客户收货 {time(s.original.requestedReceiveAt, true)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{overdueDate && <p className="submission-warning">期望收货日期已过（{overdueDate}），待核对</p>}{duplicates.some(record => record.requiresAcknowledgement) && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>; })}</ul>}
       {query.data && query.data.total > 20 && <div className="pagination"><button className="secondary" disabled={page === 1} onClick={() => setPage(page - 1)}>上一页</button><span>第 {page} 页 · {query.data.total} 份</span><button className="secondary" disabled={page * 20 >= query.data.total} onClick={() => setPage(page + 1)}>下一页</button></div>}
     </section><details className="panel entry-settings"><summary>填单二维码管理</summary><EntryManager account={account} onWritingChange={onWritingChange} /></details>
   </div>;

@@ -233,7 +233,7 @@ if (value.contains("杯子蛋糕") || value.contains("纸杯蛋糕") || value.co
     private static Map<String, String> labels() {
         var map = new LinkedHashMap<String, String>();
         add(map, "customerName", "客户姓名", "收货人", "收件人", "联系人", "姓名"); add(map, "phone", "联系电话", "收货电话", "收件电话", "手机号", "电话");
-        add(map, "memberPhone", "会员手机号", "会员手机", "会员电话"); add(map, "buyerName", "客户下单人", "下单人");
+        add(map, "memberPhone", "会员手机号", "会员手机", "会员电话"); add(map, "buyerName", "订购人姓名", "订购人", "客户订购人", "客户下单人", "下单人");
         add(map, "address", "配送地址", "收货地址", "地址"); add(map, "fulfillmentType", "配送方式", "交接方式", "交付方式", "取货方式");
         add(map, "requestedReceiveDate", "收货日期", "取货日期", "配送日期", "日期"); add(map, "receiveTime", "客户收货时间", "收货时间", "期望收货时间");
         add(map, "plannedHandoffAt", "到店取货时间", "取货时间", "计划交接时间", "交接时间"); add(map, "plannedFinishAt", "计划出品时间", "出品时间");

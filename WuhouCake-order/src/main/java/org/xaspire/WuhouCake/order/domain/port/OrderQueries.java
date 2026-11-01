@@ -33,7 +33,7 @@ public interface OrderQueries {
             String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt, String customerPhoneLast4) { }
     record PendingOrder(UUID orderId, String orderNo, LocalDate calendarDate, String status,
             String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt,
-            String customerName, String phone, String memberPhone, String buyerName, String address, Instant plannedFinishAt) { }
+            String customerName, String phone, String memberPhone, String buyerName, String address, Instant plannedFinishAt, Instant requestedReceiveAt) { }
     record CalendarItem(UUID orderId, UUID itemId, String name, int quantity) { }
     record Item(UUID orderId, UUID itemId, String name, String productType, int quantity, Long unitPriceCents,
             Long memberPriceCents, Map<String, Object> attributes) { }

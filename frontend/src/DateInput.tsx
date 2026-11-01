@@ -23,6 +23,7 @@ function DateTimeInput({ value, onChange, label, name, id, required, disabled, r
     const next = { ...draft, ...patch };
     if (patch.date === '') { next.hour = ''; next.minute = ''; }
     if (resetTimeOnDateChange && patch.date !== undefined && patch.date !== draft.date) { next.hour = ''; next.minute = ''; }
+    if (next.hour && !next.minute) next.minute = '00';
     const time = next.hour && next.minute ? `${next.hour}:${next.minute}` : '';
     const text = completeDateTime(next.date, time) || (timeOptional && !next.hour && !next.minute ? next.date : '') || (next.date || next.hour || next.minute ? `${next.date}T${next.hour}:${next.minute}` : '');
     setDraft({ ...next, source: text }); onChange(text, { date: next.date, time });

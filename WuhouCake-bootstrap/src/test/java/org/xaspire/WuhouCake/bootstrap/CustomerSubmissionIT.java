@@ -120,6 +120,7 @@ class CustomerSubmissionIT {
         assertEquals(orderId, calendar.path("orderId").asText()); assertTrue(calendar.path("plannedHandoffAt").isNull());
         var pending = staff.data("GET", "/api/orders/workbench?date=2026-11-02", null).at("/pendingOrders/0");
         assertEquals(orderId, pending.path("orderId").asText()); assertTrue(pending.path("plannedHandoffAt").isNull());
+        assertEquals("2026-11-02T10:00:00Z", pending.path("requestedReceiveAt").asText());
         var export = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/orders/" + orderId + "/exports/xlsx"))
                 .header("Authorization", "Bearer " + staff.token).POST(HttpRequest.BodyPublishers.noBody()).build();
         var download = staff.http.send(export, HttpResponse.BodyHandlers.ofByteArray()); assertEquals(200, download.statusCode());

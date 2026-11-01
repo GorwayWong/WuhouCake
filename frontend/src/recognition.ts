@@ -1,13 +1,13 @@
 import type { OrderDraft, ItemDraft } from './orderForm.ts';
 import { moneyToCents, storeTime, validDate, newItem } from './orderForm.ts';
 import { normalizeSize } from './productRules.ts';
-import { normalizeProductType } from './productTypes.ts';
+import { normalizeProductType, productTypes } from './productTypes.ts';
 import { randomUUID } from './uuid.ts';
 import type { RecognitionDraft, RecognitionField } from './types.ts';
 
 export const recognitionLimit = 12000;
 export const recognitionLabels: Record<string, string> = {
-  customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '客户订购人',
+  customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '订购人姓名',
   fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '客户收货日期', requestedReceiveAt: '客户收货时间',
   plannedHandoffAt: '到店取货时间', plannedFinishAt: '计划出品时间', totalAmountCents: '约定总金额（元）',
   name: '商品名称', productType: '商品类型', quantity: '数量', specification: '规格', size: '尺寸', flavor: '奶油', base: '内胚',
@@ -28,7 +28,11 @@ export function validateCandidate(field: string, value: string): string {
   const text = value.trim();
   if (!text) throw new Error('该字段待填写。');
   if (moneyFields[field]) { moneyToCents(text); return text; }
-  if (field === 'productType') return normalizeProductType(text);
+  if (field === 'productType') {
+    const type = normalizeProductType(text);
+    if (!Object.hasOwn(productTypes, type)) throw new Error('请选择商品类型。');
+    return type;
+  }
   if (field === 'size') return normalizeSize(text);
   if (field === 'quantity' && (!/^\d+$/.test(text) || BigInt(text) < 1n || BigInt(text) > 2147483647n)) throw new Error('数量需要有效正整数。');
   if (field === 'requestedReceiveDate' && !validDate(text)) throw new Error('需要带年份的有效收货日期。');
@@ -67,13 +71,6 @@ export function setCandidate(draft: OrderDraft, field: string, value: string, it
   else throw new Error('不支持的订单字段。');
   return next;
 }
-export function pristineItem(item: ItemDraft): boolean {
-  const initial = newItem();
-  return !item.requiresTypeConfirmation && ['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'].every(key => item[key as keyof ItemDraft] === initial[key as keyof ItemDraft])
-    && (Object.keys(initial.attributes) as (keyof ItemDraft['attributes'])[]).every(key => item.attributes[key] === initial.attributes[key])
-    && item.defaultSpecifications?.length === initial.defaultSpecifications?.length
-    && initial.defaultSpecifications!.every(key => item.defaultSpecifications?.includes(key));
-}
 export function emptyRecognitionItem(key: string = randomUUID()): ItemDraft {
   return { key, name: '', productType: '', quantity: '', unitPrice: '', memberPrice: '',
     attributes: { size: '', flavor: '', base: '', filling: '', message: '', requirements: '', specification: '' }, defaultSpecifications: [], requiresTypeConfirmation: true };
@@ -81,14 +78,19 @@ export function emptyRecognitionItem(key: string = randomUUID()): ItemDraft {
 /** Undo only unchanged values written by this fill, preserving later manual edits/removals. */
 export function undoRecognition(current: OrderDraft, before: OrderDraft, after: OrderDraft): OrderDraft {
   const result = structuredClone(current);
+  if (result.requestedReceiveDate === after.requestedReceiveDate && result.requestedReceiveAt === after.requestedReceiveAt) {
+    result.requestedReceiveDate = before.requestedReceiveDate;
+    result.requestedReceiveAt = before.requestedReceiveAt;
+  }
   for (const field of rootFields) {
+    if (field === 'requestedReceiveDate' || field === 'requestedReceiveAt') continue;
     const key = (moneyFields[field] || field) as Exclude<keyof OrderDraft, 'items'>;
     if (before[key] !== after[key] && result[key] === after[key]) Object.assign(result, { [key]: before[key] });
   }
   result.items = result.items.flatMap(item => {
     const written = after.items.find(x => x.key === item.key), original = before.items.find(x => x.key === item.key);
     if (!written) return [item];
-    if (!original && JSON.stringify(item) === JSON.stringify(written)) return [];
+    if (!original) return JSON.stringify(item) === JSON.stringify(written) ? [] : [item];
     const baseline = original || emptyRecognitionItem(item.key);
     for (const field of ['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const)
       if (baseline[field] !== written[field] && item[field] === written[field]) item[field] = baseline[field];
@@ -103,6 +105,8 @@ export function undoRecognition(current: OrderDraft, before: OrderDraft, after: 
     }
     return [item];
   });
+  const replaced = before.items.filter(item => !after.items.some(written => written.key === item.key));
+  result.items.unshift(...structuredClone(replaced));
   if (!result.items.length) result.items.push(newItem());
   return result;
 }
@@ -129,64 +133,75 @@ export function mergeModelFields(rules: RecognitionDraft, suggestions: { itemId:
   return result;
 }
 export const recognitionRowKey = (field: string, itemId?: string) => (itemId || 'order') + '.' + field;
-export function candidateEdits(result: RecognitionDraft): { values: Record<string, string>; errors: Record<string, string> } {
-  const values: Record<string, string> = {}, errors: Record<string, string> = {};
-  const read = (field: string, candidate: RecognitionField, id?: string) => {
-    const key = recognitionRowKey(field, id);
-    try { values[key] = recognitionValue(field, candidate.value); }
-    catch (error) { values[key] = ''; errors[key] = (error as Error).message; }
-  };
-  Object.entries(result.fields).forEach(([field, candidate]) => read(field, candidate));
-  result.items.forEach(item => Object.entries(item.fields).forEach(([field, candidate]) => read(field, candidate, item.id)));
-  return { values, errors };
+export interface RecognitionFeedback {
+  field: string; itemKey?: string; value: string; source: RecognitionField['source']; needsReview: boolean; error?: string;
+}
+export type RecognitionFeedbackMap = Record<string, RecognitionFeedback>;
+export function feedbackKey(field: string, itemKey?: string): string {
+  return recognitionRowKey(field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field, itemKey);
+}
+export function retainRecognitionFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
+  return Object.fromEntries(Object.entries(feedback).filter(([, mark]) =>
+    (!mark.itemKey || draft.items.some(item => item.key === mark.itemKey)) && currentValue(draft, mark.field, mark.itemKey) === mark.value));
+}
+export function formFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
+  return Object.fromEntries(Object.values(feedback).flatMap(mark => {
+    const field = moneyFields[mark.field] || mark.field;
+    const index = mark.itemKey ? draft.items.findIndex(item => item.key === mark.itemKey) : -1;
+    if (mark.itemKey && index < 0) return [];
+    return [[mark.itemKey ? `items.${index}.${field}` : field, mark]];
+  }));
 }
 export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result: RecognitionDraft,
-  edits: Record<string, string>, targets: Record<string, string>, manualFields: ReadonlySet<string>,
-  only?: { field: string; candidate: RecognitionField; itemId?: string }) {
-  let next = structuredClone(draft), applied = 0, skipped = 0, cleared = 0;
-  const recognizable = result.items.length > 0 || Object.values(result.fields).some(field => field.source === 'RULE');
-  const bound = { ...targets }, errors: Record<string, string> = {};
-  const pristine = (key: string) => next.items.some(x => x.key === key && pristineItem(x))
-    && ![...manualFields].some(field => field.startsWith(key + '.'));
-  const itemKey = (id: string) => {
-    let key = bound[id] || 'new';
-    if (key === 'new') { const item = emptyRecognitionItem(); key = item.key; next.items.push(item); bound[id] = key; }
-    else {
-      const index = next.items.findIndex(x => x.key === key);
-      if (index < 0) throw new Error('目标商品已移除，请重新选择。');
-      if (pristine(key)) next.items[index] = emptyRecognitionItem(key);
-    }
-    return key;
-  };
-  const write = (field: string, candidate: RecognitionField, id?: string) => {
-    const value = edits[recognitionRowKey(field, id)] ?? '';
-    if (!only && !id && field === 'requestedReceiveDate' && candidate.value === null && !value.trim() && recognizable) {
-      if (next.requestedReceiveDate && !manualFields.has(field) && !manualFields.has('requestedReceiveAt') && next.requestedReceiveDate === initial.requestedReceiveDate) {
-        next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared++;
-      } else if (next.requestedReceiveDate) skipped++;
-      return;
-    }
-    if (!value.trim() || (!only && candidate.needsReview)) return;
-    const selected = id ? bound[id] || 'new' : undefined;
-    if (selected === 'choose') { skipped++; return; }
-    const current = selected === 'new' ? '' : currentValue(next, field, selected);
-    if (current === value && !(selected && selected !== 'new' && pristine(selected))) return;
-    const manual = manualFields.has(id ? selected + '.' + field : field)
-      || !id && (field === 'requestedReceiveDate' && manualFields.has('requestedReceiveAt') || field === 'requestedReceiveAt' && manualFields.has('requestedReceiveDate'));
-    const untouchedDefault = id ? selected !== 'new' && pristine(selected!) : current === currentValue(initial, field);
-    if (!only && (manual || (current && current !== value && !untouchedDefault))) { skipped++; return; }
-    try {
-      validateCandidate(field, value);
-      const source = candidate.source === 'DEFAULT' && value !== candidate.value ? null : candidate.source;
-      next = setCandidate(next, field, value, id ? itemKey(id) : undefined, source); applied++;
-    } catch (error) { errors[recognitionRowKey(field, id)] = (error as Error).message; }
-  };
-  if (only) write(only.field, only.candidate, only.itemId);
-  else {
-    Object.entries(result.fields).forEach(([field, candidate]) => write(field, candidate));
-    result.items.forEach(item => Object.entries(item.fields).forEach(([field, candidate]) => write(field, candidate, item.id)));
+  manualFields: ReadonlySet<string>, options: { supplement?: boolean; targets?: Record<string, string> } = {}) {
+  let next = structuredClone(draft), cleared = 0;
+  const feedback: RecognitionFeedbackMap = {}, targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
+  const validContent = (fields: Record<string, RecognitionField>) => Object.entries(fields).some(([field, candidate]) => {
+    if (field === 'productType' || candidate.source === 'DEFAULT' || !candidate.value?.trim()) return false;
+    try { validateCandidate(field, recognitionValue(field, candidate.value)); return true; } catch { return false; }
+  });
+  const products = result.items.filter(item => validContent(item.fields));
+  const replacedItems = !options.supplement && products.length > 0;
+  if (replacedItems) {
+    next.items = products.map(item => { const empty = emptyRecognitionItem(); targets[item.id] = empty.key; return empty; });
   }
-  return { draft: next, targets: bound, applied, skipped, cleared, errors };
+  const write = (field: string, candidate: RecognitionField, itemKey?: string, onlyErrors = false) => {
+    if (!candidate.value?.trim()) return;
+    const displayField = field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field;
+    try {
+      const value = validateCandidate(field, recognitionValue(field, candidate.value));
+      if (onlyErrors) return;
+      next = setCandidate(next, field, value, itemKey, candidate.source);
+      feedback[feedbackKey(field, itemKey)] = { field: displayField, itemKey, value: currentValue(next, displayField, itemKey),
+        source: candidate.source, needsReview: candidate.needsReview || candidate.source === 'MODEL' };
+    } catch (error) {
+      feedback[feedbackKey(field, itemKey)] = { field: displayField, itemKey, value: currentValue(next, displayField, itemKey),
+        source: candidate.source, needsReview: false, error: (error as Error).message };
+    }
+  };
+  if (!options.supplement) {
+    const recognizable = products.length > 0 || Object.values(result.fields).some(field => field.source === 'RULE');
+    if (recognizable && !result.fields.requestedReceiveDate?.value && !result.fields.requestedReceiveAt?.value
+      && !manualFields.has('requestedReceiveDate') && !manualFields.has('requestedReceiveAt')
+      && next.requestedReceiveDate === initial.requestedReceiveDate && next.requestedReceiveAt === initial.requestedReceiveAt) {
+      next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared = 1;
+      feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填客户收货日期。' };
+    }
+    // 日期先于完整时刻写入，避免服务端字段顺序影响最终值。
+    const fields = Object.entries(result.fields).sort(([a], [b]) => Number(a === 'requestedReceiveAt') - Number(b === 'requestedReceiveAt'));
+    fields.forEach(([field, candidate]) => write(field, candidate));
+  }
+  for (const [index, item] of result.items.entries()) {
+    const onlyErrors = !options.supplement && !replacedItems;
+    const itemKey = onlyErrors ? next.items[index]?.key : targets[item.id];
+    if (!itemKey || !next.items.some(existing => existing.key === itemKey)) continue;
+    Object.entries(item.fields).forEach(([field, candidate]) => {
+      if (!options.supplement || candidate.source === 'MODEL') write(field, candidate, itemKey, onlyErrors);
+    });
+  }
+  const changed = Object.values(feedback).filter(mark => !mark.error && currentValue(draft, mark.field, mark.itemKey) !== mark.value);
+  const applied = changed.length, overwritten = changed.filter(mark => currentValue(draft, mark.field, mark.itemKey)).length;
+  return { draft: next, targets, applied, overwritten, cleared, feedback, replacedItems };
 }
 export class RecognitionLifecycle {
   private generation = 0;
