@@ -42,6 +42,14 @@ export function toggleCalendarMode(view: CalendarView): CalendarView {
 export function isUnfinishedOrder(order: { status: string; deletion?: unknown; deleted?: boolean }): boolean {
   return !order.deletion && !order.deleted && ['WAITING_PRODUCTION', 'PROCESSING', 'WAITING_DELIVERY', 'WAITING_PICKUP', 'DELIVERING'].includes(order.status);
 }
+export function timelinePartitions(orders: PendingOrder[], status: string) {
+  const visible = orders.filter(order => !order.deletion && !order.deleted);
+  return [
+    { id: 'pending', label: '待处理', orders: visible.filter(isUnfinishedOrder), expanded: true },
+    { id: 'completed', label: '已完成', orders: visible.filter(order => order.status === 'COMPLETED'), expanded: Boolean(status) },
+    { id: 'cancelled', label: '已取消', orders: visible.filter(order => order.status === 'CANCELLED'), expanded: Boolean(status) },
+  ].filter(group => group.orders.length);
+}
 export function overdueOrderCount(date: string, orders: { status: string; deletion?: unknown; deleted?: boolean }[], storeToday: string): number {
   return date < storeToday ? orders.filter(isUnfinishedOrder).length : 0;
 }

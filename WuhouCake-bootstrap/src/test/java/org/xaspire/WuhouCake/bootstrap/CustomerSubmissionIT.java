@@ -76,6 +76,35 @@ class CustomerSubmissionIT {
         assertEquals(1, count("customer_order_submission")); assertEquals(0, count("cake_order"));
     }
 
+    @Test void searchMatchesPhonesAndReceiptsAcrossStatesWithConsistentPaging() throws Exception {
+        var admin = admin(); var front = employee(admin, "0002", "FRONT_DESK");
+        String frontEntry = entry(front), adminEntry = entry(admin);
+        String pending = submit(frontEntry, content("13800001111", "2026-11-02T18:00:00+08:00"), UUID.randomUUID()).at("/data/submissionId").asText();
+        String confirmed = submit(adminEntry, content("13900002222", "2026-11-03T18:00:00+08:00"), UUID.randomUUID()).at("/data/submissionId").asText();
+        submit(frontEntry, content("13800004444", "2026-11-04T18:00:00+08:00"), UUID.randomUUID());
+        var corrected = content("13700003333", "2026-11-03T18:00:00+08:00");
+        admin.data("PATCH", "/api/customer-submissions/" + confirmed, Map.of("expectedVersion", 0, "review", review(corrected, admin.id, 12300)));
+        admin.data("POST", "/api/customer-submissions/" + confirmed + "/confirm", Map.of("expectedVersion", 1));
+        String all = "/api/customer-submissions?mine=false&status=ALL&keyword=";
+        for (String keyword : List.of("13900002222", "13700003333", "3333", "F" + confirmed, confirmed.toUpperCase(Locale.ROOT), "137 0000-3333")) {
+            var found = front.data("GET", all + URLEncoder.encode(keyword, java.nio.charset.StandardCharsets.UTF_8), null);
+            assertEquals(1, found.path("total").asInt(), keyword);
+            assertEquals(confirmed, found.at("/items/0/submission/id").asText());
+        }
+        assertEquals(0, front.data("GET", "/api/customer-submissions?mine=true&status=ALL&keyword=" + confirmed, null).path("total").asInt());
+        assertEquals(1, admin.data("GET", "/api/customer-submissions?mine=true&status=ALL&keyword=" + confirmed, null).path("total").asInt());
+        assertEquals(0, front.data("GET", "/api/customer-submissions?mine=false&keyword=" + confirmed, null).path("total").asInt());
+        assertEquals(1, front.data("GET", "/api/customer-submissions?mine=false&status=CONFIRMED&keyword=" + confirmed, null).path("total").asInt());
+        var first = front.data("GET", all + "0000&size=1&page=1", null);
+        var second = front.data("GET", all + "0000&size=1&page=2", null);
+        assertEquals(3, first.path("total").asInt()); assertEquals(3, second.path("total").asInt());
+        assertEquals(1, first.path("items").size()); assertEquals(1, second.path("items").size());
+        assertNotEquals(first.at("/items/0/submission/id").asText(), second.at("/items/0/submission/id").asText());
+        assertEquals(0, front.data("GET", all + "not-a-receipt", null).path("total").asInt());
+        front.data("DELETE", "/api/customer-submissions/" + pending, Map.of("expectedVersion", 0));
+        assertEquals(0, front.data("GET", all + pending, null).path("total").asInt());
+    }
+
     @Test void anonymousMultiProductRequirementsRemainOutsideOrdersUntilExplicitConfirmation() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         var receipt = submit(token, input, UUID.randomUUID()); String id = receipt.at("/data/submissionId").asText();

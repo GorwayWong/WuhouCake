@@ -38,10 +38,17 @@ public interface CustomerSubmissionMapper {
     @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE id=CAST(#{id} AS uuid) AND status<>'PURGED'" + RETAINED) Row find(String id);
     @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE id=CAST(#{id} AS uuid) AND status<>'PURGED' FOR UPDATE") Row lock(String id);
     @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE order_id=CAST(#{id} AS uuid)" + RETAINED) Row byOrder(String id);
-    @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE status=#{status} AND (CAST(#{owner} AS uuid) IS NULL OR owner_id=CAST(#{owner} AS uuid))" + RETAINED + " ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}")
-    List<Row> search(@Param("owner") String owner, @Param("status") String status, @Param("limit") int limit, @Param("offset") long offset);
-    @Select("SELECT count(*) FROM customer_order_submission WHERE status=#{status} AND (CAST(#{owner} AS uuid) IS NULL OR owner_id=CAST(#{owner} AS uuid))" + RETAINED)
-    long count(@Param("owner") String owner, @Param("status") String status);
+    String SEARCH_WHERE = " FROM customer_order_submission WHERE status IN ('PENDING','CONFIRMED')"
+            + " AND (#{status}='ALL' OR status=#{status})"
+            + " AND (CAST(#{owner} AS uuid) IS NULL OR owner_id=CAST(#{owner} AS uuid))"
+            + " AND (#{keyword}='' OR id::text=#{keyword} OR (#{keyword} ~ '^[0-9]+$' AND ("
+            + " position(#{keyword} in regexp_replace(original_phone,'[^0-9]','','g'))>0"
+            + " OR position(#{keyword} in regexp_replace(COALESCE(reviewed->'content'->>'phone',''),'[^0-9]','','g'))>0)))"
+            + RETAINED;
+    @Select("SELECT " + COLUMNS + SEARCH_WHERE + " ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}")
+    List<Row> search(@Param("owner") String owner, @Param("status") String status, @Param("keyword") String keyword, @Param("limit") int limit, @Param("offset") long offset);
+    @Select("SELECT count(*)" + SEARCH_WHERE)
+    long count(@Param("owner") String owner, @Param("status") String status, @Param("keyword") String keyword);
     @Select("SELECT 'SUBMISSION' AS kind,s.id::text,s.version,s.status,NULL::text AS order_no," + CONTENT + "->>'phone' AS phone,"
             + " ((" + CONTENT + "->>'requestedReceiveAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date AS requested_receive_date,"
             + " (" + CONTENT + "->>'requestedReceiveAt')::timestamptz AS requested_receive_at,"

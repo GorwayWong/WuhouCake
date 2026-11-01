@@ -31,10 +31,10 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
     }
     @Override public CustomerSubmission find(UUID id, boolean lock) { return submission(lock ? mapper.lock(id.toString()) : mapper.find(id.toString())); }
     @Override public CustomerSubmission findByOrder(UUID id) { return submission(mapper.byOrder(id.toString())); }
-    @Override public List<CustomerSubmission> search(UUID owner, String status, int limit, long offset) {
-        return mapper.search(string(owner), status, limit, offset).stream().map(this::submission).toList();
+    @Override public List<CustomerSubmission> search(UUID owner, String status, String keyword, int limit, long offset) {
+        return mapper.search(string(owner), status, keyword, limit, offset).stream().map(this::submission).toList();
     }
-    @Override public long count(UUID owner, String status) { return mapper.count(string(owner), status); }
+    @Override public long count(UUID owner, String status, String keyword) { return mapper.count(string(owner), status, keyword); }
     @Override public List<Duplicate> duplicates(CustomerSubmission submission) {
         var content = submission.reviewed() == null ? submission.original() : submission.reviewed().content();
         return mapper.duplicates(submission.id().toString(), content.phone().replaceAll("[ ()-]", ""), content.requestedDate()).stream()

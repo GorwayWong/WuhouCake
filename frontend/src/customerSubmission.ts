@@ -101,3 +101,12 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
     plannedFinishAt: staff ? instant(draft.plannedFinishAt, 'plannedFinishAt', false) : null };
   return { content, review, errors };
 }
+
+export interface SubmissionListView { mine: boolean; status: 'ALL' | 'PENDING' | 'CONFIRMED'; keyword: string; page: number }
+export function searchSubmissionView(view: SubmissionListView, text: string): SubmissionListView {
+  const keyword = text.trim();
+  return { ...view, keyword, status: !keyword ? 'PENDING' : keyword !== view.keyword ? 'ALL' : view.status, page: 1 };
+}
+export function submissionListQuery(view: SubmissionListView): string {
+  return new URLSearchParams({ mine: String(view.mine), status: view.status, keyword: view.keyword, page: String(view.page) }).toString();
+}

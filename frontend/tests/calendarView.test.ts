@@ -95,3 +95,18 @@ test('日期概览的首单排序不依赖查询返回顺序', () => {
   const orders = [order('002', '2026-10-20T02:00:00Z'), order('003', '2026-10-20T01:00:00Z'), order('001', '2026-10-20T01:00:00Z')];
   assert.equal([...orders].sort(compareCalendarOrders)[0].orderNo, '001');
 });
+
+test('时间轴分开统计待处理、已完成和已取消，删除订单不参与', async () => {
+  const { timelinePartitions } = await import('../src/calendarView.ts');
+  const orders = ['WAITING_PRODUCTION', 'PROCESSING', 'COMPLETED', 'COMPLETED', 'CANCELLED'].map((status, i) => ({ ...order(String(i), null), status }));
+  const groups = timelinePartitions([...orders, { ...order('deleted', null), status: 'COMPLETED', deleted: true }], '');
+  assert.deepEqual(groups.map(group => [group.label, group.orders.length, group.expanded]), [['待处理', 2, true], ['已完成', 2, false], ['已取消', 1, false]]);
+  assert.deepEqual(timelinePartitions([], ''), []);
+});
+test('具体状态筛选直接展开对应分组，回到今天保留月模式并展开当天', async () => {
+  const { timelinePartitions } = await import('../src/calendarView.ts');
+  assert.equal(timelinePartitions([{ ...order('1', null), status: 'COMPLETED' }], 'COMPLETED')[0].expanded, true);
+  assert.equal(timelinePartitions([{ ...order('2', null), status: 'CANCELLED' }], 'CANCELLED')[0].expanded, true);
+  const month = { ...defaultCalendarView('2026-10-28'), mode: 'month' as const, expanded: false };
+  assert.deepEqual(jumpCalendarDate(month, '2026-11-01'), { date: '2026-11-01', month: '2026-11', mode: 'month', expanded: true });
+});

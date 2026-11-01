@@ -62,16 +62,21 @@ public class CustomerSubmissionService {
         var submission = submissions.submit(entry, requestId, fingerprint(content), content, clock.instant());
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
-    @Transactional(readOnly = true) public Page<SubmissionViews.Detail> search(boolean mine, String status, int page, int size) {
+    @Transactional(readOnly = true) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {
         var me = staff();
-        if (page < 1 || size < 1 || size > 50 || !Set.of("PENDING", "CONFIRMED").contains(status)) throw invalid();
+        if (page < 1 || size < 1 || size > 50 || !Set.of("PENDING", "CONFIRMED", "ALL").contains(status)) throw invalid();
+        String term = keyword == null ? "" : keyword.strip().toLowerCase(Locale.ROOT);
+        if (term.length() > 100) throw invalid();
+        if (term.matches("f?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")) {
+            if (term.startsWith("f") && term.length() == 37) term = term.substring(1);
+        } else term = term.replaceAll("[\\s()（）+－–—-]", "");
         UUID owner = mine ? me.accountId() : null;
-        return new Page<>(submissions.search(owner, status, size, ((long) page - 1) * size).stream().map(s -> view(s, false)).toList(),
-                submissions.count(owner, status), page, size);
+        return new Page<>(submissions.search(owner, status, term, size, ((long) page - 1) * size).stream().map(s -> view(s, false)).toList(),
+                submissions.count(owner, status, term), page, size);
     }
     @Transactional(readOnly = true) public long pendingCount() {
         staff(CUSTOMER_SUBMISSION_PROCESS);
-        return submissions.count(null, "PENDING");
+        return submissions.count(null, "PENDING", "");
     }
     @Transactional(readOnly = true) public SubmissionViews.Detail detail(UUID id) { staff(); return view(require(id, false), true); }
     @Transactional public SubmissionViews.Detail save(UUID id, SubmissionCommands.Save command) {

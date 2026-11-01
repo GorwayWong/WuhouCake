@@ -68,3 +68,15 @@ test('待确认填单按北京时间日期提醒，核对日期优先', () => {
   assert.equal(overdueSubmissionDate({ ...midnight, reviewed: { ...review, content: sample.original } }, '2026-11-02'), '2026-11-01');
   for (const status of ['CONFIRMED', 'DELETED'] as const) assert.equal(overdueSubmissionDate({ ...sample, status }, '2026-11-02'), null);
 });
+
+test('新关键词跨状态搜索，同关键词保留所选状态，清除回到待确认并重置页码', async () => {
+  const { searchSubmissionView, submissionListQuery } = await import('../src/customerSubmission.ts');
+  const initial = { mine: true, status: 'PENDING' as const, keyword: '', page: 4 };
+  const searched = searchSubmissionView(initial, ' 138 0000-1234 ');
+  assert.deepEqual(searched, { mine: true, status: 'ALL', keyword: '138 0000-1234', page: 1 });
+  assert.equal(searchSubmissionView({ ...searched, status: 'CONFIRMED' }, searched.keyword).status, 'CONFIRMED');
+  assert.equal(searchSubmissionView({ ...searched, status: 'CONFIRMED' }, '4444').status, 'ALL');
+  assert.deepEqual(searchSubmissionView(searched, ''), { ...initial, page: 1 });
+  const params = new URLSearchParams(submissionListQuery(searched));
+  assert.equal(params.get('keyword'), '138 0000-1234'); assert.equal(params.get('mine'), 'true'); assert.equal(params.get('status'), 'ALL');
+});

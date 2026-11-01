@@ -56,7 +56,7 @@ V13 迁移只对已确认的客户来源订单回填核对后的期望时间，�
 
 | 方法和路径 | 行为 |
 | --- | --- |
-| `GET /api/customer-submissions?mine=true&status=PENDING&page=1&size=20` | 分页查询；可选全部客服及 `CONFIRMED` 状态 |
+| `GET /api/customer-submissions?mine=true&status=PENDING&page=1&size=20&keyword=` | 分页查询；支持 `PENDING`、`CONFIRMED`、`ALL`，省略状态仍默认待确认；可选全部客服。关键词匹配原始／核对手机号的连续号码片段，或带／不带 F 的完整填单编号 |
 | `GET /api/customer-submissions/pending-count` | 全部客服待处理总数，返回 `{count}`，不返回客户资料 |
 | `GET /api/customer-submissions/{id}` | 原始内容、核对结果、疑似重复记录及核对 token、处理日志 |
 | `PATCH /api/customer-submissions/{id}` | `{expectedVersion, review}` 保存核对结果 |

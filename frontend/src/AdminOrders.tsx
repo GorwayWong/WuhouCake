@@ -43,6 +43,8 @@ export function AdminOrders({ initialView, onViewChange, onOpenOrder, onWritingC
   const [validation, setValidation] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [downloadError, setDownloadError] = useState<unknown>(null);
+  const pendingDrill = useRef(false);
+  const orderResults = useRef<HTMLHeadingElement>(null);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const active = useRef<AbortController | null>(null);
@@ -63,7 +65,15 @@ export function AdminOrders({ initialView, onViewChange, onOpenOrder, onWritingC
   };
   const change = <K extends keyof ManagementDraft>(key: K, value: ManagementDraft[K]) => { setDraft(current => ({ ...current, [key]: value, allUnpaid: false })); setValidation(''); };
   const modified = JSON.stringify(draft) !== JSON.stringify(applied);
-  const drill = (changes: Partial<ManagementDraft>) => { const next = { ...applied, ...changes, allUnpaid: false }; setDraft(next); setApplied(next); setPage(1); setNotice('已按所选分组筛选明细。'); };
+  const employeeOrdersDisabledReason = busy ? '正在导出，完成后可查看该员工订单。'
+    : modified ? '筛选条件已修改，请先点击“查询”。'
+    : applied.allUnpaid ? '所有历史未付款模式下暂不可用，请展开筛选条件，选择日期范围后查询。' : '';
+  const drill = (changes: Partial<ManagementDraft>) => { const next = { ...applied, ...changes, allUnpaid: false }; setDraft(next); setApplied(next); setPage(1); setNotice('已按所选分组筛选明细。'); pendingDrill.current = true; };
+  useEffect(() => {
+    if (pendingDrill.current && !query.isFetching && query.data && !outsidePage) {
+      pendingDrill.current = false; orderResults.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [query.isFetching, query.data, outsidePage, applied, page]);
   const preset = () => {
     const date = today(), next = defaultManagementDraft(date);
     next.from = date;
@@ -123,10 +133,8 @@ export function AdminOrders({ initialView, onViewChange, onOpenOrder, onWritingC
       <section className="panel report-group"><h2>蛋糕尺寸统计</h2><p className="table-scroll-hint">左右滑动查看完整表格</p>{query.data.totals.unclassifiedCakeQuantity > 0 && <p className="form-help">尺寸待核对 {query.data.totals.unclassifiedCakeQuantity} 个</p>}
         {!query.data.sizes.length ? <p className="muted">暂无匹配蛋糕。</p> : <div className="table-scroll" tabIndex={0} role="region" aria-label="蛋糕尺寸统计，可左右滚动"><table className="management-table"><thead><tr><th>尺寸（寸）</th><th>蛋糕数量</th><th>涉及订单</th><th>查看</th></tr></thead><tbody>{query.data.sizes.map(r => <tr key={r.size ?? 'unknown'}><td>{r.size ?? '尺寸待核对'}</td><td>{r.cakeQuantity} 个</td><td>{r.orderCount} 单</td><td>{r.size && <button type="button" className="text-button" disabled={busy || modified || applied.allUnpaid} onClick={() => drill({ sizeInches: r.size! })}>查看 {r.size} 寸明细</button>}</td></tr>)}</tbody></table></div>}
       </section>
-      <section className="panel report-group"><h2>员工业绩汇总</h2><p className="table-scroll-hint">左右滑动查看完整表格</p>
-        {!query.data.employees.length ? <p className="muted">暂无员工业绩。</p> : <div className="table-scroll" tabIndex={0} role="region" aria-label="员工业绩汇总，可左右滚动"><table className="management-table"><thead><tr><th>下单员工</th><th>订单／商品</th><th>订单总额</th><th>已付款订单总额</th><th>未付款订单总额</th><th>未报价</th><th>查看</th></tr></thead><tbody>{query.data.employees.map(r => <tr key={r.employeeId ?? 'unassigned'}><td>{r.employeeName ?? '未归属'}<small>{r.employeeNumber}</small></td><td>{r.orderCount} 单 · {r.matchingQuantity} 件<small>其中蛋糕 {r.cakeQuantity} 个</small></td><td>¥{exactYuan(r.totalAmountCents)}</td><td>¥{exactYuan(r.paidAmountCents)}</td><td>¥{exactYuan(r.unpaidAmountCents)}</td><td>{r.missingAmountOrders} 单</td><td><button type="button" className="text-button" disabled={busy || modified || applied.allUnpaid} onClick={() => drill({ creditedEmployeeId: r.employeeId ?? '', unassigned: r.employeeId === null })}>查看员工明细</button></td></tr>)}</tbody></table></div>}
-      </section>
-      </>}<h2>{applied.deleted ? '已删除订单明细' : '订单明细'}</h2>
+
+      </>}<h2 ref={orderResults} className="order-results-heading">{applied.deleted ? '已删除订单明细' : '订单明细'}</h2>
       <OrderPagination total={query.data.totals.orderCount} page={page} busy={busy || query.isFetching} onPage={setPage} />
       {!query.data.items.length ? <Empty>暂无匹配订单。</Empty> : <div className="panel table-scroll desktop-order-results" tabIndex={0} role="region" aria-label="订单明细，可左右滚动"><table className="management-table"><thead><tr><th>订单／收货日期</th><th>匹配商品</th><th>状态／付款</th><th>客户／电话</th><th>下单员工</th><th>约定金额</th><th>操作</th></tr></thead><tbody>{query.data.items.map(r => <tr key={r.orderId}><td><a className="order-result-link" href={`#/orders/${r.orderId}`} aria-disabled={busy} onClick={event => openOrder(event, r.orderId)}>#{r.orderNo}</a><small className="order-result-date">收货日期 {r.receiveDate}</small></td><td><span className="order-category-list">品类：{(r.productTypes?.length ? r.productTypes : [null]).map(productTypeLabel).join('、')}</span>{r.products}<small>匹配 {r.matchingQuantity} 件，其中蛋糕 {r.cakeQuantity} 个</small></td><td><Status order={{ ...r, currentStageCode: null }} /><Payment status={r.paymentStatus} /></td><td>{r.customerName || '未填写'}<small><a className="order-result-phone" href={`tel:${r.phone}`}>{r.phone}</a></small></td><td>{r.employeeName || '未归属'}<small>{r.employeeNumber}</small></td><td>{r.totalAmountCents == null ? '未填写' : `¥${exactYuan(r.totalAmountCents)}`}</td><td><a className="text-button order-detail-link" href={`#/orders/${r.orderId}`} aria-disabled={busy} onClick={event => openOrder(event, r.orderId)}>查看详情<ArrowRight /></a></td></tr>)}</tbody></table></div>}
       {query.data.items.length > 0 && <ul className="mobile-order-results">{query.data.items.map(r => <li className="panel order-result-card" key={r.orderId}>
@@ -137,6 +145,12 @@ export function AdminOrders({ initialView, onViewChange, onOpenOrder, onWritingC
         <a className="text-button order-detail-link" href={`#/orders/${r.orderId}`} aria-disabled={busy} onClick={event => openOrder(event, r.orderId)}>查看详情<ArrowRight /></a>
       </li>)}</ul>}
       {query.data.items.length > 0 && <OrderPagination total={query.data.totals.orderCount} page={page} busy={busy || query.isFetching} onPage={setPage} bottom />}
+      {!applied.deleted && <>
+      <section className="panel report-group"><h2>员工业绩汇总</h2><p className="table-scroll-hint">左右滑动查看完整表格</p>
+        {employeeOrdersDisabledReason && query.data.employees.length > 0 && <p className="form-help" id="employee-orders-disabled-reason" role="status">{employeeOrdersDisabledReason}</p>}
+        {!query.data.employees.length ? <p className="muted">暂无员工业绩。</p> : <div className="table-scroll" tabIndex={0} role="region" aria-label="员工业绩汇总，可左右滚动"><table className="management-table"><thead><tr><th>下单员工</th><th>订单／商品</th><th>订单总额</th><th>已付款订单总额</th><th>未付款订单总额</th><th>未报价</th><th>查看</th></tr></thead><tbody>{query.data.employees.map(r => <tr key={r.employeeId ?? 'unassigned'}><td>{r.employeeName ?? '未归属'}<small>{r.employeeNumber}</small></td><td>{r.orderCount} 单 · {r.matchingQuantity} 件<small>其中蛋糕 {r.cakeQuantity} 个</small></td><td>¥{exactYuan(r.totalAmountCents)}</td><td>¥{exactYuan(r.paidAmountCents)}</td><td>¥{exactYuan(r.unpaidAmountCents)}</td><td>{r.missingAmountOrders} 单</td><td><button type="button" className="text-button" disabled={Boolean(employeeOrdersDisabledReason)} aria-describedby={employeeOrdersDisabledReason ? 'employee-orders-disabled-reason' : undefined} onClick={() => drill({ creditedEmployeeId: r.employeeId ?? '', unassigned: r.employeeId === null })}>查看该员工订单</button></td></tr>)}</tbody></table></div>}
+      </section>
+      </>}
     </>}
   </div>;
 }

@@ -45,6 +45,16 @@ class CustomerSubmissionServiceTest {
         return new CustomerSubmissions.Duplicate("ORDER", candidate, version, status, "001", "13800000000", LocalDate.of(2026, 11, 2), NOW,
                 List.of(new CustomerSubmissions.DuplicateItem("蛋糕", 1)), 100L, "客服", NOW, !"CANCELLED".equals(status));
     }
+    @Test void searchNormalizesReceiptsAndPhonesAndUsesTheSameScopeForCount() {
+        service.search(false, "ALL", " F" + id.toString().toUpperCase(Locale.ROOT) + " ", 2, 20);
+        verify(store).search(null, "ALL", id.toString(), 20, 20L);
+        verify(store).count(null, "ALL", id.toString());
+        service.search(true, "PENDING", "138 0000-1234", 1, 20);
+        verify(store).search(owner, "PENDING", "13800001234", 20, 0L);
+        verify(store).count(owner, "PENDING", "13800001234");
+        service.pendingCount(); verify(store).count(null, "PENDING", "");
+        assertThrows(OrderFailure.class, () -> service.search(false, "DELETED", "", 1, 20));
+    }
     @Test void allCandidateVersionsAndStatusesContributeToTheAcknowledgement() {
         String original = service.detail(id).duplicateCheckToken();
         assertEquals(original, service.detail(id).duplicateCheckToken());
