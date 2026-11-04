@@ -29,7 +29,7 @@ async function fixture() {
     if (path === '/api/orders/workbench/cake-bases') return ok({ date: '2026-11-04', items: [] });
     if (path === '/api/orders/recognition/parse') return ok({
       fields: { customerName: { value: '识别姓名', source: 'RULE', needsReview: false, evidence: [], issues: [] }, phone: { value: '13900000000', source: 'RULE', needsReview: true, evidence: [], issues: [] } },
-      items: [], issues: [], fragments: [], unmappedText: [], assistAvailable: false,
+      items: [], issues: ['请核对原文'], fragments: [], unmappedText: ['其他客户备注'], assistAvailable: false,
     });
     if (path === '/api/order-packages') return ok({ items: [], total: 0, page: 1, size: 20 });
     if (path === '/api/orders' && req.method() === 'POST') {
@@ -250,6 +250,12 @@ test('识别核对标记及手工字段保护跨恢复保留，再次识别不�
     await page.locator('#recognition-text').fill('识别姓名 13900000000');
     await page.getByRole('button', { name: '识别并填入', exact: true }).click();
     await waitFor(async () => (await page.locator('#phone').inputValue()) === '13900000000');
+    assert.equal(await page.getByText('未识别内容', { exact: true }).count(), 0);
+    assert.equal(await page.locator('.recognition-receipt').innerText(), '撤销本次填入');
+    if (process.env.DRAFT_SCREENSHOT) {
+      await page.locator('.recognition-section').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: process.env.DRAFT_SCREENSHOT.replace(/\.png$/, '-recognition.png') });
+    }
     const original = await saved(page);
     assert.ok(Object.keys(original.editor.feedback).length);
     await page.reload();
@@ -258,7 +264,7 @@ test('识别核对标记及手工字段保护跨恢复保留，再次识别不�
     assert.deepEqual((await saved(page)).editor.feedback, original.editor.feedback);
     await page.getByText('粘贴下单信息', { exact: true }).click();
     await page.getByRole('button', { name: '识别并填入', exact: true }).click();
-    await waitFor(async () => await page.getByText('已填入', { exact: false }).count() > 0);
+    await waitFor(async () => !(await page.getByRole('button', { name: '识别并填入', exact: true }).isDisabled()));
     assert.equal(await page.locator('#customerName').inputValue(), '手工姓名');
   } finally { await context.close(); }
 });

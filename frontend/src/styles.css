@@ -1753,9 +1753,6 @@ button,a{
 .recognition-content{padding-top:16px;min-width:0;}
 .recognition-content textarea,.recognition-content input{max-width:100%;min-width:0;font-size:16px;}
 .recognition-content .actions{flex-wrap:wrap;}
-.recognition-evidence{margin-top:8px;min-width:0;color:#596252;}
-.recognition-evidence p{overflow-wrap:anywhere;white-space:pre-wrap;}
-.recognition-evidence summary{cursor:pointer;font-size:13px;min-height:32px;}
 .recognition-assist{margin:16px 0;padding:16px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
 .recognition-assist>summary{cursor:pointer;min-height:44px;font-weight:600;}
 .recognition-quote{overflow-wrap:anywhere;white-space:pre-wrap;background:#f1f4ee;padding:12px;border-radius:8px;}

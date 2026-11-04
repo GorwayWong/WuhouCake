@@ -33,8 +33,6 @@ export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFi
       setUndo({ before: structuredClone(current), after: structuredClone(filled.draft), feedback: previousFeedback });
     }
     onChange(filled.draft, filled.feedback);
-    const invalid = Object.values(filled.feedback).filter(mark => mark.error).length;
-    setNotice(`已填入 ${filled.applied} 项，覆盖 ${filled.overwritten} 项${filled.replacedItems ? '，已替换商品列表' : ''}${invalid ? '；标出的字段请补填' : ''}`);
     if (filled.applied || filled.replacedItems || filled.cleared) {
       if (document.activeElement instanceof HTMLElement && panel.current?.contains(document.activeElement)) document.activeElement.blur();
       onEditorChange({ open: false });
@@ -80,12 +78,11 @@ export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFi
         {failure != null && <p className="notice error" role="alert">识别暂不可用，原文和表单已保留。{errorText(failure)}</p>}
       </div>
     </details>
-    {(notice || undo) && <div className="recognition-receipt"><span role="status">{notice}</span>{undo && <button type="button" className="text-button" disabled={busy || parsing || assisting} onClick={() => {
+    {(notice || undo) && <div className="recognition-receipt">{notice && <span role="status">{notice}</span>}{undo && <button type="button" className="text-button" disabled={busy || parsing || assisting} onClick={() => {
       const restored = undoRecognition(getDraft(), undo.before, undo.after);
       onChange(restored, { ...getFeedback(), ...undo.feedback }, true); setUndo(null); setTargets({}); setResult(null); setConsent(false); setNotice('已撤销本次填入，手工修改保留。');
     }}>撤销本次填入</button>}</div>}
     {result && <>
-      {(result.unmappedText.length > 0 || result.issues.length > 0) && <details className="recognition-evidence"><summary>未识别内容</summary>{[...result.issues, ...result.unmappedText].map((line, i) => <p key={i}>{line}</p>)}</details>}
       {result.fragments.length > 0 && <details className="recognition-assist"><summary>AI 补充（可选）</summary>
         <p className="form-help">将下列商品片段发送至阿里百炼补充识别；请核对其中的个人信息，第三方可能保留调用数据。</p>
         {result.fragments.map((fragment, i) => <p className="recognition-quote" key={i}>{fragment.text}</p>)}
