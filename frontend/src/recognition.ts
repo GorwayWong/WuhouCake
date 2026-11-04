@@ -152,6 +152,22 @@ export function formFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap
     return [[mark.itemKey ? `items.${index}.${field}` : field, mark]];
   }));
 }
+export function orderEntryRecognition(result: RecognitionDraft, manualFields: ReadonlySet<string>): RecognitionDraft {
+  const next = structuredClone(result), fields = next.fields;
+  const pickup = fields.fulfillmentType;
+  if (pickup?.value === 'PICKUP') fields.address = { ...pickup, value: '自提' };
+  if (!fields.requestedReceiveAt?.value && !fields.requestedReceiveDate?.value && fields.plannedHandoffAt?.value) {
+    fields.requestedReceiveAt = fields.plannedHandoffAt;
+  }
+  delete fields.fulfillmentType;
+  delete fields.plannedHandoffAt;
+  const manualReceive = manualFields.has('requestedReceiveAt') || manualFields.has('requestedReceiveDate');
+  for (const field of Object.keys(fields)) {
+    if (manualFields.has(field) || (manualReceive && (field === 'requestedReceiveAt' || field === 'requestedReceiveDate'))) delete fields[field];
+  }
+  return next;
+}
+
 export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result: RecognitionDraft,
   manualFields: ReadonlySet<string>, options: { supplement?: boolean; targets?: Record<string, string> } = {}) {
   let next = structuredClone(draft), cleared = 0;

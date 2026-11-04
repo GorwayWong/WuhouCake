@@ -57,7 +57,7 @@ public class OrderService {
             if (item == null) throw invalid();
             return OrderItem.create(ids.nextId(), item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
         }).toList();
-        var employee = selectEmployee(command.creditedEmployeeId() == null ? actor.accountId() : command.creditedEmployeeId());
+        var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
         var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee);
         orders.create(order);
         var creation = new LinkedHashMap<String, Object>();

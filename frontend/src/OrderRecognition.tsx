@@ -2,17 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { api, errorText } from './api';
 import type { OrderDraft } from './orderForm';
 import type { RecognitionAssist, RecognitionDraft } from './types';
-import { RecognitionLifecycle, applyRecognition, recognitionLimit, undoRecognition, mergeModelFields } from './recognition';
+import { RecognitionLifecycle, applyRecognition, orderEntryRecognition, recognitionLimit, undoRecognition, mergeModelFields } from './recognition';
 import type { RecognitionFeedbackMap } from './recognition';
 
 type UndoStep = { before: OrderDraft; after: OrderDraft; feedback: RecognitionFeedbackMap };
-export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFields, onChange, busy, onDirtyChange }: {
+export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFields, onChange, busy, text, open, onEditorChange }: {
   onChange: (value: OrderDraft, feedback: RecognitionFeedbackMap, restore?: boolean) => void;
-  busy: boolean; onDirtyChange: (dirty: boolean) => void;
+  busy: boolean; text: string; open: boolean; onEditorChange: (changes: { text?: string; open?: boolean }) => void;
   initialDraft: OrderDraft; getDraft: () => OrderDraft; getFeedback: () => RecognitionFeedbackMap; manualFields: ReadonlySet<string>;
 }) {
-  const [text, setText] = useState('');
-  const [open, setOpen] = useState(false);
   const [result, setResult] = useState<RecognitionDraft | null>(null);
   const [targets, setTargets] = useState<Record<string, string>>({});
   const [failure, setFailure] = useState<unknown>(null);
@@ -25,12 +23,11 @@ export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFi
   const lifecycle = useRef(new RecognitionLifecycle());
   const parseBusy = useRef(false), assistBusy = useRef(false);
   const panel = useRef<HTMLDetailsElement>(null);
-  useEffect(() => { onDirtyChange(Boolean(text.trim() || result || undo)); }, [text, result, undo, onDirtyChange]);
-  useEffect(() => () => { lifecycle.current.cancel(); onDirtyChange(false); }, [onDirtyChange]);
+  useEffect(() => () => { lifecycle.current.cancel(); }, []);
   useEffect(() => { if (busy) { lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); } }, [busy]);
   const fill = (next: RecognitionDraft, supplement = false) => {
     const current = getDraft(), previousFeedback = structuredClone(getFeedback());
-    const filled = applyRecognition(current, initialDraft, next, manualFields, { supplement, targets });
+    const filled = applyRecognition(current, initialDraft, orderEntryRecognition(next, manualFields), manualFields, { supplement, targets });
     setTargets(filled.targets);
     if (JSON.stringify(current) !== JSON.stringify(filled.draft)) {
       setUndo({ before: structuredClone(current), after: structuredClone(filled.draft), feedback: previousFeedback });
@@ -40,7 +37,7 @@ export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFi
     setNotice(`已填入 ${filled.applied} 项，覆盖 ${filled.overwritten} 项${filled.replacedItems ? '，已替换商品列表' : ''}${invalid ? '；标出的字段请补填' : ''}`);
     if (filled.applied || filled.replacedItems || filled.cleared) {
       if (document.activeElement instanceof HTMLElement && panel.current?.contains(document.activeElement)) document.activeElement.blur();
-      setOpen(false);
+      onEditorChange({ open: false });
     }
   };
   const parse = async () => {
@@ -72,10 +69,10 @@ export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFi
     } finally { if (lifecycle.current.accepts(request)) { assistBusy.current = false; setAssisting(false); } }
   };
   return <section className="recognition-section">
-    <details ref={panel} className="panel recognition-panel" open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary><strong>粘贴下单信息</strong><span>可选</span></summary>
+    <details ref={panel} className="panel recognition-panel" open={open} onToggle={event => { if (event.currentTarget.open !== open) onEditorChange({ open: event.currentTarget.open }); }}><summary><strong>粘贴下单信息</strong><span>可选</span></summary>
       <div className="recognition-content">
         <label htmlFor="recognition-text">客户下单原文<textarea id="recognition-text" value={text} rows={5} autoComplete="off" disabled={busy} onChange={event => {
-          lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setConsent(false); setAssistNotice(''); setResult(null); setFailure(null); setText(event.target.value);
+          lifecycle.current.cancel(); parseBusy.current = false; assistBusy.current = false; setParsing(false); setAssisting(false); setConsent(false); setAssistNotice(''); setResult(null); setFailure(null); onEditorChange({ text: event.target.value });
         }} placeholder="粘贴微信、短信中的订单文字" /></label>
         <p className={text.length > recognitionLimit ? 'field-error' : 'form-help'} aria-live="polite">{text.length} / {recognitionLimit} 字符{text.length > recognitionLimit && '，请缩短后重试'}</p>
         <div className="actions"><button type="button" className="primary" disabled={busy || parsing || !text.trim() || text.length > recognitionLimit} onClick={() => void parse()}>{parsing ? '正在识别…' : '识别并填入'}</button>

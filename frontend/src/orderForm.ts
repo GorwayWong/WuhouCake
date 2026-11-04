@@ -145,6 +145,9 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
     try { return storeTime(value); }
     catch (error) { errors[field] = (error as Error).message; return null; }
   };
+  let receiveAt: string | null = null;
+  try { receiveAt = receiptInstant(draft.requestedReceiveAt, draft.requestedReceiveDate); }
+  catch (error) { errors.requestedReceiveAt = (error as Error).message; }
   if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的收货日期。';
   if (!draft.items.length) errors.items = '订单至少需要一件商品。';
   const request: CreateOrderRequest = {
@@ -155,11 +158,11 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       buyerName: text(draft.buyerName, 'buyerName', '订购人姓名', 80),
     },
     fulfillment: {
-      type: draft.fulfillmentType,
-      address: text(draft.address, 'address', '配送地址', Number.MAX_SAFE_INTEGER, draft.fulfillmentType === 'DELIVERY'),
+      type: draft.address.trim() === '自提' ? 'PICKUP' : 'DELIVERY',
+      address: text(draft.address, 'address', '地址', Number.MAX_SAFE_INTEGER, true),
       requestedReceiveDate: draft.requestedReceiveDate,
-      requestedReceiveAt: (() => { try { return receiptInstant(draft.requestedReceiveAt, draft.requestedReceiveDate); } catch (error) { errors.requestedReceiveAt = (error as Error).message; return null; } })(),
-      plannedHandoffAt: dateTime(draft.plannedHandoffAt, 'plannedHandoffAt'),
+      requestedReceiveAt: receiveAt,
+      plannedHandoffAt: receiveAt,
       plannedFinishAt: dateTime(draft.plannedFinishAt, 'plannedFinishAt'),
     },
     items: draft.items.map((item, index) => {
@@ -168,7 +171,6 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       return result.item!;
     }),
     totalAmountCents: amount(draft.totalAmount, 'totalAmount'),
-    ...(draft.creditedEmployeeId ? { creditedEmployeeId: draft.creditedEmployeeId } : {}),
   };
   return { request: Object.keys(errors).length ? null : request, errors };
 }

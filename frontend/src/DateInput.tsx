@@ -6,13 +6,16 @@ import { completeDateTime, pickerDate, pickerText } from './dateControls';
 import { parseDate } from '@internationalized/date';
 import { Select } from './Select';
 
+const businessHours = Array.from({ length: 16 }, (_, index) => String(index + 7).padStart(2, '0'));
+
 interface Props {
   label: string; id?: string; name?: string; type?: 'date' | 'datetime-local';
   value: string; onChange: (value: string, parts?: { date: string; time: string }) => void; required?: boolean; disabled?: boolean;
   resetTimeOnDateChange?: boolean; timeOptional?: boolean;
+  dateDisplay?: 'full' | 'month-day'; showTimeHint?: boolean;
   'aria-invalid'?: boolean; 'aria-describedby'?: string;
 }
-function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, timeOptional = false, ...aria }: Props) {
+function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, timeOptional = false, dateDisplay, showTimeHint = true, ...aria }: Props) {
   const split = (source: string) => {
     const [date = '', time = ''] = source.split('T'), [hour = '', minute = ''] = time.split(':');
     return { source, date, hour, minute };
@@ -29,32 +32,33 @@ function DateTimeInput({ value, onChange, label, name, id, required, disabled, r
     setDraft({ ...next, source: text }); onChange(text, { date: next.date, time });
   };
   return <div className="date-time-field" data-field-name={name} data-control-label={label}>
-    <DateInput label={`${label}日期`} id={id} value={draft.date} onChange={date => update({ date })} required={required} disabled={disabled} {...aria} />
+    <DateInput label={`${label}日期`} id={id} value={draft.date} dateDisplay={dateDisplay} onChange={date => update({ date })} required={required} disabled={disabled} {...aria} />
     <div className="time-field" role="group" aria-label={`${label}时刻`}>
       <Select label={`${label}小时`} value={draft.hour} onChange={hour => update({ hour })} required={required && !timeOptional} disabled={disabled} {...aria}>
-        <option value="">小时</option>{Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0')).map(hour => <option key={hour} value={hour}>{hour} 时</option>)}
+        <option value="">小时</option>{draft.hour && !businessHours.includes(draft.hour) && <option value={draft.hour} disabled>{draft.hour} 时（原值）</option>}{businessHours.map(hour => <option key={hour} value={hour}>{hour} 时</option>)}
       </Select>
       <Select label={`${label}分钟`} value={draft.minute} onChange={minute => update({ minute })} required={required && !timeOptional} disabled={disabled} {...aria}>
         <option value="">分钟</option>{Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0')).map(minute => <option key={minute} value={minute}>{minute} 分</option>)}
       </Select>
     </div>
-    {timeOptional && <div className="optional-time-help"><span>{!draft.hour && !draft.minute ? '时刻待定' : '时刻选填'}</span>{(draft.hour || draft.minute) && <button type="button" className="text-button" disabled={disabled} onClick={() => update({ hour: '', minute: '' })}>清除时刻</button>}</div>}
+    {timeOptional && (showTimeHint || draft.hour || draft.minute) && <div className="optional-time-help">{showTimeHint && <span>{!draft.hour && !draft.minute ? '时刻待定' : '时刻选填'}</span>}{(draft.hour || draft.minute) && <button type="button" className="text-button" disabled={disabled} onClick={() => update({ hour: '', minute: '' })}>清除时刻</button>}</div>}
     <input type="hidden" name={name} value={value} />
   </div>;
 }
-export function DateInput({ label, type = 'date', value, onChange, required, disabled, id, name, resetTimeOnDateChange, timeOptional, ...aria }: Props) {
-  if (type === 'datetime-local') return <DateTimeInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} timeOptional={timeOptional} resetTimeOnDateChange={resetTimeOnDateChange} {...aria} />;
-  return <CalendarInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} {...aria} />;
+export function DateInput({ label, type = 'date', value, onChange, required, disabled, id, name, resetTimeOnDateChange, timeOptional, dateDisplay, showTimeHint, ...aria }: Props) {
+  if (type === 'datetime-local') return <DateTimeInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} timeOptional={timeOptional} resetTimeOnDateChange={resetTimeOnDateChange} dateDisplay={dateDisplay} showTimeHint={showTimeHint} {...aria} />;
+  return <CalendarInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} dateDisplay={dateDisplay} {...aria} />;
 }
-function CalendarInput({ label, value, onChange, required, disabled, id, name, ...aria }: Props) {
+function CalendarInput({ label, value, onChange, required, disabled, id, name, dateDisplay, ...aria }: Props) {
   const [open, setOpen] = useState(false);
+  const date = pickerDate(value, false);
   return <DatePicker className="date-field" aria-label={label} name={name} data-field-name={name} data-control-label={label}
-    value={pickerDate(value, false)} onChange={date => onChange(pickerText(date, false))} isRequired={required} isDisabled={disabled}
+    value={date} onChange={date => onChange(pickerText(date, false))} isRequired={required} isDisabled={disabled}
     isInvalid={aria['aria-invalid']} aria-describedby={aria['aria-describedby']} granularity="day"
     placeholderValue={parseDate(today())} shouldForceLeadingZeros firstDayOfWeek="mon"
     isOpen={open} onOpenChange={setOpen} shouldCloseOnSelect>{({ state }) => <>
     <Group className="date-control" onKeyDownCapture={event => { if (event.key === 'Enter' && (event.target as HTMLElement).matches('[role="spinbutton"]')) { event.preventDefault(); setOpen(false); (event.target as HTMLElement).blur(); } }}>
-      <Segments className="date-segments">{segment => <DateSegment segment={segment} className="date-segment" />}</Segments>
+      {dateDisplay === 'month-day' ? <Button className="date-month-day" aria-label={date ? `${label}，${value}` : `选择${label}`}>{date ? `${date.month}月${date.day}日` : '选择日期'}</Button> : <Segments className="date-segments">{segment => <DateSegment segment={segment} className="date-segment" />}</Segments>}
       <Button id={id} className="date-open" aria-label={`选择${label}`}><CalendarBlank size={20} /></Button>
     </Group>
     <Popover className="control-popover date-popover" placement="bottom start" offset={6} containerPadding={12}>

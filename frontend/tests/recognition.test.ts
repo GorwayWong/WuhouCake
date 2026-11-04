@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { changeItemDraft, createOrderRequest, newDraft, newItem } from '../src/orderForm.ts';
 import type { RecognitionDraft, RecognitionField } from '../src/types.ts';
 import { RecognitionLifecycle, applyRecognition, emptyRecognitionItem, mergeModelFields, recognitionValue,
-  setCandidate, undoRecognition, validateCandidate, retainRecognitionFeedback, formFeedback, feedbackKey } from '../src/recognition.ts';
+  setCandidate, undoRecognition, validateCandidate, retainRecognitionFeedback, formFeedback, feedbackKey, orderEntryRecognition } from '../src/recognition.ts';
 import { cakeDefaults, normalizeSize } from '../src/productRules.ts';
 
 const field = (value: string | null, source: RecognitionField['source'] = value == null ? null : 'RULE', needsReview = false): RecognitionField =>
@@ -16,6 +16,23 @@ const candidate = (): RecognitionDraft => ({
   issues: [], fragments: [], unmappedText: [], assistAvailable: false,
 });
 const apply = (draft = newDraft('2026-10-16'), result = candidate()) => applyRecognition(draft, newDraft('2026-10-16'), result, new Set());
+
+test('新建页识别将自提写入地址，仅有取货时间时带入收货时间，并保留手工地址和日期', () => {
+  const result = candidate();
+  result.fields.fulfillmentType = field('PICKUP');
+  result.fields.requestedReceiveDate = field(null);
+  result.fields.plannedHandoffAt = field('2027-01-02T10:30');
+  const normalized = orderEntryRecognition(result, new Set());
+  assert.equal(normalized.fields.address.value, '自提');
+  assert.equal(normalized.fields.requestedReceiveAt.value, '2027-01-02T10:30');
+  assert.equal('plannedHandoffAt' in normalized.fields, false);
+  assert.equal('fulfillmentType' in normalized.fields, false);
+  const manual = orderEntryRecognition(result, new Set(['address', 'requestedReceiveDate']));
+  assert.equal('address' in manual.fields, false);
+  assert.equal('requestedReceiveAt' in manual.fields, false);
+  result.fields.requestedReceiveAt = field('2027-01-02T11:30');
+  assert.equal(orderEntryRecognition(result, new Set()).fields.requestedReceiveAt.value, '2027-01-02T11:30');
+});
 
 test('一次填入明确及疑义字段，默认来源明确，不造名称、数量和时刻', () => {
   const result = candidate(); result.items[0].fields.filling.needsReview = true;

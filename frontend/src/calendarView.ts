@@ -2,6 +2,7 @@ import { calendarRange, shiftDate, shiftMonth, time, workbenchDate } from './dat
 import type { Note, PendingOrder } from './types.ts';
 
 export interface CalendarView { date: string; mode: 'week' | 'month'; month: string; expanded: boolean }
+export interface CreatedOrderFocus { accountId: string; orderId: string; orderNo: string; date: string; located: boolean }
 export function defaultCalendarView(date: string): CalendarView {
   return { date, mode: 'week', month: date.slice(0, 7), expanded: false };
 }

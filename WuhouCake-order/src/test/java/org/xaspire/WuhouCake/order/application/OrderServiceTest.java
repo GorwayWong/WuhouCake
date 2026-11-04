@@ -58,7 +58,39 @@ class OrderServiceTest {
                 new OrderCommands.Fulfillment("PICKUP", null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
                 List.of(new OrderCommands.Item("蛋糕", null, 1, null, null, Map.of())), null);
         var result = service.create(command, operator);
+        assertEquals(operator.accountId(), result.creditedEmployee().accountId());
+        assertEquals(operator.accountId(), result.createdBy());
         verify(events).publishEvent(new OrderChanged(result.orderId(), null, OrderChanged.Type.CREATED, 0, result.orderNo()));
+    }
+    @Test void manualCreationCreditsAuthenticatedEmployeeInsteadOfRequestedEmployee() {
+        var requestedEmployee = UUID.randomUUID();
+        when(identity.selectEmployee(operator.accountId())).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(operator.accountId(), "0002", "员工", "ACTIVE"));
+        when(ids.nextId()).thenAnswer(invocation -> UUID.randomUUID()); when(orders.nextNumber()).thenReturn("0000001");
+        var command = new OrderCommands.Create(new OrderCommands.Customer("客户", "13800000000", null, null),
+                new OrderCommands.Fulfillment("PICKUP", null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
+                List.of(new OrderCommands.Item("蛋糕", null, 1, null, null, Map.of())), null, requestedEmployee);
+        var result = service.create(command, operator);
+        assertEquals(operator.accountId(), result.creditedEmployee().accountId());
+        assertEquals(operator.accountId(), result.createdBy());
+        verify(identity, never()).selectEmployee(requestedEmployee);
+        var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());
+        assertEquals(operator.accountId(), logged.getValue().actorId());
+        assertEquals(operator.accountId().toString(), logged.getValue().details().get("creditedEmployeeId"));
+        assertEquals("员工", logged.getValue().details().get("creditedEmployeeName"));
+    }
+    @Test void customerSubmissionCreationKeepsReviewedEmployeeInsteadOfConfirmingEmployee() {
+        var reviewedEmployee = UUID.randomUUID(); var submissionId = UUID.randomUUID();
+        when(identity.selectEmployee(reviewedEmployee)).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(reviewedEmployee, "0003", "归属员工", "ACTIVE"));
+        when(ids.nextId()).thenAnswer(invocation -> UUID.randomUUID()); when(orders.nextNumber()).thenReturn("0000001");
+        var command = new OrderCommands.Create(new OrderCommands.Customer("客户", "13800000000", null, null),
+                new OrderCommands.Fulfillment("PICKUP", null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
+                List.of(new OrderCommands.Item("蛋糕", null, 1, null, null, Map.of())), null, reviewedEmployee);
+        var result = service.createCustomer(command, operator, submissionId);
+        assertEquals(reviewedEmployee, result.creditedEmployee().accountId());
+        assertEquals(operator.accountId(), result.createdBy());
+        var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());
+        assertEquals(reviewedEmployee.toString(), logged.getValue().details().get("creditedEmployeeId"));
+        assertEquals(submissionId.toString(), logged.getValue().details().get("submissionId"));
     }
     @Test void itemAndPaymentChangesPublishTheirCommittedVersions() {
         var order = loaded(); var itemId = order.activeItems().getFirst().itemId();

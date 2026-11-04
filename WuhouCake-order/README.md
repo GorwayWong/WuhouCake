@@ -89,7 +89,7 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 - 商品分类统一为 CAKE、TEA_BREAK、COOKIE、SNACK、DRINK、READY_BAKERY。V22 归并订单商品、套餐、待确认核对数据中的旧分类，保留 attributes、原始填单和历史快照。写入时归一化 DONUT/CUPCAKE/OTHER→TEA_BREAK、BREAD→READY_BAKERY；未知历史类型保留读取。蛋糕统计仍只统计 CAKE。
 - 时间以 ISO 8601 带偏移输入、UTC 输出，前端按北京时间展示。requestedReceiveAt 是当前期望收货时刻，可空以兼容历史日期型订单；非空时其北京时间日期必须与 requestedReceiveDate 一致。客户填单确认时写入核对后的值，交接时间不替代期望收货时间。
 - 员工新建及改期允许仅日期。PATCH 可用 requestedReceiveDate 与 requestedReceiveAt:null 显式改为时刻待定；未清除已有时刻时，只改成冲突日期仍拒绝。无关编辑不清除原时刻；非空 requestedReceiveAt 的北京时间日期必须与日历日期一致。客户填单 Review 新增可空 plannedFinishAt，确认接单时与 plannedHandoffAt 一并保存。界面及 XLSX 统一使用客户收货时间、到店取货时间、计划出品时间；来源记录保留原始时间。
-- 创建可传 creditedEmployeeId，省略时归属当前员工；需为在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
+- 员工手工创建订单固定归属当前认证员工；请求中的 creditedEmployeeId 保留兼容接收，但不用于选择手工订单归属。客户扫码填单确认仍使用核对时显式选择的在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
 - 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、requestedReceiveAt、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling 回落默认），结构值整体替换。
 - 所有状态都能更正资料和约定金额；商品仅在 WAITING_PRODUCTION/PROCESSING 可增删改，待交接须先退回其他已确认。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。
 - 制作中追加商品清空已确认的整单节点；任何商品的名称、类型、数量、规格变更会清除该项完成标记，已确认“其他”时退回抹面完成。价格修改及移除保留节点。商品变化不改约定总额和付款。DELIVERING 改为 PICKUP 时转 WAITING_PICKUP；完成/取消后的交接类型更正不重开状态。

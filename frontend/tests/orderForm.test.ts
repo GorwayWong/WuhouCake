@@ -2,15 +2,26 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createOrderRequest, moneyToCents, newDraft, newItem, storeTime, validDate } from '../src/orderForm.ts';
 
-test('客户收货日期必填、时刻可待定，完整时刻不改变到店取货或出品时间', () => {
+test('收货日期必填、时刻可留空，收货与取货共用时刻且不改变出品时间', () => {
   const draft = newDraft('2026-10-25');
-  draft.phone = '13800000000'; draft.fulfillmentType = 'PICKUP'; draft.items[0].name = '测试蛋糕';
+  draft.phone = '13800000000'; draft.address = '自提'; draft.items[0].name = '测试蛋糕';
   assert.equal(createOrderRequest(draft).request?.fulfillment.requestedReceiveAt, null);
   draft.requestedReceiveAt = '2026-10-25T18:30';
   assert.equal(createOrderRequest(draft).request?.fulfillment.requestedReceiveAt, '2026-10-25T18:30:00+08:00');
-  assert.equal(createOrderRequest(draft).request?.fulfillment.plannedHandoffAt, null);
+  assert.equal(createOrderRequest(draft).request?.fulfillment.plannedHandoffAt, '2026-10-25T18:30:00+08:00');
+  assert.equal(createOrderRequest(draft).request?.fulfillment.plannedFinishAt, null);
   draft.requestedReceiveAt = '2026-10-25T18:';
   assert.ok(createOrderRequest(draft).errors.requestedReceiveAt);
+});
+
+test('手工新建请求不指定下单员工，由服务端使用当前登录员工', () => {
+  const draft = newDraft('2026-11-03');
+  draft.phone = '13800000000'; draft.address = '自提'; draft.items[0].name = '测试蛋糕';
+  draft.creditedEmployeeId = '00000000-0000-0000-0000-000000000003';
+  const { request, errors } = createOrderRequest(draft);
+  assert.deepEqual(errors, {});
+  assert.ok(request);
+  assert.equal('creditedEmployeeId' in request, false);
 });
 
 test('人民币元准确转换整数分，空金额与零金额不同，非法金额不截断或舍入', () => {
@@ -51,7 +62,7 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   assert.equal(request.customer.phone, '13800000000');
   assert.equal(request.totalAmountCents, null);
   assert.equal(request.fulfillment.requestedReceiveDate, '2026-10-14');
-  assert.equal(request.fulfillment.plannedHandoffAt, '2026-10-15T09:00:00+08:00');
+  assert.equal(request.fulfillment.plannedHandoffAt, null);
   assert.equal(request.fulfillment.plannedFinishAt, null);
   assert.deepEqual(request.items.map(item => item.attributes), [{ size: '6', flavor: '芒果', base: '原味', filling: '芒果' }, { size: '8', flavor: '巧克力', base: '原味', filling: '芒果' }]);
   assert.equal(request.items[0].unitPriceCents, 19900);
@@ -62,14 +73,26 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   assert.equal('paymentStatus' in request, false);
   draft.address = '';
   assert.ok(createOrderRequest(draft).errors.address);
-  draft.fulfillmentType = 'PICKUP'; draft.totalAmount = '0';
-  assert.equal(createOrderRequest(draft).request?.fulfillment.address, null);
+  draft.address = '  自提  '; draft.totalAmount = '0';
+  assert.equal(createOrderRequest(draft).request?.fulfillment.address, '自提');
+  assert.equal(createOrderRequest(draft).request?.fulfillment.type, 'PICKUP');
   assert.equal(createOrderRequest(draft).request?.totalAmountCents, 0);
   draft.totalAmount = '320.50';
   assert.equal(createOrderRequest(draft).request?.totalAmountCents, 32050);
   draft.plannedHandoffAt = '';
   assert.deepEqual(createOrderRequest(draft).errors, {});
   assert.equal(createOrderRequest(draft).request?.fulfillment.plannedHandoffAt, null);
+});
+
+test('仅地址恰好为自提时使用自提方式，其他非空内容为配送，空白地址不可提交', () => {
+  const draft = newDraft('2026-12-31');
+  draft.phone = '13800000000'; draft.items[0].name = '测试蛋糕';
+  for (const [address, type] of [['自提', 'PICKUP'], [' 自提 ', 'PICKUP'], ['合成路 1 号', 'DELIVERY'], ['不自提，送到公司', 'DELIVERY']]) {
+    draft.address = address;
+    assert.equal(createOrderRequest(draft).request?.fulfillment.type, type);
+  }
+  draft.address = '  ';
+  assert.ok(createOrderRequest(draft).errors.address);
 });
 
 test('空白必填项、无商品、非法数量与可选出品时间在提交前被阻止', () => {

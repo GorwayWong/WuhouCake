@@ -1,12 +1,13 @@
 import { useLayoutEffect, useRef } from 'react';
 const positions = new Map<string, number>();
-export function useReturnScroll(key: string, ready: boolean, restoreOnKeyChange = true) {
+export function useReturnScroll(key: string, ready: boolean, restoreOnKeyChange = true, skipRestore = false) {
   const entryKey = useRef(key);
   const restored = useRef(false);
   useLayoutEffect(() => {
+    if (skipRestore) restored.current = true;
     if (!restoreOnKeyChange && key !== entryKey.current) restored.current = true;
     if (!ready && (restoreOnKeyChange || !restored.current)) return;
-    const shouldRestore = ready && (restoreOnKeyChange || !restored.current);
+    const shouldRestore = !skipRestore && ready && (restoreOnKeyChange || !restored.current);
     const target = positions.get(key) || 0;
     let restoring = shouldRestore;
     const observer = new ResizeObserver(() => restore());
@@ -28,5 +29,5 @@ export function useReturnScroll(key: string, ready: boolean, restoreOnKeyChange 
       observer.disconnect(); window.removeEventListener('scroll', save);
       window.removeEventListener('wheel', stop); window.removeEventListener('touchstart', stop); window.removeEventListener('keydown', stop);
     };
-  }, [key, ready, restoreOnKeyChange]);
+  }, [key, ready, restoreOnKeyChange, skipRestore]);
 }
