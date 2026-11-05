@@ -1,7 +1,12 @@
+import { pickupInstant, pickupDate, defaultFinishTime } from './orderTimes.ts';
+import type { FinishTimeMode } from './orderTimes.ts';
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
 import { cakeDefaults, numericSize } from './productRules.ts';
+import type { CakeDefaultField } from './productRules.ts';
+import { orderingMethodError } from './orderingMethod.ts';
+import type { DraftImage } from './draftImages.ts';
 import { randomUUID } from './uuid.ts';
-import { normalizeProductType, productTypes } from './productTypes.ts';
+import { hasUnitPrices, normalizeProductType, productTypes } from './productTypes.ts';
 
 export const specificationFields = [
   ['size', '尺寸'], ['flavor', '奶油'], ['filling', '夹馅'],
@@ -15,15 +20,18 @@ type Specification = typeof specificationFields[number][0];
 export interface ItemDraft {
   key: string; name: string; productType: string; quantity: string;
   unitPrice: string; memberPrice: string; attributes: Record<Specification, string>;
-  defaultSpecifications?: ('base' | 'filling')[];
+  defaultSpecifications?: CakeDefaultField[];
   requiresTypeConfirmation?: boolean;
   preservedAttributes?: Record<string, unknown>;
+  images?: DraftImage[];
 }
 export interface OrderDraft {
+  orderingMethod?: string;
+  orderingMethodCustom?: boolean;
   creditedEmployeeId?: string;
   customerName: string; phone: string; memberPhone: string; buyerName: string;
   fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveDate: string; requestedReceiveAt: string;
-  plannedHandoffAt: string; plannedFinishAt: string; totalAmount: string; items: ItemDraft[];
+  plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode; totalAmount: string; items: ItemDraft[];
 }
 export function newItem(): ItemDraft {
   return { key: randomUUID(), name: '', productType: 'CAKE', quantity: '1', unitPrice: '', memberPrice: '',
@@ -33,6 +41,9 @@ export function newItem(): ItemDraft {
 export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, editedSpecification?: string): ItemDraft {
   const next = { ...draft, ...changes, attributes: { ...(changes.attributes || draft.attributes) },
     defaultSpecifications: [...(draft.defaultSpecifications || [])] };
+  if (!hasUnitPrices(next.productType) || changes.productType !== undefined && !hasUnitPrices(draft.productType)) {
+    next.unitPrice = ''; next.memberPrice = '';
+  }
   if (changes.productType !== undefined && draft.requiresTypeConfirmation && changes.productType.trim()) next.requiresTypeConfirmation = false;
   if (editedSpecification) next.defaultSpecifications = next.defaultSpecifications.filter(key => key !== editedSpecification);
   if (changes.productType !== undefined && changes.productType.trim().toUpperCase() !== 'CAKE') {
@@ -46,8 +57,8 @@ export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, e
   return next;
 }
 export function newDraft(date: string): OrderDraft {
-  return { customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', address: '',
-    requestedReceiveDate: date, requestedReceiveAt: date, plannedHandoffAt: '', plannedFinishAt: '', totalAmount: '', items: [newItem()] };
+  return { orderingMethod: '', customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', address: '',
+    requestedReceiveDate: date, requestedReceiveAt: date, plannedHandoffAt: '', plannedFinishAt: '', finishTimeMode: 'AUTO', totalAmount: '', items: [newItem()] };
 }
 export function moneyToCents(input: string): number | null {
   const value = input.trim();
@@ -67,6 +78,7 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
   const quantity = Number(draft.quantity);
   if (!/^\d+$/.test(draft.quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) errors.quantity = '数量须为 1–2147483647 之间的整数。';
   const amount = (field: 'unitPrice' | 'memberPrice') => {
+    if (!hasUnitPrices(draft.productType)) return null;
     try { return moneyToCents(draft[field]); }
     catch (error) { errors[field] = (error as Error).message; return null; }
   };
@@ -74,7 +86,7 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
     unitPriceCents: amount('unitPrice'), memberPriceCents: amount('memberPrice'),
     attributes: { ...Object.fromEntries(Object.entries(draft.preservedAttributes || {}).filter(([key]) => !fieldsForProduct(draft.productType).some(([visible]) => visible === key))), ...Object.fromEntries(fieldsForProduct(draft.productType || 'CAKE').flatMap(([key]) => (draft.attributes[key] || '').trim() ? [[key, draft.attributes[key].trim()]] : [])) } };
   if (item.productType?.toUpperCase() === 'CAKE') {
-    item.attributes.base ||= cakeDefaults.base; item.attributes.filling ||= cakeDefaults.filling;
+    for (const [key, value] of Object.entries(cakeDefaults)) item.attributes[key] ||= value;
     if (validateSize && draft.attributes.size.trim()) { try { item.attributes.size = numericSize(draft.attributes.size); } catch (error) { errors.size = (error as Error).message; } }
   }
   return { item: Object.keys(errors).length ? null : item, errors };
@@ -83,10 +95,13 @@ export function textSpecification(value: unknown): boolean { return value == nul
 export function itemDraft(item: Item): ItemDraft {
   const amount = (value: number | null) => value == null ? '' : `${BigInt(value) / 100n}.${String(BigInt(value) % 100n).padStart(2, '0')}`;
   return { key: item.itemId, name: item.name, productType: normalizeProductType(item.productType || ''), quantity: String(item.quantity),
-    unitPrice: amount(item.unitPriceCents), memberPrice: amount(item.memberPriceCents), preservedAttributes: item.attributes,
+    unitPrice: hasUnitPrices(item.productType) ? amount(item.unitPriceCents) : '', memberPrice: hasUnitPrices(item.productType) ? amount(item.memberPriceCents) : '', preservedAttributes: item.attributes,
     attributes: Object.fromEntries(specificationFields.map(([key]) => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
 }
 export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && ['WAITING_PRODUCTION', 'PROCESSING'].includes(order.status); }
+export function withoutCakeUnitPrices(draft: OrderDraft): OrderDraft {
+  return { ...draft, items: draft.items.map(item => hasUnitPrices(item.productType) ? item : { ...item, unitPrice: '', memberPrice: '' }) };
+}
 export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
 export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original): { request: ItemChangeRequest | null; errors: Record<string, string> } {
   const before = original.items.find(item => item.itemId === itemId), current = baseline.items.find(item => item.itemId === itemId);
@@ -124,13 +139,15 @@ export function storeTime(value: string): string {
   return `${value}:00+08:00`;
 }
 export function receiptInstant(value: string, date: string): string | null {
-  if (!validDate(date)) throw new Error('请选择客户收货日期。');
+  if (!validDate(date)) throw new Error('请选择取货日期。');
   if (!value || value === date) return null;
-  if (value.slice(0, 10) !== date) throw new Error('客户收货日期与时刻不一致。');
+  if (value.slice(0, 10) !== date) throw new Error('取货日期与时刻不一致。');
   return storeTime(value);
 }
 export function createOrderRequest(draft: OrderDraft): { request: CreateOrderRequest | null; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
+  const methodError = orderingMethodError(draft);
+  if (methodError) errors.orderingMethod = methodError;
   const text = (value: string, field: string, label: string, maximum: number, required = false) => {
     if (required && !value.trim()) errors[field] = `请填写${label}。`;
     else if (value.length > maximum) errors[field] = `${label}最多填写 ${maximum} 个字符。`;
@@ -148,9 +165,10 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
   let receiveAt: string | null = null;
   try { receiveAt = receiptInstant(draft.requestedReceiveAt, draft.requestedReceiveDate); }
   catch (error) { errors.requestedReceiveAt = (error as Error).message; }
-  if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的收货日期。';
+  if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的取货日期。';
   if (!draft.items.length) errors.items = '订单至少需要一件商品。';
   const request: CreateOrderRequest = {
+    orderingMethod: text((draft.orderingMethod || '').trim(), 'orderingMethod', '下单方式', 80),
     customer: {
       customerName: text(draft.customerName, 'customerName', '客户姓名', 80),
       phone: text(draft.phone, 'phone', '联系电话', 32, true) || '',
@@ -163,12 +181,12 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       requestedReceiveDate: draft.requestedReceiveDate,
       requestedReceiveAt: receiveAt,
       plannedHandoffAt: receiveAt,
-      plannedFinishAt: dateTime(draft.plannedFinishAt, 'plannedFinishAt'),
+      plannedFinishAt: dateTime(draft.plannedFinishAt || (draft.finishTimeMode === 'AUTO' ? defaultFinishTime(draft.requestedReceiveAt) : ''), 'plannedFinishAt'),
     },
     items: draft.items.map((item, index) => {
       const result = itemInput(item);
       for (const [field, error] of Object.entries(result.errors)) errors[`items.${index}.${field}`] = error;
-      return result.item!;
+      return result.item ? { ...result.item, itemId: item.key } : result.item!;
     }),
     totalAmountCents: amount(draft.totalAmount, 'totalAmount'),
   };
@@ -184,22 +202,24 @@ function localStoreTime(value: string | null): string {
 }
 export function informationDraft(order: Detail): InformationDraft {
   const cents = order.totalAmountCents == null ? null : BigInt(order.totalAmountCents);
-  return { customerName: order.customer?.customerName || '', phone: order.customer?.phone || '', memberPhone: order.customer?.memberPhone || '', buyerName: order.customer?.buyerName || '',
-    fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: order.fulfillment.requestedReceiveDate,
-    requestedReceiveAt: localStoreTime(order.fulfillment.requestedReceiveAt || null) || order.fulfillment.requestedReceiveDate,
-    plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt),
+  return { orderingMethod: order.orderingMethod || '', customerName: order.customer?.customerName || '', phone: order.customer?.phone || '', memberPhone: order.customer?.memberPhone || '', buyerName: order.customer?.buyerName || '',
+    fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: pickupDate(order.fulfillment),
+    requestedReceiveAt: localStoreTime(pickupInstant(order.fulfillment)) || pickupDate(order.fulfillment),
+    plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt), finishTimeMode: order.fulfillment.plannedFinishAt ? 'MANUAL' : 'AUTO',
     totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`, creditedEmployeeId: order.creditedEmployee?.accountId || '' };
 }
 export function informationRequest(original: Detail, draft: InformationDraft, baseline = original): { request: InformationRequest | null; errors: Record<string, string> } {
   const initial = informationDraft(original), current = informationDraft(baseline);
   const changes: InformationChanges = {}, errors: Record<string, string> = {};
+  const methodError = orderingMethodError(draft);
+  if (methodError) errors.orderingMethod = methodError;
   if (draft.creditedEmployeeId !== initial.creditedEmployeeId && draft.creditedEmployeeId !== current.creditedEmployeeId) {
     if (!draft.creditedEmployeeId || !/^[a-f\d-]{36}$/i.test(draft.creditedEmployeeId)) errors.creditedEmployeeId = '请选择下单员工。';
     else changes.creditedEmployeeId = draft.creditedEmployeeId;
   }
-  for (const [field, label, maximum] of [['customerName', '客户姓名', 80], ['phone', '联系电话', 32], ['memberPhone', '会员手机', 32], ['buyerName', '订购人姓名', 80], ['address', '地址', 2147483647]] as const) {
-    const value = draft[field].trim() || null;
-    if (draft[field].length > maximum) errors[field] = `${label}最多填写 ${maximum} 个字符。`;
+  for (const [field, label, maximum] of [['orderingMethod', '下单方式', 80], ['customerName', '客户姓名', 80], ['phone', '联系电话', 32], ['memberPhone', '会员手机', 32], ['buyerName', '订购人姓名', 80], ['address', '地址', 2147483647]] as const) {
+    const value = (draft[field] || '').trim() || null;
+    if ((field === 'orderingMethod' ? (draft[field] || '').trim() : draft[field] || '').length > maximum) errors[field] = `${label}最多填写 ${maximum} 个字符。`;
     if (field === 'phone' && !value) errors.phone = '请填写联系电话。';
     if (value !== (initial[field] || null) && value !== (current[field] || null)) {
       if (field === 'phone') changes.phone = value || '';
@@ -213,10 +233,11 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   if (receiveTimeChanged || receiveDateChanged) {
     try {
       changes.requestedReceiveAt = receiptInstant(draft.requestedReceiveAt, draft.requestedReceiveDate);
-      if (receiveDateChanged) changes.requestedReceiveDate = draft.requestedReceiveDate;
+      changes.plannedHandoffAt = changes.requestedReceiveAt;
+      changes.requestedReceiveDate = draft.requestedReceiveDate;
     } catch (error) { errors.requestedReceiveAt = (error as Error).message; }
   }
-  for (const field of ['plannedHandoffAt', 'plannedFinishAt'] as const) {
+  for (const field of ['plannedFinishAt'] as const) {
     // 未改动的分钟输入不回写，保留服务端秒与微秒精度。
     if (draft[field] === initial[field] || draft[field] === current[field]) continue;
     if (!draft[field]) changes[field] = null;

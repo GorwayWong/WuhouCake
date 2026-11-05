@@ -1,5 +1,7 @@
 package org.xaspire.WuhouCake.order.infrastructure.persistence.mapper;
 
+import static org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderTimeSql.*;
+
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -10,16 +12,16 @@ public interface OrderQueryMapper {
             Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
     String PAYMENT_WHERE = " FROM cake_order WHERE deleted_at IS NULL AND <choose><when test=\"kind == 'RECEIPT'\">"
             + "payment_status='PAID' AND paid_at &gt;= #{from} AND paid_at &lt; #{to}"
-            + "</when><otherwise>requested_receive_date=#{date} AND status&lt;&gt;'CANCELLED'"
+            + "</when><otherwise>" + PICKUP_DATE + "=#{date} AND status&lt;&gt;'CANCELLED'"
             + " AND fulfillment_type IN ('PICKUP','DELIVERY') AND payment_status="
             + "<choose><when test=\"kind == 'SHIPPING_PAID'\">'PAID'</when><otherwise>'UNPAID'</otherwise></choose>"
             + "</otherwise></choose>";
     @Select("<script>SELECT count(*)" + PAYMENT_WHERE + "</script>")
     long paymentOrderCount(@Param("date") LocalDate date, @Param("kind") String kind, @Param("from") Instant from, @Param("to") Instant to);
-    @Select("<script>SELECT id::text AS order_id, order_no, created_at, requested_receive_date AS calendar_date,"
+    @Select("<script>SELECT id::text AS order_id, order_no, created_at, " + PICKUP_DATE + " AS calendar_date,"
             + " paid_at, total_amount_cents::text AS amount_cents, payment_status, status, current_stage_code" + PAYMENT_WHERE
             + " ORDER BY <choose><when test=\"kind == 'RECEIPT'\">paid_at DESC, order_no</when>"
-            + "<otherwise>planned_handoff_at NULLS LAST, order_no</otherwise></choose> LIMIT 10 OFFSET #{offset}</script>")
+            + "<otherwise>" + PICKUP_AT + " NULLS LAST, order_no</otherwise></choose> LIMIT 10 OFFSET #{offset}</script>")
     List<PaymentOrderRow> paymentOrders(@Param("date") LocalDate date, @Param("kind") String kind,
             @Param("from") Instant from, @Param("to") Instant to, @Param("offset") long offset);
     record CalendarRow(String orderId, String orderNo, LocalDate calendarDate, String status,
@@ -40,16 +42,16 @@ public interface OrderQueryMapper {
             long unpaidOrderCount, String unpaidAmountCents, long unpaidMissingAmountOrderCount, long paidWithoutDateOrderCount) { }
     record ContentSizeRow(long bytes, long rows) { }
 
-    String ORDER_COLUMNS = "id::text AS order_id, order_no, requested_receive_date AS calendar_date, status,"
-            + " current_stage_code, payment_status, fulfillment_type, planned_handoff_at";
-    String ORDER_SORT = " ORDER BY requested_receive_date, planned_handoff_at, order_no";
+    String ORDER_COLUMNS = "id::text AS order_id, order_no, " + PICKUP_DATE + " AS calendar_date, status,"
+            + " current_stage_code, payment_status, fulfillment_type, " + PICKUP_AT + " AS planned_handoff_at";
+    String ORDER_SORT = " ORDER BY " + PICKUP_DATE + ", " + PICKUP_AT + ", order_no";
     String ORDER_IDS = "<foreach collection='orderIds' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>";
     String ITEM_IDS = "<foreach collection='itemIds' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>";
 
-    @Select("SELECT " + ORDER_COLUMNS + ", RIGHT(customer_phone, 4) AS customer_phone_last4 FROM cake_order WHERE deleted_at IS NULL AND requested_receive_date >= #{from} AND requested_receive_date < #{to}" + ORDER_SORT)
+    @Select("SELECT " + ORDER_COLUMNS + ", RIGHT(customer_phone, 4) AS customer_phone_last4 FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + " >= #{from} AND " + PICKUP_DATE + " < #{to}" + ORDER_SORT)
     List<CalendarRow> calendar(@Param("from") LocalDate from, @Param("to") LocalDate to);
 
-    @Select("<script>SELECT id::text FROM cake_order WHERE deleted_at IS NULL AND requested_receive_date &gt;= #{from} AND requested_receive_date &lt; #{to}"
+    @Select("<script>SELECT id::text FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + " &gt;= #{from} AND " + PICKUP_DATE + " &lt; #{to}"
             + "<if test='status != null'> AND status=#{status}</if>"
             + "<if test='fulfillmentType != null'> AND fulfillment_type=#{fulfillmentType}</if>"
             + "<if test='paymentStatus != null'> AND payment_status=#{paymentStatus}</if>" + ORDER_SORT + " LIMIT #{limit}</script>")
@@ -69,7 +71,7 @@ public interface OrderQueryMapper {
     ContentSizeRow exportContentSize(@Param("orderIds") List<String> orderIds);
 
     @Select("SELECT " + ORDER_COLUMNS + ", customer_name, customer_phone AS phone, member_phone, buyer_name,"
-            + " delivery_address AS address, planned_finish_at, requested_receive_at FROM cake_order WHERE deleted_at IS NULL AND requested_receive_date=#{date}"
+            + " delivery_address AS address, planned_finish_at, requested_receive_at FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date}"
             + ORDER_SORT)
     List<PendingRow> pending(LocalDate date);
 
@@ -97,7 +99,7 @@ public interface OrderQueryMapper {
 
     @Select("SELECT count(*) AS total_orders,"
             + " count(*) FILTER (WHERE created_at >= #{createdFrom} AND created_at < #{createdTo}) AS created_on_date,"
-            + " count(*) FILTER (WHERE requested_receive_date=#{date} AND fulfillment_type='DELIVERY'"
+            + " count(*) FILTER (WHERE " + PICKUP_DATE + "=#{date} AND fulfillment_type='DELIVERY'"
             + " AND status NOT IN ('COMPLETED', 'CANCELLED')) AS delivery_due_on_date FROM cake_order WHERE deleted_at IS NULL")
     MetricsRow metrics(@Param("date") LocalDate date, @Param("createdFrom") Instant createdFrom, @Param("createdTo") Instant createdTo);
 
@@ -110,7 +112,7 @@ public interface OrderQueryMapper {
             + " COALESCE(sum(total_amount_cents) FILTER (WHERE payment_status='UNPAID'),0)::text AS unpaid_amount_cents,"
             + " count(*) FILTER (WHERE payment_status='UNPAID' AND total_amount_cents IS NULL) AS unpaid_missing_amount_order_count,"
             + " count(*) FILTER (WHERE payment_status='PAID' AND paid_at IS NULL) AS paid_without_date_order_count"
-            + " FROM cake_order WHERE deleted_at IS NULL AND requested_receive_date=#{date} AND status<>'CANCELLED' AND fulfillment_type IN ('PICKUP','DELIVERY')")
+            + " FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date} AND status<>'CANCELLED' AND fulfillment_type IN ('PICKUP','DELIVERY')")
     PaymentSummaryRow paymentSummary(LocalDate date);
 
     @Select("SELECT count(*) AS order_count, COALESCE(sum(total_amount_cents),0)::text AS amount_cents,"
@@ -121,7 +123,7 @@ public interface OrderQueryMapper {
     @Select("SELECT cake_size_inches(i.attributes)::text AS size,"
             + " COALESCE(NULLIF(btrim(i.attributes->>'base'),''),NULLIF(btrim(i.attributes->>'cakeBase'),''),'原味') AS flavor,"
             + " sum(i.quantity)::bigint AS quantity FROM cake_order o JOIN cake_order_item i ON i.order_id=o.id"
-            + " WHERE o.deleted_at IS NULL AND o.requested_receive_date=#{date} AND o.status<>'CANCELLED' AND NOT i.is_removed AND upper(i.product_type)='CAKE'"
+            + " WHERE o.deleted_at IS NULL AND " + ORDER_PICKUP_DATE + "=#{date} AND o.status<>'CANCELLED' AND NOT i.is_removed AND upper(i.product_type)='CAKE'"
             + " GROUP BY cake_size_inches(i.attributes), COALESCE(NULLIF(btrim(i.attributes->>'base'),''),NULLIF(btrim(i.attributes->>'cakeBase'),''),'原味')"
             + " ORDER BY cake_size_inches(i.attributes) NULLS LAST, flavor")
     List<CakeBaseRow> cakeBases(LocalDate date);

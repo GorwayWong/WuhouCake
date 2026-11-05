@@ -1,15 +1,41 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createOrderRequest, moneyToCents, newDraft, newItem, storeTime, validDate } from '../src/orderForm.ts';
+import { changeItemDraft, itemInput, createOrderRequest, moneyToCents, newDraft, newItem, storeTime, validDate } from '../src/orderForm.ts';
 
-test('收货日期必填、时刻可留空，收货与取货共用时刻且不改变出品时间', () => {
+test('蛋糕忽略隐藏的旧单价，切换品类清空价格，其他商品价格继续选填', () => {
+  const cake = newItem(); cake.name = '生日蛋糕'; cake.unitPrice = '未完成'; cake.memberPrice = '-1';
+  assert.deepEqual(itemInput(cake).errors, {});
+  assert.equal(itemInput(cake).item?.unitPriceCents, null); assert.equal(itemInput(cake).item?.memberPriceCents, null);
+  const drink = changeItemDraft(cake, { productType: 'DRINK' });
+  assert.equal(drink.unitPrice, ''); assert.equal(drink.memberPrice, '');
+  assert.deepEqual(itemInput(drink).errors, {});
+  drink.unitPrice = '10.29'; drink.memberPrice = '0';
+  assert.equal(itemInput(drink).item?.unitPriceCents, 1029); assert.equal(itemInput(drink).item?.memberPriceCents, 0);
+  const back = changeItemDraft(drink, { productType: 'CAKE' });
+  assert.equal(back.unitPrice, ''); assert.equal(back.memberPrice, '');
+});
+
+test('蛋糕空规格提交使用三个默认值，手工规格保持，非蛋糕不补齐', () => {
+  const draft = newItem(); draft.name = '蛋糕';
+  assert.equal(draft.attributes.flavor, '');
+  for (const blank of ['', ' \t\n']) {
+    draft.attributes.base = blank; draft.attributes.filling = blank; draft.attributes.flavor = blank;
+    assert.deepEqual(itemInput(draft).item?.attributes, { base: '原味', filling: '芒果', flavor: '原味奶油' });
+  }
+  Object.assign(draft.attributes, { base: '巧克力', filling: '草莓', flavor: '巧克力奶油' });
+  assert.deepEqual(itemInput(draft).item?.attributes, { base: '巧克力', filling: '草莓', flavor: '巧克力奶油' });
+  const bread = changeItemDraft(newItem(), { productType: 'BREAD', name: '面包' });
+  assert.deepEqual(itemInput(bread).item?.attributes, {});
+});
+
+test('收货日期必填、时刻可留空，取货同步旧字段并默认提前一小时出品', () => {
   const draft = newDraft('2026-10-25');
   draft.phone = '13800000000'; draft.address = '自提'; draft.items[0].name = '测试蛋糕';
   assert.equal(createOrderRequest(draft).request?.fulfillment.requestedReceiveAt, null);
   draft.requestedReceiveAt = '2026-10-25T18:30';
   assert.equal(createOrderRequest(draft).request?.fulfillment.requestedReceiveAt, '2026-10-25T18:30:00+08:00');
   assert.equal(createOrderRequest(draft).request?.fulfillment.plannedHandoffAt, '2026-10-25T18:30:00+08:00');
-  assert.equal(createOrderRequest(draft).request?.fulfillment.plannedFinishAt, null);
+  assert.equal(createOrderRequest(draft).request?.fulfillment.plannedFinishAt, '2026-10-25T17:30:00+08:00');
   draft.requestedReceiveAt = '2026-10-25T18:';
   assert.ok(createOrderRequest(draft).errors.requestedReceiveAt);
 });
@@ -65,8 +91,8 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   assert.equal(request.fulfillment.plannedHandoffAt, null);
   assert.equal(request.fulfillment.plannedFinishAt, null);
   assert.deepEqual(request.items.map(item => item.attributes), [{ size: '6', flavor: '芒果', base: '原味', filling: '芒果' }, { size: '8', flavor: '巧克力', base: '原味', filling: '芒果' }]);
-  assert.equal(request.items[0].unitPriceCents, 19900);
-  assert.equal(request.items[1].memberPriceCents, 0);
+  assert.equal(request.items[0].unitPriceCents, null);
+  assert.equal(request.items[1].memberPriceCents, null);
   assert.equal(request.items[1].quantity, 2);
   assert.equal('key' in request.items[0], false);
   assert.equal('status' in request, false);
@@ -111,4 +137,15 @@ test('空白必填项、无商品、非法数量与可选出品时间在提交�
   assert.equal(createOrderRequest(draft).request?.fulfillment.plannedFinishAt, '2026-10-13T09:00:00+08:00');
   draft.items = [];
   assert.ok(createOrderRequest(draft).errors.items);
+});
+
+test('订购方式创建时选填、裁剪首尾空白及长度验证', () => {
+  const draft = newDraft('2026-11-05');
+  draft.phone = '13800000000'; draft.address = '自提'; draft.items[0].name = '蛋糕';
+  assert.equal(createOrderRequest(draft).request?.orderingMethod, null);
+  draft.orderingMethod = '  微信  ';
+  assert.equal(createOrderRequest(draft).request?.orderingMethod, '微信');
+  draft.orderingMethod = '长'.repeat(80);
+  assert.equal(createOrderRequest(draft).request?.orderingMethod, draft.orderingMethod);
+  draft.orderingMethod += '长'; assert.ok(createOrderRequest(draft).errors.orderingMethod);
 });

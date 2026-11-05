@@ -1,3 +1,6 @@
+import { hasUnitPrices } from './productTypes.ts';
+import { defaultFinishTime } from './orderTimes.ts';
+import type { FinishTimeMode } from './orderTimes.ts';
 import { itemInput, newItem, moneyToCents } from './orderForm.ts';
 import type { ItemDraft } from './orderForm.ts';
 import { randomUUID } from './uuid.ts';
@@ -30,7 +33,8 @@ export interface EntryLink { ownerId: string; ownerName: string; url: string; en
 export interface SubmissionOrigin { submissionId: string; entryOwnerName: string; submittedAt: string; requestedReceiveAt: string }
 export interface SubmissionDraft {
   phone: string; memberPhone: string; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveAt: string;
-  items: ItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string; plannedFinishAt: string;
+  items: ItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode;
+  originalTime?: { requestedReceiveAt: string; plannedHandoffAt: string | null; plannedFinishAt: string | null; pickupTime: string };
 }
 export function localTime(instant: string | null): string {
   if (!instant) return '';
@@ -39,11 +43,11 @@ export function localTime(instant: string | null): string {
 export function overdueSubmissionDate(submission: Submission, todayDate: string): string | null {
   if (submission.status !== 'PENDING') return null;
   const content = submission.reviewed?.content || submission.original;
-  const date = localTime(content.requestedReceiveAt).slice(0, 10);
+  const date = localTime(submission.reviewed?.plannedHandoffAt || content.requestedReceiveAt).slice(0, 10);
   return date < todayDate ? date : null;
 }
 export function newSubmissionDraft(): SubmissionDraft {
-  return { phone: '', memberPhone: '', fulfillmentType: 'DELIVERY', address: '', requestedReceiveAt: '', items: [{ ...newItem(), name: '蛋糕' }], totalAmount: '', creditedEmployeeId: '', plannedHandoffAt: '', plannedFinishAt: '' };
+  return { phone: '', memberPhone: '', fulfillmentType: 'DELIVERY', address: '', requestedReceiveAt: '', items: [{ ...newItem(), name: '蛋糕' }], totalAmount: '', creditedEmployeeId: '', plannedHandoffAt: '', plannedFinishAt: '', finishTimeMode: 'AUTO' };
 }
 export function submissionDirty(draft: SubmissionDraft, initial: SubmissionDraft): boolean {
   return JSON.stringify(draft) !== JSON.stringify(initial);
@@ -52,11 +56,13 @@ export function draftFromSubmission(submission: Submission): SubmissionDraft {
   const review = submission.reviewed, content = review?.content || submission.original;
   const amount = (value: number | null | undefined) => value == null ? '' : exactYuan(value);
   return { ...newSubmissionDraft(), ...content, memberPhone: content.memberPhone || '', address: content.address || '',
-    requestedReceiveAt: localTime(content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
-    creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null), plannedFinishAt: localTime(review?.plannedFinishAt || null),
+    requestedReceiveAt: localTime(review?.plannedHandoffAt || content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
+    creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null), plannedFinishAt: localTime(review?.plannedFinishAt || null) || (!review ? defaultFinishTime(localTime(content.requestedReceiveAt)) : ''), finishTimeMode: review?.plannedFinishAt ? 'MANUAL' : 'AUTO',
+    ...(review ? { originalTime: { requestedReceiveAt: content.requestedReceiveAt, plannedHandoffAt: review.plannedHandoffAt, plannedFinishAt: review.plannedFinishAt || null,
+      pickupTime: localTime(review.plannedHandoffAt || content.requestedReceiveAt) } } : {}),
     items: content.items.map((item, i) => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: randomUUID(), quantity: String(item.quantity),
       attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: item.attributes.specification || (item.productType !== 'CAKE' ? item.attributes.filling || '' : ''), ...item.attributes },
-      defaultSpecifications: [], unitPrice: amount(review?.prices[i]?.unitPriceCents), memberPrice: amount(review?.prices[i]?.memberPriceCents) })) };
+      defaultSpecifications: [], unitPrice: hasUnitPrices(item.productType) ? amount(review?.prices[i]?.unitPriceCents) : '', memberPrice: hasUnitPrices(item.productType) ? amount(review?.prices[i]?.memberPriceCents) : '' })) };
 }
 export function submissionRequest(draft: SubmissionDraft, staff = false) {
   const errors: Record<string, string> = {};
@@ -77,10 +83,13 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
     if (localTime(result) !== value) { errors[field] = '请填写有效日期和时刻。'; return null; }
     return result;
   };
-  const requestedReceiveAt = instant(draft.requestedReceiveAt, 'requestedReceiveAt', true) || '';
+  const pickupAt = instant(draft.requestedReceiveAt, 'requestedReceiveAt', true) || '';
+  const unchangedTime = staff && draft.originalTime?.pickupTime === draft.requestedReceiveAt;
+  const requestedReceiveAt = unchangedTime ? draft.originalTime!.requestedReceiveAt : pickupAt;
   if (!draft.items.length || draft.items.length > 30) errors.items = '请保留 1–30 项商品。';
   const items = draft.items.map((item, index) => {
-    const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '' });
+    const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '',
+      attributes: { ...item.attributes, ...(item.productType === 'CAKE' ? { flavor: item.attributes.flavor.trim() || '原味动物奶油' } : {}) } });
     const type = normalizeProductType(item.productType);
     if (!Object.hasOwn(productTypes, type)) errors[`items.${index}.productType`] = '请选择蛋糕、茶歇、饼干、小吃、饮品或现货面包甜点。';
     if (result.item) result.item.productType = type;
@@ -97,8 +106,9 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
   if (staff) { try { totalAmountCents = moneyToCents(draft.totalAmount); } catch (error) { errors.totalAmount = (error as Error).message; } }
   const review: SubmissionReview = { content, totalAmountCents, creditedEmployeeId: draft.creditedEmployeeId || null,
     prices: items.filter(item => item !== null).map(item => ({ unitPriceCents: item.unitPriceCents, memberPriceCents: item.memberPriceCents })),
-    plannedHandoffAt: staff ? instant(draft.plannedHandoffAt, 'plannedHandoffAt', false) : null,
-    plannedFinishAt: staff ? instant(draft.plannedFinishAt, 'plannedFinishAt', false) : null };
+    plannedHandoffAt: staff ? unchangedTime ? draft.originalTime!.plannedHandoffAt : pickupAt || null : null,
+    plannedFinishAt: staff ? draft.originalTime && unchangedTime && draft.plannedFinishAt === localTime(draft.originalTime.plannedFinishAt)
+      ? draft.originalTime.plannedFinishAt : instant(draft.plannedFinishAt || (draft.finishTimeMode === 'AUTO' ? defaultFinishTime(draft.requestedReceiveAt) : ''), 'plannedFinishAt', false) : null };
   return { content, review, errors };
 }
 

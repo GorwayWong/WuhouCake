@@ -20,6 +20,7 @@ public final class Order {
     private String paymentStatus;
     private Instant paidAt;
     private String currentStageCode;
+    private String orderingMethod;
     private CustomerContact customer;
     private FulfillmentPlan fulfillment;
     private Long totalAmountCents;
@@ -53,6 +54,13 @@ public final class Order {
     public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
             FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
             Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion) {
+        this(id, orderNo, version, status, paymentStatus, currentStageCode, customer, fulfillment, totalAmountCents,
+                createdBy, createdAt, confirmedAt, updatedAt, items, creditedEmployee, paidAt, deletion, null);
+    }
+    public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
+            FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
+            Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion, String orderingMethod) {
+        this.orderingMethod = normalizeOrderingMethod(orderingMethod);
         this.id = Objects.requireNonNull(id); this.orderNo = requiredText(orderNo, 32);
         this.version = nonNegativeInteger(version); this.status = Objects.requireNonNull(status); this.paymentStatus = Objects.requireNonNull(paymentStatus);
         if (currentStageCode != null && !Set.of("LAYER_DONE", "FROSTING_DONE", "OTHER_DONE").contains(currentStageCode)) throw invalid();
@@ -75,6 +83,12 @@ public final class Order {
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee) {
         return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items, creditedEmployee);
     }
+    public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
+            List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod) {
+        return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now,
+                items, creditedEmployee, null, null, orderingMethod);
+    }
+    public String orderingMethod() { return orderingMethod; }
     public OrderItem requireActiveItem(UUID itemId) {
         var item = requireItem(itemId);
         if (item.removed()) throw new OrderFailure("ORDER_NOT_FOUND");
@@ -156,9 +170,10 @@ public final class Order {
     public Map<String, Object> reviseInformation(Map<String, Object> changes, Instant now, Attribution employee) {
         requireWritable();
         var fields = Set.of("customerName", "phone", "memberPhone", "buyerName", "fulfillmentType", "address", "requestedReceiveDate",
-                "requestedReceiveAt", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "creditedEmployeeId");
+                "requestedReceiveAt", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "creditedEmployeeId", "orderingMethod");
         if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !fields.contains(key))) throw invalid();
         var previous = informationValues(customer, fulfillment, totalAmountCents);
+        previous.put("orderingMethod", orderingMethod);
         previous.put("creditedEmployeeId", creditedEmployee == null ? null : creditedEmployee.accountId().toString());
         var merged = new LinkedHashMap<>(previous); merged.putAll(changes);
         var contact = new CustomerContact(text(merged.get("customerName")), text(merged.get("phone")), text(merged.get("memberPhone")), text(merged.get("buyerName")));
@@ -166,21 +181,34 @@ public final class Order {
         try { type = FulfillmentType.valueOf(text(merged.get("fulfillmentType"))); }
         catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
         var requestedDate = date(merged.get("requestedReceiveDate"));
-        var requestedAt = changes.containsKey("requestedReceiveAt") ? instant(changes.get("requestedReceiveAt")) : fulfillment.requestedReceiveAt();
-        if (changes.containsKey("requestedReceiveAt") && requestedAt != null) {
-            var derivedDate = receiveDate(requestedAt);
-            if (changes.containsKey("requestedReceiveDate") && !derivedDate.equals(requestedDate)) throw invalid();
-            requestedDate = derivedDate;
-        } else if (requestedAt != null && !Objects.equals(requestedDate, fulfillment.requestedReceiveDate())) throw invalid();
-        var plan = new FulfillmentPlan(type, text(merged.get("address")), requestedDate,
-                changes.containsKey("plannedHandoffAt") ? instant(changes.get("plannedHandoffAt")) : fulfillment.plannedHandoffAt(),
+        var requestedAt = fulfillment.requestedReceiveAt();
+        var handoffAt = fulfillment.plannedHandoffAt();
+        boolean pickupChanged = changes.containsKey("plannedHandoffAt")
+                ? !Objects.equals(instant(changes.get("plannedHandoffAt")), fulfillment.plannedHandoffAt())
+                    || changes.get("plannedHandoffAt") == null && fulfillment.requestedReceiveAt() != null
+                    || changes.containsKey("requestedReceiveAt") && !Objects.equals(instant(changes.get("requestedReceiveAt")), fulfillment.requestedReceiveAt())
+                : changes.containsKey("requestedReceiveAt") && !Objects.equals(instant(changes.get("requestedReceiveAt")), fulfillment.requestedReceiveAt());
+        if (pickupChanged) {
+            handoffAt = instant(changes.get(changes.containsKey("plannedHandoffAt") ? "plannedHandoffAt" : "requestedReceiveAt"));
+            requestedAt = handoffAt;
+            if (handoffAt != null) {
+                requestedDate = receiveDate(handoffAt);
+                if (changes.containsKey("requestedReceiveDate") && !requestedDate.equals(date(changes.get("requestedReceiveDate")))) throw invalid();
+            } else if (!changes.containsKey("requestedReceiveDate")) requestedDate = fulfillment.pickupDate();
+        } else if (!Objects.equals(requestedDate, fulfillment.requestedReceiveDate())) {
+            if (requestedAt != null) throw invalid();
+            handoffAt = null;
+        }
+        var plan = new FulfillmentPlan(type, text(merged.get("address")), requestedDate, handoffAt,
                 changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt(), requestedAt);
         var total = money(merged.get("totalAmountCents"));
         var nextStatus = status;
         if (type != fulfillment.type() && Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(status))
             nextStatus = type == FulfillmentType.DELIVERY ? "WAITING_DELIVERY" : "WAITING_PICKUP";
         var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
+        var nextMethod = normalizeOrderingMethod(merged.get("orderingMethod"));
         var nextValues = informationValues(contact, plan, total);
+        nextValues.put("orderingMethod", nextMethod);
         nextValues.put("creditedEmployeeId", employee == null ? null : employee.accountId().toString());
         nextValues.forEach((field, value) -> {
             if (!Objects.equals(previous.get(field), value)) { before.put(field, previous.get(field)); after.put(field, value); }
@@ -193,7 +221,7 @@ public final class Order {
         if (before.isEmpty()) return Map.of();
         requireNextVersion();
         var details = JsonSnapshot.object(Map.of("before", before, "after", after));
-        customer = contact; fulfillment = plan; totalAmountCents = total; status = nextStatus; creditedEmployee = employee; version++; updatedAt = now;
+        orderingMethod = nextMethod; customer = contact; fulfillment = plan; totalAmountCents = total; status = nextStatus; creditedEmployee = employee; version++; updatedAt = now;
         return details;
     }
     private static Map<String, Object> informationValues(CustomerContact customer, FulfillmentPlan fulfillment, Long total) {
@@ -207,6 +235,9 @@ public final class Order {
         values.put("plannedFinishAt", fulfillment.plannedFinishAt() == null ? null : fulfillment.plannedFinishAt().toString());
         values.put("totalAmountCents", total);
         return values;
+    }
+    private static String normalizeOrderingMethod(Object value) {
+        return optionalText(value == null ? null : text(value).strip(), 80);
     }
     private static String text(Object value) {
         if (value == null) return null;

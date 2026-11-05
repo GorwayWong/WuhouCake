@@ -29,19 +29,21 @@ export interface PendingOrder extends Omit<CalendarOrder, 'customerPhoneLast4'> 
 export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number } | null; pendingOrders: PendingOrder[] }
 export interface Detail extends OrderStatus {
   deletion?: { deletedAt: string; deletedBy: string; employeeName: string; reason: string; expiresAt: string } | null;
+  orderingMethod?: string | null;
   createdBy?: string | null; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
   orderId: string; orderNo: string; version: number; customer: Customer | null; fulfillment: Fulfillment;
   totalAmountCents: number | null; paidAt?: string | null; createdAt: string | null; updatedAt: string; items: Item[];
 }
 export interface CreateOrderRequest {
+  orderingMethod?: string | null;
   creditedEmployeeId?: string;
   customer: Customer;
   fulfillment: Omit<Fulfillment, 'type'> & { type: 'DELIVERY' | 'PICKUP' };
-  items: Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'>[];
+  items: (Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'> & { itemId?: string })[];
   totalAmountCents: number | null;
 }
 export type InformationChanges = Partial<Customer & Omit<Fulfillment, 'type'> & {
-  fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null; creditedEmployeeId: string;
+  orderingMethod: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null; creditedEmployeeId: string;
 }>;
 export interface InformationRequest { expectedVersion: number; changes: InformationChanges }
 export type ItemInput = CreateOrderRequest['items'][number];

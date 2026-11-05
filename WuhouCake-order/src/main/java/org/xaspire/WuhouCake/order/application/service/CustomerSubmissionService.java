@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.time.Clock;
 import java.util.*;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import org.springframework.transaction.annotation.Transactional;
 import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
@@ -82,11 +83,7 @@ public class CustomerSubmissionService {
     @Transactional public SubmissionViews.Detail save(UUID id, SubmissionCommands.Save command) {
         var me = staff(); var submission = require(id, true); submission.requirePending(nonNegativeInteger(command.expectedVersion()));
         if (command.review() == null) throw invalid();
-        money(command.review().totalAmountCents());
-        if (command.review().prices() != null) command.review().prices().forEach(price -> {
-            if (price == null) throw invalid(); money(price.unitPriceCents()); money(price.memberPriceCents());
-        });
-        var review = convert(command.review(), CustomerSubmission.Review.class);
+        var review = reviewForWrite(command.review());
         if (review.creditedEmployeeId() != null) identity.selectEmployee(review.creditedEmployeeId());
         if (Objects.equals(submission.reviewed(), review)) return view(submission, true);
         var before = submission.reviewed() == null ? submission.original() : submission.reviewed().content();
@@ -172,10 +169,34 @@ public class CustomerSubmissionService {
     }
     private SubmissionViews.Detail view(CustomerSubmission submission, boolean history) {
         var duplicates = "PENDING".equals(submission.status()) ? submissions.duplicates(submission) : List.<CustomerSubmissions.Duplicate>of();
-        return new SubmissionViews.Detail(convert(submission, SubmissionViews.Submission.class),
+        var exposed = snapshot(submission);
+        if (submission.reviewed() != null) exposed.put("reviewed", withoutCakePrices(submission.reviewed()));
+        return new SubmissionViews.Detail(convert(exposed, SubmissionViews.Submission.class),
                 duplicates.stream().map(record -> convert(record, SubmissionViews.Duplicate.class)).toList(),
                 "PENDING".equals(submission.status()) ? duplicateCheckToken(submission, duplicates) : null,
                 history ? submissions.activities(submission.id()).stream().map(a -> convert(a, SubmissionViews.Activity.class)).toList() : List.of());
+    }
+    private CustomerSubmission.Review reviewForWrite(SubmissionCommands.Review command) {
+        if (command.content() == null) throw invalid();
+        var content = convert(command.content(), CustomerSubmission.Content.class);
+        List<CustomerSubmission.Price> prices = null;
+        if (command.prices() != null) {
+            if (command.prices().size() != content.items().size()) throw new OrderFailure("SUBMISSION_PRICES_INVALID");
+            prices = new ArrayList<>();
+            for (int i = 0; i < content.items().size(); i++) {
+                var price = command.prices().get(i);
+                if (price == null) throw new OrderFailure("SUBMISSION_PRICES_INVALID");
+                prices.add(ProductCategories.hasUnitPrices(content.items().get(i).productType())
+                        ? new CustomerSubmission.Price(money(price.unitPriceCents()), money(price.memberPriceCents())) : new CustomerSubmission.Price(null, null));
+            }
+        }
+        return new CustomerSubmission.Review(content, prices, money(command.totalAmountCents()), command.creditedEmployeeId(), command.plannedHandoffAt(), command.plannedFinishAt());
+    }
+    private CustomerSubmission.Review withoutCakePrices(CustomerSubmission.Review review) {
+        var prices = new ArrayList<CustomerSubmission.Price>();
+        for (int i = 0; i < review.content().items().size(); i++) prices.add(
+                ProductCategories.hasUnitPrices(review.content().items().get(i).productType()) ? review.prices().get(i) : new CustomerSubmission.Price(null, null));
+        return new CustomerSubmission.Review(review.content(), prices, review.totalAmountCents(), review.creditedEmployeeId(), review.plannedHandoffAt(), review.plannedFinishAt());
     }
     private String duplicateCheckToken(CustomerSubmission submission, List<CustomerSubmissions.Duplicate> duplicates) {
         return fingerprint(List.of(submission.id(), submission.version(), duplicates));

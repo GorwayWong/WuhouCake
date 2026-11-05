@@ -16,6 +16,13 @@ public interface OrderImageMapper {
     boolean activeItem(@Param("orderId") String orderId, @Param("itemId") String itemId);
     @Select("SELECT count(*) FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed")
     int count(String id);
+    @Select("SELECT count(*) FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND item_id=CAST(#{itemId} AS uuid) AND NOT is_removed")
+    int countItem(@Param("orderId") String orderId, @Param("itemId") String itemId);
+    record UploadRow(String imageId, String fingerprint) { }
+    @Select("SELECT image_id::text,fingerprint FROM cake_order_image_upload WHERE order_id=CAST(#{orderId} AS uuid) AND request_id=CAST(#{requestId} AS uuid)")
+    UploadRow findUpload(@Param("orderId") String orderId, @Param("requestId") String requestId);
+    @Insert("INSERT INTO cake_order_image_upload(order_id,request_id,image_id,fingerprint) VALUES(CAST(#{orderId} AS uuid),CAST(#{requestId} AS uuid),CAST(#{imageId} AS uuid),#{fingerprint})")
+    void recordUpload(@Param("orderId") String orderId, @Param("requestId") String requestId, @Param("imageId") String imageId, @Param("fingerprint") String fingerprint);
     @Insert("INSERT INTO cake_order_image (id, order_id, item_id, content_type, filename, size, width, height, uploaded_by,"
             + " uploader_name_snapshot, uploaded_at, content, processing_version) VALUES (CAST(#{image.imageId} AS uuid), CAST(#{image.orderId} AS uuid),"
             + " CAST(#{image.itemId} AS uuid), #{image.contentType}, #{image.filename}, #{image.size}, #{image.width}, #{image.height},"

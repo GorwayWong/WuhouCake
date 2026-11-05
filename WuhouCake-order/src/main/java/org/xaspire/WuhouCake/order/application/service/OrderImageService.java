@@ -40,20 +40,40 @@ public class OrderImageService {
         this.identity = identity;
     }
     public OrderFileViews.Image upload(UUID orderId, UUID itemId, byte[] content, String filename, Operator operator) {
+        return upload(orderId, itemId, content, filename, operator, null);
+    }
+    public OrderFileViews.Image upload(UUID orderId, UUID itemId, byte[] content, String filename, Operator operator, UUID requestId) {
+        if (itemId == null) throw new OrderFailure("IMAGE_ITEM_REQUIRED");
         var actor = new Actor(operator.accountId(), operator.nickname());
         var checked = validator.validate(content, filename);
+        var fingerprint = fingerprint(itemId, checked.filename(), content);
         byte[] stored = checked.content() == null ? content : checked.content();
         return writes.execute(transaction -> {
             if (!images.lockOrder(orderId)) throw new OrderFailure("ORDER_NOT_FOUND");
             orders.find(orderId).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND")).requireWritable();
-            if (itemId != null && !images.activeItem(orderId, itemId)) throw new OrderFailure("ORDER_NOT_FOUND");
-            if (images.count(orderId) >= IMAGES_PER_ORDER) throw new OrderFailure("ORDER_IMAGE_LIMIT_EXCEEDED");
+            if (!images.activeItem(orderId, itemId)) throw new OrderFailure("ORDER_NOT_FOUND");
+            if (requestId != null) {
+                var previous = images.findUpload(orderId, requestId);
+                if (previous.isPresent()) {
+                    if (!previous.get().fingerprint().equals(fingerprint)) throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
+                    return view(images.find(orderId, previous.get().imageId()).orElseThrow(() -> new OrderFailure("IMAGE_UPLOAD_REMOVED")));
+                }
+            }
+            if (images.countItem(orderId, itemId) >= IMAGES_PER_ITEM) throw new OrderFailure("ORDER_IMAGE_LIMIT_EXCEEDED");
             var image = new OrderImage(ids.nextId(), orderId, itemId, checked.contentType(), checked.filename(), stored.length,
                     checked.width(), checked.height(), actor.accountId(), actor.nickname(), clock.instant().truncatedTo(ChronoUnit.MICROS));
             images.insert(image, stored);
+            if (requestId != null) images.recordUpload(orderId, requestId, image.imageId(), fingerprint);
             changed(image, actor, OrderChanged.Type.IMAGE_ADDED);
             return view(image);
         });
+    }
+    private static String fingerprint(UUID itemId, String filename, byte[] content) {
+        try {
+            var hash = java.security.MessageDigest.getInstance("SHA-256");
+            hash.update((itemId + "\0" + filename + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash.digest(content));
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
     public void remove(UUID orderId, UUID imageId, Operator operator) {
         var actor = new Actor(operator.accountId(), operator.nickname());

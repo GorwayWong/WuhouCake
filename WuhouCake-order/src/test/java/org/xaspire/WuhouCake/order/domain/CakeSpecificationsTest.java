@@ -34,5 +34,24 @@ class CakeSpecificationsTest {
         assertEquals("异常旧值", old.revise(Map.of("quantity", 2), Instant.now()).attributes().get("size"));
         assertThrows(OrderFailure.class, () -> old.revise(Map.of("attributes", Map.of("size", "abc")), Instant.now()));
     }
+    @Test void everyDefaultHandlesMissingNullBlankAndExplicitValues() {
+        var custom = Map.<String, Object>of("base", "巧克力", "filling", "草莓", "flavor", "巧克力奶油");
+        assertEquals(custom, item("CAKE", custom).attributes());
+        for (String key : CakeSpecifications.DEFAULTS.keySet()) {
+            for (String blank : List.of("", " \t\n")) {
+                assertEquals(CakeSpecifications.DEFAULTS, item("CAKE", Map.of(key, blank)).attributes());
+                assertEquals(CakeSpecifications.DEFAULTS.get(key), item("CAKE", custom)
+                        .revise(Map.of("attributes", Map.of(key, blank)), Instant.now()).attributes().get(key));
+            }
+            var clearing = new HashMap<String, Object>(); clearing.put(key, null);
+            assertEquals(CakeSpecifications.DEFAULTS, item("CAKE", clearing).attributes());
+            assertEquals(CakeSpecifications.DEFAULTS.get(key), item("CAKE", custom)
+                    .revise(Map.of("attributes", clearing), Instant.now()).attributes().get(key));
+        }
+        assertEquals(CakeSpecifications.DEFAULTS, item("CAKE", null).attributes());
+        var old = new OrderItem(UUID.randomUUID(), "旧单", "CAKE", 1, null, null, Map.of(), "NOT_STARTED", null, false, Instant.EPOCH, Instant.EPOCH);
+        assertEquals(CakeSpecifications.DEFAULTS, old.attributes());
+        for (String type : List.of("BREAD", "DONUT", "CUPCAKE", "DRINK")) assertTrue(item(type, Map.of()).attributes().isEmpty());
+    }
     private static OrderItem item(String type, Map<String, Object> attributes) { return OrderItem.create(UUID.randomUUID(), "合成商品", type, 1, null, null, attributes, Instant.EPOCH); }
 }

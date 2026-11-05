@@ -20,14 +20,14 @@ public class OrderManagementController {
     }
     public record Query(@DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to, String status, String paymentStatus,
-            String fulfillmentType, String sizeInches, UUID creditedEmployeeId, Boolean unassigned, Boolean includeCancelled, String keyword, String dateBasis, Boolean allUnpaid, Boolean deleted) {
+            String fulfillmentType, String sizeInches, UUID creditedEmployeeId, Boolean unassigned, Boolean includeCancelled, String keyword, String dateBasis, Boolean allUnpaid, Boolean deleted, String productName, String orderingMethod) {
         OrderManagementQuery command() {
             LocalDate start = from, end = to;
             if (Boolean.TRUE.equals(deleted) && start == null && end == null) {
                 end = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).plusDays(1); start = end.minusDays(30);
             }
             return new OrderManagementQuery(start, end, status, paymentStatus, fulfillmentType, sizeInches, creditedEmployeeId,
-                    Boolean.TRUE.equals(unassigned), Boolean.TRUE.equals(includeCancelled), keyword, dateBasis, Boolean.TRUE.equals(allUnpaid), Boolean.TRUE.equals(deleted));
+                    Boolean.TRUE.equals(unassigned), Boolean.TRUE.equals(includeCancelled), keyword, dateBasis, Boolean.TRUE.equals(allUnpaid), Boolean.TRUE.equals(deleted), productName, orderingMethod);
         }
     }
     @GetMapping

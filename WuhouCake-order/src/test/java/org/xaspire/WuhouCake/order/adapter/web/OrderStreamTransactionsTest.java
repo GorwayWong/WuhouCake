@@ -168,12 +168,13 @@ class OrderStreamTransactionsTest {
         var image = new OrderImage(UUID.randomUUID(), order.id(), null, "image/png", "cake.png", 1, 1, 1,
                 operator.accountId(), operator.nickname(), NOW);
         when(images.lockOrder(order.id())).thenReturn(true);
+        when(images.activeItem(eq(order.id()), any())).thenReturn(true);
         when(images.find(order.id(), image.imageId())).thenReturn(Optional.of(image));
         when(validator.validate(any(), anyString())).thenReturn(new OrderImageValidator.Checked("image/png", "cake.png", 1, 1));
         var service = new OrderImageService(orders, images, validator, new TransactionTemplate(manager), UUID::randomUUID,
                 Clock.fixed(NOW, ZoneOffset.UTC), activities, context);
         return removal ? () -> service.remove(order.id(), image.imageId(), operator)
-                : () -> service.upload(order.id(), null, new byte[]{1}, "cake.png", operator);
+                : () -> service.upload(order.id(), order.activeItems().getFirst().itemId(), new byte[]{1}, "cake.png", operator);
     }
     @Test void sendFailureCannotFailTheCommittedServiceOperation() throws Exception {
         doThrow(new IOException("disconnected")).when(emitter).send(any(SseEmitter.SseEventBuilder.class));

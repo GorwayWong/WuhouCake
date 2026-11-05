@@ -1,14 +1,16 @@
+import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
+import { firstItemFormError } from './productFormLayout';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ApiError, creationResultUnknown } from './api';
-import { canEditItems, changeItemDraft, itemChangeRequest, itemDraft, itemInput, newItem, fieldsForProduct, textSpecification } from './orderForm';
+import { canEditItems, changeItemDraft, itemChangeRequest, itemDraft, itemInput, newItem, textSpecification } from './orderForm';
 import type { Detail, ItemAddRequest, ItemChangeRequest } from './types';
 import { ErrorNotice, Product, valueText } from './ui';
 import { ProductTypeSelect } from './ProductTypeSelect';
 import { focusFormField } from './formFocus';
 
-function Field({ name, label, error, children, wide = false }: { name: string; label: string; error?: string; children: ReactNode; wide?: boolean }) {
-  return <label htmlFor={`item-${name}`} className={wide ? 'form-wide' : undefined}>{label}{children}{error && <span className="field-error" id={`item-${name}-error`}>{error}</span>}</label>;
+function Field({ name, label, error, children, className }: { name: string; label: ReactNode; error?: string; children: ReactNode; className?: string }) {
+  return <label htmlFor={`item-${name}`} className={className}><span className="form-field-heading">{label}</span>{children}{error && <span className="field-error" id={`item-${name}-error`}>{error}</span>}</label>;
 }
 export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSave, onCancel, onDirtyChange }: {
   initial: Detail; itemId?: string; latest: Detail; reopened?: Detail; busy: boolean; error: unknown;
@@ -46,7 +48,7 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
     const result = itemId ? itemChangeRequest(initial, itemId, draft, baseline) : { request: input.item ? { expectedVersion: baseline.version, item: input.item } : null, errors: input.errors };
     setErrors(result.errors);
     if (Object.keys(result.errors).length) {
-      focusFormField(form.current, Object.keys(result.errors)[0]);
+      focusFormField(form.current, firstItemFormError(result.errors, draft.productType, true)!);
       return;
     }
     if (!result.request) { onCancel(); return; }
@@ -57,13 +59,15 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
     }
   }}>
     <fieldset className="create-fields" disabled={busy}>
-      <div className="create-grid">
-        {((['name', 'productType', 'quantity', 'unitPrice', 'memberPrice']) as ('name' | 'productType' | 'quantity' | 'unitPrice' | 'memberPrice')[]).map((name, index) => <Field key={name} name={name} label={{ name: '商品名称 *', productType: '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[name]} error={errors[name]} wide={name === 'name'}>{name === 'productType' ? <ProductTypeSelect disabled={busy} {...props(name)} value={draft.productType} onChange={value => change(changeItemDraft(draft, { productType: value }))} /> : <input {...props(name)} autoFocus={index === 0} value={draft[name]} inputMode={name === 'quantity' ? 'numeric' : name.endsWith('Price') ? 'decimal' : undefined} maxLength={name === 'name' ? 128 : undefined} required={name === 'name' || name === 'quantity'} placeholder={name.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [name]: event.target.value }))} />}</Field>)}
-        {fieldsForProduct(draft.productType).map(([key, label]) => {
-          const structured = !textSpecification(original?.attributes[key]) || !textSpecification((baseline || latest).items.find(item => item.itemId === itemId)?.attributes[key]);
-          return <Field key={key} name={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} error={errors[key]} wide={key === 'requirements'}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[key] ?? original?.attributes[key])}<small>此规格保留原值。</small></span> : key === 'requirements' ? <textarea {...props(key)} rows={2} value={draft.attributes[key] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} /> : <input {...props(key)} inputMode={key === 'size' ? 'decimal' : undefined} value={draft.attributes[key] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [key]: event.target.value } }, key))} />}</Field>;
-        })}
-      </div>
+      <div className="create-item-heading product-form-heading"><h3>商品信息</h3><Field className="product-type-field" name="productType" label="商品类型" error={errors.productType}><ProductTypeSelect disabled={busy} {...props('productType')} value={draft.productType} onChange={value => change(changeItemDraft(draft, { productType: value }))} /></Field></div>
+      <ProductFormFields type={draft.productType} prices renderField={field => {
+        const required = field === 'name' || field === 'quantity';
+        if (field === 'name' || field === 'quantity' || field === 'unitPrice' || field === 'memberPrice') return <Field name={field} label={<ProductFieldLabel field={field} required={required} />} error={errors[field]}>
+          <input {...props(field)} autoFocus={field === 'name'} value={draft[field]} inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} maxLength={field === 'name' ? 128 : undefined} required={required} placeholder={field.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [field]: event.target.value }))} />
+        </Field>;
+        const structured = !textSpecification(original?.attributes[field]) || !textSpecification((baseline || latest).items.find(item => item.itemId === itemId)?.attributes[field]);
+        return <Field name={field} label={<ProductFieldLabel field={field} />} error={errors[field]}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[field] ?? original?.attributes[field])}<small>此规格保留原值。</small></span> : field === 'requirements' ? <textarea {...props(field)} rows={2} value={draft.attributes[field] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} /> : <input {...props(field)} inputMode={field === 'size' ? 'decimal' : undefined} value={draft.attributes[field] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} />}</Field>;
+      }} />
       <p className="form-help">商品报价不改变订单总额。{!itemId && latest.status === 'PROCESSING' && '追加商品后需重新确认制作进度。'}</p>
       <ErrorNotice error={unknownAddition ? null : error} />
       {unknownAddition && <p className="notice error" role="alert">追加结果未确认，输入已保留。请先核对商品列表和记录，再决定是否重试。</p>}

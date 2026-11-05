@@ -4,7 +4,15 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 public record OrderManagementQuery(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
-        String sizeInches, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted) {
+        String sizeInches, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted, String productName, String orderingMethod) {
+    public OrderManagementQuery(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
+            String sizeInches, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted, String productName) {
+        this(from, to, status, paymentStatus, fulfillmentType, sizeInches, creditedEmployeeId, unassigned, includeCancelled, keyword, dateBasis, allUnpaid, deleted, productName, null);
+    }
+    public OrderManagementQuery(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
+            String sizeInches, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted) {
+        this(from, to, status, paymentStatus, fulfillmentType, sizeInches, creditedEmployeeId, unassigned, includeCancelled, keyword, dateBasis, allUnpaid, deleted, null);
+    }
     public OrderManagementQuery(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
             String sizeInches, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid) {
         this(from, to, status, paymentStatus, fulfillmentType, sizeInches, creditedEmployeeId, unassigned, includeCancelled, keyword, dateBasis, allUnpaid, false);

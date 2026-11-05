@@ -45,7 +45,7 @@ public class OrderManagementService {
         return files.generate(filter, queries.search(filter, 10001, 0), totals, queries.sizes(filter), queries.employees(filter), products);
     }
     static Filter filter(OrderManagementQuery q) { return new Filter(q.from(), q.to(), q.status(), q.paymentStatus(), q.fulfillmentType(),
-            q.sizeInches(), q.creditedEmployeeId(), q.unassigned(), q.includeCancelled(), q.keyword(), q.dateBasis(), q.allUnpaid(), q.deleted()); }
+            q.sizeInches(), q.creditedEmployeeId(), q.unassigned(), q.includeCancelled(), q.keyword(), q.dateBasis(), q.allUnpaid(), q.deleted(), q.productName(), q.orderingMethod()); }
     private static Totals totals(OrderManagementQueries.Totals t) { return new Totals(t.orderCount(), t.matchingQuantity(), t.cakeQuantity(), t.unclassifiedCakeQuantity(), t.totalAmountCents(), t.paidAmountCents(), t.unpaidAmountCents(), t.missingAmountOrders()); }
     private List<Row> rows(List<OrderManagementQueries.Row> rows) {
         return rows(rows, false);

@@ -5,6 +5,7 @@ import org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands.Fulfillment;
 import org.xaspire.WuhouCake.order.api.dto.OrderQueryViews;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.*;
 
 /** Projects structured customer and financial data according to the caller's effective permissions. */
@@ -32,9 +33,9 @@ public final class OrderViewAccess {
                 amount ? source.paymentStatus() : null, source.currentStageCode(), contact,
                 fulfillment, amount ? source.totalAmountCents() : null, business ? source.createdBy() : null, business ? source.createdAt() : null, business ? source.confirmedAt() : null,
                 source.updatedAt(), source.items().stream().map(item -> new OrderViews.Item(item.itemId(), item.name(), item.productType(),
-                        item.quantity(), amount ? item.unitPriceCents() : null, amount ? item.memberPriceCents() : null,
+                        item.quantity(), amount && ProductCategories.hasUnitPrices(item.productType()) ? item.unitPriceCents() : null, amount && ProductCategories.hasUnitPrices(item.productType()) ? item.memberPriceCents() : null,
                         item.attributes(), item.productionStatus(), item.currentStageCode(), business ? item.createdAt() : null, item.updatedAt(), item.recentNotes())).toList(),
-                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion());
+                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business ? source.orderingMethod() : null);
     }
 
     public static List<OrderQueryViews.CalendarOrder> calendar(List<OrderQueryViews.CalendarOrder> source, EmployeeAccess access) {
@@ -51,7 +52,7 @@ public final class OrderViewAccess {
                 order.calendarDate(), order.status(), order.currentStageCode(), amount ? order.paymentStatus() : null, order.fulfillmentType(),
                 order.plannedHandoffAt(), customer ? order.customer() : null, customer ? order.address() : null, order.plannedFinishAt(),
                 order.items().stream().map(item -> new OrderQueryViews.Item(item.itemId(), item.name(), item.productType(), item.quantity(),
-                        amount ? item.unitPriceCents() : null, amount ? item.memberPriceCents() : null, item.attributes(), item.recentNotes())).toList(),
+                        amount && ProductCategories.hasUnitPrices(item.productType()) ? item.unitPriceCents() : null, amount && ProductCategories.hasUnitPrices(item.productType()) ? item.memberPriceCents() : null, item.attributes(), item.recentNotes())).toList(),
                 order.latestNote(), order.requestedReceiveAt())).toList();
         return new OrderQueryViews.Workbench(source.date(), source.metrics(), orders);
     }

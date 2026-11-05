@@ -4,7 +4,7 @@ import { ApiError, forgetSession, session, uploadOrderImage } from '../src/api.t
 import { imageFileError, loadImagePreview } from '../src/imagePreview.ts';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
-test('图片 FormData 保留真实文件与商品 ID，整单不发 itemId；失败与结果未知均不重传', async () => {
+test('图片 FormData 保留真实文件、商品 ID和稳定幂等键；失败与结果未知均不自动重传', async () => {
   const original = globalThis.fetch;
   Object.defineProperty(globalThis, 'document', { value: { cookie: 'XSRF-TOKEN=test' }, configurable: true });
   const requests: RequestInit[] = [];
@@ -28,10 +28,11 @@ test('图片 FormData 保留真实文件与商品 ID，整单不发 itemId；失
     assert.equal(requests[0].signal, controller.signal);
     const body = requests[0].body as FormData;
     assert.equal(body.get('file'), file); assert.equal(body.get('itemId'), 'item-a');
-    await uploadOrderImage('order-a', file, '');
-    assert.equal((requests[1].body as FormData).has('itemId'), false);
-    failure = 1; await assert.rejects(uploadOrderImage('order-a', file, ''), ApiError);
-    failure = 2; await assert.rejects(uploadOrderImage('order-a', file, ''), TypeError);
+    await uploadOrderImage('order-a', file, 'item-a', undefined, 'stable-upload-id');
+    assert.equal(new Headers(requests[1].headers).get('Idempotency-Key'), 'stable-upload-id');
+    assert.equal((requests[1].body as FormData).get('itemId'), 'item-a');
+    failure = 1; await assert.rejects(uploadOrderImage('order-a', file, 'item-a'), ApiError);
+    failure = 2; await assert.rejects(uploadOrderImage('order-a', file, 'item-a'), TypeError);
     await tick(); assert.equal(requests.length, 4);
   } finally { forgetSession(); globalThis.fetch = original; }
 });

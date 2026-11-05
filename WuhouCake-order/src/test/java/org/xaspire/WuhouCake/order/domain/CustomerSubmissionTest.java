@@ -5,6 +5,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CustomerSubmissionTest {
@@ -28,6 +29,19 @@ class CustomerSubmissionTest {
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Product("蛋糕", null, 1, Map.of()));
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Content("13800000000", null, "DELIVERY", "", Instant.now(), List.of(cake(Map.of("size", "8")))));
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Content("13800000000", null, "PICKUP", null, Instant.now(), List.of()));
+    }
+    @Test void blankCakeSpecificationsUseTheSharedDefaultsInSubmissionAndReview() {
+        for (String key : CakeSpecifications.DEFAULTS.keySet()) {
+            for (String blank : Arrays.asList(null, "", " \t\n")) {
+                var attributes = new HashMap<String, String>(); attributes.put("size", "8"); attributes.put(key, blank);
+                var product = cake(attributes);
+                CakeSpecifications.DEFAULTS.forEach((field, value) -> assertEquals(value, product.attributes().get(field)));
+                var content = new CustomerSubmission.Content("13800000000", null, "PICKUP", null, Instant.EPOCH, List.of(product));
+                assertEquals(product.attributes(), new CustomerSubmission.Review(content, null, null, null, null).content().items().getFirst().attributes());
+            }
+        }
+        assertEquals("原味奶油", new CustomerSubmission.Product("蛋糕", " cake ", 1, Map.of("size", "8")).attributes().get("flavor"));
+        assertEquals("巧克力奶油", cake(Map.of("size", "8", "flavor", "巧克力奶油")).attributes().get("flavor"));
     }
     @Test void receivingDateIsBeijingDateAndPhoneIsNotMemberIdentity() {
         var content = content("13800000000");

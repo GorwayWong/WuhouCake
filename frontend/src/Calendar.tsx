@@ -17,7 +17,7 @@ import { orderAccess } from './access';
 import { useReturnScroll } from './returnScroll';
 import { DayShippingSummary } from './DayShippingSummary';
 import { DayPreparationSummary } from './DayPreparationSummary';
-import { visibleCalendarFilters } from './shippingPayment';
+import { dailyOperationalCounts, visibleCalendarFilters } from './shippingPayment';
 
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 function MonthDayCell({ date, orders, view, onSelect }: { date: string; orders: CalendarOrder[]; view: CalendarView; onSelect: (date: string) => void }) {
@@ -55,7 +55,7 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     onCreatedOrderLocated?.(createdOrder.orderId);
   }, [createdOrder, onCreatedOrderLocated]);
   const statuses = calendarStatusOptions();
-  const daily = (workbench.data?.pendingOrders || []).filter(order => matchesCalendarFilters(order, effectiveFilters));
+  const daily = (workbench.data?.pendingOrders || []).filter(order => !order.deletion && !order.deleted && matchesCalendarFilters(order, effectiveFilters));
   const ordersByDay = new Map<string, CalendarOrder[]>();
   for (const order of [...(calendar.data || [])].sort(compareCalendarOrders)) {
     const orders = ordersByDay.get(order.calendarDate) || [];
@@ -140,6 +140,6 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
       <div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" aria-expanded={collapsedWeekDate !== selected} aria-controls="week-day-orders" onClick={() => setCollapsedWeekDate(collapsedWeekDate === selected ? null : selected)}>{collapsedWeekDate === selected ? <CaretDown /> : <CaretUp />}{collapsedWeekDate === selected ? '展开当日订单' : '收起当日订单'}</button></div>
       <div id="week-day-orders" hidden={collapsedWeekDate === selected}>{filtersControl}{timeline}</div>
     </>}
-    {(mode === 'week' || view.expanded) && <details className="panel daily-statistics"><summary>当日统计 · 按收货日期／付款日期查看</summary><DayShippingSummary date={selected} canReadAmounts={access.amounts} orders={workbench.data?.pendingOrders} /><DayPreparationSummary date={selected} canReadAmounts={access.amounts} /></details>}
+    {(mode === 'week' || view.expanded) && <details className="panel daily-statistics"><summary>当日统计</summary>{access.productionView ? <section className="panel" aria-label="制作订单汇总"><h2>订单总数</h2><p className="production-order-count">{workbench.data ? dailyOperationalCounts(workbench.data.pendingOrders).totalOrderCount : '—'} 笔</p></section> : <DayShippingSummary date={selected} canReadAmounts={access.amounts} orders={workbench.data?.pendingOrders} />}<DayPreparationSummary date={selected} /></details>}
   </div>;
 }

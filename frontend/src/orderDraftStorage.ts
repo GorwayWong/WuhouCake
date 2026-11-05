@@ -1,8 +1,9 @@
-import { newDraft, specificationFields } from './orderForm.ts';
+import { newDraft, specificationFields, withoutCakeUnitPrices } from './orderForm.ts';
 import type { OrderDraft } from './orderForm.ts';
 import type { RecognitionFeedbackMap } from './recognition.ts';
 import type { CreateOrderRequest } from './types.ts';
 import { randomUUID } from './uuid.ts';
+import { validDraftImages } from './draftImageMetadata.ts';
 
 export interface DraftEditor {
   text: string; open: boolean; selectedItemKey: string; scrollY: number;
@@ -11,6 +12,8 @@ export interface DraftEditor {
 export interface OrderDraftRecord {
   version: 1; accountId: string; requestId: string; revision: string; updatedAt: string;
   initial: OrderDraft; value: OrderDraft; editor: DraftEditor; pending?: CreateOrderRequest;
+  createdOrderId?: string;
+  imageStorageUsed?: boolean;
 }
 export const draftStorageKey = (accountId: string) => `wuhou:order-draft:v1:${accountId}`;
 export function freshOrderDraft(accountId: string, date: string): OrderDraftRecord {
@@ -25,13 +28,17 @@ const object = (value: unknown): value is Record<string, unknown> => Boolean(val
 const strings = (value: Record<string, unknown>, keys: string[]) => keys.every(key => typeof value[key] === 'string');
 function form(value: unknown): value is OrderDraft {
   if (!object(value) || !strings(value, ['customerName', 'phone', 'memberPhone', 'buyerName', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmount'])
+    || value.orderingMethod !== undefined && typeof value.orderingMethod !== 'string'
+    || value.orderingMethodCustom !== undefined && typeof value.orderingMethodCustom !== 'boolean'
+    || value.finishTimeMode !== undefined && !['AUTO', 'MANUAL'].includes(String(value.finishTimeMode))
     || !['DELIVERY', 'PICKUP'].includes(String(value.fulfillmentType)) || value.creditedEmployeeId !== undefined && typeof value.creditedEmployeeId !== 'string'
     || !Array.isArray(value.items) || !value.items.length) return false;
   const keys = new Set<string>();
   return value.items.every(item => {
     if (!object(item) || !strings(item, ['key', 'name', 'productType', 'quantity', 'unitPrice', 'memberPrice']) || !item.key || keys.has(String(item.key))
       || !object(item.attributes) || !strings(item.attributes, specificationFields.map(([key]) => key))
-      || item.defaultSpecifications !== undefined && (!Array.isArray(item.defaultSpecifications) || !item.defaultSpecifications.every(key => key === 'base' || key === 'filling'))
+      || item.defaultSpecifications !== undefined && (!Array.isArray(item.defaultSpecifications) || !item.defaultSpecifications.every(key => key === 'base' || key === 'filling' || key === 'flavor'))
+      || item.images !== undefined && !validDraftImages(item.images)
       || item.requiresTypeConfirmation !== undefined && typeof item.requiresTypeConfirmation !== 'boolean'
       || item.preservedAttributes !== undefined && !object(item.preservedAttributes)) return false;
     keys.add(String(item.key)); return true;
@@ -42,13 +49,14 @@ function request(value: unknown): value is CreateOrderRequest {
   const money = (v: unknown) => v === null || typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
   return object(value) && object(value.customer) && typeof value.customer.phone === 'string'
     && ['customerName', 'memberPhone', 'buyerName'].every(key => nullableString((value.customer as Record<string, unknown>)[key]))
+    && (value.orderingMethod === undefined || nullableString(value.orderingMethod))
     && (value.creditedEmployeeId === undefined || typeof value.creditedEmployeeId === 'string')
     && object(value.fulfillment) && ['DELIVERY', 'PICKUP'].includes(String(value.fulfillment.type))
     && typeof value.fulfillment.requestedReceiveDate === 'string'
     && ['address', 'plannedHandoffAt', 'plannedFinishAt'].every(key => nullableString((value.fulfillment as Record<string, unknown>)[key]))
     && (value.fulfillment.requestedReceiveAt === undefined || nullableString(value.fulfillment.requestedReceiveAt))
     && money(value.totalAmountCents) && Array.isArray(value.items) && value.items.length > 0
-    && value.items.every(item => object(item) && typeof item.name === 'string' && nullableString(item.productType)
+    && value.items.every(item => object(item) && (item.itemId === undefined || typeof item.itemId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.itemId)) && typeof item.name === 'string' && nullableString(item.productType)
       && Number.isInteger(item.quantity) && Number(item.quantity) > 0 && money(item.unitPriceCents) && money(item.memberPriceCents) && object(item.attributes));
 }
 export function decodeOrderDraft(raw: string, accountId: string): OrderDraftRecord | null {
@@ -63,8 +71,11 @@ export function decodeOrderDraft(raw: string, accountId: string): OrderDraftReco
       || !object(value.editor.feedback) || !Object.values(value.editor.feedback).every(mark => object(mark) && strings(mark, ['field', 'value'])
         && (mark.itemKey === undefined || typeof mark.itemKey === 'string') && (mark.error === undefined || typeof mark.error === 'string')
         && [null, 'RULE', 'MODEL', 'DEFAULT'].includes(mark.source as string | null) && typeof mark.needsReview === 'boolean')
-      || value.pending !== undefined && !request(value.pending)) return null;
-    return value as unknown as OrderDraftRecord;
+      || value.pending !== undefined && !request(value.pending)
+      || value.createdOrderId !== undefined && (typeof value.createdOrderId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.createdOrderId))
+      || value.imageStorageUsed !== undefined && typeof value.imageStorageUsed !== 'boolean') return null;
+    const record = value as unknown as OrderDraftRecord;
+    return { ...record, initial: withoutCakeUnitPrices(record.initial), value: withoutCakeUnitPrices(record.value) };
   } catch { return null; }
 }
 

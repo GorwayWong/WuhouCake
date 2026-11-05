@@ -69,7 +69,7 @@ class OrderFilesTest {
             assertFalse(values.contains("快照版本")); assertFalse(values.contains("WAITING_PRODUCTION"));
             var product = book.getSheet("商品明细").getRow(1);
             assertEquals("=蛋糕", product.getCell(1).getStringCellValue()); assertEquals(CellType.STRING, product.getCell(1).getCellType());
-            assertEquals("1.01", product.getCell(4).getStringCellValue()); assertEquals("未填写", product.getCell(5).getStringCellValue());
+            assertEquals("", product.getCell(4).getStringCellValue()); assertEquals("", product.getCell(5).getStringCellValue());
             assertEquals("蛋糕", product.getCell(2).getStringCellValue());
             assertTrue(product.getCell(6).getStringCellValue().contains("草莓、芒果"));
             assertTrue(product.getCell(6).getStringCellValue().contains("内胚：原味"));

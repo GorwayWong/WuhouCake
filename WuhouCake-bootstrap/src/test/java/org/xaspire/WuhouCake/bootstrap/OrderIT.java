@@ -54,6 +54,7 @@ class OrderIT {
     @Autowired IdentityService identity;
     @Autowired OrderService orderService;
     @Autowired PlatformTransactionManager transactions;
+    @Autowired org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderManagementMapper managementMapper;
     @MockitoSpyBean OrderActivities activities;
     @MockitoSpyBean Orders orders;
     @MockitoSpyBean Clock clock;
@@ -72,7 +73,54 @@ class OrderIT {
         var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys);
     }
 
-    @Test void dateOnlyReschedulingPersistsClearingAndKeepsOtherTimesAndHistory() throws Exception {
+    @Test void orderingMethodPersistsClearsAndUsesOptimisticConcurrency() throws Exception {
+        var staff = staff(); var input = new LinkedHashMap<>(create()); input.put("orderingMethod", "  微信  ");
+        var response = staff.request("POST", "/api/orders", input);
+        assertEquals(201, response.status, response.body.toString());
+        var created = response.body.path("data"); String id = created.path("orderId").asText();
+        assertEquals("微信", created.path("orderingMethod").asText());
+        assertEquals("微信", jdbc.queryForObject("SELECT ordering_method FROM cake_order WHERE id=?::uuid", String.class, id));
+        assertEquals("微信", staff.request("GET", "/api/orders/" + id, null).body.at("/data/orderingMethod").asText());
+        var changed = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("orderingMethod", "电话")));
+        assertEquals(200, changed.status, changed.body.toString());
+        assertEquals("电话", changed.body.at("/data/orderingMethod").asText());
+        assertEquals(409, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("orderingMethod", "到店"))).status);
+        assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("orderingMethod", "长".repeat(81)))).status);
+        assertEquals("电话", jdbc.queryForObject("SELECT ordering_method FROM cake_order WHERE id=?::uuid", String.class, id));
+        var changes = new LinkedHashMap<String, Object>(); changes.put("orderingMethod", null);
+        var cleared = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", changes));
+        assertEquals(200, cleared.status, cleared.body.toString()); assertTrue(cleared.body.at("/data/orderingMethod").isNull());
+        assertNull(jdbc.queryForObject("SELECT ordering_method FROM cake_order WHERE id=?::uuid", String.class, id));
+        assertEquals(2L, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='ORDER_INFORMATION_CHANGED' AND jsonb_exists(details->'after', 'orderingMethod')", Long.class, id));
+        input.put("orderingMethod", "长".repeat(81)); assertEquals(400, staff.request("POST", "/api/orders", input).status);
+        var legacy = staff.request("POST", "/api/orders", create()); assertEquals(201, legacy.status); assertTrue(legacy.body.at("/data/orderingMethod").isNull());
+    }
+
+    @Test void cakeDefaultsPersistAndLegacyReadsDoNotRewriteTheDatabase() throws Exception {
+        var staff = staff(); var created = staff.request("POST", "/api/orders", create()).body.path("data");
+        String id = created.path("orderId").asText(), cakeId = idForName(created, "蛋糕");
+        assertEquals("原味奶油", item(created, cakeId).at("/attributes/flavor").asText());
+        assertEquals("原味奶油", jdbc.queryForObject("SELECT attributes->>'flavor' FROM cake_order_item WHERE id=?::uuid", String.class, cakeId));
+        jdbc.update("UPDATE cake_order_item SET attributes=attributes - 'flavor' - 'base' - 'filling' WHERE id=?::uuid", cakeId);
+        var old = item(staff.request("GET", "/api/orders/" + id, null).body.path("data"), cakeId);
+        assertEquals("原味奶油", old.at("/attributes/flavor").asText());
+        assertEquals("芒果", old.at("/attributes/filling").asText()); assertEquals("原味", old.at("/attributes/base").asText());
+        assertNull(jdbc.queryForObject("SELECT attributes->>'flavor' FROM cake_order_item WHERE id=?::uuid", String.class, cakeId));
+        var filter = new org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.Filter(null, null, null, null, null, null, null, false, false, null, null, true);
+        var exportedCake = managementMapper.products(filter, 100).stream().filter(product -> "CAKE".equals(product.productType())).findFirst().orElseThrow();
+        assertEquals("原味奶油", exportedCake.flavor());
+        var saved = staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 0, Map.of("quantity", 2)));
+        assertEquals(200, saved.status, saved.body.toString());
+        assertEquals("原味奶油", jdbc.queryForObject("SELECT attributes->>'flavor' FROM cake_order_item WHERE id=?::uuid", String.class, cakeId));
+        var custom = Map.of("base", "巧克力", "filling", "草莓", "flavor", "巧克力奶油");
+        assertEquals(200, staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 1, Map.of("attributes", custom))).status);
+        var cleared = new HashMap<String, Object>(); cleared.put("base", null); cleared.put("filling", ""); cleared.put("flavor", " \t");
+        var result = staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 2, Map.of("attributes", cleared)));
+        assertEquals(200, result.status, result.body.toString());
+        assertEquals("原味奶油", jdbc.queryForObject("SELECT attributes->>'flavor' FROM cake_order_item WHERE id=?::uuid", String.class, cakeId));
+    }
+
+    @Test void dateOnlyReschedulingClearsPickupMirrorsAndPreservesHistory() throws Exception {
         var staff = staff();
         var order = staff.request("POST", "/api/orders", create()).body.path("data");
         String id = order.path("orderId").asText();
@@ -84,11 +132,38 @@ class OrderIT {
         var reloaded = staff.request("GET", "/api/orders/" + id, null).body.path("data");
         assertEquals("2026-10-26", reloaded.at("/fulfillment/requestedReceiveDate").asText());
         assertTrue(reloaded.at("/fulfillment/requestedReceiveAt").isNull());
-        assertEquals(order.at("/fulfillment/plannedHandoffAt"), reloaded.at("/fulfillment/plannedHandoffAt"));
+        assertTrue(reloaded.at("/fulfillment/plannedHandoffAt").isNull());
         assertNull(jdbc.queryForObject("SELECT requested_receive_at FROM cake_order WHERE id=?::uuid", java.sql.Timestamp.class, id));
         var log = staff.request("GET", "/api/orders/" + id + "/activities?type=ORDER_INFORMATION_CHANGED", null).body.at("/data/items/0");
         assertEquals("2026-10-25T10:30:00Z", log.at("/details/before/requestedReceiveAt").asText());
         assertTrue(log.at("/details/after/requestedReceiveAt").isNull());
+    }
+
+    @Test void legacyPickupDatesDriveCalendarWorkbenchAndExportsWithoutRewritingStoredTimes() throws Exception {
+        var staff = staff(); var created = createOn(staff, "2026-11-05", "18:00", "DELIVERY");
+        String id = created.path("orderId").asText();
+        jdbc.update("UPDATE cake_order SET planned_handoff_at='2026-11-03T16:30:27.123456Z',planned_finish_at='2026-11-03T15:30:00Z' WHERE id=?::uuid", id);
+        var raw = jdbc.queryForMap("SELECT requested_receive_date,requested_receive_at,planned_handoff_at,planned_finish_at FROM cake_order WHERE id=?::uuid", id);
+        assertEquals(List.of(id), orderIds(query(staff, "/api/orders/calendar?from=2026-11-04&to=2026-11-05")));
+        assertTrue(query(staff, "/api/orders/calendar?from=2026-11-05&to=2026-11-06").isEmpty());
+        var workbench = query(staff, "/api/orders/workbench?date=2026-11-04");
+        assertEquals(id, workbench.at("/pendingOrders/0/orderId").asText());
+        assertEquals("2026-11-04", workbench.at("/pendingOrders/0/calendarDate").asText());
+        assertEquals(1, query(staff, "/api/orders/workbench/payment-summary?date=2026-11-04").path("totalOrderCount").asInt());
+        assertEquals(List.of(id), queryMapper.exportIds(LocalDate.of(2026, 11, 4), LocalDate.of(2026, 11, 5), null, null, null, 10));
+        var detail = query(staff, "/api/orders/" + id);
+        assertEquals("2026-11-05", detail.at("/fulfillment/requestedReceiveDate").asText());
+        assertEquals(0, detail.path("version").asLong());
+        assertEquals(raw, jdbc.queryForMap("SELECT requested_receive_date,requested_receive_at,planned_handoff_at,planned_finish_at FROM cake_order WHERE id=?::uuid", id));
+        var unrelated = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("phone", "13900000000")));
+        assertEquals(200, unrelated.status, unrelated.body.toString());
+        assertEquals(raw, jdbc.queryForMap("SELECT requested_receive_date,requested_receive_at,planned_handoff_at,planned_finish_at FROM cake_order WHERE id=?::uuid", id));
+        jdbc.update("UPDATE cake_order SET planned_handoff_at=NULL WHERE id=?::uuid", id);
+        var fallback = query(staff, "/api/orders/calendar?from=2026-11-05&to=2026-11-06");
+        assertEquals("2026-11-05T10:00:00Z", fallback.get(0).path("plannedHandoffAt").asText());
+        jdbc.update("UPDATE cake_order SET requested_receive_at=NULL WHERE id=?::uuid", id);
+        var dateOnly = query(staff, "/api/orders/calendar?from=2026-11-05&to=2026-11-06");
+        assertEquals(id, dateOnly.get(0).path("orderId").asText()); assertTrue(dateOnly.get(0).path("plannedHandoffAt").isNull());
     }
 
     @Test void multiItemWorkflowPersistsChangesHistoryAndIndependentRecentNotes() throws Exception {
@@ -130,7 +205,7 @@ class OrderIT {
         var log = history.body.at("/data/items/0");
         assertEquals("蛋糕", log.at("/details/before/name").asText()); assertEquals("生日蛋糕", log.at("/details/after/name").asText());
         assertEquals("8", log.at("/details/before/attributes/size").asText()); assertEquals("10", log.at("/details/after/attributes/size").asText());
-        assertEquals(8000, log.at("/details/before/memberPriceCents").asLong()); assertTrue(log.at("/details/after/memberPriceCents").isNull());
+        assertFalse(log.at("/details/before").hasNonNull("memberPriceCents")); assertFalse(log.at("/details/after").hasNonNull("memberPriceCents"));
         assertEquals(staff.accountId, log.path("actorId").asText()); assertEquals("前台员工", log.path("actorNameSnapshot").asText());
         assertEquals(orderId, log.path("orderId").asText()); assertEquals(first, log.path("itemId").asText());
 
@@ -889,8 +964,8 @@ class OrderIT {
         var handoff = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0,
                 "changes", Map.of("plannedHandoffAt", "2026-10-02T12:00:00+08:00")));
         assertEquals(200, handoff.status);
-        assertTrue(orderIds(query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01")).contains(id));
-        assertFalse(orderIds(query(staff, "/api/orders/calendar?from=2026-10-02&to=2026-10-03")).contains(id));
+        assertFalse(orderIds(query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01")).contains(id));
+        assertTrue(orderIds(query(staff, "/api/orders/calendar?from=2026-10-02&to=2026-10-03")).contains(id));
         var moved = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1,
                 "changes", Map.of("requestedReceiveDate", "2026-10-02", "requestedReceiveAt", "2026-10-02T18:00:00+08:00")));
         assertEquals(200, moved.status);
@@ -956,8 +1031,8 @@ class OrderIT {
                 }
             }
             var cake = item(order, a);
-            assertEquals("CAKE", cake.path("productType").asText()); assertEquals(10000, cake.path("unitPriceCents").asLong());
-            assertEquals(8000, cake.path("memberPriceCents").asLong()); assertEquals(item(firstOrder, a).path("attributes"), cake.path("attributes"));
+            assertEquals("CAKE", cake.path("productType").asText()); assertTrue(cake.path("unitPriceCents").isNull());
+            assertTrue(cake.path("memberPriceCents").isNull()); assertEquals(item(firstOrder, a).path("attributes"), cake.path("attributes"));
             clearInvocations(queryMapper);
             var withoutMetrics = query(staff, "/api/orders/workbench?date=2026-09-30&includeMetrics=false");
             assertFalse(withoutMetrics.hasNonNull("metrics"));
@@ -1106,7 +1181,7 @@ class OrderIT {
         var staff = staff();
         var valid = new LinkedHashMap<>(create());
         valid.put("totalAmountCents", maximum);
-        valid.put("items", List.of(Map.of("name", "边界蛋糕", "quantity", 1, "unitPriceCents", maximum, "memberPriceCents", maximum)));
+        valid.put("items", List.of(Map.of("name", "边界饮品", "productType", "DRINK", "quantity", 1, "unitPriceCents", maximum, "memberPriceCents", maximum)));
         var created = staff.request("POST", "/api/orders", valid);
         assertEquals(201, created.status, created.body.toString());
         var detail = created.body.path("data");
@@ -1120,11 +1195,11 @@ class OrderIT {
                 Map.of("expectedVersion", 0, "changes", Map.of("totalAmountCents", maximum + 1))).status);
         for (var field : List.of("unitPriceCents", "memberPriceCents")) {
             invalid = new LinkedHashMap<>(valid);
-            invalid.put("items", List.of(Map.of("name", "超限商品", "quantity", 1, field, maximum + 1)));
+            invalid.put("items", List.of(Map.of("name", "超限商品", "productType", "DRINK", "quantity", 1, field, maximum + 1)));
             assertEquals(400, staff.request("POST", "/api/orders", invalid).status);
             assertEquals(400, staff.request("PATCH", "/api/orders/" + id, patch(itemId, 0, Map.of(field, maximum + 1))).status);
             assertEquals(400, staff.request("POST", "/api/orders/" + id + "/items",
-                    Map.of("expectedVersion", 0, "item", Map.of("name", "超限商品", "quantity", 1, field, maximum + 1))).status);
+                    Map.of("expectedVersion", 0, "item", Map.of("name", "超限商品", "productType", "DRINK", "quantity", 1, field, maximum + 1))).status);
         }
         var unchanged = query(staff, "/api/orders/" + id);
         assertEquals(0, unchanged.path("version").asLong());

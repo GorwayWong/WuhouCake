@@ -11,7 +11,7 @@ public interface OrderMapper {
             LocalDate requestedReceiveDate, Instant plannedHandoffAt, Instant plannedFinishAt, Long totalAmountCents,
             String createdBy, Instant createdAt, Instant confirmedAt, Instant updatedAt, String creditedEmployeeId,
             String creditedEmployeeNumber, String creditedEmployeeName, Instant requestedReceiveAt, Instant paidAt,
-            Instant deletedAt, String deletedBy, String deletedByName, String deletionReason) { }
+            Instant deletedAt, String deletedBy, String deletedByName, String deletionReason, String orderingMethod) { }
     record ItemRow(String id, String orderId, String name, String productType, int quantity, Long unitPriceCents,
             Long memberPriceCents, String attributes, String productionStatus, String currentStageCode,
             boolean removed, Instant createdAt, Instant updatedAt) { }
@@ -20,7 +20,7 @@ public interface OrderMapper {
     String SELECT_ORDER = "SELECT id::text, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
             + " created_by::text, created_at, confirmed_at, updated_at, credited_employee_id::text, credited_employee_number, credited_employee_name, requested_receive_at, paid_at,"
-            + " deleted_at, deleted_by::text, deleted_by_name, deletion_reason FROM cake_order WHERE id=CAST(#{id} AS uuid)";
+            + " deleted_at, deleted_by::text, deleted_by_name, deletion_reason, ordering_method FROM cake_order WHERE id=CAST(#{id} AS uuid)";
     @Select(SELECT_ORDER)
     Row find(String id);
     @Select(SELECT_ORDER + " FOR UPDATE")
@@ -31,10 +31,10 @@ public interface OrderMapper {
     List<ItemRow> items(String id);
     @Insert("INSERT INTO cake_order (id, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
-            + " created_by, created_at, confirmed_at, updated_at, credited_employee_id, credited_employee_number, credited_employee_name, requested_receive_at, paid_at) VALUES (CAST(#{id} AS uuid), #{orderNo}, #{version}, #{status}, #{paymentStatus}, #{currentStageCode},"
+            + " created_by, created_at, confirmed_at, updated_at, credited_employee_id, credited_employee_number, credited_employee_name, requested_receive_at, paid_at, ordering_method) VALUES (CAST(#{id} AS uuid), #{orderNo}, #{version}, #{status}, #{paymentStatus}, #{currentStageCode},"
             + " #{customerName}, #{customerPhone}, #{memberPhone}, #{buyerName}, #{fulfillmentType}, #{deliveryAddress}, #{requestedReceiveDate},"
             + " #{plannedHandoffAt}, #{plannedFinishAt}, #{totalAmountCents}, CAST(#{createdBy} AS uuid), #{createdAt}, #{confirmedAt}, #{updatedAt},"
-            + " CAST(#{creditedEmployeeId} AS uuid), #{creditedEmployeeNumber}, #{creditedEmployeeName}, #{requestedReceiveAt}, #{paidAt})")
+            + " CAST(#{creditedEmployeeId} AS uuid), #{creditedEmployeeNumber}, #{creditedEmployeeName}, #{requestedReceiveAt}, #{paidAt}, #{orderingMethod})")
     void insert(Row row);
     @Insert("INSERT INTO cake_order_item (id, order_id, name, product_type, quantity, unit_price_cents, member_price_cents, attributes,"
             + " production_status, current_stage_code, is_removed, created_at, updated_at) VALUES (CAST(#{id} AS uuid), CAST(#{orderId} AS uuid),"
@@ -48,7 +48,7 @@ public interface OrderMapper {
             + " WHERE id=CAST(#{id} AS uuid) AND order_id=CAST(#{orderId} AS uuid) AND NOT is_removed")
     int updateItem(ItemRow row);
     @Update("UPDATE cake_order SET customer_name=#{row.customerName}, customer_phone=#{row.customerPhone}, member_phone=#{row.memberPhone},"
-            + " buyer_name=#{row.buyerName}, fulfillment_type=#{row.fulfillmentType}, delivery_address=#{row.deliveryAddress},"
+            + " buyer_name=#{row.buyerName}, ordering_method=#{row.orderingMethod}, fulfillment_type=#{row.fulfillmentType}, delivery_address=#{row.deliveryAddress},"
             + " requested_receive_date=#{row.requestedReceiveDate}, requested_receive_at=#{row.requestedReceiveAt}, planned_handoff_at=#{row.plannedHandoffAt}, planned_finish_at=#{row.plannedFinishAt},"
             + " total_amount_cents=#{row.totalAmountCents}, status=#{row.status}, credited_employee_id=CAST(#{row.creditedEmployeeId} AS uuid),"
             + " credited_employee_number=#{row.creditedEmployeeNumber}, credited_employee_name=#{row.creditedEmployeeName}, version=version+1, updated_at=#{row.updatedAt}"

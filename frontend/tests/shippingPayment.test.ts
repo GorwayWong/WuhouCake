@@ -40,3 +40,7 @@ test('汇总缓存按日期隔离，付款改动和订单迁日通知触发刷�
     assert.equal(client.getQueryData<{ date: string }>(paymentSummaryKey('2026-10-23'))?.date, '2026-10-23');
   } finally { stops.forEach(stop => stop()); client.clear(); }
 });
+
+test('制作统计排除两种删除标记和取消订单，保留已完成订单', () => {
+  assert.deepEqual(dailyOperationalCounts([{ status: 'COMPLETED' }, { status: 'WAITING_PRODUCTION' }, { status: 'CANCELLED' }, { status: 'COMPLETED', deleted: true }, { status: 'WAITING_DELIVERY', deletion: {} }]), { totalOrderCount: 2, waitingDeliveryOrderCount: 0 });
+});

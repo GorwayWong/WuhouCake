@@ -110,3 +110,19 @@ test('具体状态筛选直接展开对应分组，回到今天保留月模式�
   const month = { ...defaultCalendarView('2026-10-28'), mode: 'month' as const, expanded: false };
   assert.deepEqual(jumpCalendarDate(month, '2026-11-01'), { date: '2026-11-01', month: '2026-11', mode: 'month', expanded: true });
 });
+
+test('制作分钟分组保留准确时刻、跨日和同刻稳定排序，未安排时间置后', () => {
+  const source = [order('004', null), order('003', '2026-11-05T08:10:45Z'), order('002', '2026-11-05T08:11:00Z'), order('001', '2026-11-05T08:10:45Z'), order('000', '2026-11-04T08:10:00Z')];
+  const groups = groupOrdersByTime(source, 'minute');
+  assert.deepEqual(groups.map(({ date, time, endTime, endsNextDay }) => ({ date, time, endTime, endsNextDay })), [
+    { date: '2026-11-04', time: '16:10', endTime: null, endsNextDay: false },
+    { date: '2026-11-05', time: '16:10', endTime: null, endsNextDay: false },
+    { date: '2026-11-05', time: '16:11', endTime: null, endsNextDay: false },
+    { date: null, time: '时间待定', endTime: null, endsNextDay: false },
+  ]);
+  assert.deepEqual(groups[1].orders.map(order => order.orderNo), ['001', '003']);
+  assert.equal(groups[1].orders[0].plannedHandoffAt, '2026-11-05T08:10:45Z');
+  assert.equal(source[0].orderNo, '004');
+  assert.deepEqual(groupOrdersByTime([], 'minute'), []);
+  assert.deepEqual(groupOrdersByTime([order('a', '2026-11-05T15:59:59Z'), order('b', '2026-11-05T16:00:00Z')], 'minute').map(group => [group.date, group.time]), [['2026-11-05', '23:59'], ['2026-11-06', '00:00']]);
+});

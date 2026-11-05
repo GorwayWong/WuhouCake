@@ -33,7 +33,10 @@ export function errorText(error: unknown): string {
     UNSUPPORTED_IMAGE_FORMAT: '仅支持 JPG/PNG 图片，暂不支持 HEIC/WebP。',
     INVALID_IMAGE: '图片为空或已损坏，请重新选择。',
     IMAGE_DIMENSIONS_EXCEEDED: '图片尺寸过大，请选择较小的 JPG/PNG 图片。',
-    ORDER_IMAGE_LIMIT_EXCEEDED: '每张订单最多保留 8 张图片，请先移除误传图片。',
+    IMAGE_ITEM_REQUIRED: '请选择图片对应的商品。',
+    ITEM_ID_CONFLICT: '商品标识已被使用，请重新打开录单草稿。',
+    IMAGE_UPLOAD_REMOVED: '该图片已被移除，请核对后重新选择图片。',
+    ORDER_IMAGE_LIMIT_EXCEEDED: '每个商品最多保留 5 张图片，请先移除误传图片。',
     EXPORT_EMPTY: '这些条件下没有订单，请调整日期或筛选条件。',
     EXPORT_LIMIT_EXCEEDED: '导出超过当前入口的日期限制或 100 张订单，请缩小范围或增加筛选条件。',
     EXPORT_FILE_TOO_LARGE: '导出文件过大，请缩小筛选范围；单张订单请联系管理员核对。',
@@ -171,11 +174,11 @@ export async function publicApi<T>(path: string, options: { method?: string; bod
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   }));
 }
-export async function uploadOrderImage(orderId: string, file: File, itemId: string, signal?: AbortSignal): Promise<OrderImage> {
+export async function uploadOrderImage(orderId: string, file: File, itemId: string, signal?: AbortSignal, requestId?: string): Promise<OrderImage> {
   const body = new FormData();
   body.append('file', file);
   if (itemId) body.append('itemId', itemId);
-  return decode<OrderImage>(await authenticatedFetch(`/orders/${orderId}/images`, { method: 'POST', body, signal }));
+  return decode<OrderImage>(await authenticatedFetch(`/orders/${orderId}/images`, { method: 'POST', body, signal, headers: requestId ? { 'Idempotency-Key': requestId } : undefined }));
 }
 export async function fetchOrderImage(orderId: string, imageId: string, signal: AbortSignal): Promise<Blob> {
   const response = await authenticatedFetch(`/orders/${orderId}/images/${imageId}`, { signal });

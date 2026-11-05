@@ -10,7 +10,7 @@ export function ProductionFields({ item, includeHistorical = false }: { item: It
   return <><dl className="production-fields">{productionFields(item).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>{historical.length > 0 && <details><summary>历史规格</summary><dl className="production-fields">{historical.map(([label, value], index) => <div key={index}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></details>}</>;
 }
 
-export function ProductionThumbnail({ orderId }: { orderId: string }) {
+export function ProductionThumbnail({ orderId, itemId }: { orderId: string; itemId?: string }) {
   const element = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
@@ -23,7 +23,7 @@ export function ProductionThumbnail({ orderId }: { orderId: string }) {
   }, []);
   const images = useQuery({ queryKey: ['order', orderId, 'images'], enabled: visible,
     queryFn: ({ signal }) => api<OrderImage[]>(`/orders/${orderId}/images`, { signal }) });
-  const first = images.data?.[0];
+  const first = images.data?.find(image => itemId && image.itemId === itemId) || images.data?.find(image => image.itemId == null);
   const [url, setUrl] = useState('');
   const [failed, setFailed] = useState(false);
   useEffect(() => {

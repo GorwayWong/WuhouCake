@@ -34,7 +34,7 @@ test('未修改不发送 PATCH，电话更正只提交电话，格式变化不�
   assert.deepEqual(informationRequest(order, draft).request, { expectedVersion: 2, changes: { phone: '13900003333' } });
 });
 
-test('UTC 资料按北京时间初始化，改期可只填日期，内部交接时间独立修改', () => {
+test('UTC 资料按北京时间初始化，改期可只填日期，同步兼容时间字段', () => {
   const previous = process.env.TZ;
   try {
     process.env.TZ = 'America/Los_Angeles';
@@ -42,29 +42,25 @@ test('UTC 资料按北京时间初始化，改期可只填日期，内部交接�
     assert.equal(draft.plannedHandoffAt, '2026-10-15T00:15');
     assert.equal(draft.plannedFinishAt, '2026-10-14T18:00');
     draft.requestedReceiveDate = '2026-10-18'; draft.requestedReceiveAt = '2026-10-18';
-    assert.deepEqual(informationRequest(order, draft).request?.changes, { requestedReceiveDate: '2026-10-18', requestedReceiveAt: null });
+    assert.deepEqual(informationRequest(order, draft).request?.changes, { requestedReceiveDate: '2026-10-18', requestedReceiveAt: null, plannedHandoffAt: null });
     draft.requestedReceiveAt = '2026-10-18T19:00';
-    assert.deepEqual(informationRequest(order, draft).request?.changes, { requestedReceiveDate: '2026-10-18', requestedReceiveAt: '2026-10-18T19:00:00+08:00' });
-    draft.requestedReceiveDate = order.fulfillment.requestedReceiveDate;
-    draft.requestedReceiveAt = order.fulfillment.requestedReceiveDate;
-    draft.plannedHandoffAt = '2026-10-15T00:30';
-    assert.deepEqual(informationRequest(order, draft).request?.changes, { plannedHandoffAt: '2026-10-15T00:30:00+08:00' });
+    assert.deepEqual(informationRequest(order, draft).request?.changes, { requestedReceiveDate: '2026-10-18', requestedReceiveAt: '2026-10-18T19:00:00+08:00', plannedHandoffAt: '2026-10-18T19:00:00+08:00' });
   } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
 });
 test('已有收货时刻可显式清空，未更正的精度不回写，时间与日期冲突被拒绝', () => {
   const timed: Detail = { ...order, fulfillment: { ...order.fulfillment, requestedReceiveAt: '2026-10-14T11:00:37.123456Z' } };
-  const draft = informationDraft(timed); assert.equal(draft.requestedReceiveAt, '2026-10-14T19:00');
+  const draft = informationDraft(timed); assert.equal(draft.requestedReceiveAt, '2026-10-15T00:15');
   assert.equal(informationRequest(timed, draft).request, null);
-  draft.requestedReceiveAt = timed.fulfillment.requestedReceiveDate; assert.deepEqual(informationRequest(timed, draft).request?.changes, { requestedReceiveAt: null });
+  draft.requestedReceiveDate = '2026-10-15'; draft.requestedReceiveAt = '2026-10-15'; assert.deepEqual(informationRequest(timed, draft).request?.changes, { requestedReceiveAt: null, plannedHandoffAt: null, requestedReceiveDate: '2026-10-15' });
   draft.requestedReceiveAt = '2026-10-15T20:00'; draft.requestedReceiveDate = '2026-10-16';
   assert.ok(informationRequest(timed, draft).errors.requestedReceiveAt);
 });
 
 test('清空可选资料与金额使用 null，0 元独立保存，交接切换遵守地址约束', () => {
   const draft = informationDraft(order);
-  draft.customerName = ''; draft.memberPhone = ''; draft.buyerName = ''; draft.plannedHandoffAt = ''; draft.plannedFinishAt = ''; draft.totalAmount = '';
+  draft.customerName = ''; draft.memberPhone = ''; draft.buyerName = ''; draft.plannedFinishAt = ''; draft.totalAmount = '';
   draft.fulfillmentType = 'PICKUP'; draft.address = '';
-  assert.deepEqual(informationRequest(order, draft).request?.changes, { customerName: null, memberPhone: null, buyerName: null, address: null, fulfillmentType: 'PICKUP', plannedHandoffAt: null, plannedFinishAt: null, totalAmountCents: null });
+  assert.deepEqual(informationRequest(order, draft).request?.changes, { customerName: null, memberPhone: null, buyerName: null, address: null, fulfillmentType: 'PICKUP', plannedFinishAt: null, totalAmountCents: null });
   draft.totalAmount = '0';
   assert.equal(informationRequest(order, draft).request?.changes.totalAmountCents, 0);
   draft.fulfillmentType = 'DELIVERY';
@@ -81,4 +77,20 @@ test('冲突后保留员工输入，用复核版本只提交员工改过的字�
   assert.deepEqual(informationRequest(order, draft, latest).request, { expectedVersion: 3, changes: { phone: '13900004444', totalAmountCents: 28000 } });
   assert.deepEqual(draft, snapshot);
   assert.equal(informationRequest(order, draft, { ...latest, totalAmountCents: 28000, customer: { ...latest.customer, phone: draft.phone } }).request, null);
+});
+
+test('订购方式选填、清空、长度及并发复核只提交当前差异', () => {
+  const original = { ...order, orderingMethod: '微信' };
+  const draft = informationDraft(original);
+  draft.orderingMethod = '  电话  ';
+  assert.deepEqual(informationRequest(original, draft).request?.changes, { orderingMethod: '电话' });
+  assert.equal(informationRequest(original, draft, { ...original, version: 3, orderingMethod: '电话' }).request, null);
+  draft.orderingMethod = ' ';
+  assert.deepEqual(informationRequest(original, draft).request?.changes, { orderingMethod: null });
+  draft.orderingMethod = '长'.repeat(81);
+  assert.ok(informationRequest(original, draft).errors.orderingMethod);
+  draft.orderingMethod = ''; draft.orderingMethodCustom = true;
+  assert.ok(informationRequest(original, draft).errors.orderingMethod);
+  draft.orderingMethodCustom = false;
+  assert.deepEqual(informationRequest(original, draft).request?.changes, { orderingMethod: null });
 });

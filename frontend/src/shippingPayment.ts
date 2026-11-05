@@ -6,8 +6,8 @@ export const paymentSummaryKey = (date: string) => ['workbench', 'payment-summar
 export function summaryAmount(group: PaymentGroup): string {
   return group.orderCount > 0 && group.missingAmountOrderCount === group.orderCount ? '待补金额' : `¥${exactYuan(group.amountCents)}`;
 }
-export function dailyOperationalCounts(orders: Pick<PendingOrder, 'status'>[]) {
-  const valid = orders.filter(order => order.status !== 'CANCELLED');
+export function dailyOperationalCounts(orders: Pick<PendingOrder, 'status' | 'deletion' | 'deleted'>[]) {
+  const valid = orders.filter(order => order.status !== 'CANCELLED' && !order.deletion && !order.deleted);
   return { totalOrderCount: valid.length, waitingDeliveryOrderCount: valid.filter(order => order.status === 'WAITING_DELIVERY').length };
 }
 export function visibleCalendarFilters(filters: CalendarFilters, canReadAmounts: boolean): CalendarFilters {

@@ -1,16 +1,17 @@
+import { changePickupTime, changeFinishTime, finishMode, restoreAutomaticFinish } from './orderTimes.ts';
 import type { OrderDraft, ItemDraft } from './orderForm.ts';
-import { moneyToCents, storeTime, validDate, newItem } from './orderForm.ts';
+import { moneyToCents, storeTime, validDate, newItem, withoutCakeUnitPrices } from './orderForm.ts';
 import { normalizeSize } from './productRules.ts';
-import { normalizeProductType, productTypes } from './productTypes.ts';
+import { hasUnitPrices, normalizeProductType, productTypes } from './productTypes.ts';
 import { randomUUID } from './uuid.ts';
 import type { RecognitionDraft, RecognitionField } from './types.ts';
 
 export const recognitionLimit = 12000;
 export const recognitionLabels: Record<string, string> = {
   customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '订购人姓名',
-  fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '客户收货日期', requestedReceiveAt: '客户收货时间',
-  plannedHandoffAt: '到店取货时间', plannedFinishAt: '计划出品时间', totalAmountCents: '约定总金额（元）',
-  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '规格', size: '尺寸', flavor: '奶油', base: '内胚',
+  fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '取货日期', requestedReceiveAt: '取货时间',
+  plannedHandoffAt: '取货时间', plannedFinishAt: '出品时间', totalAmountCents: '约定总金额（元）',
+  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '规格', size: '规格（寸）', flavor: '奶油', base: '蛋糕胚',
   filling: '夹馅', message: '祝福语', requirements: '其他要求', unitPriceCents: '商品单价（元）', memberPriceCents: '会员单价（元）',
 };
 const rootFields = new Set(['customerName', 'phone', 'memberPhone', 'buyerName', 'fulfillmentType', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmountCents']);
@@ -35,7 +36,7 @@ export function validateCandidate(field: string, value: string): string {
   }
   if (field === 'size') return normalizeSize(text);
   if (field === 'quantity' && (!/^\d+$/.test(text) || BigInt(text) < 1n || BigInt(text) > 2147483647n)) throw new Error('数量需要有效正整数。');
-  if (field === 'requestedReceiveDate' && !validDate(text)) throw new Error('需要带年份的有效收货日期。');
+  if (field === 'requestedReceiveDate' && !validDate(text)) throw new Error('需要带年份的有效取货日期。');
   if (field === 'requestedReceiveAt' || field === 'plannedHandoffAt' || field === 'plannedFinishAt') storeTime(text);
   if (field === 'fulfillmentType' && text !== 'DELIVERY' && text !== 'PICKUP') throw new Error('请选择 DELIVERY 或 PICKUP。');
   const maximum = field === 'customerName' || field === 'buyerName' ? 80 : field === 'phone' || field === 'memberPhone' || field === 'productType' ? 32 : field === 'name' ? 128 : 12000;
@@ -51,6 +52,8 @@ export function currentValue(draft: OrderDraft, field: string, itemKey?: string)
   return rootFields.has(field) ? String(draft[key as keyof OrderDraft] ?? '') : '';
 }
 export function setCandidate(draft: OrderDraft, field: string, value: string, itemKey?: string, source?: RecognitionField['source']): OrderDraft {
+  const target = itemKey ? draft.items.find(item => item.key === itemKey) : undefined;
+  if (target && (field === 'unitPriceCents' || field === 'memberPriceCents') && !hasUnitPrices(target.productType)) return withoutCakeUnitPrices(draft);
   const text = validateCandidate(field, value), next = structuredClone(draft), key = moneyFields[field] || field;
   if (itemKey !== undefined) {
     const item = next.items.find(x => x.key === itemKey);
@@ -58,15 +61,19 @@ export function setCandidate(draft: OrderDraft, field: string, value: string, it
     if (specificationKeys.has(key)) {
       item.attributes[key as keyof ItemDraft['attributes']] = text;
       item.defaultSpecifications = (item.defaultSpecifications || []).filter(x => x !== key);
-      if (source === 'DEFAULT' && (key === 'base' || key === 'filling')) item.defaultSpecifications.push(key);
+      if (source === 'DEFAULT' && (key === 'base' || key === 'filling' || key === 'flavor')) item.defaultSpecifications.push(key);
     } else if (['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'].includes(key)) {
-      Object.assign(item, { [key]: text }); if (key === 'productType') item.requiresTypeConfirmation = false;
+      Object.assign(item, { [key]: text }); if (key === 'productType') {
+        item.requiresTypeConfirmation = false;
+        if (!hasUnitPrices(text)) { item.unitPrice = ''; item.memberPrice = ''; }
+      }
     }
     else throw new Error('不支持的商品字段。');
   } else if (rootFields.has(field)) {
     Object.assign(next, { [key]: text });
-    if (field === 'requestedReceiveDate') next.requestedReceiveAt = text;
-    if (field === 'requestedReceiveAt') next.requestedReceiveDate = text.slice(0, 10);
+    if (field === 'requestedReceiveDate') Object.assign(next, changePickupTime(next, text));
+    if (field === 'requestedReceiveAt') { Object.assign(next, changePickupTime(next, text)); next.requestedReceiveDate = text.slice(0, 10); }
+    if (field === 'plannedFinishAt') Object.assign(next, changeFinishTime(next, text));
   }
   else throw new Error('不支持的订单字段。');
   return next;
@@ -83,7 +90,7 @@ export function undoRecognition(current: OrderDraft, before: OrderDraft, after: 
     result.requestedReceiveAt = before.requestedReceiveAt;
   }
   for (const field of rootFields) {
-    if (field === 'requestedReceiveDate' || field === 'requestedReceiveAt') continue;
+    if (field === 'requestedReceiveDate' || field === 'requestedReceiveAt' || field === 'plannedFinishAt') continue;
     const key = (moneyFields[field] || field) as Exclude<keyof OrderDraft, 'items'>;
     if (before[key] !== after[key] && result[key] === after[key]) Object.assign(result, { [key]: before[key] });
   }
@@ -105,6 +112,10 @@ export function undoRecognition(current: OrderDraft, before: OrderDraft, after: 
     }
     return [item];
   });
+  if (current.plannedFinishAt === after.plannedFinishAt && finishMode(current) === finishMode(after)) {
+    result.plannedFinishAt = before.plannedFinishAt; result.finishTimeMode = finishMode(before);
+  }
+  if (finishMode(result) === 'AUTO') Object.assign(result, restoreAutomaticFinish(result));
   const replaced = before.items.filter(item => !after.items.some(written => written.key === item.key));
   result.items.unshift(...structuredClone(replaced));
   if (!result.items.length) result.items.push(newItem());
@@ -142,6 +153,7 @@ export function feedbackKey(field: string, itemKey?: string): string {
 }
 export function retainRecognitionFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
   return Object.fromEntries(Object.entries(feedback).filter(([, mark]) =>
+    (!(mark.field === 'unitPriceCents' || mark.field === 'memberPriceCents') || hasUnitPrices(draft.items.find(item => item.key === mark.itemKey)?.productType)) &&
     (!mark.itemKey || draft.items.some(item => item.key === mark.itemKey)) && currentValue(draft, mark.field, mark.itemKey) === mark.value));
 }
 export function formFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
@@ -156,7 +168,7 @@ export function orderEntryRecognition(result: RecognitionDraft, manualFields: Re
   const next = structuredClone(result), fields = next.fields;
   const pickup = fields.fulfillmentType;
   if (pickup?.value === 'PICKUP') fields.address = { ...pickup, value: '自提' };
-  if (!fields.requestedReceiveAt?.value && !fields.requestedReceiveDate?.value && fields.plannedHandoffAt?.value) {
+  if (fields.plannedHandoffAt?.value) {
     fields.requestedReceiveAt = fields.plannedHandoffAt;
   }
   delete fields.fulfillmentType;
@@ -173,6 +185,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   let next = structuredClone(draft), cleared = 0;
   const feedback: RecognitionFeedbackMap = {}, targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
   const validContent = (fields: Record<string, RecognitionField>) => Object.entries(fields).some(([field, candidate]) => {
+    if ((field === 'unitPriceCents' || field === 'memberPriceCents') && !hasUnitPrices(fields.productType?.value)) return false;
     if (field === 'productType' || candidate.source === 'DEFAULT' || !candidate.value?.trim()) return false;
     try { validateCandidate(field, recognitionValue(field, candidate.value)); return true; } catch { return false; }
   });
@@ -182,6 +195,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     next.items = products.map(item => { const empty = emptyRecognitionItem(); targets[item.id] = empty.key; return empty; });
   }
   const write = (field: string, candidate: RecognitionField, itemKey?: string, onlyErrors = false) => {
+    if (itemKey && (field === 'unitPriceCents' || field === 'memberPriceCents') && !hasUnitPrices(next.items.find(item => item.key === itemKey)?.productType)) return;
     if (!candidate.value?.trim()) return;
     const displayField = field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field;
     try {
@@ -201,7 +215,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
       && !manualFields.has('requestedReceiveDate') && !manualFields.has('requestedReceiveAt')
       && next.requestedReceiveDate === initial.requestedReceiveDate && next.requestedReceiveAt === initial.requestedReceiveAt) {
       next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared = 1;
-      feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填客户收货日期。' };
+      feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填取货日期。' };
     }
     // 日期先于完整时刻写入，避免服务端字段顺序影响最终值。
     const fields = Object.entries(result.fields).sort(([a], [b]) => Number(a === 'requestedReceiveAt') - Number(b === 'requestedReceiveAt'));
@@ -211,7 +225,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     const onlyErrors = !options.supplement && !replacedItems;
     const itemKey = onlyErrors ? next.items[index]?.key : targets[item.id];
     if (!itemKey || !next.items.some(existing => existing.key === itemKey)) continue;
-    Object.entries(item.fields).forEach(([field, candidate]) => {
+    Object.entries(item.fields).sort(([a], [b]) => Number(b === 'productType') - Number(a === 'productType')).forEach(([field, candidate]) => {
       if (!options.supplement || candidate.source === 'MODEL') write(field, candidate, itemKey, onlyErrors);
     });
   }

@@ -46,7 +46,7 @@ export function packageSummary(value: Pick<OrderPackage, 'items'>): string {
 export function appendPackage(current: ItemDraft[], value: Pick<OrderPackage, 'items'>): ItemDraft[] {
   const incoming = packageDraft(value);
   const empty = current.length === 1 && current[0].productType === 'CAKE' && !current[0].requiresTypeConfirmation && !current[0].name.trim() && current[0].quantity === '1'
-    && !current[0].unitPrice && !current[0].memberPrice
+    && !current[0].unitPrice && !current[0].memberPrice && !current[0].images?.length
     && Object.entries(current[0].attributes).every(([key, text]) => !text || current[0].defaultSpecifications?.includes(key as 'base' | 'filling'));
   return [...(empty ? [] : current), ...incoming];
 }

@@ -115,9 +115,8 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             row(info, "付款状态", label(order.paymentStatus()));
             row(info, "客户姓名", customer.customerName()); row(info, "客户手机号", customer.phone()); row(info, "会员手机号", customer.memberPhone());
             row(info, "客户订购人", customer.buyerName()); row(info, "交付方式", label(plan.type().name())); row(info, "配送地址", plan.address());
-            row(info, "客户收货时间", plan.requestedReceiveAt() == null ? plan.requestedReceiveDate() + " · 时刻待定" : time(plan.requestedReceiveAt()));
-            row(info, "到店取货时间", plan.plannedHandoffAt() == null ? "待定" : time(plan.plannedHandoffAt()));
-            row(info, "计划出品时间", time(plan.plannedFinishAt())); row(info, "约定总金额（元）", money(order.totalAmountCents()));
+            row(info, "取货时间", plan.pickupAt() == null ? plan.pickupDate() + " · 时刻待定" : time(plan.pickupAt()));
+            row(info, "出品时间", time(plan.plannedFinishAt())); row(info, "约定总金额（元）", money(order.totalAmountCents()));
             row(info, "录单时间", time(order.createdAt()));
             row(info, "下单员工工号", order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber());
             row(info, "下单员工", order.creditedEmployee() == null ? "未归属" : order.creditedEmployee().nickname());
@@ -127,7 +126,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             var itemNames = new HashMap<UUID, String>(); int sequence = 0;
             for (var item : order.activeItems()) {
                 itemNames.put(item.itemId(), "商品 " + (++sequence) + " · " + item.name());
-                row(items, sequence, item.name(), label(item.productType()), item.quantity(), money(item.unitPriceCents()), money(item.memberPriceCents()),
+                row(items, sequence, item.name(), label(item.productType()), item.quantity(), ProductCategories.hasUnitPrices(item.productType()) ? money(item.unitPriceCents()) : "", ProductCategories.hasUnitPrices(item.productType()) ? money(item.memberPriceCents()) : "",
                         specifications(item.attributes()), label(item.productionStatus()));
             }
             var notes = sheet(book, "工作备注", "所属商品", "备注内容", "记录员工", "记录时间");

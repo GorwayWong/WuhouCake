@@ -24,10 +24,10 @@ public class OrderFileController {
     @PostMapping(value = "/{orderId}/images", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderFileViews.Image> upload(@PathVariable UUID orderId, @RequestParam MultipartFile file,
-            @RequestParam(required = false) UUID itemId, Authentication authentication) throws IOException {
+            @RequestParam UUID itemId, @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId, Authentication authentication) throws IOException {
         try (var input = file.getInputStream()) {
             return ApiResponse.success(images.upload(orderId, itemId, input.readNBytes(OrderImageService.MAX_IMAGE_BYTES + 1),
-                    file.getOriginalFilename(), operator(authentication)));
+                    file.getOriginalFilename(), operator(authentication), requestId));
         }
     }
     @GetMapping("/{orderId}/images")

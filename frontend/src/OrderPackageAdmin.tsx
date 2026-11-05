@@ -6,7 +6,8 @@ import { newPackageItem, packageDraft, packageRequest, packageSummary } from './
 import type { OrderPackage } from './orderPackages';
 import type { ItemDraft } from './orderForm';
 import type { Page } from './types';
-import { fieldsForProduct } from './orderForm';
+import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
+import { firstProductFormError } from './productFormLayout';
 import { ProductTypeSelect } from './ProductTypeSelect';
 import { Empty, ErrorNotice, Loading, valueText } from './ui';
 import { focusFormField } from './formFocus';
@@ -132,20 +133,23 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
       <form ref={form} noValidate onSubmit={event => {
         event.preventDefault(); if (disabled || conflict) return;
         const result = packageRequest(name, items); setErrors(result.errors);
-        if (!result.body) { focusFormField(form.current, Object.keys(result.errors)[0]); return; }
+        if (!result.body) { focusFormField(form.current, firstProductFormError(result.errors, items)!); return; }
         void write({ method: editing === 'new' ? 'POST' : 'PUT', path: editing === 'new' ? '/order-packages' : `/order-packages/${editing.id}`,
           body: { ...result.body, ...(editing === 'new' ? {} : { expectedVersion: editing.version }) }, key: creationKey.current, target: editing === 'new' ? undefined : editing });
       }}>
         <fieldset className="create-fields" disabled={disabled}>
           <section className="panel create-group"><label className="package-name">套餐名称 *<input {...inputProps('name')} value={name} maxLength={80} placeholder="例如：下午茶套餐" onChange={event => { setName(event.target.value); setErrors({}); }} required />{fieldError('name')}</label><p className="form-help">名称用于下单时识别，不能与现有套餐重名。</p></section>
           <section className="panel create-group"><div className="section-heading"><h2>商品内容</h2><span className="muted">{items.length} 项商品</span></div><p className="form-help">规格可留空，下单时补充。祝福语和特殊要求仅填写通用内容，客户专属内容请在下单时填写。</p>
-            {items.map((item, index) => <div className="create-item" key={item.key}><div className="create-item-heading"><h3>商品 {index + 1}</h3><button type="button" className="text-button danger" disabled={disabled || items.length === 1} aria-label={`移除商品 ${index + 1}`} onClick={() => { setItems(items.filter((_, i) => i !== index)); setErrors({}); }}><Trash />移除</button></div>
-              <div className="create-grid">
-                <label className="form-wide" htmlFor={`package-items.${index}.name`}>商品名称 *<input {...inputProps(`items.${index}.name`)} value={item.name} maxLength={128} required onChange={event => updateItem(index, { name: event.target.value })} />{fieldError(`items.${index}.name`)}</label>
-                <label htmlFor={`package-items.${index}.productType`}>商品类型 *<ProductTypeSelect {...inputProps(`items.${index}.productType`)} value={item.productType} disabled={disabled} required onChange={value => updateItem(index, { productType: value })} />{fieldError(`items.${index}.productType`)}</label>
-                <label htmlFor={`package-items.${index}.quantity`}>数量 *<input {...inputProps(`items.${index}.quantity`)} value={item.quantity} inputMode="numeric" required onChange={event => updateItem(index, { quantity: event.target.value })} />{fieldError(`items.${index}.quantity`)}</label>
-                {fieldsForProduct(item.productType).map(([key, label]) => { const field = `items.${index}.${key}`; return <label key={key} className={key === 'requirements' ? 'form-wide' : undefined} htmlFor={`package-${field}`}>{key === 'size' ? '尺寸（寸，只填数字）' : label}{key === 'requirements' ? <textarea {...inputProps(field)} rows={2} value={item.attributes[key]} onChange={event => updateItem(index, { attributes: { ...item.attributes, [key]: event.target.value } })} /> : <input {...inputProps(field)} value={item.attributes[key]} inputMode={key === 'size' ? 'decimal' : undefined} onChange={event => updateItem(index, { attributes: { ...item.attributes, [key]: event.target.value } })} />}{fieldError(field)}</label>; })}
+            {items.map((item, index) => <div className="create-item" key={item.key}>
+              <div className="create-item-heading product-form-heading"><h3>商品 {index + 1}</h3>
+                <label className="product-type-field" htmlFor={`package-items.${index}.productType`}><span className="form-field-heading">商品类型 *</span><ProductTypeSelect {...inputProps(`items.${index}.productType`)} value={item.productType} disabled={disabled} required onChange={value => updateItem(index, { productType: value })} />{fieldError(`items.${index}.productType`)}</label>
+                <button type="button" className="text-button danger" disabled={disabled || items.length === 1} aria-label={`移除商品 ${index + 1}`} onClick={() => { setItems(items.filter((_, i) => i !== index)); setErrors({}); }}><Trash />移除</button>
               </div>
+              <ProductFormFields type={item.productType} renderField={field => {
+                const name = `items.${index}.${field}`, required = field === 'name' || field === 'quantity';
+                if (field === 'name' || field === 'quantity' || field === 'unitPrice' || field === 'memberPrice') return <label htmlFor={`package-${name}`}><span className="form-field-heading"><ProductFieldLabel field={field} required={required} template /></span><input {...inputProps(name)} value={item[field]} maxLength={field === 'name' ? 128 : undefined} inputMode={field === 'quantity' ? 'numeric' : undefined} required={required} onChange={event => updateItem(index, { [field]: event.target.value })} />{fieldError(name)}</label>;
+                return <label htmlFor={`package-${name}`}><span className="form-field-heading"><ProductFieldLabel field={field} template /></span>{field === 'requirements' ? <textarea {...inputProps(name)} rows={2} value={item.attributes[field]} onChange={event => updateItem(index, { attributes: { ...item.attributes, [field]: event.target.value } })} /> : <input {...inputProps(name)} value={item.attributes[field]} inputMode={field === 'size' ? 'decimal' : undefined} onChange={event => updateItem(index, { attributes: { ...item.attributes, [field]: event.target.value } })} />}{fieldError(name)}</label>;
+              }} />
             </div>)}
             {fieldError('items')}<button type="button" className="secondary" onClick={() => setItems([...items, newPackageItem()])}><Plus />添加商品</button>
           </section>

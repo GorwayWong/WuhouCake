@@ -5,7 +5,7 @@ import java.util.*;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
 
 public final class CakeSpecifications {
-    public static final Map<String, String> DEFAULTS = Map.of("base", "原味", "filling", "芒果");
+    public static final Map<String, String> DEFAULTS = Map.of("base", "原味", "filling", "芒果", "flavor", "原味奶油");
     private CakeSpecifications() { }
     public static Map<String, Object> effective(String type, Map<String, Object> attributes) {
         var values = new LinkedHashMap<>(JsonSnapshot.object(attributes));

@@ -9,7 +9,7 @@ test('中文商品类型保持后台代码，非蛋糕不套用默认胚和夹�
     const draft = changeItemDraft({ ...newItem(), name: '合成商品' }, { productType: code });
     assert.equal(itemInput(draft).item?.productType, code);
     assert.equal(productTypeLabel(code), productTypes[code]);
-    assert.deepEqual(itemInput(draft).item?.attributes, code === 'CAKE' ? { base: '原味', filling: '芒果' } : {});
+    assert.deepEqual(itemInput(draft).item?.attributes, code === 'CAKE' ? { base: '原味', filling: '芒果', flavor: '原味奶油' } : {});
   }
   assert.equal(productTypeLabel('cake'), '蛋糕');
   assert.equal(productTypeLabel('OTHER'), '茶歇');

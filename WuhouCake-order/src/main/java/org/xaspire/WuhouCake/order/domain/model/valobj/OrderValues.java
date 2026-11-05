@@ -25,6 +25,8 @@ public final class OrderValues {
         public FulfillmentPlan(FulfillmentType type, String address, LocalDate requestedReceiveDate, Instant plannedHandoffAt, Instant plannedFinishAt) {
             this(type, address, requestedReceiveDate, plannedHandoffAt, plannedFinishAt, null);
         }
+        public Instant pickupAt() { return plannedHandoffAt != null ? plannedHandoffAt : requestedReceiveAt; }
+        public LocalDate pickupDate() { return pickupAt() == null ? requestedReceiveDate : receiveDate(pickupAt()); }
         public FulfillmentPlan {
             if (type == null || requestedReceiveDate == null) throw invalid();
             if (requestedReceiveAt != null && !requestedReceiveDate.equals(receiveDate(requestedReceiveAt))) throw invalid();

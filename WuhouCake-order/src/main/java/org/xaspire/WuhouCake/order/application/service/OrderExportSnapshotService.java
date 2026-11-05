@@ -83,7 +83,7 @@ public class OrderExportSnapshotService {
         var notes = new ArrayList<>(queries.orderNotes(orderId));
         activities.recentItemNotes(orderId).stream().filter(note -> activeIds.contains(note.itemId())).forEach(notes::add);
         var included = images.list(orderId).stream().filter(image -> image.itemId() == null || activeIds.contains(image.itemId())).toList();
-        if (included.size() > IMAGES_PER_ORDER) throw new OrderFailure("EXPORT_LIMIT_EXCEEDED");
+        if (included.size() > EXPORT_IMAGES) throw new OrderFailure("EXPORT_LIMIT_EXCEEDED");
         return new Snapshot(order, notes, included);
     }
 }

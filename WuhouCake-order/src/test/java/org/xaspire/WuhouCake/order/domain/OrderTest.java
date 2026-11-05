@@ -14,6 +14,23 @@ import static org.junit.jupiter.api.Assertions.*;
 class OrderTest {
     private static final Instant NOW = Instant.parse("2026-10-12T01:00:00Z");
 
+    @Test void orderingMethodIsOptionalNormalizedAuditedAndValidatedAtomically() {
+        var order = order(item("蛋糕", Map.of()));
+        assertNull(order.orderingMethod());
+        var change = order.reviseInformation(Map.of("orderingMethod", "  微信  "), NOW.plusSeconds(1));
+        assertEquals("微信", order.orderingMethod());
+        assertNull(((Map<?, ?>) change.get("before")).get("orderingMethod"));
+        assertEquals("微信", ((Map<?, ?>) change.get("after")).get("orderingMethod"));
+        assertTrue(order.reviseInformation(Map.of("orderingMethod", " 微信 "), NOW.plusSeconds(2)).isEmpty());
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("orderingMethod", "长".repeat(81), "phone", "13900000000"), NOW.plusSeconds(3)));
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("orderingMethod", 123), NOW.plusSeconds(3)));
+        assertEquals(1, order.version()); assertEquals("微信", order.orderingMethod());
+        order.reviseInformation(Map.of("orderingMethod", " "), NOW.plusSeconds(4));
+        assertNull(order.orderingMethod()); assertEquals(2, order.version());
+        order.reviseInformation(Map.of("orderingMethod", " " + "长".repeat(80) + " "), NOW.plusSeconds(5));
+        assertEquals("长".repeat(80), order.orderingMethod());
+    }
+
     @Test void revisingOneItemPreservesOtherItemAndRecordsActualValues() {
         var first = item("蛋糕", Map.of("size", "8", "flavors", List.of("芒果")));
         var second = item("纸杯", Map.of("flavor", "香草"));
@@ -21,7 +38,7 @@ class OrderTest {
         var details = order.reviseItem(first.itemId(), Map.of("quantity", 2, "attributes", Map.of("size", "10")), NOW.plusSeconds(1));
         assertEquals(1, order.version()); assertEquals(NOW.plusSeconds(1), order.updatedAt());
         assertEquals(2, order.requireActiveItem(first.itemId()).quantity());
-        assertEquals(Map.of("size", "10", "flavors", List.of("芒果"), "base", "原味", "filling", "芒果"), order.requireActiveItem(first.itemId()).attributes());
+        assertEquals(Map.of("size", "10", "flavors", List.of("芒果"), "base", "原味", "filling", "芒果", "flavor", "原味奶油"), order.requireActiveItem(first.itemId()).attributes());
         assertEquals(second, order.requireActiveItem(second.itemId()));
         assertEquals(Map.of("quantity", BigDecimal.ONE, "attributes", first.attributes()), details.get("before"));
         assertEquals(Map.of("quantity", BigDecimal.valueOf(2), "attributes", order.requireActiveItem(first.itemId()).attributes()), details.get("after"));
@@ -51,7 +68,7 @@ class OrderTest {
         assertEquals(NOW, order.requireActiveItem(item.itemId()).updatedAt());
     }
     @Test void invalidChangesAndForeignItemsAreRejectedWithoutMutation() {
-        var item = item("蛋糕", Map.of()); var order = order(item);
+        var item = OrderItem.create(UUID.randomUUID(), "饮品", "DRINK", 1, null, null, Map.of(), NOW); var order = order(item);
         for (var changes : List.of(Map.<String, Object>of(), Map.<String, Object>of("quantity", 0), Map.<String, Object>of("quantity", 1.5),
                 Map.<String, Object>of("unitPriceCents", -1), Map.<String, Object>of("unitPriceCents", 100.5),
                 Map.<String, Object>of("unitPriceCents", new BigDecimal("9223372036854775808")),
@@ -308,7 +325,7 @@ class OrderTest {
         assertEquals(3, order.version()); assertEquals("PROCESSING", order.status()); assertEquals("LAYER_DONE", order.currentStageCode());
         assertEquals(items, order.activeItems()); assertEquals(originalCustomer.customerName(), order.customer().customerName());
         assertEquals("13900000000", order.customer().phone()); assertEquals("新地址", order.fulfillment().address());
-        assertEquals(LocalDate.of(2026, 10, 16), order.fulfillment().requestedReceiveDate());
+        assertEquals(LocalDate.of(2026, 10, 17), order.fulfillment().requestedReceiveDate());
         assertEquals(Instant.parse("2026-10-17T04:00:00Z"), order.fulfillment().plannedHandoffAt()); assertEquals(18000L, order.totalAmountCents());
         assertEquals("13800000000", ((Map<?, ?>) changed.get("before")).get("phone"));
         assertEquals("13900000000", ((Map<?, ?>) changed.get("after")).get("phone"));
@@ -375,17 +392,19 @@ class OrderTest {
         assertTrue(order.reviseInformation(Map.of("plannedHandoffAt", "2026-10-12T10:00:00+08:00", "phone", " 13800000000 "), NOW.plusSeconds(1)).isEmpty());
         assertEquals(0, order.version()); assertEquals(NOW, order.updatedAt());
     }
-    @Test void handoffCanBeClearedAndFilledWithoutChangingReceiveDate() {
+    @Test void handoffChangesSynchronizeLegacyFieldsAndClearingKeepsPickupDate() {
         var order = order(FulfillmentType.PICKUP, item("A", Map.of()));
-        var date = order.fulfillment().requestedReceiveDate();
+        var pickupDate = order.fulfillment().pickupDate();
         var clear = new LinkedHashMap<String, Object>(); clear.put("plannedHandoffAt", null);
         var details = order.reviseInformation(clear, NOW.plusSeconds(1));
         assertNull(order.fulfillment().plannedHandoffAt());
+        assertEquals(pickupDate, order.fulfillment().requestedReceiveDate());
+        assertNull(order.fulfillment().requestedReceiveAt());
         assertNull(((Map<?, ?>) details.get("after")).get("plannedHandoffAt"));
         assertTrue(order.reviseInformation(clear, NOW.plusSeconds(2)).isEmpty());
         order.reviseInformation(Map.of("plannedHandoffAt", NOW.toString()), NOW.plusSeconds(3));
         assertEquals(NOW, order.fulfillment().plannedHandoffAt());
-        assertEquals(date, order.fulfillment().requestedReceiveDate());
+        assertEquals(NOW.atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate(), order.fulfillment().requestedReceiveDate());
         assertEquals(2, order.version());
     }
     @Test void fulfillmentTypeCorrectionsAuditActualStatusAndPreserveProductionInEveryState() {

@@ -4,7 +4,15 @@ import { itemKeyForField, selectItemAfterChange, summarizeItemPrices } from '../
 import { exactYuan } from '../src/money.ts';
 
 const items = (...keys: string[]) => keys.map(key => ({ key }));
-const price = (quantity: string, unitPrice: string, memberPrice: string) => ({ quantity, unitPrice, memberPrice });
+const price = (quantity: string, unitPrice: string, memberPrice: string) => ({ productType: 'DRINK', quantity, unitPrice, memberPrice });
+
+test('蛋糕不参与小计、缺价和无效价格提示，混合单仅计算其他商品', () => {
+  const cake = { productType: 'CAKE', quantity: '1', unitPrice: '120', memberPrice: 'abc' };
+  assert.deepEqual(summarizeItemPrices([cake]).regular, { cents: 0n, included: 0, missing: 0, invalid: 0 });
+  const mixed = summarizeItemPrices([cake, price('2', '10.29', '0')]);
+  assert.deepEqual(mixed.regular, { cents: 2058n, included: 1, missing: 0, invalid: 0 });
+  assert.deepEqual(mixed.member, { cents: 0n, included: 1, missing: 0, invalid: 0 });
+});
 
 test('保留当前商品；手工新增和套餐追加选中首个新商品', () => {
   assert.equal(selectItemAfterChange(items('a','b'), items('a','b'), 'b'), 'b');

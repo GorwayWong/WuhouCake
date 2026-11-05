@@ -4,6 +4,17 @@ import { defaultManagementDraft, managementQuery, exactYuan, orderPagination } f
 import { allCalendarFilters, matchesCalendarFilters } from '../src/calendarFilters.ts';
 import { itemInput, newItem } from '../src/orderForm.ts';
 
+test('商品名称与客户关键词独立传递，兼容旧视图并受长度和快捷模式约束', () => {
+  const draft = { ...defaultManagementDraft('2026-11-05'), keyword: ' 139 ', productName: " 草莓%_'蛋糕 " };
+  const query = new URLSearchParams(managementQuery(draft));
+  assert.equal(query.get('keyword'), '139'); assert.equal(query.get('productName'), "草莓%_'蛋糕");
+  for (const productName of [undefined, '', '　 ']) assert.equal(new URLSearchParams(managementQuery({ ...draft, productName })).has('productName'), false);
+  assert.equal(new URLSearchParams(managementQuery({ ...draft, productName: '糕'.repeat(100) })).get('productName')?.length, 100);
+  assert.throws(() => managementQuery({ ...draft, productName: '糕'.repeat(101) }));
+  assert.equal(managementQuery({ ...draft, allUnpaid: true, productName: '糕'.repeat(101) }), 'allUnpaid=true');
+  assert.equal(defaultManagementDraft('2026-11-05').productName, '');
+});
+
 test('管理默认查询本月录单日期，未来收货的预约单不被收货范围排除', () => {
   const draft = defaultManagementDraft('2026-10-17');
   const q = new URLSearchParams(managementQuery(draft));
@@ -31,7 +42,7 @@ test('日历默认全部，两个筛选共同生效', () => {
 });
 test('手动数字尺寸和清空默认在商品提交边界统一', () => {
   const draft = newItem(); draft.name = '合成蛋糕'; draft.attributes.size = '08.00'; draft.attributes.base = ' '; draft.attributes.filling = '';
-  assert.deepEqual(itemInput(draft).item?.attributes, { size: '8', base: '原味', filling: '芒果' });
+  assert.deepEqual(itemInput(draft).item?.attributes, { size: '8', base: '原味', filling: '芒果', flavor: '原味奶油' });
   draft.attributes.size = 'abc'; assert.ok(itemInput(draft).errors.size);
 });
 

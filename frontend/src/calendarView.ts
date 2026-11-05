@@ -59,10 +59,11 @@ export function compareCalendarOrders(a: { plannedHandoffAt: string | null; orde
   const second = b.plannedHandoffAt ? Date.parse(b.plannedHandoffAt) : Infinity;
   return first - second || a.orderNo.localeCompare(b.orderNo);
 }
-export function groupOrdersByTime(orders: PendingOrder[]): { key: string; time: string; date: string | null; endTime: string | null; endsNextDay: boolean; orders: PendingOrder[] }[] {
+export function groupOrdersByTime(orders: PendingOrder[], precision: 'half-hour' | 'minute' = 'half-hour'): { key: string; time: string; date: string | null; endTime: string | null; endsNextDay: boolean; orders: PendingOrder[] }[] {
+  const interval = precision === 'minute' ? 60_000 : 1_800_000;
   const groups = new Map<number | null, PendingOrder[]>();
   for (const order of [...orders].sort(compareCalendarOrders)) {
-    const slot = order.plannedHandoffAt ? Math.floor(Date.parse(order.plannedHandoffAt) / 1_800_000) * 1_800_000 : null;
+    const slot = order.plannedHandoffAt ? Math.floor(Date.parse(order.plannedHandoffAt) / interval) * interval : null;
     const group = groups.get(slot) || [];
     group.push(order); groups.set(slot, group);
   }
@@ -72,7 +73,7 @@ export function groupOrdersByTime(orders: PendingOrder[]): { key: string; time: 
     const start = new Date(slot);
     const end = new Date(slot + 1_800_000);
     const date = dateFormat.format(start);
-    return { key: String(slot), time: time(start.toISOString()), date, endTime: time(end.toISOString()), endsNextDay: dateFormat.format(end) !== date, orders };
+    return { key: String(slot), time: time(start.toISOString()), date, endTime: precision === 'minute' ? null : time(end.toISOString()), endsNextDay: precision !== 'minute' && dateFormat.format(end) !== date, orders };
   });
 }
 export function latestOrderNote(order: Pick<PendingOrder, 'items' | 'latestNote'>): Note | undefined {

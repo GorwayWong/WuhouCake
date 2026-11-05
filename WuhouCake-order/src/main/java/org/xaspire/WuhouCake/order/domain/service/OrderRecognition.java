@@ -107,7 +107,8 @@ public final class OrderRecognition {
             } catch (IllegalArgumentException | DateTimeException invalid) { put(fields, time.getKey(), invalid(raw, invalid.getMessage())); }
         }
         for (var item : items) {
-            if ("CAKE".equals(item.fields.get("productType").value())) for (String key : List.of("base", "filling")) {
+            if ("CAKE".equals(item.fields.get("productType").value())) for (String key : List.of("unitPriceCents", "memberPriceCents")) item.fields.put(key, Field.missing());
+            if ("CAKE".equals(item.fields.get("productType").value())) for (String key : List.of("base", "filling", "flavor")) {
                 boolean unresolved = fragments.stream().anyMatch(f -> item.id.equals(f.itemId()));
                 if (item.fields.get(key).source() == null) item.fields.put(key, new Field(cakeDefaults.get(key), Source.DEFAULT, List.of(), unresolved,
                         unresolved ? List.of("商品还有未理解内容，默认规格请人工核对") : List.of()));
@@ -239,7 +240,7 @@ if (value.contains("杯子蛋糕") || value.contains("纸杯蛋糕") || value.co
         add(map, "plannedHandoffAt", "到店取货时间", "取货时间", "计划交接时间", "交接时间"); add(map, "plannedFinishAt", "计划出品时间", "出品时间");
         add(map, "totalAmountCents", "订单总金额", "约定总金额", "订单总价", "总金额", "总价", "合计");
         add(map, "name", "商品名称", "蛋糕名称", "小产品名称", "商品"); add(map, "productType", "商品类型", "类型"); add(map, "quantity", "数量");
-        add(map, "specification", "规格"); add(map, "size", "蛋糕尺寸", "尺寸"); add(map, "flavor", "奶油类型", "奶油"); add(map, "base", "蛋糕胚", "内胚");
+        add(map, "specification", "规格"); add(map, "size", "蛋糕尺寸", "尺寸", "规格（寸）", "规格(寸)"); add(map, "flavor", "奶油类型", "奶油"); add(map, "base", "蛋糕胚", "内胚");
         add(map, "filling", "夹馅", "夹层", "馅料"); add(map, "legacyFlavor", "蛋糕口味", "口味");
         add(map, "message", "祝福语", "蛋糕写字"); add(map, "requirements", "其他要求", "特殊要求", "备注");
         add(map, "unitPriceCents", "商品单价", "单价"); add(map, "memberPriceCents", "会员单价", "会员价");

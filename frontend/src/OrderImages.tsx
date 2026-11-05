@@ -1,15 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Images, Plus, Trash, X } from '@phosphor-icons/react';
-import { api, creationResultUnknown, errorText, uploadOrderImage } from './api';
+import { api, errorText, uploadOrderImage } from './api';
 import { time } from './dates';
-import { imageFileError, loadImagePreview } from './imagePreview';
+import { loadImagePreview } from './imagePreview';
+import { imageQueue, imageQueueMetadata, localImageError, readDraftImage, removeQueuedImage, saveDraftImages, updateQueuedImage } from './draftImages';
+import type { QueuedImage } from './draftImages';
 import { synchronize } from './realtime';
 import type { Detail, OrderImage } from './types';
 import { ErrorNotice, Loading } from './ui';
-import { Select } from './Select';
-
-type ImageAction = { type: 'upload'; file: File; itemId: string } | { type: 'remove'; imageId: string };
 
 function ImageTile({ image, scope, blocked, remove, productionView }: { image: OrderImage; scope: string; blocked: boolean; remove: () => void; productionView?: boolean }) {
   const [url, setUrl] = useState('');
@@ -30,71 +29,108 @@ function ImageTile({ image, scope, blocked, remove, productionView }: { image: O
   </li>;
 }
 
-export function OrderImages({ order, blocked, onDraftChange, onWritingChange, productionView = false }: {
-  productionView?: boolean;
-  order: Detail; blocked: boolean; onDraftChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void;
-}) {
-  const client = useQueryClient();
-  const id = order.orderId;
-  const query = useQuery({ queryKey: ['order', id, 'images'], queryFn: ({ signal }) => api<OrderImage[]>(`/orders/${id}/images`, { signal }) });
-  const [adding, setAdding] = useState(false);
-  const [file, setFile] = useState<File | null>(null);
-  const [itemId, setItemId] = useState('');
-  const [preview, setPreview] = useState('');
-  const [validation, setValidation] = useState('');
-  const [notice, setNotice] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [failure, setFailure] = useState<{ error: unknown; type: ImageAction['type'] } | null>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const active = useRef<AbortController | null>(null);
-  useEffect(() => () => {
-    if (active.current) { active.current.abort(); active.current = null; onWritingChange(false); }
-  }, [onWritingChange]);
-  useEffect(() => { onDraftChange(adding); return () => onDraftChange(false); }, [adding, onDraftChange]);
+function QueuedImageTile({ image, busy, retry, remove }: { image: QueuedImage; busy: boolean; retry: () => void; remove: () => void }) {
+  const [url, setUrl] = useState('');
   useEffect(() => {
-    if (!file) { setPreview(''); return; }
-    const url = URL.createObjectURL(file); setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-  const clear = () => { setFile(null); setItemId(''); setAdding(false); setValidation(''); if (input.current) input.current.value = ''; };
-  async function submit(action: ImageAction) {
-    if (blocked || active.current) return;
-    const controller = new AbortController(); active.current = controller;
-    const current = () => active.current === controller && !controller.signal.aborted;
-    setSaving(true); setFailure(null); setNotice(''); onWritingChange(true);
-    try {
-      if (action.type === 'upload') await uploadOrderImage(id, action.file, action.itemId, controller.signal);
-      else await api(`/orders/${id}/images/${action.imageId}`, { method: 'DELETE', signal: controller.signal });
-      if (!current()) return;
-      if (action.type === 'upload') clear();
-      setNotice(action.type === 'upload' ? '参考图片已添加。' : '参考图片已移除。');
-    } catch (error) { if (current()) setFailure({ error, type: action.type }); }
-    finally {
-      if (current()) {
-        try { await synchronize(client, id); }
-        finally { if (current()) { active.current = null; setSaving(false); onWritingChange(false); } }
+    let cancelled = false, url = '';
+    void readDraftImage(image, image.itemId, image.id).then(row => {
+      if (!cancelled && row) { url = URL.createObjectURL(row.file); setUrl(url); }
+    }).catch(() => {});
+    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
+  }, [image.key]);
+  return <li className="reference-image">{url && <img className="draft-image-thumbnail" src={url} alt={image.name} />}<div className="image-caption"><span className="image-filename">{image.name}</span><span role="status">{image.error || '等待上传'}</span><div className="actions"><button type="button" className="text-button" disabled={busy} onClick={retry}>重试上传</button><button type="button" className="text-button danger" disabled={busy} onClick={remove}>移除待上传图片</button></div></div></li>;
+}
+
+export function OrderImages({ order, itemId, accountId, canUpload, canDelete, blocked, onDraftChange, onWritingChange, productionView = false, compact = false }: {
+  compact?: boolean; productionView?: boolean; order: Detail; itemId?: string; accountId: string; canUpload: boolean; canDelete: boolean;
+  blocked: boolean; onDraftChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void;
+}) {
+  const client = useQueryClient(), id = order.orderId;
+  const query = useQuery({ queryKey: ['order', id, 'images'], queryFn: ({ signal }) => api<OrderImage[]>(`/orders/${id}/images`, { signal }) });
+  const localKey = ['local-order-images', accountId, id];
+  const local = useQuery({ queryKey: localKey, queryFn: () => imageQueueMetadata(accountId, id), enabled: Boolean(accountId), staleTime: 0 });
+  const [saving, setSaving] = useState(false), [notice, setNotice] = useState(''), [error, setError] = useState('');
+  const input = useRef<HTMLInputElement>(null), active = useRef<AbortController | null>(null), alive = useRef(true);
+  const attempted = useRef(new Set<string>());
+  const product = order.items.find(item => item.itemId === itemId) || order.items[0];
+  const currentImages = (query.data || []).filter(image => image.itemId === product?.itemId);
+  const currentQueue = (local.data || []).filter(image => image.itemId === product?.itemId);
+  const history = (query.data || []).filter(image => !image.itemId || !order.items.some(item => item.itemId === image.itemId));
+  const orphanQueue = (local.data || []).filter(image => !order.items.some(item => item.itemId === image.itemId));
+  const busy = blocked || saving;
+  const count = currentImages.length + currentQueue.length;
+  useEffect(() => { alive.current = true; return () => { alive.current = false; active.current?.abort(); onWritingChange(false); }; }, [onWritingChange]);
+  useEffect(() => { onDraftChange(false); }, [onDraftChange]);
+  async function refresh() {
+    await Promise.all([client.invalidateQueries({ queryKey: localKey }), synchronize(client, id)]);
+  }
+  async function upload(rows: QueuedImage[]) {
+    if (active.current || blocked || !canUpload || !rows.length) return;
+    const controller = new AbortController(); active.current = controller; setSaving(true); onWritingChange(true); setError('');
+    const run = async () => {
+      for (const row of rows) {
+        if (controller.signal.aborted) return;
+        attempted.current.add(row.key);
+        const existing = (await imageQueue(accountId, id)).find(image => image.key === row.key);
+        if (!existing) continue;
+        try {
+          if (!order.items.some(item => item.itemId === existing.itemId)) throw new Error('对应商品已移除，请移除此待上传图片。');
+          await uploadOrderImage(id, new File([existing.file], existing.name, { type: existing.type }), existing.itemId, controller.signal, existing.id);
+          await removeQueuedImage(existing);
+        } catch (failure) {
+          if (controller.signal.aborted) return;
+          await updateQueuedImage(existing, failure instanceof Error && failure.message.startsWith('对应商品') ? failure.message : errorText(failure));
+        }
       }
+    };
+    try {
+      if (navigator.locks) await navigator.locks.request(`wuhou:images:${accountId}:${id}`, { signal: controller.signal }, run);
+      else await run();
+      if (alive.current && !controller.signal.aborted) setNotice('图片队列已处理，请核对上传结果。');
+    } catch (failure) { if (alive.current && !controller.signal.aborted) setError(localImageError(failure)); }
+    finally {
+      try { if (alive.current) await refresh(); }
+      finally { if (active.current === controller) { active.current = null; if (alive.current) { setSaving(false); onWritingChange(false); } } }
     }
   }
-  const busy = blocked || saving;
-  const full = (query.data?.length || 0) >= 8;
-  const invalidItem = Boolean(itemId && !order.items.some(item => item.itemId === itemId));
-  return <section id="order-reference-images" tabIndex={-1} className="panel reference-images" aria-labelledby="reference-images-title">
-    <div className="section-heading"><h2 id="reference-images-title"><Images />{productionView ? '款式图片' : '参考图片'}</h2><div className="item-heading-actions"><span className="muted">{query.data?.length ?? '—'} / 8 张</span>{!adding && <button className="secondary compact" disabled={busy || full || !query.data} onClick={() => { setFailure(null); setNotice(''); setAdding(true); }}><Plus />添加图片</button>}</div></div>
-    {adding && <p className="form-help">JPG / PNG · 每张不超过 5 MB</p>}
+  useEffect(() => {
+    const pending = (local.data || []).filter(image => !image.error && !attempted.current.has(image.key));
+    if (pending.length && !busy && canUpload) void upload(pending);
+  }, [local.data, busy, canUpload]);
+  async function select(files: File[]) {
+    if (!product || busy || !canUpload || !files.length || !query.data || !local.data) return;
+    if (count + files.length > 5) { setError(`每个商品最多 5 张图片，还可添加 ${Math.max(0, 5 - count)} 张。`); return; }
+    setSaving(true); onWritingChange(true); setError('');
+    try {
+      await saveDraftImages({ accountId, requestId: `order:${id}` }, product.itemId, files, id);
+      await client.invalidateQueries({ queryKey: localKey });
+    } catch (failure) { setError(localImageError(failure)); }
+    finally { if (alive.current) { setSaving(false); onWritingChange(false); if (input.current) input.current.value = ''; } }
+  }
+  async function remove(image: OrderImage) {
+    if (busy || !canDelete || !window.confirm(`移除参考图片「${image.filename}」？历史记录会保留。`)) return;
+    setSaving(true); onWritingChange(true); setError('');
+    try { await api(`/orders/${id}/images/${image.imageId}`, { method: 'DELETE' }); setNotice('参考图片已移除。'); }
+    catch (failure) { setError(errorText(failure)); }
+    finally { try { await refresh(); } finally { if (alive.current) { setSaving(false); onWritingChange(false); } } }
+  }
+  async function removeLocal(image: QueuedImage) {
+    if (saving || active.current) return;
+    try { await removeQueuedImage(image); await client.invalidateQueries({ queryKey: localKey }); }
+    catch { setError('本机待上传图片未能移除，请重试。'); }
+  }
+  return <section id="order-reference-images" tabIndex={-1} className={`${compact ? '' : 'panel '}reference-images`} aria-labelledby="reference-images-title">
+    <div className="section-heading"><h2 id="reference-images-title"><Images />{compact ? '图片' : productionView ? '款式图片' : '参考图片'}</h2><div className="item-heading-actions"><span className="muted">{currentImages.length} / 5 张{currentQueue.length > 0 && ` · ${currentQueue.length} 张待上传`}</span>{canUpload && <button type="button" className="secondary compact" disabled={busy || !product || count >= 5 || !query.data || !local.data} onClick={() => input.current?.click()}><Plus />添加图片</button>}</div></div>
+    <p className="form-help">{product ? `商品 ${order.items.indexOf(product) + 1} · ${product.name}` : '暂无商品'} · 每商品最多 5 张，JPG / PNG，每张不超过 5 MiB。</p>
+    <input className="sr-only" tabIndex={-1} aria-label="选择当前商品图片" ref={input} type="file" multiple accept="image/jpeg,image/png,.jpg,.jpeg,.png" disabled={busy || !canUpload} onChange={event => void select(Array.from(event.target.files || []))} />
     <ErrorNotice error={query.error} retry={() => void query.refetch()} />
-    {query.isPending ? <Loading /> : query.data?.length === 0 ? <p className="form-help">暂无款式图片。</p> : <ul className="image-grid">{query.data?.map(image => <ImageTile productionView={productionView} key={`${id}/${image.imageId}`} image={image} scope={image.itemId ? order.items.find(item => item.itemId === image.itemId)?.name || '历史商品图片' : '整张订单'} blocked={busy || adding} remove={() => { if (window.confirm(`移除参考图片「${image.filename}」？历史记录会保留。`)) submit({ type: 'remove', imageId: image.imageId }); }} />)}</ul>}
-    {full && <p className="form-help">已达 8 张上限，移除后可继续添加。</p>}
-    {adding && <form className="image-upload" onSubmit={event => { event.preventDefault(); if (file && !imageFileError(file) && !invalidItem && !full) submit({ type: 'upload', file, itemId }); }}>
-      <fieldset disabled={busy}><legend>添加参考图片</legend>
-        <label>图片文件<input ref={input} type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" onChange={event => { const selected = event.target.files?.[0] || null; const error = selected ? imageFileError(selected) : ''; setValidation(error); setFile(error ? null : selected); }} /></label>
-        <label>图片归属<Select label="图片归属" disabled={busy} value={itemId} onChange={setItemId}><option value="">整张订单</option>{order.items.map((item, index) => <option key={item.itemId} value={item.itemId}>商品 {index + 1} · {item.name}</option>)}{invalidItem && <option value={itemId}>已移除的商品，请重新选择</option>}</Select></label>
-        {preview && <div className="image-local-preview"><img src={preview} alt="待上传图片预览" /><span>{file?.name}</span></div>}
-        {validation && <p className="field-error" role="alert">{validation}</p>}{invalidItem && <p className="field-error">该商品已移除，请重新选择图片归属。</p>}
-        <div className="actions"><button className="primary" disabled={busy || !file || invalidItem || full}>{saving ? '正在保存…' : '确认上传'}</button><button type="button" className="secondary" onClick={() => { clear(); setFailure(null); }} disabled={busy}>取消</button></div>
-      </fieldset>
-    </form>}
-    {failure && <div className="notice error" role="alert">{failure.type === 'upload' && creationResultUnknown(failure.error) ? '上传结果未确认，图片选择已保留。请先刷新核对，避免重复上传。' : errorText(failure.error)}<button className="text-button" disabled={busy || query.isFetching} onClick={() => void query.refetch()}>刷新图片列表</button></div>}
+    {local.error && <p className="notice error" role="alert">本机待上传图片无法读取。<button type="button" className="text-button" onClick={() => void local.refetch()}>重试读取</button></p>}
+    {query.isPending ? <Loading /> : currentImages.length + currentQueue.length === 0 ? <p className="form-help">该商品暂无款式图片。</p> : <ul className="image-grid">{currentImages.map(image => <ImageTile key={image.imageId} image={image} scope={product?.name || '商品图片'} blocked={busy || !canDelete} productionView={productionView} remove={() => void remove(image)} />)}{currentQueue.map(image => <QueuedImageTile key={image.key} image={image} busy={busy || !canUpload} retry={() => void upload([image])} remove={() => void removeLocal(image)} />)}</ul>}
+    {currentImages.length >= 5 && <p className="form-help">该商品已达上限，移除到 5 张以下可继续添加。历史图片保留。</p>}
+    {history.length > 0 && <div className="historical-images"><h3>历史图片</h3><p className="form-help">未关联商品或原商品已移除的图片。</p><ul className="image-grid">{history.map(image => <ImageTile key={image.imageId} image={image} scope={image.itemId ? '已移除商品' : '整单历史图片'} blocked={busy || !canDelete} productionView={productionView} remove={() => void remove(image)} />)}</ul></div>}
+    {orphanQueue.length > 0 && <div className="notice error"><p>以下待上传图片的商品已移除，请核对后移除本机图片。</p><ul className="image-grid">{orphanQueue.map(image => <QueuedImageTile key={image.key} image={image} busy={busy} retry={() => void upload([image])} remove={() => void removeLocal(image)} />)}</ul></div>}
+    {saving && <p className="form-help" role="status">正在保存图片，请稍候…</p>}
+    {error && <p className="notice error" role="alert">{error}</p>}
     <div aria-live="polite">{notice && <p className="form-help">{notice}</p>}</div>
   </section>;
 }

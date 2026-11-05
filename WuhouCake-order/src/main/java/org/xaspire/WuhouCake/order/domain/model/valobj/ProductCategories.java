@@ -26,4 +26,5 @@ public final class ProductCategories {
     public static String label(String value) {
         return value == null ? "未分类" : LABELS.getOrDefault(normalize(value), value);
     }
+    public static boolean hasUnitPrices(String value) { return !"CAKE".equals(normalize(value == null ? "CAKE" : value)); }
 }

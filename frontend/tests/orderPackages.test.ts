@@ -2,6 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { appendPackage, packageItems, newPackageItem, packageRequest } from '../src/orderPackages.ts';
 import { newItem, fieldsForProduct } from '../src/orderForm.ts';
+
+test('空名称但带图片的商品不被套餐替换，原商品标识和图片归属保留', () => {
+  const original = newItem();
+  original.images = [{ id: crypto.randomUUID(), name: 'reference.png', type: 'image/png', size: 100 }];
+  const snapshot = structuredClone(original);
+  const value = { items: [{ name: '模板蛋糕', productType: 'CAKE', quantity: 1, attributes: { size: '6' } }] };
+  const result = appendPackage([original], value);
+  assert.equal(result.length, 2); assert.equal(result[0].key, original.key);
+  assert.deepEqual(result[0], snapshot); assert.deepEqual(original, snapshot);
+  assert.notEqual(result[1].key, original.key); assert.equal(result[1].images, undefined);
+  assert.equal(appendPackage([newItem()], value).length, 1);
+});
 import { managementQuery, defaultManagementDraft } from '../src/management.ts';
 
 test('fixed packages create editable independent items and preserve existing custom products', () => {

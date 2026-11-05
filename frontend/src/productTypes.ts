@@ -6,6 +6,7 @@ export function normalizeProductType(value: string): string {
   const type = value.trim().toUpperCase();
   return ({ DONUT: 'TEA_BREAK', CUPCAKE: 'TEA_BREAK', OTHER: 'TEA_BREAK', BREAD: 'READY_BAKERY' } as Record<string, string>)[type] || type;
 }
+export function hasUnitPrices(type: string | null | undefined): boolean { return normalizeProductType(type || 'CAKE') !== 'CAKE'; }
 
 export function productTypeLabel(value: string | null | undefined): string {
   if (!value) return '未分类';

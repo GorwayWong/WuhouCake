@@ -26,17 +26,17 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 | POST /api/orders/{id}/restart | expectedVersion，仅已取消订单；须同时具有 ORDER_CANCEL 与 ORDER_PRODUCTION_UPDATE |
 | POST /api/orders/{id}/notes | content、可选 itemId，空 itemId 为整单备注 |
 | GET /api/orders/{id}/activities | 可选 itemId/type，page 从 1 起、size 默认 20/最大 100 |
-| GET /api/orders/calendar | from/to，按收货日期查询 [from,to)，最多 42 天 |
+| GET /api/orders/calendar | from/to，按取货日期查询 [from,to)，最多 42 天 |
 | GET /api/orders/workbench | date，指定门店日期的统计与未完成/未取消待办 |
 | GET /api/orders/workbench/receipt-summary | date，按北京时间付款日汇总订单数和金额 |
-| GET /api/orders/workbench/cake-bases | date，按收货日期汇总蛋糕尺寸、胚口味及数量 |
+| GET /api/orders/workbench/cake-bases | date，按取货日期汇总蛋糕尺寸、胚口味及数量 |
 | GET /api/order-packages | keyword 名称子串搜索、page 默认 1、size 默认 20/最大 50，返回 Page |
 | GET /api/order-packages/{id} | 有效套餐详情，包含 version 和 updatedAt |
 | POST /api/order-packages | name + items，必须带 UUID Idempotency-Key，返回 201 |
 | PUT /api/order-packages/{id} | expectedVersion + name + items，保存修改，返回 200 |
 | DELETE /api/order-packages/{id}?expectedVersion=版本号 | 软删除套餐，返回 200 JSON；不影响已带入订单的商品 |
 | GET /api/orders/stream | Bearer + Fetch SSE |
-| POST /api/orders/{id}/images | multipart file、可选有效 itemId |
+| POST /api/orders/{id}/images | multipart file、必填有效 itemId，可选 UUID Idempotency-Key |
 | GET /api/orders/{id}/images | 图片元数据，不读取二进制 |
 | GET /api/orders/{id}/images/{imageId} | 认证图片内容 |
 | DELETE /api/orders/{id}/images/{imageId} | 软移除图片 |
@@ -55,7 +55,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 
 套餐名称去掉首尾空白后为 1–80 个字符，有效套餐名称区分大小写且唯一，已删除套餐的名称可重新使用。套餐总数不设上限，列表按 updatedAt 降序和 ID 稳定分页；keyword 按普通文本子串匹配，不把 `%`、`_` 当通配符。
 
-每个套餐至少一项商品，保存名称、类型、正整数数量及按类型显示的文本规格，不保存客户、价格、金额或图片。规格可留空，不为套餐自动补齐蛋糕内胚和夹馅；填写的蛋糕尺寸仍须满足现有数值格式。员工新建订单时逐份追加，只有初始空白商品行会被替换，同名商品不合并。带入前重新读取有效详情；带入后为独立订单草稿，修改、删除套餐均不回写草稿或历史订单。
+每个套餐至少一项商品，保存名称、类型、正整数数量及按类型显示的文本规格，不保存客户、价格、金额或图片。规格可留空，不为套餐自动补齐蛋糕内胚和夹馅；填写的蛋糕尺寸仍须满足现有数值格式。员工新建订单时逐份追加，只有初始空白且未选图片的商品行会被替换；带图行保持原商品标识与图片归属，套餐追加其后，同名商品不合并。带入前重新读取有效详情；带入后为独立订单草稿，修改、删除套餐均不回写草稿或历史订单。
 
 PUT 与 DELETE 以 expectedVersion 条件更新，旧版本返回 409 CONCURRENT_MODIFICATION；已删除套餐详情返回 404 PACKAGE_NOT_FOUND。有效套餐同名写入由数据库唯一索引保证，返回 409 PACKAGE_NAME_CONFLICT。店长核对最新版本后可继续保存保留的输入，前端不会自动覆盖。
 
@@ -83,14 +83,15 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 }
 ~~~
 
-- phone、requestedReceiveDate 和至少一件有名称/数量的商品必填；DELIVERY 必须有非空地址，PICKUP 可空。客户姓名、会员电话、客户侧下单人、交接时间 plannedHandoffAt、计划出品时间、报价和总额可选。交接时间留空保存为 null，之后可补填或清空。正式 API 的 phone 是最长 32 字符的非空文本，不提供电话真实性验证。
-- 数量为 1–2147483647 的整数；订单总额、商品单价和会员价为 0–9007199254740991 的 Long 整数分，与前端 JavaScript 安全整数上限一致，超限、浮点小数或负数返回 400 VALIDATION_FAILED。前端以元输入；空值与 0 不同，不按商品报价自动计算订单总额。汇总金额不受单笔上限限制，以精确整数分字符串返回。
-- productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling 缺失、null、空白时，写入和读取均使用原味/芒果，读取不写库。奶油仍存 flavor。新建、追加及明确修改的蛋糕 size 只接受正数、最多两位小数、整数部分最多九位，存为无单位数值文本；非法值返回 400。旧规格可读，未改尺寸时不会因旧尺寸异常阻止其他字段更正。
+- phone、requestedReceiveDate 和至少一件有名称/数量的商品必填；DELIVERY 必须有非空地址，PICKUP 可空。客户姓名、会员电话、客户侧下单人、交接时间 plannedHandoffAt、计划出品时间、报价和总额可选。只填日期且无具体时刻时，取货时间保存为 null，之后可补填或清空。正式 API 的 phone 是最长 32 字符的非空文本，不提供电话真实性验证。
+- 数量为 1–2147483647 的整数；订单总额及非蛋糕商品的单价、会员价为 0–9007199254740991 的 Long 整数分，与前端 JavaScript 安全整数上限一致，超限、浮点小数或负数返回 400 VALIDATION_FAILED。前端以元输入；空值与 0 不同，不按商品报价自动计算订单总额。汇总金额不受单笔上限限制，以精确整数分字符串返回。
+- 蛋糕（CAKE）不使用普通或会员单价，新建、追加及非蛋糕转为蛋糕时保存 null；旧客户端传入的蛋糕价格被忽略。历史蛋糕原始单价保留，读取详情、工作台、客户填单核对时输出 null，不批量改库。历史蛋糕修改其他字段不清除原单价，仅改单价不产生业务变更；蛋糕改成其他类型时，未明确提交的新单价为空。客户核对保存及转订单按新写入规则执行，既有审计日志保留。单单 XLSX、ZIP 和经营报表保留列布局，蛋糕行两种单价为空，其他商品按原规则输出。
+- productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling/flavor 缺失、null、空字符串或纯空白时，写入和读取均使用原味/芒果/原味奶油；明确填写的值保留。历史读取不写库，以后保存时写入默认值；客户填单及核对复用相同默认值。新建、追加及明确修改的蛋糕 size 只接受正数、最多两位小数、整数部分最多九位，存为无单位数值文本；非法值返回 400。旧规格可读，未改尺寸时不会因旧尺寸异常阻止其他字段更正。
 - 商品分类统一为 CAKE、TEA_BREAK、COOKIE、SNACK、DRINK、READY_BAKERY。V22 归并订单商品、套餐、待确认核对数据中的旧分类，保留 attributes、原始填单和历史快照。写入时归一化 DONUT/CUPCAKE/OTHER→TEA_BREAK、BREAD→READY_BAKERY；未知历史类型保留读取。蛋糕统计仍只统计 CAKE。
-- 时间以 ISO 8601 带偏移输入、UTC 输出，前端按北京时间展示。requestedReceiveAt 是当前期望收货时刻，可空以兼容历史日期型订单；非空时其北京时间日期必须与 requestedReceiveDate 一致。客户填单确认时写入核对后的值，交接时间不替代期望收货时间。
-- 员工新建及改期允许仅日期。PATCH 可用 requestedReceiveDate 与 requestedReceiveAt:null 显式改为时刻待定；未清除已有时刻时，只改成冲突日期仍拒绝。无关编辑不清除原时刻；非空 requestedReceiveAt 的北京时间日期必须与日历日期一致。客户填单 Review 新增可空 plannedFinishAt，确认接单时与 plannedHandoffAt 一并保存。界面及 XLSX 统一使用客户收货时间、到店取货时间、计划出品时间；来源记录保留原始时间。
+- 时间以 ISO 8601 带偏移输入、UTC 输出，界面统一为取货与出品。取货为客户或配送员从门店取走商品的时间。前端出品默认取货前一小时，手动值保持并可恢复自动；接口的 plannedFinishAt 接收最终安排，允许空值。
+- 公开字段名不变。新建以 plannedHandoffAt 优先，缺失回退 requestedReceiveAt，写入时同步两者和北京时间 requestedReceiveDate。PATCH 明确修改取货时间时同步旧收货字段；传 null 可清除时刻，日期仍必填。历史订单查询优先 plannedHandoffAt，再回退 requestedReceiveAt 和 requestedReceiveDate；日历、工作台、经营查询 RECEIVE、出货汇总和日期导出使用同一有效取货日期。无关编辑不回填，来源记录及审计保留原值。客户填单 Review 的 plannedFinishAt 为可空出品时间。
 - 员工手工创建订单固定归属当前认证员工；请求中的 creditedEmployeeId 保留兼容接收，但不用于选择手工订单归属。客户扫码填单确认仍使用核对时显式选择的在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
-- 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、requestedReceiveAt、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling 回落默认），结构值整体替换。
+- 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、requestedReceiveAt、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling/flavor 回落默认），结构值整体替换。
 - 所有状态都能更正资料和约定金额；商品仅在 WAITING_PRODUCTION/PROCESSING 可增删改，待交接须先退回其他已确认。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。
 - 制作中追加商品清空已确认的整单节点；任何商品的名称、类型、数量、规格变更会清除该项完成标记，已确认“其他”时退回抹面完成。价格修改及移除保留节点。商品变化不改约定总额和付款。DELIVERING 改为 PICKUP 时转 WAITING_PICKUP；完成/取消后的交接类型更正不重开状态。
 
@@ -128,13 +129,13 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 
 ## 查询与 SSE
 
-日历使用 [from,to)；工作台 date 按 Asia/Shanghai。非法、反向、空或超过 42 天的日历范围返回 400。统计字段：totalOrders 是全部订单数，createdOnDate 是门店当天创建数，deliveryDueOnDate 是该收货日尚未完成/取消的配送订单数，均不是商品数量统计。
+日历使用 [from,to)；工作台 date 按 Asia/Shanghai。非法、反向、空或超过 42 天的日历范围返回 400。统计字段：totalOrders 是全部订单数，createdOnDate 是门店当天创建数，deliveryDueOnDate 是该取货日尚未完成/取消的配送订单数，均不是商品数量统计。
 
 `GET /api/orders/workbench` 的 `includeMetrics` 默认 `true`，继续返回上述统计；显式传 `false` 时 `metrics` 为 `null`，只读取当天订单、商品及备注，不计算全局统计。日历工作台使用此轻量读取，页面统计来自当天筛选后的订单。
 
 每张工作台订单的 `latestNote` 返回整单及有效商品中最新的一条 NOTE，按 createdAt/id 倒序确定；没有备注时为 null。已移除商品的备注不参与卡片摘要，各商品的 recentNotes 仍只包含该商品最近三条备注。
 
-日历响应增加只读 `customerPhoneLast4` 字符串，保留客户手机号末四位及前导零，仅用于日期概览；工作台响应不增加此字段，继续返回 `customer.phone`。日历和工作台均包含该收货日全部状态（含完成、取消）的订单；前端日期概览显示全部订单，筛选仅作用于当天时间轴列表。经营查询 `GET /api/admin/orders` 按订单查询及客户、金额、业务资料读取能力授权，参数 from/to（右开区间，最多 366 天）、dateBasis（RECEIVE 默认按收货日期，CREATED 按北京时间录单日期）、status/paymentStatus/fulfillmentType、sizeInches、creditedEmployeeId、unassigned、includeCancelled、keyword、page/size（1 起、最大 100）。未知枚举、非法日期/尺寸/UUID/分页返回 400；空结果正常返回空列表及零统计。尺寸只匹配有效 CAKE 商品，累加 quantity；旧异常尺寸安全排除于精确尺寸筛选，未设尺寸时仍可查询并计为待核对。
+日历响应增加只读 `customerPhoneLast4` 字符串，保留客户手机号末四位及前导零，仅用于日期概览；工作台响应不增加此字段，继续返回 `customer.phone`。日历和工作台均包含该取货日全部状态（含完成、取消）的订单；前端日期概览显示全部订单，筛选仅作用于当天时间轴列表。经营查询 `GET /api/admin/orders` 按订单查询及客户、金额、业务资料读取能力授权，参数 from/to（右开区间，最多 366 天）、dateBasis（RECEIVE 默认按取货日期，CREATED 按北京时间录单日期）、status/paymentStatus/fulfillmentType、sizeInches、creditedEmployeeId、unassigned、includeCancelled、keyword、page/size（1 起、最大 100）。未知枚举、非法日期/尺寸/UUID/分页返回 400；空结果正常返回空列表及零统计。尺寸只匹配有效 CAKE 商品，累加 quantity；旧异常尺寸安全排除于精确尺寸筛选，未设尺寸时仍可查询并计为待核对。
 
 `allUnpaid=true` 查询全部历史未付款订单，不限日期，忽略其他筛选，包含已取消单，按 created_at、order_no、id 升序；支持分页与同口径导出。
 
@@ -150,18 +151,20 @@ SSE 使用带 Bearer 的 Fetch，先发送 ready/data={}，提交成功后发送
 
 ## 图片与导出
 
-创建后上传 JPEG/PNG，检测真实内容并解码，不能仅凭扩展名/MIME 放行。元数据与 BYTEA 内容同事务写入，图片及活动失败一并回滚。移除释放额度并保留历史；商品移除后图片可查阅，但后续导出不包含该商品的图片。内容请求认证、no-store、nosniff；不支持 HEIC 或 OCR。
+创建商品项接受可选 UUID `itemId`，提供时作为新商品的稳定标识，重复标识返回 400，与已有商品冲突返回 409；省略时由服务端生成，旧请求的创建幂等指纹保持。
+
+员工新建订单时可逐商品选图并随本机草稿恢复；订单创建后按商品 ID 上传 JPEG/PNG。上传必须指定有效商品，检测真实内容并解码，不能仅凭扩展名/MIME 放行。元数据与 BYTEA 内容同事务写入，图片及活动失败一并回滚。上传可带 UUID Idempotency-Key，订单内唯一；相同键及相同商品、规范化文件名和原始内容返回原图，不重复写图、活动或通知；同键不同请求返回 409，原图已移除时也返回 409。每商品计数与幂等检查在订单行锁内执行。移除释放额度并保留历史；商品移除后图片可查阅，但后续导出不包含该商品的图片。内容请求认证、no-store、nosniff；不支持 HEIC 或 OCR。
 
 | 资源 | 上限 |
 | --- | --- |
 | 单图 | 5 MiB；宽高各不超过 8192，总像素不超过 2400 万 |
-| 每单图片 | 8 张未移除图片，包含已移除商品关联的保留图 |
+| 每商品图片 | 5 张未移除图片，无整单 8 张限制；历史超额及未关联图片继续读取 |
 | multipart | 单文件 5 MiB、单请求 6 MiB |
 | 批量导出 | 42 天、100 单、最多 800 张图片；超量报错，不截断前 100 单 |
 | 输出文件 | 每份 XLSX 64 MiB，ZIP 256 MiB |
 | 正文预检 | 8 MiB，商品与所读取备注合计最多 10000 条；包含内部读取的历史商品/最近备注 |
 
-ZIP 筛选 from/to 是收货日期右开区间，界面结束当天须先加一天；未筛选状态时包含完成和取消。空结果、非法筛选、超范围/数量/内容均返回可理解错误。
+ZIP 筛选 from/to 是取货日期右开区间，界面结束当天须先加一天；未筛选状态时包含完成和取消。空结果、非法筛选、超范围/数量/内容均返回可理解错误。
 
 XLSX 含“订单信息、商品明细、工作备注、参考图片”四张表。有效商品规格转换为可读字段，状态和类型使用中文；备注及图片通过商品序号、名称关联，不展示内部 UUID、版本、原始 JSON。包含全部整单备注、各有效商品最近三条备注和有效图片，图片实际嵌入。金额精确转为元文本，未填金额显示“未填写”，零元显示 0.00；时间按北京时间，长文本拆连续行，文本不作为公式执行。ZIP 根目录每单一个安全订单号文件名，使用 UTF-8 和普通 Deflate；每单模板与单独导出一致。
 
@@ -202,3 +205,12 @@ DASHSCOPE_API_KEY 仅通过服务端受限配置注入；普通 .env 文件不�
 ## 验证
 
 常规单元、ArchUnit、真实 HTTP/数据库、文件及故障回归命令统一维护在[验证摘要](../frontend/verification.md#验证入口)。原阶段测试数量、分支操作过程和 Slice 计划不再作为当前契约；独立验收报告保留其执行基线与未验证边界。
+
+文字识别支持“规格（寸）”“规格(寸)”作为 size 标签，原“尺寸／蛋糕尺寸”继续可用；普通“规格”仍映射 specification，不根据寸数猜测商品分类。表单中的“蛋糕胚”仍对应 base，接口字段和历史数据格式保持。
+
+### 订购方式
+
+员工创建订单可选填顶层 `orderingMethod` 文本；资料修改使用 `changes.orderingMethod`。
+该字段独立于配送／自提和填单来源，去除首尾空白后最多 80 字符，空内容保存为 `null`。
+详情仅在具有 `ORDER_BUSINESS_DETAILS_READ` 权限时返回实际值；修改沿用 `expectedVersion` 和资料修改审计。
+旧请求可省略，历史订单保持空值；客户填单、识别和导出列不增加此字段。

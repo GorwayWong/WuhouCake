@@ -1,3 +1,4 @@
+import { hasUnitPrices } from './productTypes';
 import { CalendarBlank, Clock, Package, Truck, CheckCircle, XCircle, Circle, Stack, Cake } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import type { Item, OrderStatus } from './types';
@@ -42,7 +43,7 @@ export function Product({ item, prices = false, children, actions, completion }:
     <div className="product-heading-row"><div className="product-heading"><span className="product-mark"><Cake size={24} /></span><div className="product-title"><h3>{item.name}</h3><span className="muted">{productTypeLabel(item.productType || 'CAKE')} · 数量 {item.quantity}</span></div></div>{completion}</div>
     {actions}
     {children || <dl className="attributes">{Object.entries(item.attributes || {}).map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd>{valueText(value)}</dd></div>)}
-      {prices && <><div><dt>单价</dt><dd>{money(item.unitPriceCents)}</dd></div><div><dt>会员单价</dt><dd>{money(item.memberPriceCents)}</dd></div></>}
+      {prices && hasUnitPrices(item.productType) && <><div><dt>单价</dt><dd>{money(item.unitPriceCents)}</dd></div><div><dt>会员单价</dt><dd>{money(item.memberPriceCents)}</dd></div></>}
     </dl>}
     {item.recentNotes.length > 0 && <div className="recent-notes"><h4>最近备注 <span>{item.recentNotes.length}</span></h4>
       <ul>{item.recentNotes.map(note => <li key={note.id}><div className="note-meta"><strong>{note.actorNameSnapshot}</strong><time dateTime={note.createdAt}>{time(note.createdAt, true)}</time></div><p>{note.content}</p></li>)}</ul>

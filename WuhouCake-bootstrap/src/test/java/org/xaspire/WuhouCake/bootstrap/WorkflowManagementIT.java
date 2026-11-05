@@ -51,6 +51,24 @@ class WorkflowManagementIT {
     }
     @AfterAll void cleanup() { reset(operations, orderActivities, management, creations); clearRedis(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE"); }
     private void clearRedis() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
+    @Test void managementReceiveFilterAndExportsUseHistoricalPickupDatesWithFallbacks() throws Exception {
+        var created = a.data("POST", "/api/orders", create(a.id)); String id = created.path("orderId").asText();
+        jdbc.update("UPDATE cake_order SET planned_handoff_at='2026-11-03T16:30:00Z' WHERE id=?::uuid", id);
+        var oldRange = admin.data("GET", search(""), null); assertEquals(0, oldRange.at("/totals/orderCount").asInt());
+        String range = "/api/admin/orders?from=2026-11-04&to=2026-11-05";
+        var current = admin.data("GET", range, null);
+        assertEquals(id, current.at("/items/0/orderId").asText()); assertEquals("2026-11-04", current.at("/items/0/receiveDate").asText());
+        assertEquals(1, current.at("/totals/orderCount").asInt());
+        var download = admin.raw("GET", range.replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, download.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(download.body()))) { assertEquals(2, book.getSheet("订单明细").getPhysicalNumberOfRows()); }
+        assertEquals("2026-10-17", a.data("GET", "/api/orders/" + id, null).at("/fulfillment/requestedReceiveDate").asText());
+        jdbc.update("UPDATE cake_order SET planned_handoff_at=NULL WHERE id=?::uuid", id);
+        assertEquals(1, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
+        jdbc.update("UPDATE cake_order SET requested_receive_at=NULL WHERE id=?::uuid", id);
+        assertEquals(1, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
+    }
+
     @Test void mixedProductsAreCountedByQuantityAndFilteredExportMatchesTheListWithoutLogs() throws Exception {
         var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
         assertEquals(a.id, order.path("createdBy").asText()); assertEquals(b.id, order.at("/creditedEmployee/accountId").asText());
@@ -86,6 +104,130 @@ class WorkflowManagementIT {
         assertEquals(before, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
         assertEquals(2, admin.data("GET", search("&includeCancelled=true"), null).at("/totals/orderCount").asInt());
         assertEquals(1, admin.data("GET", search("&status=CANCELLED"), null).at("/totals/orderCount").asInt());
+    }
+    @Test void orderingMethodFiltersEveryReportAndExportUsingTheSameExactValue() throws Exception {
+        var names = List.of("下单人", "小程序", "到店", "客服号", "微信%_'\\");
+        var created = new LinkedHashMap<String, JsonNode>();
+        for (String method : names) {
+            var input = new LinkedHashMap<>(create(a.id)); input.put("orderingMethod", " " + method + " ");
+            created.put(method, a.data("POST", "/api/orders", input));
+        }
+        a.data("POST", "/api/orders", create(a.id));
+        for (String method : names) {
+            String suffix = "&orderingMethod=" + java.net.URLEncoder.encode(" " + method + " ", java.nio.charset.StandardCharsets.UTF_8);
+            var report = admin.data("GET", search(suffix), null);
+            assertEquals(1, report.at("/totals/orderCount").asInt()); assertEquals(created.get(method).path("orderId"), report.at("/items/0/orderId"));
+            assertEquals(9, report.at("/totals/matchingQuantity").asInt()); assertEquals("52000", report.at("/totals/totalAmountCents").asText());
+            assertEquals(2, report.path("sizes").size()); assertEquals(9, report.at("/employees/0/matchingQuantity").asInt());
+            assertEquals(0, admin.data("GET", search(suffix + "&page=2&size=1"), null).path("items").size());
+        }
+        assertEquals(6, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
+        assertEquals(6, admin.data("GET", search("&orderingMethod=%20%20"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search("&orderingMethod=%25"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search("&orderingMethod=" + "x".repeat(80)), null).at("/totals/orderCount").asInt());
+        assertEquals(400, admin.raw("GET", search("&orderingMethod=" + "x".repeat(81)), null).statusCode());
+        assertEquals(6, admin.data("GET", "/api/admin/orders?allUnpaid=true&orderingMethod=nomatch", null).at("/totals/orderCount").asInt());
+        String method = names.getLast(), encoded = java.net.URLEncoder.encode(method, java.nio.charset.StandardCharsets.UTF_8);
+        String suffix = "&orderingMethod=" + encoded + "&productName=" + java.net.URLEncoder.encode("八寸", java.nio.charset.StandardCharsets.UTF_8) + "&sizeInches=8&keyword=139";
+        var combined = admin.data("GET", search(suffix), null);
+        assertEquals(1, combined.at("/totals/orderCount").asInt()); assertEquals(2, combined.at("/totals/matchingQuantity").asInt());
+        assertEquals("52000", combined.at("/totals/totalAmountCents").asText()); assertEquals(1, combined.path("sizes").size());
+        assertEquals(2, combined.at("/employees/0/matchingQuantity").asInt());
+        assertEquals(0, admin.data("GET", search(suffix + "&creditedEmployeeId=" + b.id), null).at("/totals/orderCount").asInt());
+        var response = admin.raw("GET", search(suffix).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, response.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
+            assertEquals(2, book.getSheet("订单明细").getPhysicalNumberOfRows()); assertEquals(2, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            assertEquals("520.00", book.getSheet("订单明细").getRow(1).getCell(9).getStringCellValue());
+            boolean recorded = false;
+            for (var row : book.getSheet("统计")) if (row.getCell(0).getStringCellValue().equals("下单方式")) {
+                assertEquals(method, row.getCell(1).getStringCellValue()); recorded = true;
+            }
+            assertTrue(recorded);
+        }
+        var download = admin.raw("POST", "/api/admin/orders/exports/zip", Map.of("from", "2026-10-01", "to", "2026-11-01", "orderingMethod", method));
+        assertEquals(200, download.statusCode());
+        try (var zip = new java.util.zip.ZipInputStream(new ByteArrayInputStream(download.body()))) {
+            assertNotNull(zip.getNextEntry());
+            try (var book = new XSSFWorkbook(new ByteArrayInputStream(zip.readAllBytes()))) {
+                assertEquals(4, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            }
+            assertNull(zip.getNextEntry());
+        }
+        String id = created.get("到店").path("orderId").asText();
+        jdbc.update("UPDATE cake_order SET ordering_method='  Legacy  ' WHERE id=?::uuid", id);
+        assertEquals(1, admin.data("GET", search("&orderingMethod=Legacy"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search("&orderingMethod=legacy"), null).at("/totals/orderCount").asInt());
+        a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("orderingMethod", "电话")));
+        assertEquals(1, admin.data("GET", search("&orderingMethod=" + java.net.URLEncoder.encode("电话", java.nio.charset.StandardCharsets.UTF_8)), null).at("/totals/orderCount").asInt());
+        a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("orderingMethod", "")));
+        assertEquals(0, admin.data("GET", search("&orderingMethod=" + java.net.URLEncoder.encode("电话", java.nio.charset.StandardCharsets.UTF_8)), null).at("/totals/orderCount").asInt());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='ORDER_INFORMATION_CHANGED' AND jsonb_exists(details->'after','orderingMethod')", Integer.class, id));
+        id = created.get(method).path("orderId").asText();
+        admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "合成删除"));
+        var deleted = deletedFilters();
+        String deletedQuery = "/api/admin/orders?deleted=true&from=" + deleted.get("from") + "&to=" + deleted.get("to");
+        assertEquals(1, admin.data("GET", deletedQuery + "&orderingMethod=" + encoded, null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", deletedQuery + "&orderingMethod=nomatch", null).at("/totals/orderCount").asInt());
+    }
+    @Test void productNameSharesItemMatchingAcrossReportsExportsAndZipSelection() throws Exception {
+        var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        var other = a.data("POST", "/api/orders", create(a.id));
+        jdbc.update("UPDATE cake_order_item SET name='普通商品' WHERE order_id=?::uuid", other.path("orderId").asText());
+        String name = java.net.URLEncoder.encode(" 蛋糕 ", java.nio.charset.StandardCharsets.UTF_8);
+        var all = admin.data("GET", search("&productName=" + name), null);
+        assertEquals(1, all.at("/totals/orderCount").asInt()); assertEquals(9, all.at("/totals/matchingQuantity").asInt());
+        assertEquals("52000", all.at("/totals/totalAmountCents").asText());
+        assertEquals(0, admin.data("GET", search("&productName=" + name + "&page=2&size=1"), null).path("items").size());
+        String suffix = "&productName=" + java.net.URLEncoder.encode("八寸", java.nio.charset.StandardCharsets.UTF_8);
+        var filtered = admin.data("GET", search(suffix + "&sizeInches=8&keyword=139"), null);
+        assertEquals(id, filtered.at("/items/0/orderId").asText());
+        assertEquals(2, filtered.at("/totals/matchingQuantity").asInt()); assertEquals(2, filtered.at("/totals/cakeQuantity").asInt());
+        assertEquals("52000", filtered.at("/totals/totalAmountCents").asText());
+        assertEquals(1, filtered.path("sizes").size()); assertEquals("8", filtered.at("/sizes/0/size").asText());
+        assertEquals(2, filtered.at("/employees/0/matchingQuantity").asInt()); assertEquals("52000", filtered.at("/employees/0/totalAmountCents").asText());
+        assertEquals(Set.of("CAKE", "TEA_BREAK"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
+        assertFalse(filtered.at("/items/0/products").asText().contains("十寸"));
+        assertEquals(0, admin.data("GET", search(suffix + "&sizeInches=10"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search(suffix + "&keyword=nomatch"), null).at("/totals/orderCount").asInt());
+        assertEquals(1, admin.data("GET", search(suffix + "&keyword=" + order.path("orderNo").asText()), null).at("/totals/orderCount").asInt());
+        var response = admin.raw("GET", search(suffix).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, response.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
+            assertEquals(2, book.getSheet("订单明细").getPhysicalNumberOfRows());
+            assertEquals(2, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            assertEquals("八寸蛋糕", book.getSheet("商品明细").getRow(1).getCell(1).getStringCellValue());
+            assertEquals(2d, book.getSheet("订单明细").getRow(1).getCell(10).getNumericCellValue());
+            assertEquals("520.00", book.getSheet("订单明细").getRow(1).getCell(9).getStringCellValue());
+        }
+        var download = admin.raw("POST", "/api/admin/orders/exports/zip", Map.of("from", "2026-10-01", "to", "2026-11-01", "productName", "八寸"));
+        assertEquals(200, download.statusCode());
+        try (var zip = new java.util.zip.ZipInputStream(new ByteArrayInputStream(download.body()))) {
+            assertNotNull(zip.getNextEntry());
+            try (var book = new XSSFWorkbook(new ByteArrayInputStream(zip.readAllBytes()))) {
+                assertEquals(4, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            }
+            assertNull(zip.getNextEntry());
+        }
+    }
+    @Test void productNameIsLiteralOptionalAndRespectsRemovedAndDeletedOrders() throws Exception {
+        var order = a.data("POST", "/api/orders", create(a.id)); String id = order.path("orderId").asText();
+        String name = "点心%_'\\";
+        jdbc.update("UPDATE cake_order_item SET name=? WHERE order_id=?::uuid AND product_type='TEA_BREAK'", name, id);
+        String suffix = "&productName=" + java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(6, admin.data("GET", search(suffix), null).at("/totals/matchingQuantity").asInt());
+        assertEquals(0, admin.data("GET", search("&productName=%25%25"), null).at("/totals/orderCount").asInt());
+        assertEquals(1, admin.data("GET", search("&productName=%20%20"), null).at("/totals/orderCount").asInt());
+        assertEquals(200, admin.raw("GET", search("&productName=" + "x".repeat(100)), null).statusCode());
+        assertEquals(400, admin.raw("GET", search("&productName=" + "x".repeat(101)), null).statusCode());
+        assertEquals(1, admin.data("GET", "/api/admin/orders?allUnpaid=true&productName=nomatch", null).at("/totals/orderCount").asInt());
+        jdbc.update("UPDATE cake_order_item SET is_removed=true WHERE order_id=?::uuid AND name=?", id, name);
+        assertEquals(0, admin.data("GET", search(suffix), null).at("/totals/orderCount").asInt());
+        admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "合成删除"));
+        var filters = deletedFilters();
+        String deleted = "/api/admin/orders?deleted=true&from=" + filters.get("from") + "&to=" + filters.get("to");
+        assertEquals(1, admin.data("GET", deleted + "&productName=" + java.net.URLEncoder.encode("八寸", java.nio.charset.StandardCharsets.UTF_8), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", deleted + suffix, null).at("/totals/orderCount").asInt());
     }
     @Test void abnormalHistoricalSizesRemainReadableAndCannotBreakFiltering() throws Exception {
         var order = a.data("POST", "/api/orders", create(b.id)); String item = null;
@@ -146,7 +288,7 @@ class WorkflowManagementIT {
     @Test void managementExportHandlesMoreThanOneHundredOrdersAndLegacyUnassignedOrders() throws Exception {
         a.data("POST", "/api/orders", create(a.id));
         jdbc.update("WITH new_orders AS (INSERT INTO cake_order(id,order_no,version,status,payment_status,customer_phone,fulfillment_type,requested_receive_date,planned_handoff_at,created_by,created_at,confirmed_at,updated_at)"
-                + " SELECT gen_random_uuid(),'legacy-'||n,0,'WAITING_PRODUCTION','UNPAID','13900000000','PICKUP',DATE '2026-10-17',now(),?::uuid,now(),now(),now() FROM generate_series(1,105)n RETURNING id)"
+                + " SELECT gen_random_uuid(),'legacy-'||n,0,'WAITING_PRODUCTION','UNPAID','13900000000','PICKUP',DATE '2026-10-17',TIMESTAMPTZ '2026-10-17T06:00:00Z',?::uuid,now(),now(),now() FROM generate_series(1,105)n RETURNING id)"
                 + " INSERT INTO cake_order_item(id,order_id,name,product_type,quantity,attributes,production_status,is_removed,created_at,updated_at) SELECT gen_random_uuid(),id,'旧蛋糕','CAKE',1,'{}'::jsonb,'NOT_STARTED',false,now(),now() FROM new_orders", a.id);
         var data = admin.data("GET", search("&unassigned=true&size=100"), null); assertEquals(105, data.at("/totals/orderCount").asInt()); assertEquals(100, data.path("items").size());
         var result = admin.raw("GET", search("&unassigned=true").replace("/api/admin/orders?", "/api/admin/orders/export?"), null);

@@ -17,9 +17,18 @@ public final class OrderCommands {
         }
     }
     public record Item(@NotBlank String name, String productType, @NotNull Number quantity,
-            Number unitPriceCents, Number memberPriceCents, Map<String, Object> attributes) { }
+            Number unitPriceCents, Number memberPriceCents, Map<String, Object> attributes,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) UUID itemId) {
+        public Item(String name, String productType, Number quantity, Number unitPriceCents, Number memberPriceCents, Map<String, Object> attributes) {
+            this(name, productType, quantity, unitPriceCents, memberPriceCents, attributes, null);
+        }
+    }
     public record Create(@NotNull @Valid Customer customer, @NotNull @Valid Fulfillment fulfillment,
-            @NotEmpty List<@NotNull @Valid Item> items, Number totalAmountCents, UUID creditedEmployeeId) {
+            @NotEmpty List<@NotNull @Valid Item> items, Number totalAmountCents, UUID creditedEmployeeId,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String orderingMethod) {
+        public Create(Customer customer, Fulfillment fulfillment, List<Item> items, Number totalAmountCents, UUID creditedEmployeeId) {
+            this(customer, fulfillment, items, totalAmountCents, creditedEmployeeId, null);
+        }
         public Create(Customer customer, Fulfillment fulfillment, List<Item> items, Number totalAmountCents) {
             this(customer, fulfillment, items, totalAmountCents, null);
         }

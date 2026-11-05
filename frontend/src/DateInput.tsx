@@ -12,10 +12,10 @@ interface Props {
   label: string; id?: string; name?: string; type?: 'date' | 'datetime-local';
   value: string; onChange: (value: string, parts?: { date: string; time: string }) => void; required?: boolean; disabled?: boolean;
   resetTimeOnDateChange?: boolean; timeOptional?: boolean;
-  dateDisplay?: 'full' | 'month-day'; showTimeHint?: boolean;
+  dateDisplay?: 'full' | 'month-day'; showTimeHint?: boolean; compactTime?: boolean;
   'aria-invalid'?: boolean; 'aria-describedby'?: string;
 }
-function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, timeOptional = false, dateDisplay, showTimeHint = true, ...aria }: Props) {
+function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, timeOptional = false, dateDisplay, showTimeHint = true, compactTime = false, ...aria }: Props) {
   const split = (source: string) => {
     const [date = '', time = ''] = source.split('T'), [hour = '', minute = ''] = time.split(':');
     return { source, date, hour, minute };
@@ -35,18 +35,18 @@ function DateTimeInput({ value, onChange, label, name, id, required, disabled, r
     <DateInput label={`${label}日期`} id={id} value={draft.date} dateDisplay={dateDisplay} onChange={date => update({ date })} required={required} disabled={disabled} {...aria} />
     <div className="time-field" role="group" aria-label={`${label}时刻`}>
       <Select label={`${label}小时`} value={draft.hour} onChange={hour => update({ hour })} required={required && !timeOptional} disabled={disabled} {...aria}>
-        <option value="">小时</option>{draft.hour && !businessHours.includes(draft.hour) && <option value={draft.hour} disabled>{draft.hour} 时（原值）</option>}{businessHours.map(hour => <option key={hour} value={hour}>{hour} 时</option>)}
+        <option value="">小时</option>{draft.hour && !businessHours.includes(draft.hour) && <option value={draft.hour} disabled>{draft.hour}{compactTime ? '（原值）' : ' 时（原值）'}</option>}{businessHours.map(hour => <option key={hour} value={hour}>{hour}{!compactTime && ' 时'}</option>)}
       </Select>
       <Select label={`${label}分钟`} value={draft.minute} onChange={minute => update({ minute })} required={required && !timeOptional} disabled={disabled} {...aria}>
-        <option value="">分钟</option>{Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0')).map(minute => <option key={minute} value={minute}>{minute} 分</option>)}
+        <option value="">分钟</option>{Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0')).map(minute => <option key={minute} value={minute}>{minute}{!compactTime && ' 分'}</option>)}
       </Select>
     </div>
     {timeOptional && (showTimeHint || draft.hour || draft.minute) && <div className="optional-time-help">{showTimeHint && <span>{!draft.hour && !draft.minute ? '时刻待定' : '时刻选填'}</span>}{(draft.hour || draft.minute) && <button type="button" className="text-button" disabled={disabled} onClick={() => update({ hour: '', minute: '' })}>清除时刻</button>}</div>}
     <input type="hidden" name={name} value={value} />
   </div>;
 }
-export function DateInput({ label, type = 'date', value, onChange, required, disabled, id, name, resetTimeOnDateChange, timeOptional, dateDisplay, showTimeHint, ...aria }: Props) {
-  if (type === 'datetime-local') return <DateTimeInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} timeOptional={timeOptional} resetTimeOnDateChange={resetTimeOnDateChange} dateDisplay={dateDisplay} showTimeHint={showTimeHint} {...aria} />;
+export function DateInput({ label, type = 'date', value, onChange, required, disabled, id, name, resetTimeOnDateChange, timeOptional, dateDisplay, showTimeHint, compactTime, ...aria }: Props) {
+  if (type === 'datetime-local') return <DateTimeInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} timeOptional={timeOptional} resetTimeOnDateChange={resetTimeOnDateChange} dateDisplay={dateDisplay} showTimeHint={showTimeHint} compactTime={compactTime} {...aria} />;
   return <CalendarInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} dateDisplay={dateDisplay} {...aria} />;
 }
 function CalendarInput({ label, value, onChange, required, disabled, id, name, dateDisplay, ...aria }: Props) {
@@ -58,7 +58,7 @@ function CalendarInput({ label, value, onChange, required, disabled, id, name, d
     placeholderValue={parseDate(today())} shouldForceLeadingZeros firstDayOfWeek="mon"
     isOpen={open} onOpenChange={setOpen} shouldCloseOnSelect>{({ state }) => <>
     <Group className="date-control" onKeyDownCapture={event => { if (event.key === 'Enter' && (event.target as HTMLElement).matches('[role="spinbutton"]')) { event.preventDefault(); setOpen(false); (event.target as HTMLElement).blur(); } }}>
-      {dateDisplay === 'month-day' ? <Button className="date-month-day" aria-label={date ? `${label}，${value}` : `选择${label}`}>{date ? `${date.month}月${date.day}日` : '选择日期'}</Button> : <Segments className="date-segments">{segment => <DateSegment segment={segment} className="date-segment" />}</Segments>}
+      {dateDisplay === 'month-day' ? <button type="button" className="date-month-day" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-label={date ? `${label}，${value}` : `选择${label}`} onClick={() => setOpen(true)}>{date ? `${date.month}月${date.day}日` : '选择日期'}</button> : <Segments className="date-segments">{segment => <DateSegment segment={segment} className="date-segment" />}</Segments>}
       <Button id={id} className="date-open" aria-label={`选择${label}`}><CalendarBlank size={20} /></Button>
     </Group>
     <Popover className="control-popover date-popover" placement="bottom start" offset={6} containerPadding={12}>

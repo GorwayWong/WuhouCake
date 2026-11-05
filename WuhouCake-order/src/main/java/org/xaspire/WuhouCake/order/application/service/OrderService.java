@@ -52,13 +52,18 @@ public class OrderService {
         FulfillmentType type;
         try { type = FulfillmentType.valueOf(fulfillment.type()); }
         catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
-        var plan = new FulfillmentPlan(type, fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt());
+        var pickupAt = fulfillment.plannedHandoffAt() != null ? fulfillment.plannedHandoffAt() : fulfillment.requestedReceiveAt();
+        var plan = new FulfillmentPlan(type, fulfillment.address(), pickupAt == null ? fulfillment.requestedReceiveDate() : receiveDate(pickupAt),
+                pickupAt, fulfillment.plannedFinishAt(), pickupAt);
+        var itemIds = new HashSet<UUID>();
         var items = command.items().stream().map(item -> {
             if (item == null) throw invalid();
-            return OrderItem.create(ids.nextId(), item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
+            var itemId = item.itemId() == null ? ids.nextId() : item.itemId();
+            if (!itemIds.add(itemId)) throw invalid();
+            return OrderItem.create(itemId, item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
         }).toList();
         var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
-        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee);
+        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod());
         orders.create(order);
         var creation = new LinkedHashMap<String, Object>();
         creation.put("status", order.status()); creation.put("paymentStatus", order.paymentStatus());
@@ -107,7 +112,7 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now(); var input = command.item();
         if (input == null) throw invalid();
-        var item = OrderItem.create(ids.nextId(), input.name(), input.productType(), input.quantity(), input.unitPriceCents(),
+        var item = OrderItem.create(input.itemId() == null ? ids.nextId() : input.itemId(), input.name(), input.productType(), input.quantity(), input.unitPriceCents(),
                 input.memberPriceCents(), input.attributes(), now);
         var changed = order.addItem(item, now);
         orders.addItem(order, expected, item.itemId());
@@ -292,6 +297,6 @@ public class OrderService {
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
                         order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()), order.paidAt(),
                 order.deletion() == null ? null : new OrderViews.Deletion(order.deletion().deletedAt(), order.deletion().deletedBy(),
-                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()));
+                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()), order.orderingMethod());
     }
 }

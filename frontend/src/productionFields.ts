@@ -1,3 +1,4 @@
+import { hasUnitPrices } from './productTypes.ts';
 import type { Item } from './types.ts';
 
 function text(value: unknown): string {
@@ -22,4 +23,14 @@ export function productionFields(item: Pick<Item, 'attributes'> & Partial<Pick<I
     ['祝福语', text(attributes.message ?? attributes.greeting)],
     ['特殊要求', text(attributes.requirements ?? attributes.otherRequirements)],
   ];
+}
+
+export function productionCardFields(item: Pick<Item, 'attributes' | 'productType'> | undefined): [string, string][] {
+  if (!item) return [];
+  const attributes = item.attributes || {};
+  const display = (value: unknown, missing: string) => value == null || typeof value === 'string' && !value.trim() ? missing : text(value) || missing;
+  if (hasUnitPrices(item.productType)) return [['规格', display(attributes.specification, '规格待确认')]];
+  const size = display(attributes.size, '尺寸待确认');
+  return [['尺寸', /^\d+(?:\.\d+)?$/.test(size) ? `${size} 寸` : size],
+    ['蛋糕胚', display(attributes.base ?? attributes.cakeBase, '蛋糕胚待确认')]];
 }

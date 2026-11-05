@@ -10,7 +10,13 @@ public final class OrderViews {
 
     public record Detail(UUID orderId, String orderNo, long version, String status, String paymentStatus, String currentStageCode,
             Customer customer, Fulfillment fulfillment, Long totalAmountCents, UUID createdBy,
-            Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items, Employee creditedEmployee, Instant paidAt, Deletion deletion) {
+            Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items, Employee creditedEmployee, Instant paidAt, Deletion deletion, String orderingMethod) {
+        public Detail(UUID orderId, String orderNo, long version, String status, String paymentStatus, String currentStageCode,
+                Customer customer, Fulfillment fulfillment, Long totalAmountCents, UUID createdBy,
+                Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items, Employee creditedEmployee, Instant paidAt, Deletion deletion) {
+            this(orderId, orderNo, version, status, paymentStatus, currentStageCode, customer, fulfillment, totalAmountCents,
+                    createdBy, createdAt, confirmedAt, updatedAt, items, creditedEmployee, paidAt, deletion, null);
+        }
         public Detail(UUID orderId, String orderNo, long version, String status, String paymentStatus, String currentStageCode,
                 Customer customer, Fulfillment fulfillment, Long totalAmountCents, UUID createdBy,
                 Instant createdAt, Instant confirmedAt, Instant updatedAt, List<Item> items, Employee creditedEmployee, Instant paidAt) {

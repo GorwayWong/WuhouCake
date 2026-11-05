@@ -11,6 +11,25 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.RecognitionDraft;
 import static org.junit.jupiter.api.Assertions.*;
 
 class OrderRecognitionTest {
+    @ParameterizedTest @ValueSource(strings = {"规格（寸）", "规格(寸)", "尺寸", "蛋糕尺寸"})
+    void sizeLabelsShareTheSameNumericFieldAndDoNotInferAProductType(String label) throws Exception {
+        var fields = recognition().parse(label + "：6").items().getFirst().fields();
+        assertEquals("6", fields.get("size").value()); assertNull(fields.get("specification").value());
+        assertNull(fields.get("productType").value());
+    }
+    @Test void newSizeLabelsDoNotChangeOrdinarySpecificationsOrMixProductFields() throws Exception {
+        var items = recognition().parse("商品1：蛋糕\n规格（寸）：6\n商品2：饮品\n规格：300ml").items();
+        assertEquals("6", items.getFirst().fields().get("size").value()); assertNull(items.getFirst().fields().get("specification").value());
+        assertEquals("300ml", items.getLast().fields().get("specification").value()); assertNull(items.getLast().fields().get("size").value());
+        assertEquals("DRINK", items.getLast().fields().get("productType").value());
+    }
+    @Test void creamDefaultsOnlyForCakesAndExplicitCreamKeepsItsEvidence() throws Exception {
+        var cream = recognition().parse("商品：8寸蛋糕").items().getFirst().fields().get("flavor");
+        assertEquals("原味奶油", cream.value()); assertEquals(RecognitionDraft.Source.DEFAULT, cream.source()); assertTrue(cream.evidence().isEmpty());
+        var explicit = recognition().parse("商品：8寸蛋糕\n奶油：巧克力奶油").items().getFirst().fields().get("flavor");
+        assertEquals("巧克力奶油", explicit.value()); assertEquals(RecognitionDraft.Source.RULE, explicit.source()); assertFalse(explicit.evidence().isEmpty());
+        assertNull(recognition().parse("商品：面包").items().getFirst().fields().get("flavor").value());
+    }
     @ParameterizedTest @ValueSource(strings = {"订购人姓名", "订购人", "客户订购人", "客户下单人", "下单人"})
     void buyerNameLabelsKeepTheirOwnField(String label) throws Exception {
         var result = recognition().parse("客户姓名：李女士\n" + label + "：陈女士\n电话：13800000001");

@@ -16,6 +16,7 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
         public Product {
             name = requiredText(name, 128);
             if (productType == null || !PRODUCT_TYPES.contains(ProductCategories.normalize(productType))) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
+            productType = ProductCategories.normalize(productType);
             if (quantity < 1) throw new OrderFailure("SUBMISSION_QUANTITY_INVALID");
             var values = new TreeMap<String, String>();
             if (attributes != null) attributes.forEach((key, value) -> {
@@ -25,7 +26,7 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
             if ("CAKE".equals(productType)) {
                 String size = CakeSpecifications.size(values.get("size"));
                 if (size == null) throw new OrderFailure("SUBMISSION_CAKE_SIZE_REQUIRED");
-                values.put("size", size); values.putIfAbsent("base", "原味"); values.putIfAbsent("filling", "芒果");
+                values.put("size", size); CakeSpecifications.DEFAULTS.forEach(values::putIfAbsent);
             }
             attributes = Collections.unmodifiableMap(values);
         }

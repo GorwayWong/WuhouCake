@@ -11,6 +11,14 @@ public final class PostgresOrderImages implements OrderImages {
     @Override public boolean lockOrder(UUID id) { return mapper.lockOrder(id.toString()) != null; }
     @Override public boolean activeItem(UUID orderId, UUID itemId) { return mapper.activeItem(orderId.toString(), itemId.toString()); }
     @Override public int count(UUID orderId) { return mapper.count(orderId.toString()); }
+    @Override public int countItem(UUID orderId, UUID itemId) { return mapper.countItem(orderId.toString(), itemId.toString()); }
+    @Override public Optional<Upload> findUpload(UUID orderId, UUID requestId) {
+        return Optional.ofNullable(mapper.findUpload(orderId.toString(), requestId.toString()))
+                .map(row -> new Upload(UUID.fromString(row.imageId()), row.fingerprint()));
+    }
+    @Override public void recordUpload(UUID orderId, UUID requestId, UUID imageId, String fingerprint) {
+        mapper.recordUpload(orderId.toString(), requestId.toString(), imageId.toString(), fingerprint);
+    }
     @Override public void remove(UUID orderId, UUID imageId) { mapper.remove(orderId.toString(), imageId.toString()); }
     @Override public boolean contains(UUID orderId, UUID imageId) { return mapper.contains(orderId.toString(), imageId.toString()); }
     @Override public void insert(OrderImage image, byte[] content) {

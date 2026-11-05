@@ -7,6 +7,41 @@ function storage() {
   const values = new Map<string, string>();
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
 }
+test('下单方式其他选项的未完成输入可恢复，非法选择状态拒绝恢复', () => {
+  const db = storage(), slot = new OrderDraftSlot('alice', () => db), record = freshOrderDraft('alice', '2026-11-05');
+  record.value = { ...record.value, orderingMethod: '', orderingMethodCustom: true };
+  const saved = slot.write(record);
+  assert.equal(slot.read().record?.value.orderingMethodCustom, true);
+  assert.ok(createOrderRequest(slot.read().record!.value).errors.orderingMethod);
+  const malformed = JSON.parse(JSON.stringify(saved)); malformed.value.orderingMethodCustom = 'OTHER';
+  assert.equal(decodeOrderDraft(JSON.stringify(malformed), 'alice'), null);
+});
+test('旧蛋糕草稿恢复隐藏价格但不改原存储及结果待确认载荷', () => {
+  const db = storage(), slot = new OrderDraftSlot('alice', () => db), record = freshOrderDraft('alice', '2026-11-04');
+  record.value = structuredClone(record.value); record.value.items[0].name = '旧蛋糕'; record.value.phone = '13800000000'; record.value.address = '自提';
+  record.value.items[0].unitPrice = '120'; record.value.items[0].memberPrice = '未完成';
+  record.pending = createOrderRequest(record.value).request!; record.pending.items[0].unitPriceCents = 12000;
+  const saved = slot.write(record), before = db.getItem(draftStorageKey('alice'));
+  const restored = slot.read().record!;
+  assert.equal(restored.value.items[0].unitPrice, ''); assert.equal(restored.value.items[0].memberPrice, '');
+  assert.deepEqual(restored.pending, saved.pending); assert.equal(restored.pending!.items[0].unitPriceCents, 12000);
+  assert.equal(db.getItem(draftStorageKey('alice')), before);
+});
+test('草稿保存商品图片引用和已创建订单，不序列化文件，并兼容奶油默认来源', () => {
+  const slot = new OrderDraftSlot('alice', () => storage());
+  const record = freshOrderDraft('alice', '2026-11-04');
+  record.value = structuredClone(record.value);
+  record.value.items[0].images = [{ id: crypto.randomUUID(), name: 'cake.png', type: 'image/png', size: 100 }];
+  record.value.items[0].defaultSpecifications = ['base', 'filling', 'flavor'];
+  record.createdOrderId = crypto.randomUUID();
+  const saved = slot.write(record);
+  assert.deepEqual(decodeOrderDraft(JSON.stringify(saved), 'alice'), saved);
+  assert.equal(decodeOrderDraft(JSON.stringify(saved), 'bob'), null);
+  assert.equal(hasDraftContent(saved), true);
+  const tooMany = structuredClone(saved);
+  tooMany.value.items[0].images = Array.from({ length: 6 }, () => ({ id: crypto.randomUUID(), name: 'x.png', type: 'image/png', size: 1 }));
+  assert.equal(decodeOrderDraft(JSON.stringify(tooMany), 'alice'), null);
+});
 test('空白默认表单不算草稿，原文或部分输入即算有效内容', () => {
   const record = freshOrderDraft('alice', '2026-11-04');
   assert.equal(hasDraftContent(record), false);

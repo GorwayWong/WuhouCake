@@ -12,14 +12,15 @@ after(async () => { await browser?.close(); });
 async function fixture() {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
   context.setDefaultTimeout(10000);
-  const model = { account: 'alice', permitted: true, loseResponse: false, reject: false, orders: new Map(), requests: [] };
+  await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
+  const model = { account: 'alice', permitted: true, loseResponse: false, reject: false, orders: new Map(), requests: [], recognitionFields: {}, extraPermissions: [] };
   await context.route('**/api/**', async route => {
     const req = route.request(), path = new URL(req.url()).pathname;
     const ok = data => route.fulfill({ json: { success: true, data } });
     if (path === '/api/auth/csrf') return route.fulfill({ headers: { 'set-cookie': 'XSRF-TOKEN=test; Path=/' }, json: { success: true, data: { headerName: 'X-XSRF-TOKEN' } } });
     if (path === '/api/auth/refresh' || path === '/api/auth/login') return ok({ accessToken: 'test-token', expiresIn: 3600, passwordChangeRequired: false });
     if (path === '/api/auth/logout') return ok(null);
-    if (path === '/api/me') return ok({ accountId: model.account, nickname: model.account, employeeNumber: model.account, jobRoles: ['FRONT_DESK'], access: { permissions: model.permitted ? ['ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ'] : [], uiCapabilities: [] } });
+    if (path === '/api/me') return ok({ accountId: model.account, nickname: model.account, employeeNumber: model.account, jobRoles: ['FRONT_DESK'], access: { permissions: model.permitted ? ['ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ', ...model.extraPermissions] : [], uiCapabilities: [] } });
     if (path === '/api/orders/stream') return route.fulfill({ status: 503 });
     if (path === '/api/orders/calendar') return ok([]);
     if (path === '/api/orders/workbench') return ok({ date: '2026-11-04', metrics: null, pendingOrders: [] });
@@ -28,7 +29,7 @@ async function fixture() {
     if (path === '/api/orders/workbench/receipt-summary') return ok({ date: '2026-11-04', orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 });
     if (path === '/api/orders/workbench/cake-bases') return ok({ date: '2026-11-04', items: [] });
     if (path === '/api/orders/recognition/parse') return ok({
-      fields: { customerName: { value: '识别姓名', source: 'RULE', needsReview: false, evidence: [], issues: [] }, phone: { value: '13900000000', source: 'RULE', needsReview: true, evidence: [], issues: [] } },
+      fields: { customerName: { value: '识别姓名', source: 'RULE', needsReview: false, evidence: [], issues: [] }, phone: { value: '13900000000', source: 'RULE', needsReview: true, evidence: [], issues: [] }, ...model.recognitionFields },
       items: [], issues: ['请核对原文'], fragments: [], unmappedText: ['其他客户备注'], assistAvailable: false,
     });
     if (path === '/api/order-packages') return ok({ items: [], total: 0, page: 1, size: 20 });
@@ -283,5 +284,217 @@ test('切后台及 pagehide 补存最新滚动位置，不触发恢复弹窗或�
     assert.equal((await saved(page)).requestId, id);
     assert.equal(await page.locator('#customerName').inputValue(), '切后台内容');
     assert.equal(await page.getByRole('dialog').count(), 0);
+  } finally { await context.close(); }
+});
+
+async function selectTime(page, field, unit, value) {
+  await page.locator(`.date-time-field[data-field-name="${field}"] .time-field .choice-trigger`).nth(unit === 'hour' ? 0 : 1).click();
+  await page.getByRole('option', { name: new RegExp('^' + value + '(?: [时分])?$') }).click();
+}
+test('时间字段位于客户信息前，手机两列、窄屏单列，日期和时分分行且日历不溢出', async () => {
+  const { context, page } = await fixture();
+  try {
+    for (const width of [320, 360, 390, 430, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      const geometry = await page.evaluate(() => {
+        const grid = document.querySelector('.create-time-grid');
+        const labels = [...grid.children];
+        const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, bottom: r.bottom }; };
+        return { fields: labels.map(rect), grid: rect(grid), customers: rect(document.querySelector('.create-customer-grid')),
+          parts: labels.map(label => ({ date: rect(label.querySelector('.date-control')), hour: rect(label.querySelector('.time-field .choice-trigger')) })),
+          overflow: document.documentElement.scrollWidth > innerWidth };
+      });
+      assert.equal(geometry.overflow, false, `page overflow at ${width}`);
+      assert.ok(geometry.customers.y >= geometry.grid.bottom);
+      if (width >= 360) {
+        assert.ok(Math.abs(geometry.fields[0].y - geometry.fields[1].y) < 1);
+        assert.ok(Math.abs(geometry.fields[0].width - geometry.fields[1].width) < 1);
+        assert.ok(geometry.fields[1].x > geometry.fields[0].x);
+      } else assert.ok(geometry.fields[1].y >= geometry.fields[0].bottom);
+      for (const part of geometry.parts) {
+        assert.ok(part.hour.y >= part.date.bottom);
+        assert.ok(part.hour.width >= 44);
+      }
+      for (const field of ['requestedReceiveAt', 'plannedFinishAt']) {
+        assert.equal(await page.locator('#' + field).count(), 1);
+        if (field === 'plannedFinishAt') await page.locator(`.date-time-field[data-field-name="${field}"] .date-month-day`).click();
+        else await page.locator('#' + field).click();
+        const popup = page.getByRole('dialog'); await popup.waitFor();
+        const box = await popup.boundingBox();
+        assert.ok(box.x >= 0 && box.x + box.width <= width + 1, `calendar overflow at ${width}`);
+        await page.keyboard.press('Escape');
+      }
+      if (process.env.DRAFT_SCREENSHOT && [360, 390, 1280].includes(width)) {
+        await page.evaluate(() => document.activeElement?.blur());
+        await page.locator('.create-order-info').scrollIntoViewIfNeeded();
+        await page.screenshot({ path: process.env.DRAFT_SCREENSHOT.replace(/\.png$/, `-times-${width}.png`) });
+      }
+    }
+  } finally { await context.close(); }
+});
+test('取货日期、时刻和出品输入沿用原规则，恢复后同步提交，改日期清时刻并定位错误', async () => {
+  const { context, page, model } = await fixture();
+  const value = field => page.locator(`input[name="${field}"]`).inputValue();
+  try {
+    await complete(page); model.reject = true;
+    await page.getByRole('button', { name: '创建订单', exact: true }).click();
+    await waitFor(() => Promise.resolve(model.requests.length === 1));
+    await waitFor(async () => (await saved(page)).pending === undefined);
+    assert.equal(model.requests[0].body.fulfillment.requestedReceiveAt, null);
+    assert.equal(model.requests[0].body.fulfillment.plannedHandoffAt, null);
+    const date = await value('requestedReceiveAt');
+    await selectTime(page, 'requestedReceiveAt', 'hour', '09');
+    assert.equal(await value('requestedReceiveAt'), date + 'T09:00');
+    await selectTime(page, 'requestedReceiveAt', 'minute', '15');
+    await page.locator('#plannedFinishAt').click();
+    await page.getByRole('button', { name: '今天', exact: true }).click();
+    await selectTime(page, 'plannedFinishAt', 'hour', '08');
+    const production = await value('plannedFinishAt');
+    const id = (await saved(page)).requestId;
+    await page.reload();
+    await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    assert.equal(await value('requestedReceiveAt'), date + 'T09:15');
+    assert.equal(await value('plannedFinishAt'), production);
+    assert.equal((await saved(page)).requestId, id);
+    await page.getByRole('button', { name: '创建订单', exact: true }).click();
+    await waitFor(() => Promise.resolve(model.requests.length === 2));
+    await waitFor(async () => (await saved(page)).pending === undefined);
+    const fulfillment = model.requests[1].body.fulfillment;
+    assert.equal(fulfillment.requestedReceiveAt, fulfillment.plannedHandoffAt);
+    assert.equal(fulfillment.requestedReceiveAt, date + 'T09:15:00+08:00');
+    assert.equal(fulfillment.plannedFinishAt, production + ':00+08:00');
+    await page.getByRole('button', { name: '清除时刻', exact: true }).click();
+    assert.equal(await value('requestedReceiveAt'), date);
+    await selectTime(page, 'requestedReceiveAt', 'hour', '10');
+    await page.locator('#requestedReceiveAt').click();
+    await page.locator('.date-calendar [role="button"]:not([data-selected]):not([data-outside-month]):not([data-disabled])').first().click();
+    const changed = await value('requestedReceiveAt');
+    assert.match(changed, /^\d{4}-\d{2}-\d{2}$/);
+    assert.notEqual(changed, date);
+    await page.locator('#requestedReceiveAt').click();
+    await page.getByRole('button', { name: '清空', exact: true }).click();
+    await page.getByRole('button', { name: '创建订单', exact: true }).click();
+    await page.locator('#requestedReceiveAt-error').waitFor();
+    assert.equal(model.requests.length, 2);
+    assert.equal(await page.locator('.date-time-field[data-field-name="requestedReceiveAt"]').evaluate(element => element.contains(document.activeElement)), true);
+    assert.equal(await page.locator('.create-time-grid [data-invalid]').count() > 0, true);
+  } finally { await context.close(); }
+});
+test('识别带入的取货和出品时间在顶部显示，草稿恢复保留时间及核对标记', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    const candidate = value => ({ value, source: 'RULE', needsReview: true, evidence: [], issues: [] });
+    model.recognitionFields = { requestedReceiveAt: candidate('2026-11-08T15:30'), plannedFinishAt: candidate('2026-11-08T13:00') };
+    await page.getByText('粘贴下单信息', { exact: true }).click();
+    await page.locator('#recognition-text').fill('11月8日15:30取货，13:00出品');
+    await page.getByRole('button', { name: '识别并填入', exact: true }).click();
+    await waitFor(async () => (await saved(page))?.value.requestedReceiveAt === '2026-11-08T15:30');
+    assert.equal(await page.locator('.create-time-grid > label[data-recognition="true"]').count(), 2);
+    await page.reload();
+    await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    assert.equal(await page.locator('input[name="requestedReceiveAt"]').inputValue(), '2026-11-08T15:30');
+    assert.equal(await page.locator('input[name="plannedFinishAt"]').inputValue(), '2026-11-08T13:00');
+    assert.equal(await page.locator('.create-time-grid > label[data-recognition="true"]').count(), 2);
+  } finally { await context.close(); }
+});
+
+test('出品自动随动、手动保留、刷新恢复及恢复自动，移动端无溢出', async () => {
+  const { context, page, errors } = await fixture();
+  const value = field => page.locator(`input[name="${field}"]`).inputValue();
+  try {
+    const date = await value('requestedReceiveAt');
+    await selectTime(page, 'requestedReceiveAt', 'hour', '17');
+    await selectTime(page, 'requestedReceiveAt', 'minute', '30');
+    assert.equal(await value('plannedFinishAt'), date + 'T16:30');
+    assert.equal((await saved(page)).value.finishTimeMode, 'AUTO');
+    await selectTime(page, 'plannedFinishAt', 'hour', '14');
+    await selectTime(page, 'requestedReceiveAt', 'hour', '18');
+    assert.equal(await value('plannedFinishAt'), date + 'T14:30');
+    assert.equal((await saved(page)).value.finishTimeMode, 'MANUAL');
+    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    assert.equal(await value('plannedFinishAt'), date + 'T14:30');
+    if (process.env.TIME_SCREENSHOT) await page.screenshot({ path: process.env.TIME_SCREENSHOT });
+    const restore = page.getByRole('button', { name: '恢复自动计算', exact: true });
+    await restore.click();
+    assert.equal(await value('plannedFinishAt'), date + 'T17:30');
+    assert.equal((await saved(page)).value.finishTimeMode, 'AUTO');
+    assert.equal(await restore.count(), 0);
+    await selectTime(page, 'requestedReceiveAt', 'hour', '19');
+    assert.equal(await value('plannedFinishAt'), date + 'T18:30');
+    await page.getByRole('button', { name: '清除时刻', exact: true }).click();
+    assert.equal(await value('plannedFinishAt'), '');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('历史订单编辑只展示取货和出品，保留原始差异，不改时间只提交电话', async () => {
+  const { context, page, model, errors } = await fixture();
+  const patches = [];
+  const detail = { orderId: '00000000-0000-4000-8000-000000000001', orderNo: 'TEST-LEGACY', version: 1, status: 'WAITING_PRODUCTION', paymentStatus: 'UNPAID', currentStageCode: null,
+    customer: { phone: '13800000000', customerName: '测试客户', memberPhone: null, buyerName: null },
+    fulfillment: { type: 'DELIVERY', address: '测试地址', requestedReceiveDate: '2026-11-05', requestedReceiveAt: '2026-11-05T10:00:00Z',
+      plannedHandoffAt: '2026-11-04T16:30:00Z', plannedFinishAt: '2026-11-04T14:00:00Z' },
+    totalAmountCents: null, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z', items: [] };
+  try {
+    model.extraPermissions = ['ORDER_READ', 'ORDER_BUSINESS_DETAILS_READ', 'ORDER_INFORMATION_UPDATE'];
+    await context.route('**/api/employees/options?*', route => route.fulfill({ json: { success: true, data: [] } }));
+    await context.route('**/api/orders/00000000-0000-4000-8000-000000000001**', route => {
+      const req = route.request(), path = new URL(req.url()).pathname;
+      let data = detail;
+      if (path.endsWith('/information')) { patches.push(req.postDataJSON()); detail.version++; detail.customer.phone = patches.at(-1).changes.phone; }
+      else if (path.endsWith('/customer-origin')) data = null;
+      else if (path.endsWith('/images')) data = [];
+      else if (path.endsWith('/activities') || path.endsWith('/notes')) data = { items: [], total: 0, page: 1, size: 20 };
+      return route.fulfill({ json: { success: true, data } });
+    });
+    await page.reload(); await page.locator('#customerName').waitFor();
+    await page.goto(`${base}/#/orders/00000000-0000-4000-8000-000000000001`);
+    await page.getByRole('button', { name: '编辑资料', exact: true }).click();
+    assert.equal(await page.locator('input[name="requestedReceiveAt"]').inputValue(), '2026-11-05T00:30');
+    assert.equal(await page.locator('input[name="plannedFinishAt"]').inputValue(), '2026-11-04T22:00');
+    assert.equal(await page.locator('.information-form input[name="plannedHandoffAt"]').count(), 0);
+    assert.equal(await page.getByText('历史时间不同，请核对：', { exact: false }).count(), 1);
+    assert.equal(patches.length, 0);
+    await page.locator('#edit-phone').fill('13900000000');
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await waitFor(() => Promise.resolve(patches.length === 1));
+    assert.deepEqual(patches[0], { expectedVersion: 1, changes: { phone: '13900000000' } });
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+test('客户扫码只填取货时间，员工核对出品提前一小时并同步取货字段', async () => {
+  const { context, page, model, errors } = await fixture();
+  let posted, savedReview;
+  try {
+    await context.route('**/api/public/order-entries/test**', route => {
+      if (route.request().method() === 'POST') { posted = route.request().postDataJSON(); return route.fulfill({ json: { success: true, data: { submissionNo: 'FTEST' } } }); }
+      return route.fulfill({ json: { success: true, data: { ownerName: '测试客服' } } });
+    });
+    await page.goto(`${base}/#/fill/test`);
+    await page.locator('#phone').fill('13800000000'); await page.locator('#address').fill('测试地址');
+    await page.locator('#requestedReceiveAt').click(); await page.getByRole('button', { name: '今天', exact: true }).click();
+    await selectTime(page, 'requestedReceiveAt', 'hour', '17'); await selectTime(page, 'requestedReceiveAt', 'minute', '30');
+    await page.locator('[id="items.0.size"]').fill('8');
+    assert.equal(await page.locator('input[name="plannedHandoffAt"], input[name="plannedFinishAt"]').count(), 0);
+    await page.getByRole('button', { name: '提交预订', exact: true }).click();
+    await page.getByRole('heading', { name: '已提交，待客服确认' }).waitFor();
+    assert.ok(posted.requestedReceiveAt); assert.equal('plannedFinishAt' in posted, false);
+    model.extraPermissions = ['CUSTOMER_SUBMISSION_PROCESS', 'ORDER_BUSINESS_DETAILS_READ'];
+    const submission = { id: '00000000-0000-4000-8000-000000000002', original: posted, reviewed: null, status: 'PENDING', ownerName: '测试客服', version: 0, createdAt: new Date().toISOString(), orderId: null };
+    await context.route('**/api/customer-submissions/00000000-0000-4000-8000-000000000002', route => {
+      if (route.request().method() === 'PATCH') { savedReview = route.request().postDataJSON().review; submission.reviewed = savedReview; submission.version++; }
+      return route.fulfill({ json: { success: true, data: { submission, duplicates: [], activities: [], duplicateCheckToken: 'test' } } });
+    });
+    await context.route('**/api/employees/options?*', route => route.fulfill({ json: { success: true, data: [] } }));
+    await page.goto(`${base}/#/customer-submissions/00000000-0000-4000-8000-000000000002`); await page.reload();
+    await page.locator('#plannedFinishAt').waitFor();
+    const value = await page.locator('input[name="plannedFinishAt"]').inputValue(); assert.ok(value.endsWith('T16:30'), value);
+    assert.equal(await page.locator('input[name="plannedHandoffAt"]').count(), 0);
+    await page.getByRole('button', { name: '保存核对结果', exact: true }).click();
+    await waitFor(() => Promise.resolve(Boolean(savedReview)));
+    assert.equal(savedReview.plannedHandoffAt, savedReview.content.requestedReceiveAt);
+    assert.equal(Date.parse(savedReview.plannedHandoffAt) - Date.parse(savedReview.plannedFinishAt), 3600000);
+    assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

@@ -73,7 +73,7 @@ export function exportActivitySummary(details: Record<string, unknown>): string[
   const filters = details.filters;
   if (filters && typeof filters === 'object') {
     const filter = filters as Record<string, unknown>;
-    if (typeof filter.from === 'string' && typeof filter.to === 'string' && workbenchDate(`#/?date=${filter.from}`) && workbenchDate(`#/?date=${filter.to}`)) lines.push(`收货日期：${filter.from} 至 ${shiftDate(filter.to, -1)}（含首尾）`);
+    if (typeof filter.from === 'string' && typeof filter.to === 'string' && workbenchDate(`#/?date=${filter.from}`) && workbenchDate(`#/?date=${filter.to}`)) lines.push(`取货日期：${filter.from} 至 ${shiftDate(filter.to, -1)}（含首尾）`);
     lines.push(`订单状态：${exportOptions.status[String(filter.status)] || '全部'}；交接：${exportOptions.fulfillmentType[String(filter.fulfillmentType)] || '全部'}；付款：${exportOptions.paymentStatus[String(filter.paymentStatus)] || '全部'}`);
   }
   if (typeof details.snapshotVersion === 'number') lines.push(`导出时订单版本：${details.snapshotVersion}`);

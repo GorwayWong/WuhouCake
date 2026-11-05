@@ -26,14 +26,15 @@ test('单商品仅提交差异，结构化与未知 JSONB、其他商品、备�
 });
 
 test('规格删除提交 null，报价清空与 0 区分，金额精确转分且无变化不提交', () => {
-  const draft = itemDraft(order.items[0]);
+  const pricedOrder = structuredClone(order); pricedOrder.items[0].productType = 'DRINK';
+  const draft = itemDraft(pricedOrder.items[0]);
   draft.unitPrice = '199.290';
-  assert.ok(itemChangeRequest(order, 'first', draft).errors.unitPrice);
+  assert.ok(itemChangeRequest(pricedOrder, 'first', draft).errors.unitPrice);
   draft.unitPrice = '199.29'; draft.memberPrice = '0';
-  assert.equal(itemChangeRequest(order, 'first', draft).request, null);
+  assert.equal(itemChangeRequest(pricedOrder, 'first', draft).request, null);
   draft.attributes.requirements = ''; draft.unitPrice = '280.01'; draft.memberPrice = '';
-  assert.deepEqual(itemChangeRequest(order, 'first', draft).request?.changes, { unitPriceCents: 28001, memberPriceCents: null, attributes: { requirements: null } });
-  const added = newItem(); added.name = '追加蛋糕'; added.unitPrice = '199.29'; added.memberPrice = '0';
+  assert.deepEqual(itemChangeRequest(pricedOrder, 'first', draft).request?.changes, { unitPriceCents: 28001, memberPriceCents: null, attributes: { requirements: null } });
+  const added = newItem(); added.name = '追加饮品'; added.productType = 'DRINK'; added.unitPrice = '199.29'; added.memberPrice = '0';
   const result = itemInput(added);
   assert.equal(result.item?.unitPriceCents, 19929); assert.equal(result.item?.memberPriceCents, 0);
   assert.equal('itemId' in result.item!, false);

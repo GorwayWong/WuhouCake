@@ -76,7 +76,7 @@ test('导出日志区分单单与批量、还原含首尾日期和筛选条件�
   const single = exportActivitySummary({ mode: 'SINGLE', format: 'XLSX', snapshotVersion: 0, imageIds: ['one'] });
   assert.equal(single[0], '单订单 XLSX'); assert.ok(single.includes('导出时订单版本：0')); assert.ok(single.includes('参考图片：1 张'));
   const batch = exportActivitySummary({ mode: 'BATCH', filters: { from: '2026-12-31', to: '2027-01-02', status: 'COMPLETED', fulfillmentType: 'DELIVERY', paymentStatus: 'PAID' }, snapshotVersion: 4, imageIds: [] });
-  assert.ok(batch.includes('收货日期：2026-12-31 至 2027-01-01（含首尾）'));
+  assert.ok(batch.includes('取货日期：2026-12-31 至 2027-01-01（含首尾）'));
   assert.ok(batch.includes('订单状态：已完成；交接：配送；付款：已付款'));
   assert.match(batch.at(-1)!, /核对浏览器下载记录/);
 });

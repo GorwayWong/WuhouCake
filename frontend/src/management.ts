@@ -2,9 +2,10 @@ import { validDate } from './orderForm.ts';
 import { numericSize } from './productRules.ts';
 import { shiftDate } from './dates.ts';
 import { exportOptions } from './exportFiles.ts';
+import { orderingMethodError } from './orderingMethod.ts';
 
 export interface ManagementDraft { from: string; through: string; status: string; paymentStatus: string; fulfillmentType: string;
-  sizeInches: string; creditedEmployeeId: string; unassigned: boolean; includeCancelled: boolean; keyword: string; dateBasis: string; allUnpaid?: boolean; deleted?: boolean }
+  sizeInches: string; creditedEmployeeId: string; unassigned: boolean; includeCancelled: boolean; keyword: string; productName?: string; orderingMethod?: string; orderingMethodCustom?: boolean; dateBasis: string; allUnpaid?: boolean; deleted?: boolean }
 export interface ManagementView { draft: ManagementDraft; applied: ManagementDraft; page: number }
 export const orderPageSize = 10;
 export function orderPagination(total: number, page: number) {
@@ -21,7 +22,7 @@ export function orderPagination(total: number, page: number) {
 }
 export function defaultManagementDraft(date: string): ManagementDraft {
   return { from: date.slice(0, 8) + '01', through: date, status: '', paymentStatus: '', fulfillmentType: '',
-    sizeInches: '', creditedEmployeeId: '', unassigned: false, includeCancelled: false, keyword: '', dateBasis: 'CREATED' };
+    sizeInches: '', creditedEmployeeId: '', unassigned: false, includeCancelled: false, keyword: '', productName: '', orderingMethod: '', dateBasis: 'CREATED' };
 }
 export function managementQuery(draft: ManagementDraft): string {
   if (draft.allUnpaid && !draft.deleted) return new URLSearchParams({ allUnpaid: 'true' }).toString();
@@ -42,6 +43,12 @@ export function managementQuery(draft: ManagementDraft): string {
     query.set('creditedEmployeeId', draft.creditedEmployeeId);
   }
   if (draft.keyword.trim()) query.set('keyword', draft.keyword.trim());
+  const productName = draft.productName?.trim();
+  if (productName && productName.length > 100) throw new Error('商品名称最多填写 100 字。');
+  if (productName) query.set('productName', productName);
+  const methodError = orderingMethodError(draft);
+  if (methodError) throw new Error(methodError);
+  if (draft.orderingMethod?.trim()) query.set('orderingMethod', draft.orderingMethod.trim());
   return query.toString();
 }
 export { exactYuan } from './money.ts';

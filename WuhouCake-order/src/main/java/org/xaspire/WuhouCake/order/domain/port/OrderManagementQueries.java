@@ -8,7 +8,15 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invali
 
 public interface OrderManagementQueries {
     record Filter(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
-            String size, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted) {
+            String size, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted, String productName, String orderingMethod) {
+        public Filter(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
+                String size, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted, String productName) {
+            this(from, to, status, paymentStatus, fulfillmentType, size, creditedEmployeeId, unassigned, includeCancelled, keyword, dateBasis, allUnpaid, deleted, productName, null);
+        }
+        public Filter(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
+                String size, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid, boolean deleted) {
+            this(from, to, status, paymentStatus, fulfillmentType, size, creditedEmployeeId, unassigned, includeCancelled, keyword, dateBasis, allUnpaid, deleted, null);
+        }
         public Filter(LocalDate from, LocalDate to, String status, String paymentStatus, String fulfillmentType,
                 String size, UUID creditedEmployeeId, boolean unassigned, boolean includeCancelled, String keyword, String dateBasis, boolean allUnpaid) {
             this(from, to, status, paymentStatus, fulfillmentType, size, creditedEmployeeId, unassigned, includeCancelled, keyword, dateBasis, allUnpaid, false);
@@ -23,7 +31,7 @@ public interface OrderManagementQueries {
             }
             if (allUnpaid) {
                 from = null; to = null; status = null; paymentStatus = "UNPAID"; fulfillmentType = null; size = null;
-                creditedEmployeeId = null; unassigned = false; includeCancelled = true; keyword = null; dateBasis = "CREATED";
+                creditedEmployeeId = null; unassigned = false; includeCancelled = true; keyword = null; productName = null; orderingMethod = null; dateBasis = "CREATED";
             } else if (from == null || to == null || from.getYear() < 1 || to.getYear() > 9999 || !from.isBefore(to) || ChronoUnit.DAYS.between(from, to) > 366) throw invalid();
             status = option(status, Set.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING", "COMPLETED", "CANCELLED"));
             paymentStatus = option(paymentStatus, Set.of("PAID", "UNPAID"));
@@ -33,6 +41,8 @@ public interface OrderManagementQueries {
             size = CakeSpecifications.size(size);
             if (creditedEmployeeId != null && unassigned) throw invalid();
             if (keyword != null) { keyword = keyword.strip(); if (keyword.isEmpty()) keyword = null; else if (keyword.length() > 100) throw invalid(); }
+            if (productName != null) { productName = productName.strip(); if (productName.isEmpty()) productName = null; else if (productName.length() > 100) throw invalid(); }
+            if (orderingMethod != null) { orderingMethod = orderingMethod.strip(); if (orderingMethod.isEmpty()) orderingMethod = null; else if (orderingMethod.length() > 80) throw invalid(); }
         }
         private static String option(String value, Set<String> values) {
             if (value == null || value.isBlank()) return null;

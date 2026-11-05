@@ -3,6 +3,7 @@ import { DraftConflict, OrderDraftSlot, draftStorageKey, freshOrderDraft, hasDra
 import type { DraftEditor, OrderDraftRecord } from './orderDraftStorage';
 import type { OrderDraft } from './orderForm';
 import type { CreateOrderRequest } from './types';
+import { removeDraftImage, removeDraftImages } from './draftImages';
 
 type SaveStatus = 'idle' | 'saved' | 'error' | 'conflict';
 export interface DraftCandidate { record: OrderDraftRecord | null; invalid: boolean }
@@ -64,7 +65,12 @@ export function useOrderDraft() {
   }, [setLocal, showCandidate, saveStatus]);
   const clear = useCallback(() => {
     if (statusRef.current === 'conflict') return false;
-    try { slot.current?.remove(); setLocal(null); showCandidate(null); saveStatus('idle'); return true; }
+    try {
+      const current = draftRef.current || candidateRef.current?.record;
+      slot.current?.remove(); setLocal(null); showCandidate(null); saveStatus('idle');
+      if (current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(error => { if (accountId.current === current.accountId) failed(error); });
+      return true;
+    }
     catch (error) { failed(error); return false; }
   }, [setLocal, showCandidate, saveStatus, failed]);
   const discard = useCallback(() => {
@@ -77,8 +83,19 @@ export function useOrderDraft() {
     showCandidate(null); entered.current = false;
   }, [showCandidate, setLocal]);
   const leave = useCallback(() => { entered.current = false; }, []);
-  const change = useCallback((value: OrderDraft, editor?: Partial<DraftEditor>) => {
-    if (draftRef.current) persist({ ...draftRef.current, value, editor: { ...draftRef.current.editor, ...editor } });
+  const change = useCallback((value: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages = false) => {
+    const before = draftRef.current;
+    if (!before) return false;
+    const saved = persist({ ...before, value, imageStorageUsed: before.imageStorageUsed || value.items.some(item => item.images?.length), editor: { ...before.editor, ...editor } });
+    if (saved && !retainRemovedImages) for (const item of before.value.items) for (const image of item.images || []) {
+      if (!value.items.some(next => next.key === item.key && next.images?.some(candidate => candidate.id === image.id)))
+        void removeDraftImage(before, item.key, image.id).catch(error => { if (accountId.current === before.accountId) failed(error); });
+    }
+    return saved;
+  }, [persist, failed]);
+  const created = useCallback((orderId: string) => {
+    if (!draftRef.current) return false;
+    return persist({ ...draftRef.current, createdOrderId: orderId });
   }, [persist]);
   const changeEditor = useCallback((editor: Partial<DraftEditor>) => {
     if (draftRef.current) change(draftRef.current.value, editor);
@@ -126,5 +143,5 @@ export function useOrderDraft() {
       window.removeEventListener('pagehide', flush); window.removeEventListener('scroll', scroll); window.removeEventListener('storage', storage);
     };
   }, [persist, failed]);
-  return { draft, draftRef, candidate, status, open, accept, discard, clear, close, leave, change, changeEditor, prepare, rejected, retry, retained, restore };
+  return { draft, draftRef, candidate, status, open, accept, discard, clear, close, leave, change, changeEditor, prepare, created, rejected, retry, retained, restore };
 }

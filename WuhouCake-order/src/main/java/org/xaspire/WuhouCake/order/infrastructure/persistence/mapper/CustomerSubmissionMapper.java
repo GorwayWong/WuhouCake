@@ -1,5 +1,7 @@
 package org.xaspire.WuhouCake.order.infrastructure.persistence.mapper;
 
+import static org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderTimeSql.*;
+
 import java.time.*;
 import java.util.List;
 import org.apache.ibatis.annotations.*;
@@ -15,6 +17,7 @@ public interface CustomerSubmissionMapper {
             LocalDate requestedReceiveDate, Instant requestedReceiveAt, String items, Long totalAmountCents,
             String handledBy, Instant createdAt) { }
     String CONTENT = "COALESCE(s.reviewed->'content',s.original)";
+    String CONTENT_PICKUP_AT = "COALESCE((s.reviewed->>'plannedHandoffAt')::timestamptz,(" + CONTENT + "->>'requestedReceiveAt')::timestamptz)";
     String RETAINED = " AND (order_id IS NULL OR EXISTS (SELECT 1 FROM cake_order retained_order"
             + " WHERE retained_order.id=customer_order_submission.order_id"
             + " AND (retained_order.deleted_at IS NULL OR retained_order.deleted_at>CURRENT_TIMESTAMP-INTERVAL '720 hours')))";
@@ -50,19 +53,19 @@ public interface CustomerSubmissionMapper {
     @Select("SELECT count(*)" + SEARCH_WHERE)
     long count(@Param("owner") String owner, @Param("status") String status, @Param("keyword") String keyword);
     @Select("SELECT 'SUBMISSION' AS kind,s.id::text,s.version,s.status,NULL::text AS order_no," + CONTENT + "->>'phone' AS phone,"
-            + " ((" + CONTENT + "->>'requestedReceiveAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date AS requested_receive_date,"
-            + " (" + CONTENT + "->>'requestedReceiveAt')::timestamptz AS requested_receive_at,"
+            + " (" + CONTENT_PICKUP_AT + " AT TIME ZONE 'Asia/Shanghai')::date AS requested_receive_date,"
+            + " " + CONTENT_PICKUP_AT + " AS requested_receive_at,"
             + " (SELECT jsonb_agg(jsonb_build_object('name',item->>'name','quantity',(item->>'quantity')::int) ORDER BY position)::text"
             + " FROM jsonb_array_elements(" + CONTENT + "->'items') WITH ORDINALITY AS products(item,position)) AS items,"
             + " (s.reviewed->>'totalAmountCents')::bigint AS total_amount_cents,"
             + " COALESCE((SELECT actor_name FROM customer_submission_activity WHERE submission_id=s.id AND type='REVIEWED' ORDER BY id DESC LIMIT 1),s.owner_name) AS handled_by,s.created_at"
             + " FROM customer_order_submission s WHERE s.status='PENDING' AND s.id!=CAST(#{id} AS uuid)"
             + " AND regexp_replace(" + CONTENT + "->>'phone','[ ()-]','','g')=#{phone}"
-            + " AND ((" + CONTENT + "->>'requestedReceiveAt')::timestamptz AT TIME ZONE 'Asia/Shanghai')::date=#{date}"
-            + " UNION ALL SELECT 'ORDER',o.id::text,o.version,o.status,o.order_no,o.customer_phone,o.requested_receive_date,o.requested_receive_at,"
+            + " AND (" + CONTENT_PICKUP_AT + " AT TIME ZONE 'Asia/Shanghai')::date=#{date}"
+            + " UNION ALL SELECT 'ORDER',o.id::text,o.version,o.status,o.order_no,o.customer_phone," + ORDER_PICKUP_DATE + "," + ORDER_PICKUP_AT + ","
             + " COALESCE((SELECT jsonb_agg(jsonb_build_object('name',name,'quantity',quantity) ORDER BY created_at,id)::text FROM cake_order_item WHERE order_id=o.id AND NOT is_removed),'[]'),"
             + " o.total_amount_cents,COALESCE((SELECT actor_name_snapshot FROM cake_order_activity WHERE order_id=o.id AND type='CREATED' ORDER BY id LIMIT 1),'未记录'),o.created_at"
-            + " FROM cake_order o WHERE o.deleted_at IS NULL AND regexp_replace(o.customer_phone,'[ ()-]','','g')=#{phone} AND o.requested_receive_date=#{date}"
+            + " FROM cake_order o WHERE o.deleted_at IS NULL AND regexp_replace(o.customer_phone,'[ ()-]','','g')=#{phone} AND " + ORDER_PICKUP_DATE + "=#{date}"
             + " ORDER BY created_at DESC,kind,id")
     List<DuplicateRow> duplicates(@Param("id") String id, @Param("phone") String phone, @Param("date") LocalDate date);
     @Update("UPDATE customer_order_submission SET reviewed=CAST(#{review} AS jsonb),status=#{status},order_id=CAST(#{orderId} AS uuid),version=version+1,updated_at=#{now}"

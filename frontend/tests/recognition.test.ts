@@ -17,6 +17,26 @@ const candidate = (): RecognitionDraft => ({
 });
 const apply = (draft = newDraft('2026-10-16'), result = candidate()) => applyRecognition(draft, newDraft('2026-10-16'), result, new Set());
 
+test('蛋糕识别不带入单价或价格错误，其他商品按类型优先处理单价，不推算整单金额', () => {
+  const cake = candidate(); cake.items[0].fields.unitPriceCents = field('非法金额'); cake.items[0].fields.memberPriceCents = field('10000');
+  const ignored = apply(newDraft('2026-10-16'), cake);
+  assert.equal(ignored.draft.items[0].unitPrice, ''); assert.equal(ignored.draft.items[0].memberPrice, '');
+  assert.equal(Object.values(ignored.feedback).some(mark => ['unitPriceCents', 'memberPriceCents'].includes(mark.field)), false);
+  assert.equal(ignored.draft.totalAmount, '');
+  const drink = candidate(); drink.items[0].fields = { unitPriceCents: field('1029'), memberPriceCents: field('0'), name: field('饮品'), quantity: field('2'), productType: field('DRINK') };
+  const priced = apply(newDraft('2026-10-16'), drink).draft;
+  assert.equal(priced.items[0].unitPrice, '10.29'); assert.equal(priced.items[0].memberPrice, '0.00'); assert.equal(priced.totalAmount, '');
+});
+
+test('识别默认奶油在品类切换时清除，手工确认后的奶油保留', () => {
+  const draft = newDraft('2026-11-04'), key = draft.items[0].key;
+  const filled = setCandidate(draft, 'flavor', cakeDefaults.flavor, key, 'DEFAULT').items[0];
+  assert.ok(filled.defaultSpecifications?.includes('flavor'));
+  assert.equal(changeItemDraft(filled, { productType: 'BREAD' }).attributes.flavor, '');
+  const manual = changeItemDraft(filled, { attributes: { ...filled.attributes, flavor: '巧克力奶油' } }, 'flavor');
+  assert.equal(changeItemDraft(manual, { productType: 'BREAD' }).attributes.flavor, '巧克力奶油');
+});
+
 test('新建页识别将自提写入地址，仅有取货时间时带入收货时间，并保留手工地址和日期', () => {
   const result = candidate();
   result.fields.fulfillmentType = field('PICKUP');
@@ -31,7 +51,7 @@ test('新建页识别将自提写入地址，仅有取货时间时带入收货�
   assert.equal('address' in manual.fields, false);
   assert.equal('requestedReceiveAt' in manual.fields, false);
   result.fields.requestedReceiveAt = field('2027-01-02T11:30');
-  assert.equal(orderEntryRecognition(result, new Set()).fields.requestedReceiveAt.value, '2027-01-02T11:30');
+  assert.equal(orderEntryRecognition(result, new Set()).fields.requestedReceiveAt.value, '2027-01-02T10:30');
 });
 
 test('一次填入明确及疑义字段，默认来源明确，不造名称、数量和时刻', () => {
