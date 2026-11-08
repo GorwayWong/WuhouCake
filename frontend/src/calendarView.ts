@@ -49,6 +49,7 @@ export function timelinePartitions(orders: PendingOrder[], status: string) {
   return [
     { id: 'pending', label: '待处理', orders: visible.filter(isUnfinishedOrder), expanded: true },
     { id: 'completed', label: orderStatusNames.COMPLETED, orders: visible.filter(order => order.status === 'COMPLETED'), expanded: Boolean(status) },
+    { id: 'unknown', label: '状态待更新', orders: visible.filter(order => !Object.hasOwn(orderStatusNames, order.status)), expanded: true },
     { id: 'cancelled', label: orderStatusNames.CANCELLED, orders: visible.filter(order => order.status === 'CANCELLED'), expanded: Boolean(status) },
   ].filter(group => group.orders.length);
 }

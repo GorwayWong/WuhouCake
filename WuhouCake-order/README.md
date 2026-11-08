@@ -208,3 +208,11 @@ DASHSCOPE_API_KEY 仅通过服务端受限配置注入；普通 .env 文件不�
 该字段独立于配送／自提和填单来源，去除首尾空白后最多 80 字符，空内容保存为 `null`。
 详情仅在具有 `ORDER_BUSINESS_DETAILS_READ` 权限时返回实际值；修改沿用 `expectedVersion` 和资料修改审计。
 旧请求可省略，历史订单保持空值；客户填单、识别和导出列不增加此字段。
+
+### 整单双报价与支付登记
+
+`POST /api/orders` 新增可选 `originalAmountCents`、`memberAmountCents`、`paymentMethod`。金额为整数分，会员价非 null 时优先（包括 0），否则采用原价，成交金额继续通过 `totalAmountCents` 返回并用于汇总；同时传入不一致的成交金额会被拒绝。旧客户端仅传 `totalAmountCents` 仍可创建订单。
+
+方式为 `UNIONPAY`、`MEMBER_CARD`、`BANK_TRANSFER`、`SERVICE_WECHAT`、`CASH`、`UNPAID`。省略时沿用未付默认值；指定非未付方式需付款操作权限，创建事务内同时保存已付款和服务器时间。未对接实际支付通道。
+
+`PATCH /api/orders/{id}/information` 可更正双报价，服务端重新计算成交金额；修改金额不改付款状态或付款时间。`PATCH /api/orders/{id}/payment-status` 支持同时传 `paymentMethod`，状态与方式必须一致；已付只改方式保留原付款时间。两类写入沿用 `expectedVersion` 与审计，创建沿用幂等标识。V26 新增可空列，不回填历史订单渠道或报价。

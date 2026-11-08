@@ -28,6 +28,8 @@ public final class EmployeeAccessPolicy {
                 permissions.add(ORDER_ORDERING_DETAILS_READ);
                 permissions.removeAll(Set.of(ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
             }
+            if (Set.of(JobRole.FRONT_DESK, JobRole.FRONT_DESK_SUPERVISOR, JobRole.FRONT_DESK_CLERK).contains(role))
+                permissions.remove(ORDER_PRODUCTION_UPDATE);
             permissions.add(ORDER_PHONE_READ);
             if (!production) {
                 permissions.add(CUSTOMER_SUBMISSION_PROCESS);

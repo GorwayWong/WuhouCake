@@ -121,3 +121,20 @@ export async function removeQueuedImage(image: Pick<StoredImage, 'key'>) { await
 export async function forgetImageTransfer(scope: ImageScope) {
   await write(['transfers'], tx => { tx.objectStore('transfers').delete(JSON.stringify([scope.accountId, scope.requestId])); });
 }
+
+export async function editImageQueue(accountId: string, orderId: string): Promise<QueuedImage[]> {
+  const rows = await read<StoredImage[]>('files', store => store.getAll());
+  return rows.filter(row => row.accountId === accountId && !row.orderId && row.requestId.startsWith(`edit:${orderId}:`))
+    .map(({ file: _file, ...row }) => row);
+}
+export async function commitEditImages(scope: ImageScope, order: Detail) {
+  const items = new Set(order.items.map(item => item.itemId));
+  await write(['files'], tx => {
+    const store = tx.objectStore('files'), request = store.index('draft').getAll([scope.accountId, scope.requestId]);
+    request.onsuccess = () => {
+      const rows = request.result as StoredImage[];
+      if (rows.some(row => !items.has(row.itemId)) || order.deletion || order.deleted) { tx.abort(); return; }
+      for (const row of rows) store.put({ ...row, orderId: order.orderId });
+    };
+  });
+}

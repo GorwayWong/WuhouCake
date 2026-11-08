@@ -7,7 +7,7 @@ export const productFormLabels: Record<ProductFormField, string> = {
   message: '祝福语', requirements: '特殊要求', specification: '规格', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）',
 };
 export function productFormRows(type: string, prices = false): ProductFormField[][] {
-  if (!hasUnitPrices(type)) return [['name'], ['size', 'quantity'], ['base', 'filling'], ['flavor'], ['message'], ['requirements']];
+  if (!hasUnitPrices(type)) return [['name'], ['size', 'quantity'], ['base', 'flavor'], ['filling'], ['message'], ['requirements']];
   return [['name'], ['quantity'], ...(prices ? [['unitPrice', 'memberPrice'] as ProductFormField[]] : []), ['specification'], ['requirements']];
 }
 export function firstItemFormError(errors: Record<string, unknown>, type: string, prices = false): string | undefined {

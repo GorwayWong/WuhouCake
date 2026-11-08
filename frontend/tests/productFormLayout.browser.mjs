@@ -5,7 +5,7 @@ import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
-const rows = ['name', 'size,quantity', 'base,filling', 'flavor', 'message', 'requirements'];
+const rows = ['name', 'size,quantity', 'base,flavor', 'filling', 'message', 'requirements'];
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true, channel: process.env.DRAFT_BROWSER_CHANNEL || 'chrome' }); });
 after(async () => { await browser?.close(); });
@@ -177,6 +177,7 @@ test('先选图再带入套餐保留空名称商品及本机文件，不覆盖�
     const original = await saved(), value = { id: crypto.randomUUID(), name: '蛋糕套餐', version: 0, updatedAt: '2026-11-04T08:00:00Z', items: [{ name: '模板蛋糕', productType: 'CAKE', quantity: 1, attributes: { size: '6' } }] };
     await context.route('**/api/order-packages**', route => route.fulfill({ json: { success: true, data: new URL(route.request().url()).pathname === '/api/order-packages' ? { items: [value], total: 1, page: 1, size: 20 } : value } }));
     await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.getByRole('button', { name: '使用套餐', exact: true }).click();
     await page.getByRole('button', { name: /选择套餐/ }).click(); await page.getByRole('option', { name: /蛋糕套餐/ }).click();
     await page.getByRole('button', { name: '带入商品', exact: true }).click(); await until(async () => (await saved()).value.items.length === 2);
     const next = await saved(); assert.equal(next.value.items[0].key, original.value.items[0].key); assert.deepEqual(next.value.items[0].images, original.value.items[0].images);
@@ -203,4 +204,117 @@ test('未确认分类的识别商品在标题区提示并聚焦，选择类型�
     assert.equal((await saved()).value.items[0].requiresTypeConfirmation, false); assert.equal(await page.locator('[id="items.0.size"]').inputValue(), '6');
     assert.equal(model.createCalls.length, 0); assert.deepEqual(errors, []);
   } finally { await context.close(); }
+});
+
+
+test('录单顶部紧凑且套餐默认不加载，四种宽度无溢出', async () => {
+  const { context, page, saved, errors, model } = await createOrderFixture(browser, base);
+  try {
+    model.permissions.push('ORDER_MANAGEMENT_READ', 'ORDER_BUSINESS_DETAILS_READ', 'CUSTOMER_SUBMISSION_PROCESS');
+    let requests = 0;
+    await context.route('**/api/orders/stream', () => {});
+    await context.route('**/api/order-packages?**', route => { requests++; return route.fulfill({ json: { success: true, data: { items: [], total: 0, page: 1, size: 20 } } }); });
+    await page.reload();
+    await page.locator('#customerName').fill('布局客户');
+    await until(async () => Boolean((await saved())?.updatedAt));
+    for (const width of [320, 390, 430, 1280]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      const layout = await page.evaluate(() => {
+        const nav = document.querySelector('.app-nav').getBoundingClientRect();
+        const bar = document.querySelector('.draft-toolbar').getBoundingClientRect();
+        const recognition = document.querySelector('.recognition-section').getBoundingClientRect();
+        const status = document.querySelector('.draft-save-status').getBoundingClientRect();
+        const discard = document.querySelector('.draft-toolbar button').getBoundingClientRect();
+        return { overflow: document.documentElement.scrollWidth > innerWidth, navGap: bar.top - nav.bottom, barGap: recognition.top - bar.bottom, statusTop: status.top, discardBottom: discard.bottom, height: discard.height };
+      });
+      assert.equal(layout.overflow, false); assert.ok(layout.navGap >= 12 && layout.navGap <= 16, JSON.stringify(layout));
+      assert.ok(layout.barGap >= 12 && layout.barGap <= 16, JSON.stringify(layout));
+      assert.ok(layout.statusTop < layout.discardBottom); assert.ok(layout.height >= 44);
+      if (process.env.LAYOUT_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.LAYOUT_SCREENSHOT_DIR}/entry-compact-top-${width}.png`, fullPage: false });
+    }
+    assert.equal(requests, 0);
+    assert.equal(await page.getByRole('button', { name: '使用套餐', exact: true }).getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.getByRole('textbox', { name: '搜索套餐' }).count(), 0);
+    await page.getByRole('button', { name: '放弃草稿', exact: true }).click();
+    await page.getByRole('button', { name: '确认放弃', exact: true }).waitFor();
+    assert.ok(await saved());
+    await page.getByRole('button', { name: '返回', exact: true }).click();
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('套餐按需加载、收起保留搜索与选择，带入时不能收起，失败后可重试和重复添加', async () => {
+  const { context, page, saved, errors } = await createOrderFixture(browser, base);
+  try {
+    const value = { id: crypto.randomUUID(), name: '测试套餐', version: 0, updatedAt: '2026-11-08T08:00:00Z', items: [{ name: '套餐商品', productType: 'TEA_BREAK', quantity: 2, attributes: {} }] };
+    let listCalls = 0, detailCalls = 0, fail = true;
+    let pending;
+    await context.route('**/api/order-packages**', async route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/order-packages') { listCalls++; return route.fulfill({ json: { success: true, data: { items: [value], total: 21, page: Number(url.searchParams.get('page') || 1), size: 20 } } }); }
+      detailCalls++;
+      await new Promise(resolve => { pending = resolve; });
+      return route.fulfill(fail ? { status: 404, json: { success: false, code: 'NOT_FOUND' } } : { json: { success: true, data: value } });
+    });
+    await page.reload();
+    assert.equal(listCalls, 0);
+    await page.getByRole('button', { name: '使用套餐', exact: true }).click();
+    await page.getByRole('textbox', { name: '搜索套餐' }).fill('测试');
+    await page.locator('.package-picker').getByRole('button', { name: '搜索', exact: true }).click();
+    await page.getByRole('button', { name: /选择套餐/ }).click();
+    await page.getByRole('option', { name: /测试套餐/ }).click();
+    await page.getByRole('button', { name: '收起套餐', exact: true }).click();
+    const closedCalls = listCalls;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    assert.equal(listCalls, closedCalls);
+    await page.getByRole('button', { name: '使用套餐', exact: true }).click();
+    assert.equal(await page.getByRole('textbox', { name: '搜索套餐' }).inputValue(), '测试');
+    await page.getByRole('button', { name: '带入商品', exact: true }).click();
+    await until(() => Boolean(pending));
+    assert.equal(await page.getByRole('button', { name: '收起套餐', exact: true }).isDisabled(), true);
+    pending(); pending = undefined;
+    await page.locator('.package-picker').getByRole('alert').waitFor();
+    assert.equal((await saved())?.value.items.length || 1, 1);
+    fail = false;
+    await page.getByRole('button', { name: '带入商品', exact: true }).click();
+    await until(() => Boolean(pending)); pending(); pending = undefined;
+    await until(async () => (await saved())?.value.items.some(item => item.name === '套餐商品'));
+    const count = (await saved()).value.items.length;
+    await page.getByRole('button', { name: '再添加一份', exact: true }).click();
+    await until(() => Boolean(pending)); pending(); pending = undefined;
+    await until(async () => (await saved()).value.items.length === count + 1);
+    await page.getByRole('button', { name: '收起套餐', exact: true }).click();
+    assert.equal((await saved()).value.items.length, count + 1);
+    await page.getByRole('button', { name: '使用套餐', exact: true }).click();
+    await page.locator('.package-picker').getByRole('button', { name: '下一页', exact: true }).click();
+    await page.locator('.package-picker').getByText('第 2 页', { exact: false }).waitFor();
+    assert.equal(detailCalls, 3);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+
+test('新常用方式提交老板，历史下单人经恢复仍保留原文', async () => {
+  for (const method of ['老板', '下单人']) {
+    const { context, page, complete, saved, model, errors } = await createOrderFixture(browser, base);
+    try {
+      await complete();
+      if (method === '老板') {
+        await page.locator('.ordering-method-input button').click();
+        await page.getByRole('option', { name: '老板', exact: true }).click();
+        assert.equal(await page.getByRole('option', { name: '下单人', exact: true }).count(), 0);
+      } else {
+        await page.evaluate(() => { const key = 'wuhou:order-draft:v1:alice'; const draft = JSON.parse(localStorage.getItem(key)); draft.value.orderingMethod = '下单人'; localStorage.setItem(key, JSON.stringify(draft)); });
+        await page.reload();
+        await page.getByRole('button', { name: '继续填写', exact: true }).click();
+        assert.equal(await page.getByRole('textbox', { name: '具体下单方式', exact: true }).inputValue(), '下单人');
+      }
+      await until(async () => (await saved()).value.orderingMethod === method);
+      await page.getByRole('button', { name: '创建订单', exact: true }).click();
+      await until(() => model.createCalls.length === 1);
+      assert.equal(model.createCalls[0].input.orderingMethod, method);
+      assert.deepEqual(errors, []);
+    } finally { await context.close(); }
+  }
 });

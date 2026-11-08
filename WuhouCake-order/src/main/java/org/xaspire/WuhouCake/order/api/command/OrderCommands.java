@@ -25,7 +25,13 @@ public final class OrderCommands {
     }
     public record Create(@NotNull @Valid Customer customer, @NotNull @Valid Fulfillment fulfillment,
             @NotEmpty List<@NotNull @Valid Item> items, Number totalAmountCents, UUID creditedEmployeeId,
-            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String orderingMethod) {
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String orderingMethod,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Number originalAmountCents,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Number memberAmountCents,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String paymentMethod) {
+        public Create(Customer customer, Fulfillment fulfillment, List<Item> items, Number totalAmountCents, UUID creditedEmployeeId, String orderingMethod) {
+            this(customer, fulfillment, items, totalAmountCents, creditedEmployeeId, orderingMethod, null, null, null);
+        }
         public Create(Customer customer, Fulfillment fulfillment, List<Item> items, Number totalAmountCents, UUID creditedEmployeeId) {
             this(customer, fulfillment, items, totalAmountCents, creditedEmployeeId, null);
         }
@@ -37,7 +43,9 @@ public final class OrderCommands {
     public record Information(@NotNull Number expectedVersion, @NotEmpty Map<String, Object> changes) { }
     public record AddItem(@NotNull Number expectedVersion, @NotNull @Valid Item item) { }
     public record RemoveItem(@NotNull Number expectedVersion) { }
-    public record PaymentStatus(@NotNull Number expectedVersion, @NotBlank String paymentStatus) { }
+    public record PaymentStatus(@NotNull Number expectedVersion, @NotBlank String paymentStatus, String paymentMethod) {
+        public PaymentStatus(Number expectedVersion, String paymentStatus) { this(expectedVersion, paymentStatus, null); }
+    }
     public record ProductionAction(@NotNull Number expectedVersion, @NotBlank String action) { }
     public record SimpleItemCompletion(@NotNull Number expectedVersion, @NotNull Boolean completed) { }
     public record FulfillmentAction(@NotNull Number expectedVersion, @NotBlank String action) { }

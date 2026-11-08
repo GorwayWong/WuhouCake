@@ -1,3 +1,5 @@
+import { exactYuan } from './money.ts';
+import { paymentMethods, effectiveOrderAmount } from './orderPayment.ts';
 import { productionStatuses } from './orderStates.ts';
 import { pickupInstant, pickupDate, defaultFinishTime } from './orderTimes.ts';
 import type { FinishTimeMode } from './orderTimes.ts';
@@ -32,7 +34,7 @@ export interface OrderDraft {
   creditedEmployeeId?: string;
   customerName: string; phone: string; memberPhone: string; buyerName: string;
   fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveDate: string; requestedReceiveAt: string;
-  plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode; totalAmount: string; items: ItemDraft[];
+  plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode; totalAmount: string; memberAmount?: string; paymentMethod?: string; items: ItemDraft[];
 }
 export function newItem(): ItemDraft {
   return { key: randomUUID(), name: '', productType: 'CAKE', quantity: '1', unitPrice: '', memberPrice: '',
@@ -59,7 +61,7 @@ export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, e
 }
 export function newDraft(date: string): OrderDraft {
   return { orderingMethod: '', customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', address: '',
-    requestedReceiveDate: date, requestedReceiveAt: date, plannedHandoffAt: '', plannedFinishAt: '', finishTimeMode: 'AUTO', totalAmount: '', items: [newItem()] };
+    requestedReceiveDate: date, requestedReceiveAt: date, plannedHandoffAt: '', plannedFinishAt: '', finishTimeMode: 'AUTO', totalAmount: '', memberAmount: '', paymentMethod: 'UNPAID', items: [newItem()] };
 }
 export function moneyToCents(input: string): number | null {
   const value = input.trim();
@@ -168,6 +170,10 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
   catch (error) { errors.requestedReceiveAt = (error as Error).message; }
   if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的取货日期。';
   if (!draft.items.length) errors.items = '订单至少需要一件商品。';
+  const original = amount(draft.totalAmount, 'totalAmount');
+  const member = amount(draft.memberAmount || '', 'memberAmount');
+  const method = draft.paymentMethod || 'UNPAID';
+  if (!Object.hasOwn(paymentMethods, method)) errors.paymentMethod = '请选择有效的支付方式。';
   const request: CreateOrderRequest = {
     orderingMethod: text((draft.orderingMethod || '').trim(), 'orderingMethod', '下单方式', 80),
     customer: {
@@ -189,7 +195,8 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       for (const [field, error] of Object.entries(result.errors)) errors[`items.${index}.${field}`] = error;
       return result.item ? { ...result.item, itemId: item.key } : result.item!;
     }),
-    totalAmountCents: amount(draft.totalAmount, 'totalAmount'),
+    originalAmountCents: original, memberAmountCents: member, paymentMethod: method,
+    totalAmountCents: effectiveOrderAmount(original, member),
   };
   return { request: Object.keys(errors).length ? null : request, errors };
 }
@@ -202,11 +209,13 @@ function localStoreTime(value: string | null): string {
   return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`;
 }
 export function informationDraft(order: Detail): InformationDraft {
-  const cents = order.totalAmountCents == null ? null : BigInt(order.totalAmountCents);
+  const original = order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null);
+  const cents = original == null ? null : BigInt(original);
   return { orderingMethod: order.orderingMethod || '', customerName: order.customer?.customerName || '', phone: order.customer?.phone || '', memberPhone: order.customer?.memberPhone || '', buyerName: order.customer?.buyerName || '',
     fulfillmentType: order.fulfillment.type as InformationDraft['fulfillmentType'], address: order.fulfillment.address || '', requestedReceiveDate: pickupDate(order.fulfillment),
     requestedReceiveAt: localStoreTime(pickupInstant(order.fulfillment)) || pickupDate(order.fulfillment),
     plannedHandoffAt: localStoreTime(order.fulfillment.plannedHandoffAt), plannedFinishAt: localStoreTime(order.fulfillment.plannedFinishAt), finishTimeMode: order.fulfillment.plannedFinishAt ? 'MANUAL' : 'AUTO',
+    memberAmount: order.memberAmountCents === undefined ? undefined : order.memberAmountCents === null ? '' : exactYuan(order.memberAmountCents),
     totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`, creditedEmployeeId: order.creditedEmployee?.accountId || '' };
 }
 export function informationRequest(original: Detail, draft: InformationDraft, baseline = original): { request: InformationRequest | null; errors: Record<string, string> } {
@@ -247,7 +256,13 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
       catch (error) { errors[field] = (error as Error).message; }
     }
   }
-  if (draft.totalAmount !== initial.totalAmount) {
+  if (draft.memberAmount !== undefined || original.memberAmountCents !== undefined) {
+    for (const [field, key] of [['totalAmount', 'originalAmountCents'], ['memberAmount', 'memberAmountCents']] as const) {
+      if ((draft[field] || '') === (initial[field] || '')) continue;
+      try { const cents = moneyToCents(draft[field] || ''); if (cents !== moneyToCents(current[field] || '')) changes[key] = cents; }
+      catch (error) { errors[field] = (error as Error).message; }
+    }
+  } else if (draft.totalAmount !== initial.totalAmount) {
     try {
       const cents = moneyToCents(draft.totalAmount);
       if (cents !== original.totalAmountCents && cents !== baseline.totalAmountCents) changes.totalAmountCents = cents;
@@ -259,7 +274,10 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   return { request: !Object.keys(errors).length && Object.keys(changes).length ? { expectedVersion: baseline.version, changes } : null, errors };
 }
 
-export function amountInformationRequest(original: Detail, amount: string, baseline = original): { request: InformationRequest | null; errors: Record<string, string> } {
+export function amountInformationRequest(original: Detail, amount: string, baseline = original, memberAmount?: string): { request: InformationRequest | null; errors: Record<string, string> } {
+  if (memberAmount !== undefined || original.memberAmountCents !== undefined) {
+    return informationRequest(original, { ...informationDraft(original), totalAmount: amount, memberAmount: memberAmount ?? informationDraft(original).memberAmount ?? '' }, baseline);
+  }
   if (amount === informationDraft(original).totalAmount) return { request: null, errors: {} };
   try {
     const cents = moneyToCents(amount);

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './api';
 import { DateInput } from './DateInput';
-import { shiftDate, time } from './dates';
+import { businessDate, shiftDate, businessTime } from './dates';
 import { orderStatusNames, productionStatuses } from './orderStates';
 import { productionPreset, productionQueryHref, validProductionRange } from './productionQueryRoute';
 import type { ProductionQueryRoute } from './productionQueryRoute';
@@ -97,14 +97,14 @@ export function ProductionQuery({ route }: { route: ProductionQueryRoute }) {
         <ul className="production-query-days">{buckets.map(({ date, orderCount }) => <li key={date}>
           <a href={productionQueryHref({ ...route, bucket: date, page: 1 })}
             aria-current={bucket === date ? 'true' : undefined} className="production-query-day">
-            <span>{date === 'unscheduled' ? '出品待定' : date}</span><strong>{orderCount} 笔</strong>
+            <span>{date === 'unscheduled' ? '出品待定' : businessDate(date)}</span><strong>{orderCount} 笔</strong>
           </a>
         </li>)}</ul>
       </>}
     </section>
 
     {bucket && <section className="panel" aria-labelledby="production-detail-heading" tabIndex={-1} ref={detailsSection}>
-      <h2 id="production-detail-heading">{bucket === 'unscheduled' ? '出品待定' : bucket}订单明细</h2>
+      <h2 id="production-detail-heading">{bucket === 'unscheduled' ? '出品待定' : businessDate(bucket)}订单明细</h2>
       <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
       {detail.isPending ? <Loading /> : detail.data && (detail.data.total === 0 ? <Empty>暂无匹配订单。</Empty> : <>
         <p>共 {detail.data.total} 笔订单</p>
@@ -113,8 +113,8 @@ export function ProductionQuery({ route }: { route: ProductionQueryRoute }) {
             <strong>{order.itemName || '未填写商品名称'}</strong><span>#{order.orderNo} · {orderStatusNames[order.status]}</span>
           </a>
           <dl>
-            <div><dt>出品</dt><dd>{order.plannedFinishAt ? time(order.plannedFinishAt, true) : '待定'}</dd></div>
-            <div><dt>取货</dt><dd>{order.pickupAt ? time(order.pickupAt, true) : `${order.pickupDate} · 时刻待定`}</dd></div>
+            <div><dt>出品</dt><dd>{order.plannedFinishAt ? businessTime(order.plannedFinishAt) : '待定'}</dd></div>
+            <div><dt>取货</dt><dd>{order.pickupAt ? businessTime(order.pickupAt) : `${businessDate(order.pickupDate)} · 时刻待定`}</dd></div>
           </dl>
         </li>)}</ul>
         <nav className="pagination" aria-label="待制作订单分页">

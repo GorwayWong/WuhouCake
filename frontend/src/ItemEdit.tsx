@@ -12,9 +12,9 @@ import { focusFormField } from './formFocus';
 function Field({ name, label, error, children, className }: { name: string; label: ReactNode; error?: string; children: ReactNode; className?: string }) {
   return <label htmlFor={`item-${name}`} className={className}><span className="form-field-heading">{label}</span>{children}{error && <span className="field-error" id={`item-${name}-error`}>{error}</span>}</label>;
 }
-export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSave, onCancel, onDirtyChange }: {
+export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSave, onCancel, onDirtyChange, onSaveUnchanged }: {
   initial: Detail; itemId?: string; latest: Detail; reopened?: Detail; busy: boolean; error: unknown;
-  onSave: (request: ItemChangeRequest | ItemAddRequest) => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
+  onSave: (request: ItemChangeRequest | ItemAddRequest) => Promise<unknown>; onSaveUnchanged?: () => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
 }) {
   busy = busy || Boolean(latest.deletion || latest.deleted);
   const original = initial.items.find(item => item.itemId === itemId);
@@ -51,7 +51,7 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
       focusFormField(form.current, firstItemFormError(result.errors, draft.productType, true)!);
       return;
     }
-    if (!result.request) { onCancel(); return; }
+    if (!result.request) { try { if (onSaveUnchanged) await onSaveUnchanged(); else onCancel(); } catch { /* 保存错误由父级操作提示展示。 */ } return; }
     attemptedVersion.current = result.request.expectedVersion;
     try { await onSave(result.request); }
     catch (error) {
@@ -66,7 +66,7 @@ export function ItemEdit({ initial, itemId, latest, reopened, busy, error, onSav
           <input {...props(field)} autoFocus={field === 'name'} value={draft[field]} inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} maxLength={field === 'name' ? 128 : undefined} required={required} placeholder={field.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [field]: event.target.value }))} />
         </Field>;
         const structured = !textSpecification(original?.attributes[field]) || !textSpecification((baseline || latest).items.find(item => item.itemId === itemId)?.attributes[field]);
-        return <Field name={field} label={<ProductFieldLabel field={field} />} error={errors[field]}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[field] ?? original?.attributes[field])}<small>此规格保留原值。</small></span> : field === 'requirements' ? <textarea {...props(field)} rows={2} value={draft.attributes[field] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} /> : <input {...props(field)} inputMode={field === 'size' ? 'decimal' : undefined} value={draft.attributes[field] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} />}</Field>;
+        return <Field name={field} label={<ProductFieldLabel field={field} />} error={errors[field]}>{structured ? <span className="preserved-specification">{valueText(current?.attributes[field] ?? original?.attributes[field])}<small>此规格保留原值。</small></span> : (field === 'requirements' || field === 'filling') ? <textarea {...props(field)} rows={2} value={draft.attributes[field] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} /> : <input {...props(field)} inputMode={field === 'size' ? 'decimal' : undefined} value={draft.attributes[field] || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} />}</Field>;
       }} />
       <p className="form-help">商品报价不改变订单总额。{!itemId && latest.status !== 'CAKE_BASE' && '追加商品后需重新确认制作进度。'}</p>
       <ErrorNotice error={unknownAddition ? null : error} />

@@ -26,7 +26,8 @@ class EmployeeAccessPolicyTest {
             assertTrue(access.allows(ORDER_PHONE_READ));
             assertEquals(role == JobRole.STORE_MANAGER, access.allows(ORDER_DELETE));
             assertEquals(!production, access.allows(ORDER_DELETED_READ));
-            assertTrue(access.allows(ORDER_PRODUCTION_UPDATE));
+            assertEquals(!Set.of(JobRole.FRONT_DESK, JobRole.FRONT_DESK_SUPERVISOR, JobRole.FRONT_DESK_CLERK).contains(role), access.allows(ORDER_PRODUCTION_UPDATE));
+            assertTrue(access.allows(ORDER_FULFILLMENT_UPDATE));
             assertTrue(access.allows(ORDER_NOTE_CREATE));
             assertTrue(access.allows(ORDER_IMAGE_UPLOAD));
             assertEquals(role == JobRole.STORE_MANAGER, access.allows(EMPLOYEE_MANAGE));
@@ -76,6 +77,13 @@ class EmployeeAccessPolicyTest {
         }
     }
 
+    @Test void frontDeskOverridesRemainExplicitAndSystemAdministrationDoesNotGrantProduction() {
+        for (var role : Set.of(JobRole.FRONT_DESK, JobRole.FRONT_DESK_CLERK, JobRole.FRONT_DESK_SUPERVISOR)) {
+            assertFalse(new EmployeeAccessPolicy(Map.of()).access(account(Set.of(role), SystemRole.SUPER_ADMIN)).allows(ORDER_PRODUCTION_UPDATE));
+            assertTrue(new EmployeeAccessPolicy(Map.of(role, Set.of(ORDER_PRODUCTION_UPDATE))).access(account(Set.of(role), SystemRole.STAFF)).allows(ORDER_PRODUCTION_UPDATE));
+        }
+    }
+
     private static EmployeeAccount account(Set<JobRole> roles, SystemRole systemRole) {
         return EmployeeAccount.create(UUID.randomUUID(), "EMP001", "测试员工", roles, systemRole, "initial-hash", NOW)
                 .replacePassword("permanent-hash", false, NOW);
@@ -88,6 +96,7 @@ class EmployeeAccessPolicyTest {
             assertTrue(access.allows(ORDER_AMOUNT_READ));
             assertTrue(access.allows(ORDER_CUSTOMER_READ));
             assertTrue(access.allows(ORDER_BUSINESS_DETAILS_READ));
+            assertTrue(access.allows(ORDER_PRODUCTION_UPDATE));
             assertEquals(role == JobRole.STORE_MANAGER, access.allows(EMPLOYEE_MANAGE));
         }
     }

@@ -2258,3 +2258,35 @@ button,a{
 @media(max-width:380px) {
   .production-query-range { grid-template-columns:1fr; }
 }
+
+/* 录单页的草稿操作与识别入口保持紧凑，其他工作台沿用原间距。 */
+.workspace.workspace-create{padding-top:12px}
+.workspace-create .draft-toolbar{max-width:960px;margin:0 auto 12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 12px;min-width:0}
+.workspace-create .draft-toolbar .draft-save-status{flex:1 1 180px;margin:0;overflow-wrap:anywhere}
+.workspace-create .draft-toolbar>button{margin-left:auto;min-height:44px;flex-shrink:0}
+.workspace-create .draft-discard-confirmation{max-width:960px;margin:0 auto 16px}
+.workspace-create .recognition-section{margin-bottom:16px}
+.package-picker-section{margin:12px 0}
+.package-toggle{min-height:44px}
+.package-picker-section .package-picker{margin:8px 0 0}
+@media(max-width:640px){.workspace-create .package-picker input{font-size:16px}.workspace-create .package-picker button{min-height:44px}}
+
+.front-order-information .detail-business-time dd{font-size:20px;font-weight:700;line-height:1.5;overflow-wrap:anywhere;color:var(--ink)}
+.front-order-information .detail-contact-phone dd,.front-order-information .detail-contact-address dd{font-size:18px;line-height:1.6;overflow-wrap:anywhere}
+.product-form-fields textarea{resize:vertical;min-height:72px;white-space:pre-wrap}
+
+.order-quoted-prices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}
+.order-quoted-prices dd{font-size:18px;overflow-wrap:anywhere;margin:4px 0 0}
+.order-payment-editor{display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin:16px 0}
+.order-payment-editor>label{min-width:0;flex:1 1 180px}
+.order-payment-editor>.form-help{flex-basis:100%;margin:0}
+
+.create-grid.order-pricing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:359px){.create-grid.order-pricing-fields{grid-template-columns:1fr}}
+
+.calendar-date-help{flex-basis:100%;font-size:13px;color:var(--muted)}
+.version-notice{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px}
+.version-notice button{min-height:44px}
+.staged-edit-image{margin:12px 0;list-style:none}
+
+.staged-image-list{padding:0;margin:0;list-style:none}

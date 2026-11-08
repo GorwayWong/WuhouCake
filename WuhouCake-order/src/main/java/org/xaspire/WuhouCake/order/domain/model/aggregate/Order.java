@@ -23,6 +23,9 @@ public final class Order {
     private CustomerContact customer;
     private FulfillmentPlan fulfillment;
     private Long totalAmountCents;
+    private Long originalAmountCents;
+    private Long memberAmountCents;
+    private String paymentMethod;
     private final UUID createdBy;
     private Attribution creditedEmployee;
     private final Instant createdAt;
@@ -59,6 +62,17 @@ public final class Order {
     public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
             FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
             Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion, String orderingMethod) {
+        this(id, orderNo, version, status, paymentStatus, currentStageCode, customer, fulfillment, totalAmountCents,
+                createdBy, createdAt, confirmedAt, updatedAt, items, creditedEmployee, paidAt, deletion, orderingMethod, null, null, null);
+    }
+    public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
+            FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
+            Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion, String orderingMethod,
+            Long originalAmountCents, Long memberAmountCents, String paymentMethod) {
+        this.originalAmountCents = money(originalAmountCents); this.memberAmountCents = money(memberAmountCents);
+        this.paymentMethod = normalizePaymentMethod(paymentMethod);
+        if (this.paymentMethod != null && !paymentStatus.equals(this.paymentMethod.equals("UNPAID") ? "UNPAID" : "PAID")) throw invalid();
+        if ((originalAmountCents != null || memberAmountCents != null) && !Objects.equals(totalAmountCents, memberAmountCents != null ? memberAmountCents : originalAmountCents)) throw invalid();
         this.orderingMethod = normalizeOrderingMethod(orderingMethod);
         this.id = Objects.requireNonNull(id); this.orderNo = requiredText(orderNo, 32);
         this.version = nonNegativeInteger(version); this.status = Objects.requireNonNull(status); this.paymentStatus = Objects.requireNonNull(paymentStatus);
@@ -85,6 +99,27 @@ public final class Order {
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod) {
         return new Order(id, orderNo, 0, "CAKE_BASE", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now,
                 items, creditedEmployee, null, null, orderingMethod);
+    }
+    public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
+            List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod,
+            Long originalAmountCents, Long memberAmountCents, String paymentMethod) {
+        Long original = money(originalAmountCents), member = money(memberAmountCents);
+        Long effective = member != null ? member : original;
+        if (original != null || member != null) {
+            if (total != null && !Objects.equals(total, effective)) throw invalid();
+        } else effective = money(total);
+        var method = normalizePaymentMethod(paymentMethod);
+        boolean paid = method != null && !method.equals("UNPAID");
+        return new Order(id, orderNo, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, effective,
+                actorId, now, now, now, items, creditedEmployee, paid ? now : null, null, orderingMethod, original, member, method);
+    }
+    public Long originalAmountCents() { return originalAmountCents; }
+    public Long memberAmountCents() { return memberAmountCents; }
+    public String paymentMethod() { return paymentMethod; }
+    private static String normalizePaymentMethod(String value) {
+        if (value == null) return null;
+        if (!Set.of("UNIONPAY", "MEMBER_CARD", "BANK_TRANSFER", "SERVICE_WECHAT", "CASH", "UNPAID").contains(value)) throw invalid();
+        return value;
     }
     public String orderingMethod() { return orderingMethod; }
     public OrderItem requireActiveItem(UUID itemId) {
@@ -173,9 +208,10 @@ public final class Order {
     public Map<String, Object> reviseInformation(Map<String, Object> changes, Instant now, Attribution employee) {
         requireWritable();
         var fields = Set.of("customerName", "phone", "memberPhone", "buyerName", "fulfillmentType", "address", "requestedReceiveDate",
-                "requestedReceiveAt", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "creditedEmployeeId", "orderingMethod");
+                "requestedReceiveAt", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "originalAmountCents", "memberAmountCents", "creditedEmployeeId", "orderingMethod");
         if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !fields.contains(key))) throw invalid();
         var previous = informationValues(customer, fulfillment, totalAmountCents);
+        previous.put("originalAmountCents", originalAmountCents); previous.put("memberAmountCents", memberAmountCents);
         previous.put("orderingMethod", orderingMethod);
         previous.put("creditedEmployeeId", creditedEmployee == null ? null : creditedEmployee.accountId().toString());
         var merged = new LinkedHashMap<>(previous); merged.putAll(changes);
@@ -204,10 +240,22 @@ public final class Order {
         }
         var plan = new FulfillmentPlan(type, text(merged.get("address")), requestedDate, handoffAt,
                 changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt(), requestedAt);
-        var total = money(merged.get("totalAmountCents"));
+        Long original = originalAmountCents, member = memberAmountCents;
+        Long total = totalAmountCents;
+        if (changes.containsKey("originalAmountCents") || changes.containsKey("memberAmountCents")) {
+            original = changes.containsKey("originalAmountCents") ? money(changes.get("originalAmountCents"))
+                    : originalAmountCents == null && memberAmountCents == null ? totalAmountCents : originalAmountCents;
+            member = money(merged.get("memberAmountCents"));
+            total = member != null ? member : original;
+            if (changes.containsKey("totalAmountCents") && !Objects.equals(money(changes.get("totalAmountCents")), total)) throw invalid();
+        } else if (changes.containsKey("totalAmountCents") && !Objects.equals(money(changes.get("totalAmountCents")), totalAmountCents)) {
+            if (memberAmountCents != null) throw invalid();
+            total = money(changes.get("totalAmountCents")); original = total;
+        }
         var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
         var nextMethod = normalizeOrderingMethod(merged.get("orderingMethod"));
         var nextValues = informationValues(contact, plan, total);
+        nextValues.put("originalAmountCents", original); nextValues.put("memberAmountCents", member);
         nextValues.put("orderingMethod", nextMethod);
         nextValues.put("creditedEmployeeId", employee == null ? null : employee.accountId().toString());
         nextValues.forEach((field, value) -> {
@@ -220,7 +268,7 @@ public final class Order {
         if (before.isEmpty()) return Map.of();
         requireNextVersion();
         var details = JsonSnapshot.object(Map.of("before", before, "after", after));
-        orderingMethod = nextMethod; customer = contact; fulfillment = plan; totalAmountCents = total; creditedEmployee = employee; version++; updatedAt = now;
+        orderingMethod = nextMethod; customer = contact; fulfillment = plan; totalAmountCents = total; originalAmountCents = original; memberAmountCents = member; creditedEmployee = employee; version++; updatedAt = now;
         return details;
     }
     private static Map<String, Object> informationValues(CustomerContact customer, FulfillmentPlan fulfillment, Long total) {
@@ -254,13 +302,21 @@ public final class Order {
         catch (DateTimeException failure) { throw invalid(); }
     }
     public Map<String, Object> changePaymentStatus(String paymentStatus, Instant now) {
+        return changePaymentStatus(paymentStatus, null, now);
+    }
+    public Map<String, Object> changePaymentStatus(String paymentStatus, String method, Instant now) {
         requireWritable();
         if (paymentStatus == null || !Set.of("UNPAID", "PAID").contains(paymentStatus)) throw invalid();
-        if (this.paymentStatus.equals(paymentStatus)) return Map.of();
+        var nextMethod = normalizePaymentMethod(method);
+        if (nextMethod == null) nextMethod = this.paymentStatus.equals(paymentStatus) ? paymentMethod
+                : paymentStatus.equals("UNPAID") ? (paymentMethod == null ? null : "UNPAID") : "UNPAID".equals(paymentMethod) ? null : paymentMethod;
+        if (nextMethod != null && !paymentStatus.equals(nextMethod.equals("UNPAID") ? "UNPAID" : "PAID")) throw invalid();
+        if (this.paymentStatus.equals(paymentStatus) && Objects.equals(paymentMethod, nextMethod)) return Map.of();
         requireNextVersion();
-        var before = new LinkedHashMap<String, Object>(); before.put("paymentStatus", this.paymentStatus); before.put("paidAt", paidAt == null ? null : paidAt.toString());
-        this.paymentStatus = paymentStatus; paidAt = "PAID".equals(paymentStatus) ? now : null; version++; updatedAt = now;
-        var after = new LinkedHashMap<String, Object>(); after.put("paymentStatus", paymentStatus); after.put("paidAt", paidAt == null ? null : paidAt.toString());
+        var before = new LinkedHashMap<String, Object>(); before.put("paymentStatus", this.paymentStatus); before.put("paidAt", paidAt == null ? null : paidAt.toString()); if (!Objects.equals(paymentMethod, nextMethod)) before.put("paymentMethod", paymentMethod);
+        if (!this.paymentStatus.equals(paymentStatus)) paidAt = "PAID".equals(paymentStatus) ? now : null;
+        this.paymentStatus = paymentStatus; this.paymentMethod = nextMethod; version++; updatedAt = now;
+        var after = new LinkedHashMap<String, Object>(); after.put("paymentStatus", paymentStatus); after.put("paidAt", paidAt == null ? null : paidAt.toString()); if (before.containsKey("paymentMethod")) after.put("paymentMethod", paymentMethod);
         return JsonSnapshot.object(Map.of("before", before, "after", after));
     }
     public Map<String, Object> applyProductionAction(String action, Instant now) {

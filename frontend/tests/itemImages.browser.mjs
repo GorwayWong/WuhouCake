@@ -90,7 +90,7 @@ test('本机图片缺失阻止提交，存储失败不标为已保存，放弃�
     assert.equal((await saved()).value.items[0].images.length, 0);
     await page.evaluate(() => { IDBDatabase.prototype.transaction = window.originalImageTransaction; });
     await select(['kept.png']); await until(async () => (await saved()).value.items[0].images.length === 1);
-    const kept = await saved(); page.once('dialog', dialog => dialog.accept()); await page.getByRole('button', { name: '放弃草稿', exact: true }).click();
+    const kept = await saved(); await page.getByRole('button', { name: '放弃草稿', exact: true }).click(); await page.getByRole('button', { name: '确认放弃', exact: true }).click();
     await until(async () => !(await page.evaluate(async record => (await import('/src/draftImages.ts')).readDraftImage(record, record.value.items[0].key, record.value.items[0].images[0].id).then(Boolean), kept)));
   } finally { await context.close(); }
 });

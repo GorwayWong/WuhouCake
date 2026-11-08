@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, CaretDown, CaretUp, Plus } from '@phosphor-icons/react';
 import { api } from './api';
-import { calendarRange, today, weekStart, workbenchDate } from './dates';
+import { businessDate, calendarRange, today, weekStart, workbenchDate } from './dates';
 import type { Account, CalendarOrder, Workbench } from './types';
 import { ErrorNotice, Loading } from './ui';
 import { allCalendarFilters, calendarStatusOptions, matchesCalendarFilters } from './calendarFilters';
@@ -111,7 +111,7 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     if (ready) scrollAnchor.current = null;
   }, [view, mode, workbench.isPending, workbench.data, calendar.data, reservedHeight, resetVersion]);
   const changeFilters = (next: CalendarFilters) => { resetDay(selected); onFiltersChange(next); };
-  const filtersControl = <div className="calendar-filters" aria-label="订单筛选">
+  const filtersControl = <div className="calendar-filters" aria-label="订单筛选"><span className="calendar-date-help">按取货日期显示订单</span>
     {((access.amounts ? ['status', 'paymentStatus'] : ['status']) as (keyof CalendarFilters)[]).map(key => <label className="calendar-filter" key={key}>{key === 'status' ? '订单状态' : '付款状态'}<Select label={key === 'status' ? '订单状态' : '付款状态'} value={effectiveFilters[key]} onChange={value => changeFilters({ ...filters, [key]: value })}><option value="">全部</option>{(key === 'status' ? statuses : Object.entries(exportOptions.paymentStatus)).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</Select></label>)}
     {(effectiveFilters.status || effectiveFilters.paymentStatus) && <button type="button" className="text-button" onClick={() => changeFilters({ ...allCalendarFilters })}>清除筛选</button>}
   </div>;
@@ -121,7 +121,7 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     {workbench.isPending && !workbench.error ? <Loading /> : workbench.data ? <OrderTimeline key={`${selected}:${mode}:${effectiveFilters.status}:${resetVersion}`} orders={daily} view={view} account={account} status={effectiveFilters.status} createdOrderId={createdOrder?.orderId} onCreatedOrderVisible={showCreatedOrder} /> : null}
   </>;
   return <div className="calendar-workbench" ref={workbenchElement} style={{ minHeight: reservedHeight }}>
-    {createdOrder && <div className="notice created-order-notice" role="status">订单 #{createdOrder.orderNo} 已创建，{createdOrder.located ? '已定位到' : '正在定位到'}{Number(createdOrder.date.slice(5, 7))}月{Number(createdOrder.date.slice(8))}日</div>}
+    {createdOrder && <div className="notice created-order-notice" role="status">订单 #{createdOrder.orderNo} 已创建，{createdOrder.located ? '已定位到' : '正在定位到'}{businessDate(createdOrder.date)}</div>}
     <div className="page-heading workbench-heading"><div className="workbench-heading-actions"><button type="button" className="secondary compact" onClick={() => jumpDate(today())}>回到今天</button>{access.entry && <a className="primary" href="#/orders/new"><Plus />新建订单</a>}</div></div>
     <section className={`panel calendar-panel ${mode}`} aria-label={mode === 'week' ? '周历' : '月历'}>
       <div className="calendar-toolbar"><label className="date-jump"><span className="sr-only">跳转日期</span><DateInput label="跳转日期" value={selected} onChange={value => { if (value && workbenchDate(`#/?date=${value}`)) jumpDate(value); }} /></label><div className="period-actions"><button type="button" className="icon-button" aria-label={mode === 'week' ? '上一周' : '上个月'} onClick={() => onViewChange(shiftCalendarPeriod(view, -1))}><ArrowLeft /></button><button type="button" className="icon-button" aria-label={mode === 'week' ? '下一周' : '下个月'} onClick={() => onViewChange(shiftCalendarPeriod(view, 1))}><ArrowRight /></button></div></div>
@@ -130,14 +130,14 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
       <div className="calendar-scroll" ref={calendarElement}><div className="calendar-weekdays">{weekdays.map(day => <span key={day}>周{day}</span>)}</div><div className="calendar-weeks">{weeks.map(week => <Fragment key={week[0]}>
         <div className="calendar-grid" data-week={week[0]}>{week.map(date => <MonthDayCell key={date} date={date} orders={ordersByDay.get(date) || []} view={view} onSelect={selectDate} />)}</div>
         {mode === 'month' && <section id={`month-orders-${week[0]}`} className="month-expanded" aria-label={`${selected} 当日订单`} hidden={!view.expanded || !week.includes(selected)}>
-          {view.expanded && week.includes(selected) && <><div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" onClick={collapseMonthPanel} aria-expanded="true" aria-controls={`month-orders-${week[0]}`}><CaretUp />收起</button></div>{filtersControl}{timeline}</>}
+          {view.expanded && week.includes(selected) && <><div className="section-heading"><h2>{businessDate(selected)} 订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" onClick={collapseMonthPanel} aria-expanded="true" aria-controls={`month-orders-${week[0]}`}><CaretUp />收起</button></div>{filtersControl}{timeline}</>}
         </section>}
       </Fragment>)}</div></div>
       <button type="button" className="calendar-toggle" onClick={() => onViewChange(toggleCalendarMode(view))}>{mode === 'week' ? '展开本月日历' : '切换周历工作台'}{mode === 'week' ? <CaretDown /> : <CaretUp />}</button>
     </section>
     {mode === 'month' && !view.expanded && <div className="calendar-filter-bar">{filtersControl}</div>}
     {mode === 'week' && <>
-      <div className="section-heading"><h2>{Number(selected.slice(5, 7))} 月 {Number(selected.slice(8))} 日订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" aria-expanded={collapsedWeekDate !== selected} aria-controls="week-day-orders" onClick={() => setCollapsedWeekDate(collapsedWeekDate === selected ? null : selected)}>{collapsedWeekDate === selected ? <CaretDown /> : <CaretUp />}{collapsedWeekDate === selected ? '展开当日订单' : '收起当日订单'}</button></div>
+      <div className="section-heading"><h2>{businessDate(selected)} 订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" aria-expanded={collapsedWeekDate !== selected} aria-controls="week-day-orders" onClick={() => setCollapsedWeekDate(collapsedWeekDate === selected ? null : selected)}>{collapsedWeekDate === selected ? <CaretDown /> : <CaretUp />}{collapsedWeekDate === selected ? '展开当日订单' : '收起当日订单'}</button></div>
       <div id="week-day-orders" hidden={collapsedWeekDate === selected}>{filtersControl}{timeline}</div>
     </>}
     {(mode === 'week' || view.expanded) && <details className="panel daily-statistics">

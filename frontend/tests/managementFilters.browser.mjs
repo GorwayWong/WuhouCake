@@ -70,7 +70,7 @@ test('管理筛选双列布局、组合查询、导出、分页和详情返回�
     await page.getByRole('option', { name: '自提', exact: true }).click();
     await filters.getByRole('textbox', { name: '蛋糕尺寸（寸）', exact: true }).fill('8');
     const method = filters.locator('#management-orderingMethod');
-    for (const option of ['下单人', '小程序', '到店', '客服号', '其他']) {
+    for (const option of ['老板', '小程序', '到店', '客服号', '其他']) {
       await method.click(); await page.getByRole('option', { name: option, exact: true }).click();
     }
     await page.getByRole('button', { name: '查询', exact: true }).click();

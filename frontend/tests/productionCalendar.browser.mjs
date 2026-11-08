@@ -57,7 +57,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     const exact = page.getByRole('region', { name: date + ' 出品时间 16:10', exact: true });
     assert.deepEqual(await exact.locator('.order-summary-number').allTextContents(), ['#001', '#002']);
     assert.equal(await page.getByRole('region', { name: date + ' 出品时间 16:11', exact: true }).count(), 1);
-    assert.equal(await page.getByRole('region', { name: '2026-11-04 出品时间 16:10', exact: true }).locator('.timeline-date').innerText(), '2026-11-04');
+    assert.equal(await page.getByRole('region', { name: '2026-11-04 出品时间 16:10', exact: true }).locator('.timeline-date').innerText(), '11/04');
     assert.match(await page.locator(`[data-order-id="${unspecified.orderId}"]`).innerText(), /尺寸待确认[\s\S]*蛋糕胚待确认/);
     assert.equal(await page.getByRole('region', { name: '出品待定', exact: true }).count(), 1);
     assert.deepEqual(await page.locator(`[data-order-id="${nextTime.orderId}"] .production-card-specifications dt`).allTextContents(), ['规格']);
@@ -68,7 +68,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     await statistics.locator('summary').click();
     const cakeBases = statistics.getByRole('region', { name: '蛋糕胚统计' });
     await cakeBases.getByText('8 个', { exact: true }).first().waitFor();
-    assert.deepEqual(await statistics.getByRole('heading').allTextContents(), [date + ' 蛋糕胚统计']);
+    assert.deepEqual(await statistics.getByRole('heading').allTextContents(), ['11/05 蛋糕胚统计']);
     assert.doesNotMatch(await statistics.innerText(), /待配送|付款|查看明细/);
     assert.equal(requests.some(url => url.includes('payment-summary')), false);
     await page.locator('[data-control-label="订单状态"] button').click();

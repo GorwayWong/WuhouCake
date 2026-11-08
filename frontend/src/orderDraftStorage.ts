@@ -1,3 +1,4 @@
+import { paymentMethods } from './orderPayment.ts';
 import { newDraft, specificationFields, withoutCakeUnitPrices } from './orderForm.ts';
 import type { OrderDraft } from './orderForm.ts';
 import type { RecognitionFeedbackMap } from './recognition.ts';
@@ -28,6 +29,8 @@ const object = (value: unknown): value is Record<string, unknown> => Boolean(val
 const strings = (value: Record<string, unknown>, keys: string[]) => keys.every(key => typeof value[key] === 'string');
 function form(value: unknown): value is OrderDraft {
   if (!object(value) || !strings(value, ['customerName', 'phone', 'memberPhone', 'buyerName', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmount'])
+    || value.memberAmount !== undefined && typeof value.memberAmount !== 'string'
+    || value.paymentMethod !== undefined && (typeof value.paymentMethod !== 'string' || !Object.hasOwn(paymentMethods, value.paymentMethod))
     || value.orderingMethod !== undefined && typeof value.orderingMethod !== 'string'
     || value.orderingMethodCustom !== undefined && typeof value.orderingMethodCustom !== 'boolean'
     || value.finishTimeMode !== undefined && !['AUTO', 'MANUAL'].includes(String(value.finishTimeMode))
@@ -55,7 +58,10 @@ function request(value: unknown): value is CreateOrderRequest {
     && typeof value.fulfillment.requestedReceiveDate === 'string'
     && ['address', 'plannedHandoffAt', 'plannedFinishAt'].every(key => nullableString((value.fulfillment as Record<string, unknown>)[key]))
     && (value.fulfillment.requestedReceiveAt === undefined || nullableString(value.fulfillment.requestedReceiveAt))
-    && money(value.totalAmountCents) && Array.isArray(value.items) && value.items.length > 0
+    && money(value.totalAmountCents)
+    && (value.originalAmountCents === undefined || money(value.originalAmountCents))
+    && (value.memberAmountCents === undefined || money(value.memberAmountCents))
+    && (value.paymentMethod === undefined || typeof value.paymentMethod === 'string' && Object.hasOwn(paymentMethods, value.paymentMethod)) && Array.isArray(value.items) && value.items.length > 0
     && value.items.every(item => object(item) && (item.itemId === undefined || typeof item.itemId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.itemId)) && typeof item.name === 'string' && nullableString(item.productType)
       && Number.isInteger(item.quantity) && Number(item.quantity) > 0 && money(item.unitPriceCents) && money(item.memberPriceCents) && object(item.attributes));
 }

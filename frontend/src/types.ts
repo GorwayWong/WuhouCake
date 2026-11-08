@@ -32,9 +32,11 @@ export interface Detail extends OrderStatus {
   orderingMethod?: string | null;
   createdBy?: string | null; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
   orderId: string; orderNo: string; version: number; customer: Customer | null; fulfillment: Fulfillment;
+  originalAmountCents?: number | null; memberAmountCents?: number | null; paymentMethod?: string | null;
   totalAmountCents: number | null; paidAt?: string | null; createdAt: string | null; updatedAt: string; items: Item[];
 }
 export interface CreateOrderRequest {
+  originalAmountCents?: number | null; memberAmountCents?: number | null; paymentMethod?: string;
   orderingMethod?: string | null;
   creditedEmployeeId?: string;
   customer: Customer;
@@ -43,7 +45,7 @@ export interface CreateOrderRequest {
   totalAmountCents: number | null;
 }
 export type InformationChanges = Partial<Customer & Omit<Fulfillment, 'type'> & {
-  orderingMethod: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null; creditedEmployeeId: string;
+  originalAmountCents: number | null; memberAmountCents: number | null; orderingMethod: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null; creditedEmployeeId: string;
 }>;
 export interface InformationRequest { expectedVersion: number; changes: InformationChanges }
 export type ItemInput = CreateOrderRequest['items'][number];

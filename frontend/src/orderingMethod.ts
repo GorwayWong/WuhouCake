@@ -1,4 +1,4 @@
-export const orderingMethods = ['下单人', '小程序', '到店', '客服号'] as const;
+export const orderingMethods = ['老板', '小程序', '到店', '客服号'] as const;
 export interface OrderingMethodDraft { orderingMethod?: string; orderingMethodCustom?: boolean }
 export function customOrderingMethod(draft: OrderingMethodDraft): boolean {
   return Boolean(draft.orderingMethodCustom || draft.orderingMethod?.trim() && !orderingMethods.some(method => method === draft.orderingMethod?.trim()));

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { firstItemFormError, firstProductFormError, productFormLabels, productFormRows } from '../src/productFormLayout.ts';
 
 test('蛋糕字段按行排列，显示名称映射原字段，不混用文字规格', () => {
-  assert.deepEqual(productFormRows('CAKE', true), [['name'], ['size', 'quantity'], ['base', 'filling'], ['flavor'], ['message'], ['requirements']]);
+  assert.deepEqual(productFormRows('CAKE', true), [['name'], ['size', 'quantity'], ['base', 'flavor'], ['filling'], ['message'], ['requirements']]);
   assert.equal(productFormLabels.size, '规格（寸）'); assert.equal(productFormLabels.base, '蛋糕胚');
   assert.deepEqual(productFormRows('DRINK', true), [['name'], ['quantity'], ['unitPrice', 'memberPrice'], ['specification'], ['requirements']]);
   assert.deepEqual(productFormRows('DRINK'), [['name'], ['quantity'], ['specification'], ['requirements']]);

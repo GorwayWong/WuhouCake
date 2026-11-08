@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Calendar, CalendarCell, CalendarGrid, CalendarGridBody, CalendarGridHeader, CalendarHeaderCell, DateInput as Segments, DatePicker, DateSegment, Dialog, FieldError, Group, Heading, Popover } from 'react-aria-components';
 import { CalendarBlank, CaretLeft, CaretRight, X } from '@phosphor-icons/react';
-import { today } from './dates';
+import { businessDate, today } from './dates';
 import { completeDateTime, pickerDate, pickerText } from './dateControls';
 import { parseDate } from '@internationalized/date';
 import { Select } from './Select';
@@ -12,7 +12,7 @@ interface Props {
   label: string; id?: string; name?: string; type?: 'date' | 'datetime-local';
   value: string; onChange: (value: string, parts?: { date: string; time: string }) => void; required?: boolean; disabled?: boolean;
   resetTimeOnDateChange?: boolean; timeOptional?: boolean;
-  dateDisplay?: 'full' | 'month-day'; showTimeHint?: boolean; compactTime?: boolean;
+  dateDisplay?: 'full' | 'business'; showTimeHint?: boolean; compactTime?: boolean;
   'aria-invalid'?: boolean; 'aria-describedby'?: string;
 }
 function DateTimeInput({ value, onChange, label, name, id, required, disabled, resetTimeOnDateChange = false, timeOptional = false, dateDisplay, showTimeHint = true, compactTime = false, ...aria }: Props) {
@@ -49,7 +49,7 @@ export function DateInput({ label, type = 'date', value, onChange, required, dis
   if (type === 'datetime-local') return <DateTimeInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} timeOptional={timeOptional} resetTimeOnDateChange={resetTimeOnDateChange} dateDisplay={dateDisplay} showTimeHint={showTimeHint} compactTime={compactTime} {...aria} />;
   return <CalendarInput label={label} value={value} onChange={onChange} required={required} disabled={disabled} id={id} name={name} dateDisplay={dateDisplay} {...aria} />;
 }
-function CalendarInput({ label, value, onChange, required, disabled, id, name, dateDisplay, ...aria }: Props) {
+function CalendarInput({ label, value, onChange, required, disabled, id, name, dateDisplay = 'business', ...aria }: Props) {
   const [open, setOpen] = useState(false);
   const date = pickerDate(value, false);
   return <DatePicker className="date-field" aria-label={label} name={name} data-field-name={name} data-control-label={label}
@@ -58,7 +58,7 @@ function CalendarInput({ label, value, onChange, required, disabled, id, name, d
     placeholderValue={parseDate(today())} shouldForceLeadingZeros firstDayOfWeek="mon"
     isOpen={open} onOpenChange={setOpen} shouldCloseOnSelect>{({ state }) => <>
     <Group className="date-control" onKeyDownCapture={event => { if (event.key === 'Enter' && (event.target as HTMLElement).matches('[role="spinbutton"]')) { event.preventDefault(); setOpen(false); (event.target as HTMLElement).blur(); } }}>
-      {dateDisplay === 'month-day' ? <button type="button" className="date-month-day" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-label={date ? `${label}，${value}` : `选择${label}`} onClick={() => setOpen(true)}>{date ? `${date.month}月${date.day}日` : '选择日期'}</button> : <Segments className="date-segments">{segment => <DateSegment segment={segment} className="date-segment" />}</Segments>}
+      {dateDisplay === 'business' ? <button type="button" className="date-month-day" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-label={date ? `${label}，${value}` : `选择${label}`} onClick={() => setOpen(true)}>{date ? businessDate(value) : '选择日期'}</button> : <Segments className="date-segments">{segment => <DateSegment segment={segment} className="date-segment" />}</Segments>}
       <Button id={id} className="date-open" aria-label={`选择${label}`}><CalendarBlank size={20} /></Button>
     </Group>
     <Popover className="control-popover date-popover" placement="bottom start" offset={6} containerPadding={12}>

@@ -10,7 +10,7 @@ import { displayedStatusCode, statusNames } from './orderStates';
 export { statusNames } from './orderStates';
 
 export function statusLabel(order: OrderStatus) {
-  return statusNames[displayedStatusCode(order)] || order.status;
+  return statusNames[displayedStatusCode(order)] || '状态待更新';
 }
 export function Status({ order }: { order: OrderStatus }) {
   const status = displayedStatusCode(order);

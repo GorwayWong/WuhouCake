@@ -69,6 +69,8 @@ public class ApiErrors {
     ResponseEntity<ApiResponse<Void>> validation(Exception failure) { return response(400, "VALIDATION_FAILED"); }
     @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
     ResponseEntity<ApiResponse<Void>> uploadSize(Exception failure) { return response(413, "IMAGE_TOO_LARGE"); }
+    @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
+    ResponseEntity<ApiResponse<Void>> forbidden(org.springframework.security.access.AccessDeniedException failure) { return response(403, "FORBIDDEN"); }
     @ExceptionHandler(DataAccessException.class)
     ResponseEntity<ApiResponse<Void>> unavailable(DataAccessException failure) { return response(503, "SERVICE_UNAVAILABLE"); }
     @ExceptionHandler(NoResourceFoundException.class)

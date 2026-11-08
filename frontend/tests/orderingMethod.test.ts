@@ -5,6 +5,8 @@ import { defaultManagementDraft, managementQuery } from '../src/management.ts';
 import { createOrderRequest, newDraft } from '../src/orderForm.ts';
 
 test('下单方式常用值、自定义值和历史值保持原文，其他空白不能提交', () => {
+  assert.deepEqual(orderingMethods, ['老板', '小程序', '到店', '客服号']);
+  assert.equal(customOrderingMethod({ orderingMethod: '下单人' }), true);
   for (const orderingMethod of orderingMethods) assert.equal(customOrderingMethod({ orderingMethod }), false);
   assert.equal(customOrderingMethod({ orderingMethod: ' 微信 ' }), true);
   assert.equal(customOrderingMethod({ orderingMethod: '', orderingMethodCustom: true }), true);
@@ -17,7 +19,7 @@ test('下单方式常用值、自定义值和历史值保持原文，其他空�
 test('查询方式与其他条件独立、兼容旧视图，快捷模式忽略该条件', () => {
   const draft = defaultManagementDraft('2026-11-05');
   assert.equal(new URLSearchParams(managementQuery(draft)).has('orderingMethod'), false);
-  for (const orderingMethod of [...orderingMethods, " 微信%_'\\ "]) {
+  for (const orderingMethod of [...orderingMethods, '下单人', " 微信%_'\\ "]) {
     const query = new URLSearchParams(managementQuery({ ...draft, orderingMethod, productName: '蛋糕', keyword: '139' }));
     assert.equal(query.get('orderingMethod'), orderingMethod.trim());
     assert.equal(query.get('productName'), '蛋糕'); assert.equal(query.get('keyword'), '139');

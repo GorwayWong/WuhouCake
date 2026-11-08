@@ -23,6 +23,10 @@ public class OrderController {
     @PostMapping @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderViews.Detail> create(@Valid @RequestBody OrderCommands.Create command, Authentication authentication,
             @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        if (command.paymentMethod() != null && !"UNPAID".equals(command.paymentMethod())
+                && !account.access().allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_PAYMENT_UPDATE))
+            throw new org.springframework.security.access.AccessDeniedException("ORDER_PAYMENT_UPDATE required");
         return visible(orders.detail(creations.create(command, operator(authentication), requestId)), authentication);
     }
     @GetMapping("/{id}")

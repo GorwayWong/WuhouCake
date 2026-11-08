@@ -113,10 +113,13 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
                 row(info, "删除原因", order.deletion().reason()); row(info, "保留截止时间", time(order.deletion().expiresAt()));
             }
             row(info, "付款状态", label(order.paymentStatus()));
+            row(info, "支付方式", order.paymentMethod() == null ? (order.paymentStatus().equals("PAID") ? "已付款（方式未记录）" : "未付") : label(order.paymentMethod()));
             row(info, "客户姓名", customer.customerName()); row(info, "客户手机号", customer.phone()); row(info, "会员手机号", customer.memberPhone());
             row(info, "客户订购人", customer.buyerName()); row(info, "交付方式", label(plan.type().name())); row(info, "配送地址", plan.address());
             row(info, "取货时间", plan.pickupAt() == null ? plan.pickupDate() + " · 时刻待定" : time(plan.pickupAt()));
             row(info, "出品时间", time(plan.plannedFinishAt())); row(info, "约定总金额（元）", money(order.totalAmountCents()));
+            row(info, "原价（元）", money(order.originalAmountCents() == null && order.memberAmountCents() == null ? order.totalAmountCents() : order.originalAmountCents()));
+            row(info, "会员价（元）", money(order.memberAmountCents()));
             row(info, "录单时间", time(order.createdAt()));
             row(info, "下单员工工号", order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber());
             row(info, "下单员工", order.creditedEmployee() == null ? "未归属" : order.creditedEmployee().nickname());
@@ -207,6 +210,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
         return switch (code) {
             case "CAKE_BASE" -> "出胚"; case "LAYER" -> "夹层"; case "FROSTING" -> "抹面"; case "DECORATING" -> "装饰";
             case "WAITING_DELIVERY" -> "待配送"; case "COMPLETED" -> "已配送"; case "CANCELLED" -> "已取消";
+            case "UNIONPAY" -> "银联"; case "MEMBER_CARD" -> "扣卡"; case "BANK_TRANSFER" -> "对公转账"; case "SERVICE_WECHAT" -> "客服微信"; case "CASH" -> "现金";
             case "PAID" -> "已付款"; case "UNPAID" -> "未付款";
             case "DELIVERY" -> "配送上门"; case "PICKUP" -> "门店自提";
 case "CAKE", "DONUT", "CUPCAKE", "BREAD", "DRINK", "OTHER", "TEA_BREAK", "COOKIE", "SNACK", "READY_BAKERY" -> ProductCategories.label(code);

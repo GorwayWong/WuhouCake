@@ -1536,10 +1536,89 @@ class OrderIT {
         assertEquals(oldest, report.body.at("/data/items/0/orderId").asText());
         assertEquals(recent, report.body.at("/data/items/1/orderId").asText());
     }
+    @Test void frontDeskCannotWriteProductionButCanCreatePayAndHandoff() throws Exception {
+        var maker = staff(); var admin = new Client(); admin.login("0001", PASSWORD);
+        int number = 10;
+        for (String role : List.of("FRONT_DESK", "FRONT_DESK_SUPERVISOR", "FRONT_DESK_CLERK")) {
+            String employeeNumber = "FD" + number++;
+            var provisioned = admin.request("POST", "/api/admin/employees", Map.of("employeeNumber", employeeNumber, "nickname", "纯前厅", "jobRoles", List.of(role)));
+            assertEquals(201, provisioned.status);
+            String temporary = provisioned.body.at("/data/temporaryPassword").asText();
+            var front = new Client(); front.login(employeeNumber, temporary); front.changePassword(temporary); front.login(employeeNumber, PASSWORD);
+            assertEquals(200, front.request("GET", "/api/me", null).status);
+            var created = front.request("POST", "/api/orders", cakeOrder()); assertEquals(201, created.status);
+            String id = created.body.at("/data/orderId").asText();
+            assertEquals(200, front.request("GET", "/api/orders/" + id, null).status);
+            for (String action : List.of("COMPLETE_BASE", "ROLLBACK_PRODUCTION", "REOPEN_PRODUCTION")) {
+                assertEquals(403, front.request("POST", "/api/orders/" + id + "/production-actions", action(0, action)).status);
+            }
+            assertEquals(403, front.request("PATCH", "/api/orders/" + id + "/items/" + idForName(created.body.path("data"), "蛋糕") + "/production-status", Map.of("expectedVersion", 0, "completed", true)).status);
+            assertEquals(created.body.path("data"), query(front, "/api/orders/" + id));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Integer.class, id));
+            production(maker, id, 0, "COMPLETE_BASE"); production(maker, id, 1, "COMPLETE_LAYER");
+            var ready = finishProduction(maker, id, 2); long version = ready.path("version").asLong();
+            assertEquals(200, front.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", version, "paymentStatus", "PAID")).status);
+            assertEquals(200, front.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(version + 1, "COMPLETE_DELIVERY")).status);
+            var pending = front.request("POST", "/api/orders", cakeOrder()).body.path("data"); String cancelledId = pending.path("orderId").asText();
+            var cancelled = front.request("POST", "/api/orders/" + cancelledId + "/cancel", Map.of("expectedVersion", 0, "reason", "客户取消"));
+            assertEquals(200, cancelled.status);
+            long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, cancelledId);
+            assertEquals(403, front.request("POST", "/api/orders/" + cancelledId + "/restart", Map.of("expectedVersion", 1)).status);
+            assertEquals(cancelled.body.path("data"), query(front, "/api/orders/" + cancelledId));
+            assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, cancelledId));
+        }
+    }
+
+    @Test void orderQuotesPaymentMethodsPersistAtomicallyAndDriveReceiptTotals() throws Exception {
+        var staff = staff();
+        var input = new LinkedHashMap<String, Object>(cakeOrder());
+        input.put("originalAmountCents", 15800); input.put("memberAmountCents", 12800); input.put("totalAmountCents", 12800); input.put("paymentMethod", "CASH");
+        String key = UUID.randomUUID().toString();
+        var created = staff.request("POST", "/api/orders", input, key); assertEquals(201, created.status, created.body.toString());
+        var first = created.body.path("data"); String id = first.path("orderId").asText();
+        assertEquals(15800, first.path("originalAmountCents").asLong()); assertEquals(12800, first.path("memberAmountCents").asLong());
+        assertEquals(12800, first.path("totalAmountCents").asLong()); assertEquals("PAID", first.path("paymentStatus").asText());
+        assertEquals("CASH", first.path("paymentMethod").asText()); assertEquals(0, first.path("version").asLong());
+        String paidAt = first.path("paidAt").asText(); assertFalse(first.path("paidAt").isNull());
+        assertEquals(first, staff.request("POST", "/api/orders", input, key).body.path("data"));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+        var stored = jdbc.queryForMap("SELECT original_amount_cents,member_amount_cents,total_amount_cents,payment_method FROM cake_order WHERE id=?::uuid", id);
+        assertEquals(15800L, stored.get("original_amount_cents")); assertEquals(12800L, stored.get("member_amount_cents")); assertEquals("CASH", stored.get("payment_method"));
+        var method = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID", "paymentMethod", "BANK_TRANSFER"));
+        assertEquals(200, method.status); assertEquals(paidAt, method.body.at("/data/paidAt").asText());
+        assertEquals("BANK_TRANSFER", query(staff, "/api/orders/" + id).path("paymentMethod").asText());
+        var same = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID", "paymentMethod", "BANK_TRANSFER"));
+        assertEquals(1, same.body.at("/data/version").asLong());
+        assertEquals(409, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "UNPAID", "paymentMethod", "UNPAID")).status);
+        assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "UNPAID", "paymentMethod", "CASH")).status);
+        var original = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("originalAmountCents", 18000)));
+        assertEquals(200, original.status); assertEquals(12800, original.body.at("/data/totalAmountCents").asLong()); assertEquals(paidAt, original.body.at("/data/paidAt").asText());
+        var clearMember = new HashMap<String, Object>(); clearMember.put("memberAmountCents", null);
+        var quote = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 2, "changes", clearMember));
+        assertEquals(200, quote.status); assertEquals(18000, quote.body.at("/data/totalAmountCents").asLong());
+        assertEquals(18000, query(staff, "/api/orders/" + id).path("totalAmountCents").asLong());
+        String date = Instant.parse(paidAt).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString();
+        assertEquals("18000", query(staff, "/api/orders/workbench/receipt-summary?date=" + date).path("amountCents").asText());
+        var zero = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 3, "changes", Map.of("memberAmountCents", 0)));
+        assertEquals(200, zero.status); assertEquals(0, zero.body.at("/data/totalAmountCents").asLong());
+        assertEquals("0", query(staff, "/api/orders/workbench/receipt-summary?date=" + date).path("amountCents").asText());
+        assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 4, "paymentStatus", "UNPAID", "paymentMethod", "UNPAID")).status);
+        assertTrue(query(staff, "/api/orders/" + id).path("paidAt").isNull());
+        assertEquals(0, query(staff, "/api/orders/workbench/receipt-summary?date=" + date).path("orderCount").asInt());
+        var bad = new LinkedHashMap<>(input); bad.put("totalAmountCents", 15800);
+        assertEquals(400, staff.request("POST", "/api/orders", bad).status);
+        bad.put("totalAmountCents", 12800); bad.put("paymentMethod", "OTHER"); assertEquals(400, staff.request("POST", "/api/orders", bad).status);
+        doReturn(EmployeeAccess.of(Set.of(EmployeeAccess.Permission.ORDER_CREATE, EmployeeAccess.Permission.ORDER_CUSTOMER_READ, EmployeeAccess.Permission.ORDER_AMOUNT_READ))).when(employeeAccess).access(any());
+        assertEquals(403, staff.request("POST", "/api/orders", input).status);
+        reset(employeeAccess);
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='CREATED'", Integer.class, id));
+    }
+
     private Client staff() throws Exception {
         identity.initializeAdministrator("0001", "店长", INITIAL);
         var admin = new Client(); admin.login("0001", INITIAL); admin.changePassword(INITIAL); admin.login("0001", PASSWORD);
-        var provisioned = admin.request("POST", "/api/admin/employees", Map.of("employeeNumber", "0002", "nickname", "前台员工", "jobRoles", List.of("FRONT_DESK"), "systemRole", "STAFF"));
+        var provisioned = admin.request("POST", "/api/admin/employees", Map.of("employeeNumber", "0002", "nickname", "前台员工", "jobRoles", List.of("FRONT_DESK", "DECORATOR"), "systemRole", "STAFF"));
         assertEquals(201, provisioned.status, provisioned.body.toString());
         var staff = new Client(); staff.accountId = provisioned.body.at("/data/account/accountId").asText();
         String temporary = provisioned.body.at("/data/temporaryPassword").asText();
@@ -1713,10 +1792,12 @@ class OrderIT {
         void changePassword(String current) throws Exception {
             assertEquals(200, request("POST", "/api/me/password", Map.of("currentPassword", current, "newPassword", PASSWORD)).status);
         }
-        Result request(String method, String path, Object body) throws Exception {
+        Result request(String method, String path, Object body) throws Exception { return request(method, path, body, null); }
+        Result request(String method, String path, Object body, String idempotencyKey) throws Exception {
             boolean auth = path.startsWith("/api/auth/");
             if (auth && !method.equals("GET")) request("GET", "/api/auth/csrf", null);
             var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).header("Content-Type", "application/json");
+            if (idempotencyKey != null) builder.header("Idempotency-Key", idempotencyKey);
             if (method.equals("POST") && path.equals("/api/order-packages")) builder.header("Idempotency-Key", UUID.randomUUID().toString());
             if (token != null && !auth) builder.header("Authorization", "Bearer " + token);
             if (auth && !method.equals("GET")) cookies.getCookieStore().getCookies().stream().filter(cookie -> cookie.getName().equals("XSRF-TOKEN"))

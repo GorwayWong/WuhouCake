@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarHref, defaultCalendarView, readCalendarView, selectCalendarDate, jumpCalendarDate, shiftCalendarPeriod, toggleCalendarMode, groupOrdersByTime, latestOrderNote, compareCalendarOrders, overdueOrderCount } from '../src/calendarView.ts';
+import { timelinePartitions, calendarHref, defaultCalendarView, readCalendarView, selectCalendarDate, jumpCalendarDate, shiftCalendarPeriod, toggleCalendarMode, groupOrdersByTime, latestOrderNote, compareCalendarOrders, overdueOrderCount } from '../src/calendarView.ts';
 import { calendarOrderHref, orderHref, workspaceRoute } from '../src/routes.ts';
 import type { PendingOrder, Item, Note } from '../src/types.ts';
 
@@ -125,4 +125,12 @@ test('制作分钟分组保留准确时刻、跨日和同刻稳定排序，未�
   assert.equal(source[0].orderNo, '004');
   assert.deepEqual(groupOrdersByTime([], 'minute'), []);
   assert.deepEqual(groupOrdersByTime([order('a', '2026-11-05T15:59:59Z'), order('b', '2026-11-05T16:00:00Z')], 'minute').map(group => [group.date, group.time]), [['2026-11-05', '23:59'], ['2026-11-06', '00:00']]);
+});
+
+
+test('未知状态不静默丢单，默认展开只读核对分组', () => {
+  const orders = [{ orderId: 'one', status: 'FUTURE_STAGE' }, { orderId: 'two', status: 'FUTURE_STAGE' }] as Parameters<typeof timelinePartitions>[0];
+  const groups = timelinePartitions(orders, '');
+  assert.equal(groups.length, 1); assert.equal(groups[0].id, 'unknown');
+  assert.equal(groups[0].orders.length, 2); assert.equal(groups[0].expanded, true);
 });

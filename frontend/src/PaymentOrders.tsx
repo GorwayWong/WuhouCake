@@ -4,7 +4,7 @@ import { ArrowLeft } from '@phosphor-icons/react';
 import { api } from './api';
 import { ErrorNotice, Loading } from './ui';
 import { exactYuan } from './management';
-import { time } from './dates';
+import { businessDate, businessTime } from './dates';
 import { displayedStatusCode, statusNames } from './orderStates';
 import { orderHref } from './routes';
 import { paymentKinds, paymentListHref } from './paymentListRoute';
@@ -24,14 +24,14 @@ export function PaymentOrders({ route }: { route: PaymentListRoute }) {
   useReturnScroll(href, Boolean(query.data));
   return <section className="panel">
     <a className="back-link" href={from}><ArrowLeft />返回工作台</a>
-    <h1>{date} {paymentKinds[kind]}</h1>
+    <h1>{businessDate(date)} {paymentKinds[kind]}</h1>
     <p className="form-help">{kind === 'RECEIPT' ? '按付款时间，不限取货日期，含已取消订单。' : '按取货日期，不含已取消订单。'}金额为订单总额。</p>
     <ErrorNotice error={query.error} retry={() => void query.refetch()} />
     {query.isPending ? <Loading /> : query.data && <>
       <p>共 {query.data.total} 笔订单</p>
       <div className="table-scroll" tabIndex={0} role="region" aria-label="付款订单明细，可左右滚动">
         <table className="management-table"><thead><tr><th>订单号</th><th>下单时间</th><th>客户取货日期</th><th>付款时间</th><th>订单总金额</th><th>付款状态</th><th>订单状态</th></tr></thead>
-          <tbody>{query.data.orders.map(o => <tr key={o.orderId}><td><a href={orderHref(o.orderId, href)}>{o.orderNo}</a></td><td>{o.createdAt ? time(o.createdAt, true) : '—'}</td><td>{o.calendarDate}</td><td>{o.paidAt ? time(o.paidAt, true) : '未记录'}</td><td>{o.amountCents === null ? '未填写金额' : `¥${exactYuan(o.amountCents)}`}</td><td>{o.paymentStatus === 'PAID' ? '已付款' : '未付款'}</td><td>{statusNames[displayedStatusCode(o)]}</td></tr>)}</tbody>
+          <tbody>{query.data.orders.map(o => <tr key={o.orderId}><td><a href={orderHref(o.orderId, href)}>{o.orderNo}</a></td><td>{o.createdAt ? businessTime(o.createdAt) : '—'}</td><td>{businessDate(o.calendarDate)}</td><td>{o.paidAt ? businessTime(o.paidAt) : '未记录'}</td><td>{o.amountCents === null ? '未填写金额' : `¥${exactYuan(o.amountCents)}`}</td><td>{o.paymentStatus === 'PAID' ? '已付款' : '未付款'}</td><td>{statusNames[displayedStatusCode(o)]}</td></tr>)}</tbody>
         </table>
       </div>
       {!query.data.total && <p>暂无匹配订单。</p>}

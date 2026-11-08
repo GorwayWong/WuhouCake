@@ -63,10 +63,13 @@ public class OrderService {
             return OrderItem.create(itemId, item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
         }).toList();
         var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
-        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod());
+        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod());
         orders.create(order);
         var creation = new LinkedHashMap<String, Object>();
         creation.put("status", order.status()); creation.put("paymentStatus", order.paymentStatus());
+        creation.put("originalAmountCents", order.originalAmountCents()); creation.put("memberAmountCents", order.memberAmountCents());
+        creation.put("totalAmountCents", order.totalAmountCents()); creation.put("paymentMethod", order.paymentMethod());
+        creation.put("paidAt", order.paidAt() == null ? null : order.paidAt().toString());
         creation.put("creditedEmployeeId", employee.accountId().toString()); creation.put("creditedEmployeeName", employee.nickname());
         if (submissionId != null) { creation.put("source", "CUSTOMER_SUBMITTED"); creation.put("submissionId", submissionId.toString()); }
         activities.append(OrderActivity.append(order.id(), null, "CREATED", submissionId == null ? "创建订单" : "确认客户填单 · 来源：用户填写", creation, actor, now));
@@ -148,7 +151,7 @@ public class OrderService {
         var order = requireOrder(id);
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now();
-        var changed = order.changePaymentStatus(command.paymentStatus(), now);
+        var changed = order.changePaymentStatus(command.paymentStatus(), command.paymentMethod(), now);
         if (changed.isEmpty()) orders.verifyVersion(id, expected);
         else {
             orders.changePaymentStatus(order, expected);
@@ -297,6 +300,6 @@ public class OrderService {
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
                         order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()), order.paidAt(),
                 order.deletion() == null ? null : new OrderViews.Deletion(order.deletion().deletedAt(), order.deletion().deletedBy(),
-                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()), order.orderingMethod());
+                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()), order.orderingMethod(), order.originalAmountCents(), order.memberAmountCents(), order.paymentMethod());
     }
 }

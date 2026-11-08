@@ -39,7 +39,7 @@ public final class OrderViewAccess {
                 source.updatedAt(), source.items().stream().map(item -> new OrderViews.Item(item.itemId(), item.name(), item.productType(),
                         item.quantity(), amount && ProductCategories.hasUnitPrices(item.productType()) ? item.unitPriceCents() : null, amount && ProductCategories.hasUnitPrices(item.productType()) ? item.memberPriceCents() : null,
                         item.attributes(), item.productionStatus(), item.currentStageCode(), business ? item.createdAt() : null, item.updatedAt(), item.recentNotes())).toList(),
-                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business || ordering ? source.orderingMethod() : null);
+                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business || ordering ? source.orderingMethod() : null, amount ? source.originalAmountCents() : null, amount ? source.memberAmountCents() : null, amount ? source.paymentMethod() : null);
     }
 
     public static List<OrderQueryViews.CalendarOrder> calendar(List<OrderQueryViews.CalendarOrder> source, EmployeeAccess access) {

@@ -64,15 +64,15 @@ test('师傅可筛选待制作、返回原明细，两页随 SSE 同步，前厅
     });
     await page.reload();
     await page.getByRole('link', { name: '待制作查询' }).waitFor();
-    await page.getByRole('link', { name: '2026-11-01 1 笔' }).waitFor();
+    await page.getByRole('link', { name: '11/01 1 笔' }).waitFor();
     assert.equal(latestSummary?.get('to'), '2026-11-03');
     await page.locator('[data-control-label="制作工序"] button').click();
     await page.getByRole('option', { name: '夹层', exact: true }).click();
     await page.getByRole('button', { name: '查询', exact: true }).click();
-    await page.getByRole('link', { name: '2026-11-01 1 笔' }).click();
+    await page.getByRole('link', { name: '11/01 1 笔' }).click();
     await page.getByRole('link', { name: /草莓蛋糕/ }).click();
     await page.getByRole('link', { name: '返回待制作查询' }).click();
-    await page.getByRole('heading', { name: '2026-11-01订单明细' }).waitFor();
+    await page.getByRole('heading', { name: '11/01订单明细' }).waitFor();
     assert.equal(new URL(page.url().split('#')[1], base).searchParams.get('stage'), 'LAYER');
     const peer = await context.newPage();
     await peer.setViewportSize({ width: 1280, height: 900 });
@@ -85,17 +85,17 @@ test('师傅可筛选待制作、返回原明细，两页随 SSE 同步，前厅
     moved = true;
     publish('ORDER_INFORMATION_CHANGED');
     for (const client of [page, peer]) {
-      await client.getByRole('link', { name: '2026-11-02 1 笔' }).waitFor();
+      await client.getByRole('link', { name: '11/02 1 笔' }).waitFor();
       await client.getByText('暂无匹配订单。', { exact: true }).waitFor();
     }
     for (const client of [page, peer]) {
-      await client.getByRole('link', { name: '2026-11-02 1 笔' }).click();
+      await client.getByRole('link', { name: '11/02 1 笔' }).click();
       await client.getByRole('link', { name: /草莓蛋糕/ }).waitFor();
     }
     completed = true;
     publish('ORDER_PRODUCTION_CHANGED');
     for (const client of [page, peer]) {
-      await client.getByRole('link', { name: '2026-11-02 0 笔' }).waitFor();
+      await client.getByRole('link', { name: '11/02 0 笔' }).waitFor();
       await client.getByText('暂无匹配订单。', { exact: true }).waitFor();
       await client.getByRole('link', { name: '出品待定 1 笔' }).click();
       await client.getByRole('link', { name: /TEST-UNSCHEDULED/ }).waitFor();
