@@ -65,13 +65,13 @@ export function useOrderDraft() {
     setLocal(record); showCandidate(null);
     if (statusRef.current !== 'error' && statusRef.current !== 'conflict') saveStatus(record.updatedAt ? 'saved' : 'idle');
   }, [setLocal, showCandidate, saveStatus]);
-  const clear = useCallback(() => {
+  const clear = useCallback((retainImages = false) => {
     if (statusRef.current === 'conflict') return false;
     try {
       const current = draftRef.current || candidateRef.current?.record;
       slot.current?.remove(); setLocal(null); showCandidate(null); saveStatus('idle');
       const owner = slot.current;
-      if (current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(() => {
+      if (!retainImages && current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(() => {
         if (slot.current === owner) setCleanupWarning('旧草稿的本机图片未能清理，可能仍占用存储空间；不会影响新草稿保存。');
       });
       return true;
@@ -123,7 +123,7 @@ export function useOrderDraft() {
     try { return slot.current.read(); }
     catch (error) { failed(error); return { record: null, invalid: true }; }
   }, [failed]);
-  const restore = useCallback((record: OrderDraftRecord) => { persist(record); }, [persist]);
+  const restore = useCallback((record: OrderDraftRecord) => persist(record), [persist]);
   useEffect(() => {
     const flush = () => {
       if (entered.current && !candidateRef.current && draftRef.current) {

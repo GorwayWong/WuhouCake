@@ -127,14 +127,38 @@ export async function editImageQueue(accountId: string, orderId: string): Promis
   return rows.filter(row => row.accountId === accountId && !row.orderId && row.requestId.startsWith(`edit:${orderId}:`))
     .map(({ file: _file, ...row }) => row);
 }
-export async function commitEditImages(scope: ImageScope, order: Detail) {
-  const items = new Set(order.items.map(item => item.itemId));
+export async function validateEditImages(scope: ImageScope, order: Detail, expected: QueuedImage[]) {
+  if (!expected.length) return;
+  const rows = await Promise.all(expected.map(image => readDraftImage(scope, image.itemId, image.id)));
+  if (rows.some((row, index) => !row?.file || row.file.size !== expected[index].size))
+    throw new LocalImageError('暂存图片缺失，请重新选择或移除缺失图片后保存。');
+  if (expected.some(image => !order.items.some(item => item.itemId === image.itemId)))
+    throw new LocalImageError('图片对应商品已移除，请移除这张暂存图片。');
+}
+export async function commitEditImages(scope: ImageScope, order: Detail, expected: QueuedImage[]) {
+  if (!expected.length) return;
   await write(['files'], tx => {
     const store = tx.objectStore('files'), request = store.index('draft').getAll([scope.accountId, scope.requestId]);
     request.onsuccess = () => {
       const rows = request.result as StoredImage[];
-      if (rows.some(row => !items.has(row.itemId)) || order.deletion || order.deleted) { tx.abort(); return; }
-      for (const row of rows) store.put({ ...row, orderId: order.orderId });
+      if (expected.some(image => !rows.some(row => row.id === image.id && row.itemId === image.itemId && row.file?.size === image.size)) ||
+          expected.some(image => !order.items.some(item => item.itemId === image.itemId)) || order.deletion || order.deleted) { tx.abort(); return; }
+      for (const image of expected) {
+        const row = rows.find(row => row.id === image.id && row.itemId === image.itemId)!;
+        store.put({ ...row, orderId: order.orderId });
+      }
+    };
+  });
+}
+
+export async function removeEditImage(scope: ImageScope, image: QueuedImage) {
+  if (image.accountId !== scope.accountId || image.requestId !== scope.requestId || image.orderId)
+    throw new LocalImageError('只能移除本次编辑的暂存图片。');
+  await write(['files'], tx => {
+    const store = tx.objectStore('files'), request = store.get(key(scope, image.itemId, image.id));
+    request.onsuccess = () => {
+      const row = request.result as StoredImage | undefined;
+      if (row && !row.orderId && row.accountId === scope.accountId && row.requestId === scope.requestId) store.delete(row.key);
     };
   });
 }

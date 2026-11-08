@@ -77,3 +77,89 @@ test('取消清理失败保留暂存与编辑，重试取消才清理完成',asy
   assert.equal(await page.getByText('待保存：保存修改后上传',{exact:true}).count(),0);
  }finally{await context.close();}
 });
+
+test('普通编辑取消不依赖图片存储', async () => {
+ const {context,page}=await fixture();
+ try {
+  await page.getByRole('button',{name:'编辑资料',exact:true}).click();
+  await page.locator('#edit-customerName').fill('普通编辑');
+  await page.evaluate(()=>{ IDBDatabase.prototype.transaction=function(){throw new DOMException('denied','SecurityError');}; });
+  await page.locator('.information-form').getByRole('button',{name:'取消',exact:true}).click();
+  await until(async()=>await page.locator('.information-form').count()===0);
+ } finally {await context.close();}
+});
+test('双标签页及复制标签页不能访问原会话图片，刷新保留清单并发现缺文件', async () => {
+ const {context,page,select,model}=await fixture();
+ try {
+  await page.getByRole('button',{name:'编辑资料',exact:true}).click(); await select(['private.png']);
+  await page.getByText('待保存：保存修改后上传',{exact:true}).waitFor();
+  const copy = await page.evaluate(()=>Object.fromEntries(Object.entries(sessionStorage)));
+  const other=await context.newPage();
+  await other.goto(base+'/#/orders/'+orderId);
+  await other.evaluate(copy=>{for(const [k,v] of Object.entries(copy))sessionStorage.setItem(k,v);},copy);
+  await other.reload();await other.getByRole('button',{name:'编辑资料',exact:true}).click();
+  assert.equal(await other.getByText('private.png',{exact:true}).count(),0);
+  await other.locator('.information-form').getByRole('button',{name:'取消',exact:true}).click();
+  const rows=await page.evaluate(async()=>{
+   const db=await new Promise((resolve,reject)=>{const r=indexedDB.open('wuhou-order-images',1);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
+   return new Promise(resolve=>{const tx=db.transaction('files','readwrite'); const req=tx.objectStore('files').getAll();req.onsuccess=()=>{for(const row of req.result)tx.objectStore('files').delete(row.key);};tx.oncomplete=()=>resolve(req.result.map(r=>({size:r.file.size,name:r.name})));});
+  });
+  assert.equal(rows[0].size>0,true);
+  await page.reload();await page.getByRole('button',{name:'继续编辑并恢复图片',exact:true}).click();
+  await page.locator('.information-form').getByRole('button',{name:'保存修改',exact:true}).click();
+  await page.getByText('暂存图片缺失，请重新选择或移除缺失图片后保存。',{exact:false}).waitFor();
+  assert.equal(model.uploads.length,0);
+  await page.getByRole('button',{name:'移除暂存图片',exact:true}).click();
+  await page.locator('.information-form').getByRole('button',{name:'取消',exact:true}).click();
+  await until(async()=>await page.locator('.information-form').count()===0);
+ } finally {await context.close();}
+});
+
+for (const failure of ['503','network']) test(`退出${failure}保留草稿图片及真实文件`, async () => {
+ const {context,page,select,saved}=await createOrderFixture(browser,base);
+ try {
+  await select(['logout.png']);await until(async()=>Boolean((await saved())?.value.items[0].images?.length));
+  const before=await saved();
+  await context.route('**/api/auth/logout',r=>failure==='network'?r.abort('failed'):r.fulfill({status:503,json:{success:false,code:'SERVICE_UNAVAILABLE'}}));
+  page.on('dialog',d=>d.accept());await page.getByRole('button',{name:'退出登录',exact:true}).click();
+  await until(async()=>Boolean((await saved())?.value.items[0].images?.length));
+  const file=await page.evaluate(async record=>{
+   const image=record.value.items[0].images[0];const row=await (await import('/src/draftImages.ts')).readDraftImage(record,record.value.items[0].key,image.id);
+   return row?.file.size;
+  },before);
+  assert.ok(file>0);assert.equal((await saved()).requestId,before.requestId);
+ } finally {await context.close();}
+});
+
+test('资料保存后转队列事务失败，保留图片并仅重试图片', async () => {
+ const {context,page,model,select}=await fixture();let calls=0;
+ try {
+  await context.route(`**/api/orders/${orderId}/information`, async r=>{
+   calls++;model.order.customer.customerName=r.request().postDataJSON().changes.customerName;model.order.version++;
+   await page.evaluate(()=>{window.originalImageTransaction=IDBDatabase.prototype.transaction;IDBDatabase.prototype.transaction=function(stores,mode,...rest){if(mode==='readwrite')throw new DOMException('denied','SecurityError');return window.originalImageTransaction.call(this,stores,mode,...rest);};});
+   return r.fulfill({json:{success:true,data:model.order}});
+  });
+  await page.getByRole('button',{name:'编辑资料',exact:true}).click();
+  await page.locator('#edit-customerName').fill('已保存资料');await select(['partial.png']);
+  await page.getByText('待保存：保存修改后上传',{exact:true}).waitFor();
+  await page.locator('.information-form').getByRole('button',{name:'保存修改',exact:true}).click();
+  await page.getByText('资料已保存，但图片尚未进入上传队列。请核对资料后继续上传暂存图片。',{exact:false}).waitFor();
+  assert.equal(model.uploads.length,0);
+  await page.evaluate(()=>{IDBDatabase.prototype.transaction=window.originalImageTransaction;});
+  await page.getByRole('button',{name:'已核对资料，继续上传暂存图片',exact:true}).click();
+  await until(()=>model.images.length===1);assert.equal(calls,1);assert.equal(model.uploads.length,1);
+ } finally {await context.close();}
+});
+test('退出成功但图片清理失败，登录页提示且文件仍保留', async () => {
+ const {context,page,select,saved}=await createOrderFixture(browser,base);
+ try {
+  await select(['cleanup.png']);await until(async()=>Boolean((await saved())?.value.items[0].images?.length));
+  await context.route('**/api/auth/logout',r=>r.fulfill({json:{success:true,data:null}}));
+  await page.evaluate(()=>{window.originalImageTransaction=IDBDatabase.prototype.transaction;IDBDatabase.prototype.transaction=function(stores,mode,...rest){if(mode==='readwrite')throw new DOMException('denied','SecurityError');return window.originalImageTransaction.call(this,stores,mode,...rest);};});
+  page.on('dialog',d=>d.accept());await page.getByRole('button',{name:'退出登录',exact:true}).click();
+  await page.getByText('已退出登录，但本机图片未能清理，可能仍占用存储空间。',{exact:true}).waitFor();
+  assert.equal(await saved(),null);
+  const sizes=await page.evaluate(async()=>{const db=await new Promise(resolve=>{const r=indexedDB.open('wuhou-order-images',1);r.onsuccess=()=>resolve(r.result);});return new Promise(resolve=>{const r=db.transaction('files').objectStore('files').getAll();r.onsuccess=()=>resolve(r.result.map(row=>row.file.size));});});
+  assert.ok(sizes.some(size=>size>0));
+ } finally {await context.close();}
+});

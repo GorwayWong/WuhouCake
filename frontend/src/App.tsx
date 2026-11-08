@@ -1,3 +1,4 @@
+import { removeDraftImages } from './draftImages';
 import { VersionNotice } from './VersionNotice';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -255,9 +256,10 @@ export function App() {
     const retained = drafts.retained();
     const current = retained?.record;
     if ((current || retained?.invalid) && !window.confirm(`退出登录将清除未提交草稿，确定退出吗？${discardWarning(Boolean(current?.pending))}`)) return false;
-    if (!clearDraft()) { setNotice('本机草稿未能清除，请检查浏览器存储权限或草稿冲突后重试退出。'); return false; }
+    if (!clearDraft(true)) { setNotice('本机草稿未能清除，请检查浏览器存储权限或草稿冲突后重试退出。'); return false; }
     try { await session.logout(); }
-    catch (error) { if (current) drafts.restore(current); throw error; }
+    catch (error) { if (current && !drafts.restore(current)) setNotice('退出失败，草稿和图片仍保留在当前页面，但草稿未能重新保存到本机，请勿关闭页面。'); throw error; }
+    if (current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(() => setNotice('已退出登录，但本机图片未能清理，可能仍占用存储空间。'));
     leaveDraft();
     const view = defaultCalendarView(today());
     setCalendarView(view);
@@ -281,7 +283,7 @@ export function App() {
     {candidate && <OrderDraftRecovery candidate={candidate} blocked={draftStatus === 'conflict'} accept={drafts.accept} discard={discard} dismiss={() => { drafts.close(); window.location.hash = calendarHref(calendarView); }} />}
   </>;
   if (state.loading) return <Loading />;
-  if (!state.token || state.token.passwordChangeRequired) return <>{dirty && <div className="draft-session-notice notice" role="status">登录已失效，未提交草稿已保留。同一员工重新登录后可选择恢复；请留意本机保存是否成功。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={() => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
+  if (!state.token || state.token.passwordChangeRequired) return <>{notice && <p className="notice" role="status">{notice}</p>}{dirty && <div className="draft-session-notice notice" role="status">登录已失效，未提交草稿已保留。同一员工重新登录后可选择恢复；请留意本机保存是否成功。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={() => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
   return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && ['error', 'conflict'].includes(draftStatus)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftStatus === 'conflict'} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={creation.error || (!creating && draft?.pending ? pendingCreationError : null)} submitted={draft?.pending || creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftChange={(value, editor, retainRemovedImages) => {
     const saved = changeDraft(value, editor, retainRemovedImages);
     if (!draftRef.current?.pending) creation.reset();

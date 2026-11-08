@@ -1,4 +1,4 @@
-import { randomUUID } from './uuid';
+import { useEditImageSession } from './editImageSession';
 import type { EditImageActions } from './OrderImages';
 import { OrderPaymentEditor } from './OrderPaymentEditor';
 import { paymentMethods, paymentMethodLabel } from './orderPayment';
@@ -143,7 +143,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const [message, setMessage] = useState('');
   const [editing, setEditing] = useState<{ kind: 'information' | 'item' | 'amount'; order: Detail; itemId?: string; reopened?: Detail } | null>(null);
   const imageActions = useRef<EditImageActions | null>(null);
-  const imageSession = useRef(randomUUID());
+  const { session: imageSession, ready: imageSessionReady } = useEditImageSession(account?.accountId || '', id);
   const [discardingImages, setDiscardingImages] = useState(false);
   const [imageDraft, setImageDraft] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
@@ -162,6 +162,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const mutation = useMutation({
     retry: false,
     mutationFn: async ({ path, body, method = 'POST' }: { path: string; body: unknown; method?: string }) => {
+      if (['information', '', 'items', 'images-only'].includes(path)) await imageActions.current?.validate();
       if (path === 'images-only') return api<Detail>(`/orders/${id}`);
       if (path === 'notes') { await api(`/orders/${id}/${path}`, { method, body }); return null; }
       return api<Detail>(`/orders/${id}${path ? `/${path}` : ''}`, { method, body });
@@ -196,8 +197,8 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       }
       if (['information', '', 'items', 'images-only'].includes(variables.path)) {
         try { if (updated) await imageActions.current?.commit(updated); }
-        catch { setMessage('资料已保存，但图片尚未进入上传队列。请核对资料后继续上传暂存图片。'); }
-        setEditing(null); imageSession.current = randomUUID();
+        catch { setMessage('资料已保存，但图片尚未进入上传队列。请核对资料后继续上传暂存图片。'); setEditing(null); return; }
+        setEditing(null);
       }
       if (variables.path === 'notes') { setNote(''); setNoteResultUnknown(false); }
       if (variables.path === 'cancel') { setReason(''); setShowCancel(false); }
@@ -242,7 +243,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const cancelEdit = async () => {
     if (mutation.isPending || imageWriting || discardingImages) return;
     setDiscardingImages(true);
-    try { await imageActions.current?.discard(); setEditing(null); imageSession.current = randomUUID(); mutation.reset(); }
+    try { await imageActions.current?.discard(); setEditing(null); mutation.reset(); }
     catch { setMessage('暂存图片未能清理，编辑内容已保留，请重试取消。'); }
     finally { setDiscardingImages(false); }
   };
@@ -269,7 +270,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       </div>;
   const checklist = <><div className="production-checklist-heading"><h3>商品备齐</h3><span>{order.items.filter(item => item.productionStatus === 'COMPLETED').length} / {order.items.length} 项完成</span><button type="button" className="text-button" onClick={() => { const images = document.getElementById('order-reference-images'); images?.scrollIntoView({ behavior: 'instant', block: 'start' }); images?.focus({ preventScroll: true }); }}>查看参考图</button></div>
       <ul className="production-checklist">{order.items.map(item => <li key={item.itemId}><label className={item.productionStatus === 'COMPLETED' ? 'is-complete' : ''}>{hasPermissions(account, 'ORDER_PRODUCTION_UPDATE') && <input type="checkbox" aria-label={`${item.name}制作完成`} checked={item.productionStatus === 'COMPLETED'} disabled={blocked || !productionStatuses.includes(order.status) || !hasPermissions(account, 'ORDER_PRODUCTION_UPDATE')} onChange={event => mutation.mutate({ path: `items/${item.itemId}/production-status`, method: 'PATCH', body: { expectedVersion: order.version, completed: event.target.checked } })} />}<span>{item.name}</span><strong>×{item.quantity}</strong><small>{item.productionStatus === 'COMPLETED' ? '已完成' : '待完成'}</small></label></li>)}</ul></>;
-  const images = <OrderImages key={id} order={order} itemId={currentProduct?.itemId} accountId={account?.accountId || ''} canUpload={hasPermissions(account, 'ORDER_IMAGE_UPLOAD')} canDelete={hasPermissions(account, 'ORDER_IMAGE_DELETE')} productionView={access.productionView} compact={frontDeskView || access.productionView} editSession={editing ? imageSession.current : undefined} editActions={imageActions} recover={!readOnly && hasPermissions(account, 'ORDER_EDIT') ? session => { imageSession.current = session; setEditing({ kind: 'information', order }); mutation.reset(); } : undefined} blocked={mutation.isPending || discardingImages || Boolean(editing?.kind === 'item' && !editing.itemId) || exportWriting || readOnly} onDraftChange={imageDraftChange} onWritingChange={imageWritingChange} />;
+  const images = <OrderImages key={id} order={order} itemId={currentProduct?.itemId} accountId={account?.accountId || ''} canUpload={hasPermissions(account, 'ORDER_IMAGE_UPLOAD')} canDelete={hasPermissions(account, 'ORDER_IMAGE_DELETE')} productionView={access.productionView} compact={frontDeskView || access.productionView} ownerSession={imageSessionReady ? imageSession.current : undefined} editSession={editing ? imageSession.current : undefined} editActions={imageActions} recover={!readOnly && hasPermissions(account, 'ORDER_EDIT') ? session => { imageSession.current = session; setEditing({ kind: 'information', order }); mutation.reset(); } : undefined} blocked={mutation.isPending || discardingImages || Boolean(editing?.kind === 'item' && !editing.itemId) || exportWriting || readOnly} onDraftChange={imageDraftChange} onWritingChange={imageWritingChange} />;
   const paymentPanel = access.amounts && <section className="panel payment-panel"><div className="section-heading payment-heading"><h2>金额与付款</h2>{hasPermissions(account, 'ORDER_EDIT') && !editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'amount', order }); }}><NotePencil />修改金额</button>}</div>{editing?.kind === 'amount' && <div className="amount-editor"><InformationEdit amountOnly initial={editing.order} latest={order} busy={mutation.isPending || imageWriting || discardingImages || readOnly} error={mutation.variables?.path === 'information' ? mutation.error : null} onDirtyChange={editorDirtyChange} onSave={request => mutation.mutateAsync({ path: 'information', method: 'PATCH', body: request })} onSaveUnchanged={saveUnchanged} onCancel={() => void cancelEdit()} /></div>}<div><dl className="order-quoted-prices"><div><dt>原价</dt><dd>{money(order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null))}</dd></div><div><dt>会员价</dt><dd>{money(order.memberAmountCents ?? null)}</dd></div></dl><p className="muted">成交金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong>{order.paymentStatus === 'PAID' && <p className="form-help">付款时间：{order.paidAt ? businessTime(order.paidAt) : '历史付款时间未记录'}</p>}</div>{access.amounts && <Payment status={order.paymentStatus} />}<p>支付方式：{paymentMethodLabel(order.paymentMethod, order.paymentStatus)}</p>{hasPermissions(account, 'ORDER_PAYMENT_UPDATE') && <OrderPaymentEditor key={order.version} order={order} disabled={blocked} save={paymentMethod => mutation.mutate({ path: 'payment-status', method: 'PATCH', body: { expectedVersion: order.version, paymentStatus: paymentMethod === 'UNPAID' ? 'UNPAID' : 'PAID', paymentMethod } })} />}</section>;
   return <div className={`detail-page ${access.productionView ? 'production-detail' : ''}`}>
     {returnHref && <a className="back-link" href={returnHref} aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />{returnLabel}</a>}
