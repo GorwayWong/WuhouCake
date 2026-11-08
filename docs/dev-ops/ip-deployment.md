@@ -6,7 +6,7 @@
 
 部署目录为 `/home/tago-deploy/wuhou`，Compose 项目名为 `wuhou-ip`。前后端来自部署时的当前工作区，包含已有未提交的业务修改。未迁移本机业务数据库，线上为独立的新数据库。旧 TAGO 环境保持停止，其卷、证书和恢复资料保留。
 
-2026-11-06 当前版本为 `20261105T160046Z-role-ui`，镜像为 `wuhou-app:20261105T160046Z-role-ui`，前端目录为 `releases/20261105T160046Z-role-ui/dist`，对应代码提交 `bf15f04`。本次上线商品图片幂等上传、取货与出品时间、商品定价与表单、下单方式、经营筛选、客户批注及师傅日历；Flyway 新增 V23、V24，原 22 个迁移文件保持不变。部署前备份已通过完整恢复验证，29 张订单、90 个商品项、51 张图片和 3 个账号保持不变。部署与回滚记录见[本次发布验收](../verification/2026-11-06-role-ui-deployment.md)。
+2026-11-08 当前版本为 `20261108T032408Z-workflow`，镜像为 `wuhou-app:20261108T032408Z-workflow`，前端目录为 `releases/20261108T032408Z-workflow/dist`，对应源码提交 `420ab0f`。上线六节点订单流程、待制作查询和草稿放弃重试；Flyway 新增 V25，旧 24 个迁移文件保持不变。备份恢复及迁移试跑通过，切换前后 30 张订单、91 个商品项、51 张图片和 3 个账号保持不变。V25 不兼容旧订单状态，不能仅回退镜像。详见[本次发布验收及回滚约束](../verification/2026-11-08-workflow-draft-deployment.md)。
 
 配置来源为 [Compose](compose/docker-compose-ip.yml)、[Caddy 配置](compose/Caddyfile.ip)、[证书续期脚本](compose/renew-ip-certificate.sh)和[数据库备份脚本](compose/backup-ip-database.sh)。服务器的 `compose.yml` 对应仓库 Compose 文件；`.env` 包含随机数据库密码、运行 UID/GID、发布目录和镜像名，权限为 `600`，不纳入版本控制。当前网关复用服务器已有 Caddy 2.10.2 镜像，并创建独立的 Wuhou 容器。
 
