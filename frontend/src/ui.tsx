@@ -1,5 +1,5 @@
 import { hasUnitPrices } from './productTypes';
-import { CalendarBlank, Clock, Package, Truck, CheckCircle, XCircle, Circle, Stack, Cake } from '@phosphor-icons/react';
+import { CalendarBlank, Clock, Truck, CheckCircle, XCircle, Circle, Stack, Cake } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import type { Item, OrderStatus } from './types';
 import { time } from './dates';
@@ -13,11 +13,11 @@ export function statusLabel(order: OrderStatus) {
   return statusNames[displayedStatusCode(order)] || order.status;
 }
 export function Status({ order }: { order: OrderStatus }) {
-  const Icon = order.status === 'COMPLETED' ? CheckCircle : order.status === 'CANCELLED' ? XCircle
-    : order.status === 'DELIVERING' || order.status === 'WAITING_DELIVERY' ? Truck
-    : order.status === 'WAITING_PICKUP' ? Package : order.currentStageCode === 'LAYER_DONE' ? Stack
-    : order.currentStageCode === 'FROSTING_DONE' ? Cake : Clock;
-  return <span className={`badge status-${order.status.toLowerCase()}`}><Icon size={15} />{statusLabel(order)}</span>;
+  const status = displayedStatusCode(order);
+  const Icon = status === 'COMPLETED' ? CheckCircle : ['CANCELLED', 'DELETED'].includes(status) ? XCircle
+    : status === 'WAITING_DELIVERY' ? Truck : status === 'LAYER' ? Stack
+    : ['CAKE_BASE', 'FROSTING', 'DECORATING'].includes(status) ? Cake : Clock;
+  return <span className={`badge status-${status.toLowerCase()}`}><Icon size={15} />{statusLabel(order)}</span>;
 }
 export function Payment({ status }: { status: string | null }) {
   if (status == null) return null;
@@ -45,8 +45,13 @@ export function Product({ item, prices = false, children, actions, completion }:
     {children || <dl className="attributes">{Object.entries(item.attributes || {}).map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd>{valueText(value)}</dd></div>)}
       {prices && hasUnitPrices(item.productType) && <><div><dt>单价</dt><dd>{money(item.unitPriceCents)}</dd></div><div><dt>会员单价</dt><dd>{money(item.memberPriceCents)}</dd></div></>}
     </dl>}
-    {item.recentNotes.length > 0 && <div className="recent-notes"><h4>最近备注 <span>{item.recentNotes.length}</span></h4>
-      <ul>{item.recentNotes.map(note => <li key={note.id}><div className="note-meta"><strong>{note.actorNameSnapshot}</strong><time dateTime={note.createdAt}>{time(note.createdAt, true)}</time></div><p>{note.content}</p></li>)}</ul>
-    </div>}
+    <RecentProductNotes item={item} />
   </section>;
+}
+
+export function RecentProductNotes({ item }: { item: Item }) {
+  if (item.recentNotes.length === 0) return null;
+  return <div className="recent-notes"><h4>{item.name}的最近备注 <span>{item.recentNotes.length}</span></h4>
+    <ul>{item.recentNotes.map(note => <li key={note.id}><div className="note-meta"><strong>{note.actorNameSnapshot}</strong><time dateTime={note.createdAt}>{time(note.createdAt, true)}</time></div><p>{note.content}</p></li>)}</ul>
+  </div>;
 }

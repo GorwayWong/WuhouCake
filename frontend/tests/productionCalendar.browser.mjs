@@ -18,7 +18,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     await context.route('**/api/me', route => route.fulfill({ json: { success: true, data: { accountId: model.account, nickname: '测试师傅', jobRoles: roles, access: { permissions: model.permissions, uiCapabilities: [] } } } }));
     const firstId = crypto.randomUUID(), secondId = crypto.randomUUID();
     const item = { itemId: firstId, name: '草莓蛋糕', productType: 'CAKE', quantity: 2, attributes: { size: '6', base: '原味' }, recentNotes: [] };
-    const order = (orderNo, finish, patch = {}) => ({ orderId: crypto.randomUUID(), orderNo, calendarDate: date, status: 'WAITING_PRODUCTION', currentStageCode: null, paymentStatus: null,
+    const order = (orderNo, finish, patch = {}) => ({ orderId: crypto.randomUUID(), orderNo, calendarDate: date, status: 'CAKE_BASE', currentStageCode: null, paymentStatus: null,
       fulfillmentType: 'PICKUP', plannedHandoffAt: date + 'T18:00:00+08:00', requestedReceiveAt: date + 'T18:00:00+08:00', plannedFinishAt: finish,
       customer: null, address: null, items: [{ ...item }], latestNote: null, ...patch });
     const main = order('001', date + 'T16:10:35+08:00', { orderId, items: [item, { ...item, itemId: secondId, name: '第二个蛋糕', quantity: 1, attributes: { size: '12', base: '巧克力' } }],
@@ -66,13 +66,14 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     const statistics = page.locator('.daily-statistics');
     assert.equal(await statistics.getAttribute('open'), null);
     await statistics.locator('summary').click();
-    assert.equal(await statistics.locator('.production-order-count').innerText(), '6 笔');
-    assert.match(await statistics.innerText(), /蛋糕胚统计/);
+    const cakeBases = statistics.getByRole('region', { name: '蛋糕胚统计' });
+    await cakeBases.getByText('8 个', { exact: true }).first().waitFor();
+    assert.deepEqual(await statistics.getByRole('heading').allTextContents(), [date + ' 蛋糕胚统计']);
     assert.doesNotMatch(await statistics.innerText(), /待配送|付款|查看明细/);
     assert.equal(requests.some(url => url.includes('payment-summary')), false);
     await page.locator('[data-control-label="订单状态"] button').click();
-    await page.getByRole('option', { name: '待制作', exact: true }).click();
-    assert.equal(await statistics.locator('.production-order-count').innerText(), '6 笔');
+    await page.getByRole('option', { name: '出胚', exact: true }).click();
+    assert.ok(await cakeBases.getByText('8 个', { exact: true }).first().isVisible());
     await page.getByRole('button', { name: '清除筛选', exact: true }).click();
     const originalName = item.name;
     item.name = '超长蛋糕名称'.repeat(12); item.attributes.base = '原味与巧克力混合蛋糕胚'.repeat(8);
@@ -101,7 +102,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     await page.reload(); await card.waitFor(); await statistics.locator('summary').click();
     assert.equal(await page.locator('[data-control-label="付款状态"]').count(), 1);
     assert.equal(requests.some(url => url.includes('payment-summary')), false);
-    assert.doesNotMatch(await statistics.innerText(), /待配送|付款/);
+    assert.doesNotMatch(await statistics.innerText(), /订单汇总|订单总数|待配送|付款/);
     for (const jobRoles of [['BAKER', 'FRONT_DESK_CLERK'], ['STORE_MANAGER']]) {
       roles = jobRoles;
       model.permissions = ['ORDER_READ', 'ORDER_CUSTOMER_READ', 'ORDER_BUSINESS_DETAILS_READ', 'ORDER_AMOUNT_READ'];
@@ -115,6 +116,89 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     model.permissions = model.permissions.filter(permission => permission !== 'ORDER_AMOUNT_READ');
     await page.reload(); await card.locator('.front-card-times').waitFor();
     assert.equal(await page.locator('[data-control-label="付款状态"]').count(), 0);
+    const signal = Promise.withResolvers();
+    await context.route('**/api/orders/stream', async route => {
+      const change = await signal.promise;
+      await route.fulfill({ contentType: 'text/event-stream', body: `event: order.changed\ndata: ${JSON.stringify(change)}\n\n` }).catch(() => {});
+    });
+    model.order = { ...main, version: 0, fulfillment: { type: 'PICKUP', requestedReceiveDate: date }, currentStageCode: null };
+    await page.reload(); await card.waitFor();
+    const detailPage = await context.newPage();
+    await detailPage.goto(base + '/#/orders/' + orderId);
+    await detailPage.locator('[aria-current="step"]').getByText('出胚', { exact: true }).waitFor();
+    await page.locator('[data-control-label="订单状态"] button').click();
+    await page.getByRole('option', { name: '出胚', exact: true }).click();
+    main.status = 'LAYER';
+    model.order = { ...model.order, status: 'LAYER', version: 1 };
+    signal.resolve({ orderId, version: 1, changeType: 'ORDER_PRODUCTION_CHANGED' });
+    await detailPage.locator('[aria-current="step"]').getByText('夹层', { exact: true }).waitFor();
+    await card.waitFor({ state: 'hidden' });
+    await page.locator('[data-control-label="订单状态"] button').click();
+    await page.getByRole('option', { name: '夹层', exact: true }).click();
+    await card.locator('.badge').getByText('夹层', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
   } catch (error) { console.log('制作回归失败页面', page.url(), (await page.locator('body').innerText()).slice(0, 1800)); throw error; } finally { await context.close(); }
+});
+
+test('手机与桌面详情共用六节点，师傅切换商品可核对规格、要求和对应图片', async () => {
+  const { context, page, model, errors } = await createOrderFixture(browser, base);
+  try {
+    const originalPermissions = model.permissions;
+    await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
+    const cake = { itemId: crypto.randomUUID(), name: '草莓蛋糕', productType: 'CAKE', quantity: 1,
+      attributes: { size: '8', filling: '草莓', flavor: '动物奶油', message: '生日快乐', requirements: '请把文字写在蛋糕正中'.repeat(20) },
+      productionStatus: 'COMPLETED', recentNotes: [] };
+    const cookies = { itemId: crypto.randomUUID(), name: '手工饼干', productType: 'COOKIE', quantity: 3,
+      attributes: { specification: '每盒六片', requirements: '分袋装' }, productionStatus: 'IN_PROGRESS', recentNotes: [] };
+    model.order = { orderId, orderNo: 'TEST-SIX', version: 4, status: 'DECORATING', currentStageCode: null,
+      customer: { phone: '13800000000', buyerName: '测试订购人' }, orderingMethod: '到店',
+      fulfillment: { type: 'PICKUP', requestedReceiveDate: date, plannedFinishAt: date + 'T16:10:00+08:00' },
+      items: [cake, cookies], paymentStatus: 'UNPAID' };
+    model.images = [cake, cookies].map(item => ({ imageId: crypto.randomUUID(), orderId, itemId: item.itemId,
+      filename: item.name + '.png', contentType: 'image/png' }));
+    model.permissions = ['ORDER_READ', 'ORDER_PRODUCTION_UPDATE', 'ORDER_FULFILLMENT_UPDATE', 'ORDER_PHONE_READ', 'ORDER_ORDERING_DETAILS_READ'];
+    const open = async () => {
+      await page.goto('about:blank');
+      await page.goto(base + '/#/orders/' + orderId);
+      await page.getByRole('list', { name: '整单状态进度' }).waitFor();
+    };
+    const labels = ['出胚', '夹层', '抹面', '装饰', '待配送', '已配送'];
+    const checkProgress = async () => {
+      assert.deepEqual(await page.locator('.progress-label').allTextContents(), labels);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    };
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      await open();
+      await checkProgress();
+      assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '装饰');
+      assert.equal(await page.getByRole('button', { name: '完成装饰' }).isDisabled(), true);
+      const steps = await page.locator('.progress-step').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
+      assert.equal(new Set(steps).size, width < 600 ? 2 : 1);
+      if (width < 600) assert.deepEqual(steps.map(y => y === steps[0]), [true, true, true, true, false, false]);
+      const information = page.getByRole('region', { name: '订单信息' });
+      await information.getByText('测试订购人', { exact: true }).waitFor();
+      await information.getByText('到店', { exact: true }).waitFor();
+      await information.getByText(cake.attributes.requirements, { exact: true }).waitFor();
+      await information.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).waitFor();
+      await information.getByRole('button', { name: '下一个商品' }).click();
+      await information.getByText('每盒六片', { exact: true }).waitFor();
+      await information.getByRole('button', { name: '查看大图：手工饼干.png' }).waitFor();
+      assert.equal(await information.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).count(), 0);
+      assert.equal(await page.getByRole('heading', { name: '金额与付款' }).count(), 0);
+    }
+    model.order.status = 'WAITING_DELIVERY';
+    model.permissions = [...originalPermissions, 'ORDER_FULFILLMENT_UPDATE'];
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      await open();
+      await checkProgress();
+      assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '待配送');
+      await page.getByRole('button', { name: '确认自提' }).waitFor();
+      await page.getByRole('heading', { name: '金额与付款' }).waitFor();
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
 });

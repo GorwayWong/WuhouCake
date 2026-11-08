@@ -12,6 +12,7 @@ export function useOrderDraft() {
   const draftRef = useRef(draft);
   const [candidate, setCandidate] = useState<DraftCandidate | null>(null);
   const candidateRef = useRef(candidate);
+  const [cleanupWarning, setCleanupWarning] = useState('');
   const [status, setStatus] = useState<SaveStatus>('idle');
   const statusRef = useRef<SaveStatus>('idle');
   const slot = useRef<OrderDraftSlot | null>(null);
@@ -33,6 +34,7 @@ export function useOrderDraft() {
   const open = useCallback((id: string, canEnter: boolean, selectedDate?: string) => {
     if (accountId.current !== id || canEnter !== Boolean(slot.current)) {
       accountId.current = id; slot.current = canEnter ? new OrderDraftSlot(id) : null;
+      setCleanupWarning('');
       entered.current = false; setLocal(null); showCandidate(null); saveStatus('idle');
     }
     if (!canEnter || selectedDate === undefined || entered.current) return;
@@ -68,10 +70,13 @@ export function useOrderDraft() {
     try {
       const current = draftRef.current || candidateRef.current?.record;
       slot.current?.remove(); setLocal(null); showCandidate(null); saveStatus('idle');
-      if (current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(error => { if (accountId.current === current.accountId) failed(error); });
+      const owner = slot.current;
+      if (current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(() => {
+        if (slot.current === owner) setCleanupWarning('旧草稿的本机图片未能清理，可能仍占用存储空间；不会影响新草稿保存。');
+      });
       return true;
     }
-    catch (error) { failed(error); return false; }
+    catch (error) { if (error instanceof DraftConflict) failed(error); return false; }
   }, [setLocal, showCandidate, saveStatus, failed]);
   const discard = useCallback(() => {
     if (!clear()) return false;
@@ -143,5 +148,5 @@ export function useOrderDraft() {
       window.removeEventListener('pagehide', flush); window.removeEventListener('scroll', scroll); window.removeEventListener('storage', storage);
     };
   }, [persist, failed]);
-  return { draft, draftRef, candidate, status, open, accept, discard, clear, close, leave, change, changeEditor, prepare, created, rejected, retry, retained, restore };
+  return { draft, draftRef, candidate, status, cleanupWarning, open, accept, discard, clear, close, leave, change, changeEditor, prepare, created, rejected, retry, retained, restore };
 }

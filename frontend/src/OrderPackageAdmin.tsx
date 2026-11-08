@@ -124,7 +124,7 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
   const fieldError = (field: string) => errors[field] && <span className="field-error" id={`package-${field}-error`}>{errors[field]}</span>;
   const updateItem = (index: number, change: Partial<ItemDraft>) => { setItems(current => current.map((item, i) => i === index ? { ...item, ...change } : item)); setErrors({}); };
   return <div className="management-page package-management">
-    <div className="page-heading"><div><h1>{editing ? editing === 'new' ? '新建套餐' : '编辑套餐' : '套餐管理'}</h1><p className="muted">维护常用商品组合，供员工下单时快速填写。</p></div>{!editing && <button className="primary" disabled={disabled} onClick={() => void start('new')}><Plus />新建套餐</button>}</div>
+    <div className="page-heading"><div><h1>{editing ? editing === 'new' ? '新建套餐' : '编辑套餐' : '套餐管理'}</h1>{!editing && <p className="muted">维护常用商品组合，供员工下单时快速填写。</p>}</div>{!editing && <button className="primary" disabled={disabled} onClick={() => void start('new')}><Plus />新建套餐</button>}</div>
     {message && <div className="notice" role="status">{message}</div>}
     <ErrorNotice error={error} />
     {pending && <div className="notice error" role="alert"><p>操作结果尚未确认，输入已保留。请先确认原请求结果，再继续编辑。</p><button className="secondary" disabled={busy} onClick={() => void verify()}>{busy ? '正在确认…' : '确认原操作结果'}</button></div>}
@@ -138,8 +138,8 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
           body: { ...result.body, ...(editing === 'new' ? {} : { expectedVersion: editing.version }) }, key: creationKey.current, target: editing === 'new' ? undefined : editing });
       }}>
         <fieldset className="create-fields" disabled={disabled}>
-          <section className="panel create-group"><label className="package-name">套餐名称 *<input {...inputProps('name')} value={name} maxLength={80} placeholder="例如：下午茶套餐" onChange={event => { setName(event.target.value); setErrors({}); }} required />{fieldError('name')}</label><p className="form-help">名称用于下单时识别，不能与现有套餐重名。</p></section>
-          <section className="panel create-group"><div className="section-heading"><h2>商品内容</h2><span className="muted">{items.length} 项商品</span></div><p className="form-help">规格可留空，下单时补充。祝福语和特殊要求仅填写通用内容，客户专属内容请在下单时填写。</p>
+          <section className="panel create-group"><label className="package-name">套餐名称 *<input {...inputProps('name')} value={name} maxLength={80} placeholder="例如：下午茶套餐" onChange={event => { setName(event.target.value); setErrors({}); }} required />{fieldError('name')}</label></section>
+          <section className="panel create-group"><div className="section-heading"><h2>商品内容</h2><span className="muted">{items.length} 项商品</span></div>
             {items.map((item, index) => <div className="create-item" key={item.key}>
               <div className="create-item-heading product-form-heading"><h3>商品 {index + 1}</h3>
                 <label className="product-type-field" htmlFor={`package-items.${index}.productType`}><span className="form-field-heading">商品类型 *</span><ProductTypeSelect {...inputProps(`items.${index}.productType`)} value={item.productType} disabled={disabled} required onChange={value => updateItem(index, { productType: value })} />{fieldError(`items.${index}.productType`)}</label>

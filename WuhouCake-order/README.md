@@ -92,8 +92,8 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 - 公开字段名不变。新建以 plannedHandoffAt 优先，缺失回退 requestedReceiveAt，写入时同步两者和北京时间 requestedReceiveDate。PATCH 明确修改取货时间时同步旧收货字段；传 null 可清除时刻，日期仍必填。历史订单查询优先 plannedHandoffAt，再回退 requestedReceiveAt 和 requestedReceiveDate；日历、工作台、经营查询 RECEIVE、出货汇总和日期导出使用同一有效取货日期。无关编辑不回填，来源记录及审计保留原值。客户填单 Review 的 plannedFinishAt 为可空出品时间。
 - 员工手工创建订单固定归属当前认证员工；请求中的 creditedEmployeeId 保留兼容接收，但不用于选择手工订单归属。客户扫码填单确认仍使用核对时显式选择的在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
 - 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、requestedReceiveAt、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling/flavor 回落默认），结构值整体替换。
-- 所有状态都能更正资料和约定金额；商品仅在 WAITING_PRODUCTION/PROCESSING 可增删改，待交接须先退回其他已确认。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。
-- 制作中追加商品清空已确认的整单节点；任何商品的名称、类型、数量、规格变更会清除该项完成标记，已确认“其他”时退回抹面完成。价格修改及移除保留节点。商品变化不改约定总额和付款。DELIVERING 改为 PICKUP 时转 WAITING_PICKUP；完成/取消后的交接类型更正不重开状态。
+- 所有状态都能更正资料和约定金额；商品仅在出胚、夹层、抹面、装饰可增删改，待配送须先退回装饰。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。
+- 追加商品时回到出胚。若此前已进入下一工序，则重置有效商品的备齐勾选。商品名称、类型、数量或规格变更会清除该项备齐勾选。价格修改和移除保留节点。商品变化不改约定总额和付款。更正交接方式时，整单状态保持当前节点。
 
 写请求带当前 expectedVersion。有效资料、商品、付款和状态变化同事务推进一次版本并记录活动；无实际变化仍校验版本，但不写版本/时间/活动。409 CONCURRENT_MODIFICATION 后须读取最新状态人工复核，不自动重试。备注、图片不增加订单版本，仍会发 SSE；导出不记新活动、不发 SSE。
 
@@ -101,29 +101,23 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 
 ## 整单状态
 
-新订单 WAITING_PRODUCTION / UNPAID / version 0。付款仅 PAID/UNPAID，可双向手工更正，与制作互不阻断。UNPAID→PAID 自动记录 paidAt；重复确认不改时间，改回 UNPAID 清空时间。历史已付款且无日期的订单不推算日期。
+新订单为 `CAKE_BASE`、`UNPAID`、version 0。整单 `status` 表示当前节点，整单 `currentStageCode` 保留在 API 响应中，值为 `null`。付款可独立更正。UNPAID→PAID 记录 paidAt，重复确认保留原时间，改回 UNPAID 清空时间。历史已付款且无日期的订单仍显示时间未记录。
 
-| 制作 action | 前置条件 | 结果 |
+| 动作 | 当前节点 | 结果 |
 | --- | --- | --- |
-| START_PRODUCTION | WAITING_PRODUCTION | PROCESSING |
-| COMPLETE_LAYER | PROCESSING，节点为空 | LAYER_DONE |
-| COMPLETE_FROSTING | PROCESSING，节点 LAYER_DONE | FROSTING_DONE |
-| COMPLETE_OTHER | PROCESSING、FROSTING_DONE，所有有效商品已勾选完成 | OTHER_DONE |
-| COMPLETE_PRODUCTION | PROCESSING、OTHER_DONE，所有有效商品已勾选完成 | DELIVERY→WAITING_DELIVERY；PICKUP→WAITING_PICKUP |
-| REOPEN_PRODUCTION | WAITING_DELIVERY/WAITING_PICKUP | PROCESSING、OTHER_DONE，保留商品勾选 |
-| ROLLBACK_PRODUCTION | PROCESSING | OTHER_DONE→FROSTING_DONE→LAYER_DONE→无阶段→WAITING_PRODUCTION，每次只后退一步 |
+| `COMPLETE_BASE` | 出胚 `CAKE_BASE` | 夹层 `LAYER` |
+| `COMPLETE_LAYER` | 夹层 `LAYER` | 抹面 `FROSTING` |
+| `COMPLETE_FROSTING` | 抹面 `FROSTING` | 装饰 `DECORATING` |
+| `COMPLETE_DECORATION` | 装饰，全部有效商品已勾选备齐 | 待配送 `WAITING_DELIVERY` |
+| `COMPLETE_DELIVERY` | 待配送，方式为配送 | 已配送 `COMPLETED` |
+| `CONFIRM_PICKUP` | 待配送，方式为自提 | 已配送 `COMPLETED` |
+| `ROLLBACK_PRODUCTION` | 夹层、抹面或装饰 | 退回上一道工序 |
+| `REOPEN_PRODUCTION` | 待配送 | 退回装饰 |
+| `ROLLBACK_FULFILLMENT` | 已配送 | 退回待配送 |
 
-| 交付 action | 前置条件 | 结果 |
-| --- | --- | --- |
-| START_DELIVERY | DELIVERY / WAITING_DELIVERY | DELIVERING |
-| COMPLETE_DELIVERY | DELIVERY / DELIVERING | COMPLETED |
-| CONFIRM_PICKUP | PICKUP / WAITING_PICKUP | COMPLETED |
-| ROLLBACK_FULFILLMENT | DELIVERY / DELIVERING | WAITING_DELIVERY |
-| ROLLBACK_FULFILLMENT | COMPLETED | DELIVERY→DELIVERING；PICKUP→WAITING_PICKUP |
+普通回退保留商品备齐勾选。退回出胚或通过 `POST /api/orders/{id}/restart` 恢复已取消订单时，将所有有效商品重置为 `NOT_STARTED`。恢复要求 `ORDER_CANCEL` 和 `ORDER_PRODUCTION_UPDATE`，通过独立接口记录 `RESTART_CANCELLED` 活动。每次移动推进一次版本，事务内记录前后状态，提交后推送 SSE。取消需提供原因，适用于出胚到待配送的订单。
 
-所有订单向前均需经过夹层、抹面、“其他”，所有有效商品（含主蛋糕）逐项勾选完成后才能确认“其他”，之后才能完成整单制作。制作与交付均可逐节点后退，包含已完成订单；普通后退保留商品勾选，只有退回待制作时重置所有有效商品为 NOT_STARTED，并清空整单制作阶段。取消任一商品勾选后，已确认的“其他”退回抹面完成。已取消订单通过 restart 恢复至待制作，执行同样重置，保留原订单号、业务资料、付款及历史活动。restart 记录 RESTART_CANCELLED 动作，使用 ORDER_PRODUCTION_CHANGED 活动和 SSE；production-actions 不接受该动作，防止绕过双权限校验。
-
-历史订单使用相同相邻节点链，待交付退回其他已确认，不补写历史阶段活动或自动勾选商品；后续向前仍校验商品完成门禁。不批量回退已有订单。每次移动推进一次版本，事务内记录前后状态并在提交后通知。商品资料、金额、付款状态及 paidAt、图片和备注不因移动改变。制作完成后仍需配送／自提确认；无部分交付或自动派单。取消仍要求非空原因，已完成／已取消不能再次取消；后退和恢复取消单不要求原因。
+升级由 Flyway V25 执行。旧待制作和未确认夹层的制作中单转为出胚，旧已夹层转为抹面，旧已抹面和其他已确认转为装饰。旧待自提及配送中转为待配送。保留交接方式、原有勾选、付款、版本及审计记录。部署时暂停写入并备份数据库，迁移前后按状态核对数量，前后端同批切换并刷新已打开页面，再恢复写入。
 
 活动包含服务端操作者和昵称快照、时间、动作及适用的 before/after；按 createdAt/id 倒序分页。各商品最近三条 NOTE 只属于该商品，整单备注不混入。历史导出活动继续可读，不再新增。
 
@@ -131,7 +125,7 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 
 日历使用 [from,to)；工作台 date 按 Asia/Shanghai。非法、反向、空或超过 42 天的日历范围返回 400。统计字段：totalOrders 是全部订单数，createdOnDate 是门店当天创建数，deliveryDueOnDate 是该取货日尚未完成/取消的配送订单数，均不是商品数量统计。
 
-`GET /api/orders/workbench` 的 `includeMetrics` 默认 `true`，继续返回上述统计；显式传 `false` 时 `metrics` 为 `null`，只读取当天订单、商品及备注，不计算全局统计。日历工作台使用此轻量读取，页面统计来自当天筛选后的订单。
+`GET /api/orders/workbench` 的 `includeMetrics` 默认 `true`，继续返回上述统计；显式传 `false` 时 `metrics` 为 `null`，只读取当天订单、商品及备注，不计算全局统计。日历工作台使用此轻量读取，页面统计使用当天全部有效订单。
 
 每张工作台订单的 `latestNote` 返回整单及有效商品中最新的一条 NOTE，按 createdAt/id 倒序确定；没有备注时为 null。已移除商品的备注不参与卡片摘要，各商品的 recentNotes 仍只包含该商品最近三条备注。
 

@@ -39,7 +39,7 @@ class CustomerSubmissionServiceTest {
         var submission = new CustomerSubmission(id, UUID.randomUUID(), owner, "客服", 1, "PENDING", content,
                 new CustomerSubmission.Review(content, null, 100L, owner, NOW), null, NOW, NOW);
         when(store.find(eq(id), anyBoolean())).thenReturn(submission);
-        when(store.duplicates(submission)).thenReturn(List.of(record(0, "WAITING_PRODUCTION")));
+        when(store.duplicates(submission)).thenReturn(List.of(record(0, "CAKE_BASE")));
     }
     private CustomerSubmissions.Duplicate record(long version, String status) {
         return new CustomerSubmissions.Duplicate("ORDER", candidate, version, status, "001", "13800000000", LocalDate.of(2026, 11, 2), NOW,
@@ -59,7 +59,7 @@ class CustomerSubmissionServiceTest {
         String original = service.detail(id).duplicateCheckToken();
         assertEquals(original, service.detail(id).duplicateCheckToken());
         var submission = store.find(id, false);
-        when(store.duplicates(submission)).thenReturn(List.of(record(1, "WAITING_PRODUCTION")));
+        when(store.duplicates(submission)).thenReturn(List.of(record(1, "CAKE_BASE")));
         assertNotEquals(original, service.detail(id).duplicateCheckToken());
         assertRejected(new SubmissionCommands.Confirm(1, original, null));
         when(store.duplicates(submission)).thenReturn(List.of(record(1, "CANCELLED")));

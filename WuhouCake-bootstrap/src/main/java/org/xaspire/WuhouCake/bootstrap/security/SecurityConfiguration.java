@@ -80,7 +80,8 @@ public class SecurityConfiguration {
             authorize.requestMatchers(GET, "/api/orders/workbench/payment-summary").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
             authorize.requestMatchers(GET, "/api/orders/workbench/payment-orders").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
             authorize.requestMatchers(GET, "/api/orders/workbench/receipt-summary").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
-            authorize.requestMatchers(GET, "/api/orders/workbench/cake-bases").access(permissions(ORDER_READ));
+            authorize.requestMatchers(GET, "/api/orders/workbench/cake-bases",
+                    "/api/orders/workbench/production-summary", "/api/orders/workbench/production-orders").access(permissions(ORDER_READ));
             authorize.requestMatchers(GET, "/api/orders/{id}/notes").access(permissions(ORDER_READ));
             authorize.requestMatchers(GET, "/api/orders/{id}/customer-origin").access(permissions(ORDER_READ, ORDER_CUSTOMER_READ));
             authorize.requestMatchers(GET, "/api/orders/calendar", "/api/orders/workbench", "/api/orders/stream", "/api/orders/{id}",

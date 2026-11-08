@@ -114,8 +114,9 @@ public class OrderService {
         if (input == null) throw invalid();
         var item = OrderItem.create(input.itemId() == null ? ids.nextId() : input.itemId(), input.name(), input.productType(), input.quantity(), input.unitPriceCents(),
                 input.memberPriceCents(), input.attributes(), now);
+        var previousItems = order.activeItems();
         var changed = order.addItem(item, now);
-        orders.addItem(order, expected, item.itemId());
+        orders.addItem(order, expected, item.itemId(), changedProductionItems(previousItems, order));
         activities.append(OrderActivity.append(id, item.itemId(), "ITEM_ADDED", "追加商品", changed, actor, now));
         changed(order, item.itemId(), OrderChanged.Type.ITEM_ADDED);
         return detail(order, activities.recentItemNotes(id));
@@ -163,10 +164,7 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var previousItems = order.activeItems(); var now = now();
         var changed = order.applyProductionAction(command.action(), now);
-        var changedItemIds = previousItems.stream()
-                .filter(item -> !Objects.equals(item.productionStatus(), order.requireActiveItem(item.itemId()).productionStatus()))
-                .map(OrderItem::itemId).toList();
-        orders.changeProduction(order, expected, changedItemIds);
+        orders.changeProduction(order, expected, changedProductionItems(previousItems, order));
         activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "修改整单制作进度", changed, actor, now));
         changed(order, null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
         return detail(order, activities.recentItemNotes(id));
@@ -178,13 +176,15 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var previousItems = order.activeItems(); var now = now();
         var changed = order.restartCancelled(now);
-        var changedItemIds = previousItems.stream()
-                .filter(item -> !Objects.equals(item.productionStatus(), order.requireActiveItem(item.itemId()).productionStatus()))
-                .map(OrderItem::itemId).toList();
-        orders.changeProduction(order, expected, changedItemIds);
-        activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "恢复已取消订单至待制作", changed, actor, now));
+        orders.changeProduction(order, expected, changedProductionItems(previousItems, order));
+        activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "恢复已取消订单至出胚", changed, actor, now));
         changed(order, null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
         return detail(order, activities.recentItemNotes(id));
+    }
+    private static List<UUID> changedProductionItems(List<OrderItem> previousItems, Order order) {
+        return previousItems.stream()
+                .filter(item -> !Objects.equals(item.productionStatus(), order.requireActiveItem(item.itemId()).productionStatus()))
+                .map(OrderItem::itemId).toList();
     }
     @Transactional
     public OrderViews.Detail fulfillmentAction(UUID id, OrderCommands.FulfillmentAction command, Operator operator) {

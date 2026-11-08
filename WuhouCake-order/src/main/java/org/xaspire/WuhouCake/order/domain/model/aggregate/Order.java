@@ -19,7 +19,6 @@ public final class Order {
     private String status;
     private String paymentStatus;
     private Instant paidAt;
-    private String currentStageCode;
     private String orderingMethod;
     private CustomerContact customer;
     private FulfillmentPlan fulfillment;
@@ -63,10 +62,9 @@ public final class Order {
         this.orderingMethod = normalizeOrderingMethod(orderingMethod);
         this.id = Objects.requireNonNull(id); this.orderNo = requiredText(orderNo, 32);
         this.version = nonNegativeInteger(version); this.status = Objects.requireNonNull(status); this.paymentStatus = Objects.requireNonNull(paymentStatus);
-        if (currentStageCode != null && !Set.of("LAYER_DONE", "FROSTING_DONE", "OTHER_DONE").contains(currentStageCode)) throw invalid();
+        if (currentStageCode != null || !ORDER_STATUSES.contains(status)) throw invalid();
         this.paidAt = paidAt;
         this.deletion = deletion;
-        this.currentStageCode = currentStageCode;
         this.customer = Objects.requireNonNull(customer); this.fulfillment = Objects.requireNonNull(fulfillment);
         this.totalAmountCents = money(totalAmountCents); this.createdBy = Objects.requireNonNull(createdBy);
         this.creditedEmployee = creditedEmployee;
@@ -77,15 +75,15 @@ public final class Order {
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now) {
-        return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items);
+        return new Order(id, orderNo, 0, "CAKE_BASE", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items);
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee) {
-        return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items, creditedEmployee);
+        return new Order(id, orderNo, 0, "CAKE_BASE", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items, creditedEmployee);
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod) {
-        return new Order(id, orderNo, 0, "WAITING_PRODUCTION", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now,
+        return new Order(id, orderNo, 0, "CAKE_BASE", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now,
                 items, creditedEmployee, null, null, orderingMethod);
     }
     public String orderingMethod() { return orderingMethod; }
@@ -113,7 +111,7 @@ public final class Order {
         requireWritable();
         var previous = requireItem(itemId);
         if (previous.removed()) return Map.of();
-        if (!Set.of("WAITING_PRODUCTION", "PROCESSING").contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        if (!PRODUCTION_STATUSES.contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
         if (activeItems().size() == 1) throw invalid();
         requireNextVersion();
         var removed = previous.remove(now);
@@ -123,19 +121,23 @@ public final class Order {
     }
     public Map<String, Object> addItem(OrderItem item, Instant now) {
         requireWritable();
-        if (!Set.of("WAITING_PRODUCTION", "PROCESSING").contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        if (!PRODUCTION_STATUSES.contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
         if (item == null || items.containsKey(item.itemId()) || item.removed() || !"NOT_STARTED".equals(item.productionStatus())
                 || item.currentStageCode() != null) throw invalid();
         requireNextVersion();
-        var added = status.equals("PROCESSING") ? item.changeProductionStatus("IN_PROGRESS", now) : item;
-        var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
-        before.put("item", null); after.put("item", itemValues(added));
-        if (currentStageCode != null) {
-            before.put("currentStageCode", currentStageCode); after.put("currentStageCode", null);
+        var before = new LinkedHashMap<String, Object>();
+        var after = new LinkedHashMap<String, Object>();
+        before.put("item", null);
+        after.put("item", itemValues(item));
+        var itemChanges = status.equals("CAKE_BASE") ? List.<Map<String, Object>>of()
+                : updateItemStatuses("NOT_STARTED", false, now);
+        if (!status.equals("CAKE_BASE")) {
+            before.put("status", status);
+            after.put("status", "CAKE_BASE");
         }
-        var details = JsonSnapshot.object(Map.of("before", before, "after", after));
-        items.put(added.itemId(), added); currentStageCode = null; version++; updatedAt = now;
-        return details;
+        items.put(item.itemId(), item);
+        status = "CAKE_BASE"; version++; updatedAt = now;
+        return JsonSnapshot.object(Map.of("before", before, "after", after, "itemChanges", itemChanges));
     }
     private static Map<String, Object> itemValues(OrderItem item) {
         var values = new LinkedHashMap<>(item.businessValues());
@@ -146,7 +148,7 @@ public final class Order {
     public Map<String, Object> reviseItem(UUID itemId, Map<String, Object> changes, Instant now) {
         requireWritable();
         var previous = requireActiveItem(itemId);
-        if (!Set.of("WAITING_PRODUCTION", "PROCESSING").contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        if (!PRODUCTION_STATUSES.contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
         var revised = previous.revise(changes, now);
         var before = new LinkedHashMap<String, Object>();
         var after = new LinkedHashMap<String, Object>();
@@ -156,10 +158,11 @@ public final class Order {
         });
         if (before.isEmpty()) return Map.of();
         if (version == Long.MAX_VALUE) throw new OrderFailure("CONCURRENT_MODIFICATION");
-        if (status.equals("PROCESSING")
+        if ("COMPLETED".equals(previous.productionStatus())
                 && before.keySet().stream().anyMatch(Set.of("name", "productType", "quantity", "attributes")::contains)) {
             revised = revised.changeProductionStatus("IN_PROGRESS", now);
-            if ("OTHER_DONE".equals(currentStageCode)) currentStageCode = "FROSTING_DONE";
+            before.put("productionStatus", previous.productionStatus());
+            after.put("productionStatus", revised.productionStatus());
         }
         items.put(itemId, revised); version++; updatedAt = now;
         return JsonSnapshot.object(Map.of("before", before, "after", after));
@@ -202,9 +205,6 @@ public final class Order {
         var plan = new FulfillmentPlan(type, text(merged.get("address")), requestedDate, handoffAt,
                 changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt(), requestedAt);
         var total = money(merged.get("totalAmountCents"));
-        var nextStatus = status;
-        if (type != fulfillment.type() && Set.of("WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(status))
-            nextStatus = type == FulfillmentType.DELIVERY ? "WAITING_DELIVERY" : "WAITING_PICKUP";
         var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
         var nextMethod = normalizeOrderingMethod(merged.get("orderingMethod"));
         var nextValues = informationValues(contact, plan, total);
@@ -213,7 +213,6 @@ public final class Order {
         nextValues.forEach((field, value) -> {
             if (!Objects.equals(previous.get(field), value)) { before.put(field, previous.get(field)); after.put(field, value); }
         });
-        if (!status.equals(nextStatus)) { before.put("status", status); after.put("status", nextStatus); }
         if (before.containsKey("creditedEmployeeId")) {
             before.put("creditedEmployeeName", creditedEmployee == null ? "未归属" : creditedEmployee.nickname() + " · " + creditedEmployee.employeeNumber());
             after.put("creditedEmployeeName", employee == null ? "未归属" : employee.nickname() + " · " + employee.employeeNumber());
@@ -221,7 +220,7 @@ public final class Order {
         if (before.isEmpty()) return Map.of();
         requireNextVersion();
         var details = JsonSnapshot.object(Map.of("before", before, "after", after));
-        orderingMethod = nextMethod; customer = contact; fulfillment = plan; totalAmountCents = total; status = nextStatus; creditedEmployee = employee; version++; updatedAt = now;
+        orderingMethod = nextMethod; customer = contact; fulfillment = plan; totalAmountCents = total; creditedEmployee = employee; version++; updatedAt = now;
         return details;
     }
     private static Map<String, Object> informationValues(CustomerContact customer, FulfillmentPlan fulfillment, Long total) {
@@ -267,124 +266,104 @@ public final class Order {
     public Map<String, Object> applyProductionAction(String action, Instant now) {
         requireWritable();
         if (action == null) throw invalid();
-        String nextStatus = status, nextStage = currentStageCode, itemStatus = null;
-        switch (action) {
-            case "START_PRODUCTION" -> {
-                requireProductionState(status.equals("WAITING_PRODUCTION"));
-                nextStatus = "PROCESSING"; itemStatus = "IN_PROGRESS";
+        String nextStatus = switch (action) {
+            case "COMPLETE_BASE" -> {
+                requireProductionState(status.equals("CAKE_BASE"));
+                yield "LAYER";
             }
             case "COMPLETE_LAYER" -> {
-                requireProductionState(status.equals("PROCESSING") && currentStageCode == null);
-                nextStage = "LAYER_DONE";
+                requireProductionState(status.equals("LAYER"));
+                yield "FROSTING";
             }
             case "COMPLETE_FROSTING" -> {
-                requireProductionState(status.equals("PROCESSING") && "LAYER_DONE".equals(currentStageCode));
-                nextStage = "FROSTING_DONE";
+                requireProductionState(status.equals("FROSTING"));
+                yield "DECORATING";
             }
-            case "COMPLETE_OTHER" -> {
-                requireProductionState(status.equals("PROCESSING") && "FROSTING_DONE".equals(currentStageCode));
+            case "COMPLETE_DECORATION" -> {
+                requireProductionState(status.equals("DECORATING"));
                 if (!allItemsComplete()) throw new OrderFailure("OTHER_ITEMS_INCOMPLETE");
-                nextStage = "OTHER_DONE";
-            }
-            case "COMPLETE_PRODUCTION" -> {
-                requireProductionState(status.equals("PROCESSING") && "OTHER_DONE".equals(currentStageCode));
-                if (!allItemsComplete()) throw new OrderFailure("OTHER_ITEMS_INCOMPLETE");
-                nextStatus = fulfillment.type() == FulfillmentType.DELIVERY ? "WAITING_DELIVERY" : "WAITING_PICKUP";
-                itemStatus = "COMPLETED";
+                yield "WAITING_DELIVERY";
             }
             case "REOPEN_PRODUCTION" -> {
-                requireProductionState(Set.of("WAITING_DELIVERY", "WAITING_PICKUP").contains(status));
-                nextStatus = "PROCESSING"; nextStage = "OTHER_DONE";
+                requireProductionState(status.equals("WAITING_DELIVERY"));
+                yield "DECORATING";
             }
-            case "ROLLBACK_PRODUCTION" -> {
-                requireProductionState(status.equals("PROCESSING"));
-                if (currentStageCode == null) {
-                    nextStatus = "WAITING_PRODUCTION"; itemStatus = "NOT_STARTED";
-                } else {
-                    nextStage = switch (currentStageCode) {
-                        case "OTHER_DONE" -> "FROSTING_DONE";
-                        case "FROSTING_DONE" -> "LAYER_DONE";
-                        case "LAYER_DONE" -> null;
-                        default -> throw invalid();
-                    };
-                }
-            }
+            case "ROLLBACK_PRODUCTION" -> switch (status) {
+                case "LAYER" -> "CAKE_BASE";
+                case "FROSTING" -> "LAYER";
+                case "DECORATING" -> "FROSTING";
+                default -> throw new OrderFailure("INVALID_PRODUCTION_TRANSITION");
+            };
             default -> throw invalid();
-        }
-        return changeProduction(action, nextStatus, nextStage, itemStatus, now);
+        };
+        return changeProduction(action, nextStatus, now);
     }
     public Map<String, Object> restartCancelled(Instant now) {
         requireWritable();
         requireProductionState(status.equals("CANCELLED"));
-        return changeProduction("RESTART_CANCELLED", "WAITING_PRODUCTION", null, "NOT_STARTED", now);
+        return changeProduction("RESTART_CANCELLED", "CAKE_BASE", now);
     }
-    private Map<String, Object> changeProduction(String action, String nextStatus, String nextStage, String itemStatus, Instant now) {
+    private Map<String, Object> changeProduction(String action, String nextStatus, Instant now) {
         requireNextVersion();
-        var before = productionValues();
-        var itemChanges = new ArrayList<Map<String, Object>>();
-        if (itemStatus != null) {
-            for (var item : activeItems()) {
-                var changed = item.changeProductionStatus(itemStatus, now);
-                if (changed.equals(item)) continue;
-                items.put(item.itemId(), changed);
-                itemChanges.add(Map.of("itemId", item.itemId().toString(), "before", Map.of("productionStatus", item.productionStatus()),
-                        "after", Map.of("productionStatus", changed.productionStatus())));
-            }
+        var before = status;
+        var itemChanges = nextStatus.equals("CAKE_BASE") ? updateItemStatuses("NOT_STARTED", false, now)
+                : action.equals("COMPLETE_BASE") ? updateItemStatuses("IN_PROGRESS", true, now) : List.<Map<String, Object>>of();
+        status = nextStatus; version++; updatedAt = now;
+        return JsonSnapshot.object(Map.of("action", action, "before", Map.of("status", before),
+                "after", Map.of("status", status), "itemChanges", itemChanges, "workflowVersion", 2));
+    }
+    private List<Map<String, Object>> updateItemStatuses(String itemStatus, boolean onlyNotStarted, Instant now) {
+        var changes = new ArrayList<Map<String, Object>>();
+        for (var item : activeItems()) {
+            if (onlyNotStarted && !"NOT_STARTED".equals(item.productionStatus())) continue;
+            var changed = item.changeProductionStatus(itemStatus, now);
+            if (changed.equals(item)) continue;
+            items.put(item.itemId(), changed);
+            changes.add(Map.of("itemId", item.itemId().toString(), "before", Map.of("productionStatus", item.productionStatus()),
+                    "after", Map.of("productionStatus", changed.productionStatus())));
         }
-        status = nextStatus; currentStageCode = nextStage; version++; updatedAt = now;
-        return JsonSnapshot.object(Map.of("action", action, "before", before, "after", productionValues(), "itemChanges", itemChanges));
+        return changes;
     }
     public Map<String, Object> applyFulfillmentAction(String action, Instant now) {
         requireWritable();
         if (action == null) throw invalid();
-        String nextStatus;
-        switch (action) {
-            case "START_DELIVERY" -> {
-                requireFulfillmentState(fulfillment.type() == FulfillmentType.DELIVERY && status.equals("WAITING_DELIVERY"));
-                nextStatus = "DELIVERING";
-            }
+        String nextStatus = switch (action) {
             case "COMPLETE_DELIVERY" -> {
-                requireFulfillmentState(fulfillment.type() == FulfillmentType.DELIVERY && status.equals("DELIVERING"));
-                nextStatus = "COMPLETED";
+                requireFulfillmentState(fulfillment.type() == FulfillmentType.DELIVERY && status.equals("WAITING_DELIVERY"));
+                yield "COMPLETED";
             }
             case "CONFIRM_PICKUP" -> {
-                requireFulfillmentState(fulfillment.type() == FulfillmentType.PICKUP && status.equals("WAITING_PICKUP"));
-                nextStatus = "COMPLETED";
+                requireFulfillmentState(fulfillment.type() == FulfillmentType.PICKUP && status.equals("WAITING_DELIVERY"));
+                yield "COMPLETED";
             }
             case "ROLLBACK_FULFILLMENT" -> {
-                requireFulfillmentState(status.equals("COMPLETED") || status.equals("DELIVERING") && fulfillment.type() == FulfillmentType.DELIVERY);
-                nextStatus = status.equals("DELIVERING") ? "WAITING_DELIVERY"
-                        : fulfillment.type() == FulfillmentType.DELIVERY ? "DELIVERING" : "WAITING_PICKUP";
+                requireFulfillmentState(status.equals("COMPLETED"));
+                yield "WAITING_DELIVERY";
             }
             default -> throw invalid();
-        }
+        };
         requireNextVersion();
         var before = status; status = nextStatus; version++; updatedAt = now;
-        return JsonSnapshot.object(Map.of("action", action, "before", Map.of("status", before), "after", Map.of("status", status)));
+        return JsonSnapshot.object(Map.of("action", action, "before", Map.of("status", before),
+                "after", Map.of("status", status), "workflowVersion", 2));
     }
     public Map<String, Object> cancel(String reason, Instant now) {
         requireWritable();
         requiredText(reason, Integer.MAX_VALUE);
-        if (!Set.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING").contains(status))
+        if (!PRODUCTION_STATUSES.contains(status) && !status.equals("WAITING_DELIVERY"))
             throw new OrderFailure("ORDER_NOT_CANCELLABLE");
         requireNextVersion();
         var before = status; status = "CANCELLED"; version++; updatedAt = now;
-        return JsonSnapshot.object(Map.of("before", Map.of("status", before), "after", Map.of("status", status)));
-    }
-    private Map<String, Object> productionValues() {
-        var values = new LinkedHashMap<String, Object>();
-        values.put("status", status); values.put("currentStageCode", currentStageCode);
-        return values;
+        return JsonSnapshot.object(Map.of("before", Map.of("status", before), "after", Map.of("status", status), "workflowVersion", 2));
     }
     public Map<String, Object> completeSimpleItem(UUID itemId, boolean completed, Instant now) {
         requireWritable();
-        requireProductionState(status.equals("PROCESSING"));
+        requireProductionState(PRODUCTION_STATUSES.contains(status));
         var item = requireActiveItem(itemId);
         var changed = item.changeProductionStatus(completed ? "COMPLETED" : "IN_PROGRESS", now);
         if (changed.equals(item)) return Map.of();
         requireNextVersion();
         items.put(itemId, changed);
-        if (!completed && "OTHER_DONE".equals(currentStageCode)) currentStageCode = "FROSTING_DONE";
         version++; updatedAt = now;
         return JsonSnapshot.object(Map.of("itemId", itemId.toString(), "before", Map.of("productionStatus", item.productionStatus()),
                 "after", Map.of("productionStatus", changed.productionStatus())));
@@ -406,7 +385,7 @@ public final class Order {
     public String status() { return status; }
     public String paymentStatus() { return paymentStatus; }
     public Instant paidAt() { return paidAt; }
-    public String currentStageCode() { return currentStageCode; }
+    public String currentStageCode() { return null; }
     public CustomerContact customer() { return customer; }
     public FulfillmentPlan fulfillment() { return fulfillment; }
     public Long totalAmountCents() { return totalAmountCents; }

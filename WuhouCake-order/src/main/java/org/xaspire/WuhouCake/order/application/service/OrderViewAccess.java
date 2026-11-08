@@ -24,8 +24,12 @@ public final class OrderViewAccess {
         if (source == null) return null;
         boolean customer = access.allows(ORDER_CUSTOMER_READ), amount = access.allows(ORDER_AMOUNT_READ);
         boolean business = access.allows(ORDER_BUSINESS_DETAILS_READ);
-        var contact = customer ? source.customer() : access.allows(ORDER_PHONE_READ) && source.customer() != null
-                ? new org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer(null, source.customer().phone(), null, null) : null;
+        boolean phone = access.allows(ORDER_PHONE_READ), ordering = access.allows(ORDER_ORDERING_DETAILS_READ);
+        var contact = source.customer();
+        if (!customer && contact != null) {
+            contact = phone || ordering ? new org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer(
+                    null, phone ? contact.phone() : null, null, ordering ? contact.buyerName() : null) : null;
+        }
         var fulfillment = source.fulfillment();
         if (!customer && fulfillment != null) fulfillment = new Fulfillment(fulfillment.type(), null,
                 fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt());
@@ -35,7 +39,7 @@ public final class OrderViewAccess {
                 source.updatedAt(), source.items().stream().map(item -> new OrderViews.Item(item.itemId(), item.name(), item.productType(),
                         item.quantity(), amount && ProductCategories.hasUnitPrices(item.productType()) ? item.unitPriceCents() : null, amount && ProductCategories.hasUnitPrices(item.productType()) ? item.memberPriceCents() : null,
                         item.attributes(), item.productionStatus(), item.currentStageCode(), business ? item.createdAt() : null, item.updatedAt(), item.recentNotes())).toList(),
-                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business ? source.orderingMethod() : null);
+                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business || ordering ? source.orderingMethod() : null);
     }
 
     public static List<OrderQueryViews.CalendarOrder> calendar(List<OrderQueryViews.CalendarOrder> source, EmployeeAccess access) {

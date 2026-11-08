@@ -9,6 +9,7 @@ export function orderAccess(account: Pick<Account, 'access'> | undefined) {
   const business = hasPermissions(account, 'ORDER_BUSINESS_DETAILS_READ');
   return {
     customer, amounts, business,
+    ordering: business || hasPermissions(account, 'ORDER_ORDERING_DETAILS_READ'),
     phone: customer || hasPermissions(account, 'ORDER_PHONE_READ'),
     delete: hasPermissions(account, 'ORDER_DELETE'),
     deleted: hasPermissions(account, 'ORDER_DELETED_READ'),

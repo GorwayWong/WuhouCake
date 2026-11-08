@@ -5,9 +5,36 @@ import static org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.Orde
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 import org.apache.ibatis.annotations.*;
 
 public interface OrderQueryMapper {
+    record ProductionDayRow(LocalDate date, long orderCount) { }
+    record ProductionOrderRow(String orderId, String orderNo, String itemName, String status,
+            Instant plannedFinishAt, Instant pickupAt, LocalDate pickupDate) { }
+
+    String PRODUCTION_WHERE = " FROM cake_order WHERE deleted_at IS NULL AND status IN "
+            + "<foreach collection='stages' item='stage' open='(' separator=',' close=')'>#{stage}</foreach>";
+    String FINISH_RANGE = "planned_finish_at &gt;= #{from} AND planned_finish_at &lt; #{to}";
+    String PRODUCTION_BUCKET = " AND <choose><when test='from == null'>planned_finish_at IS NULL</when><otherwise>"
+            + FINISH_RANGE + "</otherwise></choose>";
+
+    @Select("<script>SELECT (planned_finish_at AT TIME ZONE 'Asia/Shanghai')::date AS date, count(*) AS order_count"
+            + PRODUCTION_WHERE + " AND (planned_finish_at IS NULL OR (" + FINISH_RANGE + ")) GROUP BY 1</script>")
+    List<ProductionDayRow> productionCounts(@Param("from") Instant from, @Param("to") Instant to, @Param("stages") Set<String> stages);
+
+    @Select("<script>SELECT count(*)" + PRODUCTION_WHERE + PRODUCTION_BUCKET + "</script>")
+    long productionOrderCount(@Param("from") Instant from, @Param("to") Instant to, @Param("stages") Set<String> stages);
+
+    @Select("<script>SELECT id::text AS order_id, order_no,"
+            + " (SELECT i.name FROM cake_order_item i WHERE i.order_id=cake_order.id AND NOT i.is_removed ORDER BY i.created_at,i.id LIMIT 1) AS item_name,"
+            + " status, planned_finish_at, " + PICKUP_AT + " AS pickup_at, " + PICKUP_DATE + " AS pickup_date"
+            + PRODUCTION_WHERE + PRODUCTION_BUCKET
+            + " ORDER BY <choose><when test='from == null'>pickup_date, pickup_at NULLS LAST</when>"
+            + "<otherwise>planned_finish_at</otherwise></choose>, order_no, id LIMIT #{limit} OFFSET #{offset}</script>")
+    List<ProductionOrderRow> productionOrders(@Param("from") Instant from, @Param("to") Instant to,
+            @Param("stages") Set<String> stages, @Param("limit") int limit, @Param("offset") long offset);
+
     record PaymentOrderRow(String orderId, String orderNo, Instant createdAt, LocalDate calendarDate,
             Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
     String PAYMENT_WHERE = " FROM cake_order WHERE deleted_at IS NULL AND <choose><when test=\"kind == 'RECEIPT'\">"
@@ -104,7 +131,7 @@ public interface OrderQueryMapper {
     MetricsRow metrics(@Param("date") LocalDate date, @Param("createdFrom") Instant createdFrom, @Param("createdTo") Instant createdTo);
 
     @Select("SELECT count(*) AS total_order_count,"
-            + " count(*) FILTER (WHERE status='WAITING_DELIVERY') AS waiting_delivery_order_count,"
+            + " count(*) FILTER (WHERE status='WAITING_DELIVERY' AND fulfillment_type='DELIVERY') AS waiting_delivery_order_count,"
             + " count(*) FILTER (WHERE payment_status='PAID') AS paid_order_count,"
             + " COALESCE(sum(total_amount_cents) FILTER (WHERE payment_status='PAID'),0)::text AS paid_amount_cents,"
             + " count(*) FILTER (WHERE payment_status='PAID' AND total_amount_cents IS NULL) AS paid_missing_amount_order_count,"

@@ -25,6 +25,7 @@ public final class EmployeeAccessPolicy {
             boolean production = Set.of(JobRole.PASTRY_CHEF, JobRole.PASTRY_SUPERVISOR, JobRole.DECORATOR, JobRole.BAKER).contains(role);
             boolean manager = role == JobRole.MANAGER || role == JobRole.STORE_MANAGER;
             if (production) {
+                permissions.add(ORDER_ORDERING_DETAILS_READ);
                 permissions.removeAll(Set.of(ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
             }
             permissions.add(ORDER_PHONE_READ);

@@ -10,12 +10,56 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer;
 import org.xaspire.WuhouCake.order.api.dto.OrderQueryViews;
 import org.xaspire.WuhouCake.order.domain.port.OrderQueries;
 
+import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.PRODUCTION_STATUSES;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
 
 public class OrderQueryService {
     private static final ZoneId STORE_ZONE = ZoneId.of("Asia/Shanghai");
     private final OrderQueries queries;
     public OrderQueryService(OrderQueries queries) { this.queries = queries; }
+
+    private static final int PRODUCTION_PAGE_SIZE = 20;
+
+    @Transactional(readOnly = true)
+    public OrderQueryViews.ProductionSummary productionSummary(LocalDate from, LocalDate to, String stage) {
+        if (!productionDate(from) || !productionDate(to) || !from.isBefore(to) || ChronoUnit.DAYS.between(from, to) > 42) throw invalid();
+        var counts = new HashMap<LocalDate, Long>();
+        for (var row : queries.productionCounts(storeDayStart(from), storeDayStart(to), productionStages(stage))) {
+            counts.put(row.date(), row.orderCount());
+        }
+        var days = from.datesUntil(to).map(date -> new OrderQueryViews.ProductionDay(date, counts.getOrDefault(date, 0L))).toList();
+        return new OrderQueryViews.ProductionSummary(days.stream().mapToLong(OrderQueryViews.ProductionDay::orderCount).sum(),
+                counts.getOrDefault(null, 0L), days);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.ProductionOrders productionOrders(LocalDate date, boolean unscheduled, String stage, int page) {
+        if (page < 1 || (unscheduled ? date != null : !productionDate(date))) throw invalid();
+        var stages = productionStages(stage);
+        Instant from = unscheduled ? null : storeDayStart(date);
+        Instant to = unscheduled ? null : storeDayStart(date.plusDays(1));
+        long total = queries.productionOrderCount(from, to, stages);
+        int current = (int) Math.min(page, total == 0 ? 1 : 1 + (total - 1) / PRODUCTION_PAGE_SIZE);
+        var orders = total == 0 ? List.<OrderQueryViews.ProductionOrder>of()
+                : queries.productionOrders(from, to, stages, PRODUCTION_PAGE_SIZE, (current - 1L) * PRODUCTION_PAGE_SIZE).stream()
+                        .map(row -> new OrderQueryViews.ProductionOrder(row.orderId(), row.orderNo(), row.itemName(),
+                                row.status(), row.plannedFinishAt(), row.pickupAt(), row.pickupDate())).toList();
+        return new OrderQueryViews.ProductionOrders(current, total, orders);
+    }
+
+    private static Set<String> productionStages(String stage) {
+        if (stage == null) return PRODUCTION_STATUSES;
+        if (!PRODUCTION_STATUSES.contains(stage)) throw invalid();
+        return Set.of(stage);
+    }
+
+    private static boolean productionDate(LocalDate date) {
+        return date != null && date.getYear() >= 1 && date.getYear() <= 9999;
+    }
+
+    private static Instant storeDayStart(LocalDate date) {
+        return date.atStartOfDay(STORE_ZONE).toInstant();
+    }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public OrderQueryViews.PaymentOrders paymentOrders(LocalDate date, String kind, int page) {

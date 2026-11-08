@@ -3,12 +3,17 @@ package org.xaspire.WuhouCake.order.domain.model.valobj;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Set;
 import java.util.UUID;
 
 public final class OrderValues {
     private OrderValues() { }
     /** Largest integer cent value that remains exact in numeric JSON browser clients. */
     public static final long MAX_MONEY_CENTS = 9_007_199_254_740_991L;
+
+    public static final Set<String> PRODUCTION_STATUSES = Set.of("CAKE_BASE", "LAYER", "FROSTING", "DECORATING");
+    public static final Set<String> ORDER_STATUSES = Set.of("CAKE_BASE", "LAYER", "FROSTING", "DECORATING",
+            "WAITING_DELIVERY", "COMPLETED", "CANCELLED");
 
     public enum FulfillmentType { DELIVERY, PICKUP }
 

@@ -8,7 +8,7 @@ import { canEditItems } from '../src/orderForm.ts';
 test('删除通知在REST重新读取前锁住旧详情并移出日历及待办，不覆盖编辑基线', () => {
   const client = new QueryClient();
   const id = '12345678-1234-4234-8234-123456789abc';
-  const original = { orderId: id, orderNo: '0000001', status: 'PROCESSING', version: 3 };
+  const original = { orderId: id, orderNo: '0000001', status: 'LAYER', version: 3 };
   const draft = { ...original, name: '尚未保存的蛋糕' };
   client.setQueryData(['order', id, 'detail'], original);
   client.setQueryData(['calendar', '2026-10-25'], [original]);

@@ -16,6 +16,22 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 public class OrderQueryController {
     private final OrderQueryService queries;
     public OrderQueryController(OrderQueryService queries) { this.queries = queries; }
+    @GetMapping("/workbench/production-summary")
+    public ApiResponse<OrderQueryViews.ProductionSummary> productionSummary(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) String stage) {
+        return ApiResponse.success(queries.productionSummary(from, to, stage));
+    }
+
+    @GetMapping("/workbench/production-orders")
+    public ApiResponse<OrderQueryViews.ProductionOrders> productionOrders(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(defaultValue = "false") boolean unscheduled, @RequestParam(required = false) String stage,
+            @RequestParam(defaultValue = "1") int page) {
+        return ApiResponse.success(queries.productionOrders(date, unscheduled, stage, page));
+    }
+
     @GetMapping("/workbench/payment-orders")
     public ApiResponse<OrderQueryViews.PaymentOrders> paymentOrders(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,

@@ -14,4 +14,7 @@ test('客户填单入口按服务端能力显示，六岗位和自定义权限�
   assert.equal(orderAccess(production).customer, false);
   assert.equal(orderAccess(production).submissions, false);
   assert.equal(orderAccess(production).delete, false);
+  const ordering = { access: { permissions: ['ORDER_ORDERING_DETAILS_READ'], uiCapabilities: [] } };
+  assert.equal(orderAccess(ordering).ordering, true);
+  assert.equal(orderAccess(ordering).customer, false);
 });

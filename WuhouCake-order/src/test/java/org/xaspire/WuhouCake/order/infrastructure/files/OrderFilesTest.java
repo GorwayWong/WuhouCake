@@ -65,8 +65,8 @@ class OrderFilesTest {
             assertEquals("订单-0000013.xlsx", file.filename()); assertEquals(4, book.getNumberOfSheets());
             var values = allText(book.getSheet("订单信息")); assertTrue(values.contains("=客户"));
             assertTrue(values.contains("2026-10-16 10:00:00")); assertTrue(values.contains("123.45"));
-            assertTrue(values.contains("待制作")); assertTrue(values.contains("未付款")); assertFalse(values.contains(order.id().toString()));
-            assertFalse(values.contains("快照版本")); assertFalse(values.contains("WAITING_PRODUCTION"));
+            assertTrue(values.contains("出胚")); assertTrue(values.contains("未付款")); assertFalse(values.contains(order.id().toString()));
+            assertFalse(values.contains("快照版本")); assertFalse(values.contains("CAKE_BASE"));
             var product = book.getSheet("商品明细").getRow(1);
             assertEquals("=蛋糕", product.getCell(1).getStringCellValue()); assertEquals(CellType.STRING, product.getCell(1).getCellType());
             assertEquals("", product.getCell(4).getStringCellValue()); assertEquals("", product.getCell(5).getStringCellValue());

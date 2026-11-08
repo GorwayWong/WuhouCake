@@ -1,3 +1,4 @@
+import { orderStatusNames, productionStatuses } from './orderStates.ts';
 import { calendarRange, shiftDate, shiftMonth, time, workbenchDate } from './dates.ts';
 import type { Note, PendingOrder } from './types.ts';
 
@@ -41,14 +42,14 @@ export function toggleCalendarMode(view: CalendarView): CalendarView {
   return { ...view, mode: view.mode === 'week' ? 'month' : 'week', month: view.date.slice(0, 7), expanded: false };
 }
 export function isUnfinishedOrder(order: { status: string; deletion?: unknown; deleted?: boolean }): boolean {
-  return !order.deletion && !order.deleted && ['WAITING_PRODUCTION', 'PROCESSING', 'WAITING_DELIVERY', 'WAITING_PICKUP', 'DELIVERING'].includes(order.status);
+  return !order.deletion && !order.deleted && (productionStatuses.includes(order.status) || order.status === 'WAITING_DELIVERY');
 }
 export function timelinePartitions(orders: PendingOrder[], status: string) {
   const visible = orders.filter(order => !order.deletion && !order.deleted);
   return [
     { id: 'pending', label: '待处理', orders: visible.filter(isUnfinishedOrder), expanded: true },
-    { id: 'completed', label: '已完成', orders: visible.filter(order => order.status === 'COMPLETED'), expanded: Boolean(status) },
-    { id: 'cancelled', label: '已取消', orders: visible.filter(order => order.status === 'CANCELLED'), expanded: Boolean(status) },
+    { id: 'completed', label: orderStatusNames.COMPLETED, orders: visible.filter(order => order.status === 'COMPLETED'), expanded: Boolean(status) },
+    { id: 'cancelled', label: orderStatusNames.CANCELLED, orders: visible.filter(order => order.status === 'CANCELLED'), expanded: Boolean(status) },
   ].filter(group => group.orders.length);
 }
 export function overdueOrderCount(date: string, orders: { status: string; deletion?: unknown; deleted?: boolean }[], storeToday: string): number {

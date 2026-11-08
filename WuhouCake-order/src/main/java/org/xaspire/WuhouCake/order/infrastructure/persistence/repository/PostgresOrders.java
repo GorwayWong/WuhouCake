@@ -49,9 +49,8 @@ public final class PostgresOrders implements Orders {
     @Override public void reviseInformation(Order order, long expectedVersion) {
         if (mapper.updateInformation(row(order), expectedVersion) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
     }
-    @Override public void addItem(Order order, long expectedVersion, UUID itemId) {
-        if (mapper.updateProduction(order.id().toString(), expectedVersion, order.status(), order.currentStageCode(), order.updatedAt()) != 1)
-            throw new OrderFailure("CONCURRENT_MODIFICATION");
+    @Override public void addItem(Order order, long expectedVersion, UUID itemId, List<UUID> changedItemIds) {
+        changeProduction(order, expectedVersion, changedItemIds);
         insertItem(order.id(), order.requireActiveItem(itemId));
     }
     @Override public void removeItem(Order order, long expectedVersion, UUID itemId) {

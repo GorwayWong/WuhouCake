@@ -7,6 +7,12 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer;
 
 public final class OrderQueryViews {
     private OrderQueryViews() { }
+    public record ProductionDay(LocalDate date, long orderCount) { }
+    public record ProductionSummary(long total, long unscheduled, List<ProductionDay> days) { }
+    public record ProductionOrder(UUID orderId, String orderNo, String itemName, String status,
+            Instant plannedFinishAt, Instant pickupAt, LocalDate pickupDate) { }
+    public record ProductionOrders(int page, long total, List<ProductionOrder> orders) { }
+
     public record PaymentOrder(UUID orderId, String orderNo, Instant createdAt, LocalDate calendarDate,
             Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
     public record PaymentOrders(LocalDate date, String kind, int page, long total, List<PaymentOrder> orders) { }

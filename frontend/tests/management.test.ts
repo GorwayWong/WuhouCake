@@ -38,7 +38,7 @@ test('经营条件规范化数字、日期、员工与金额，拒绝非法条�
 test('日历默认全部，两个筛选共同生效', () => {
   assert.deepEqual(allCalendarFilters, { status: '', paymentStatus: '' });
   assert.equal(matchesCalendarFilters({ status: 'COMPLETED', paymentStatus: 'PAID' }, { status: '', paymentStatus: '' }), true);
-  assert.equal(matchesCalendarFilters({ status: 'PROCESSING', paymentStatus: 'PAID' }, { status: 'PROCESSING', paymentStatus: 'UNPAID' }), false);
+  assert.equal(matchesCalendarFilters({ status: 'LAYER', paymentStatus: 'PAID' }, { status: 'LAYER', paymentStatus: 'UNPAID' }), false);
 });
 test('手动数字尺寸和清空默认在商品提交边界统一', () => {
   const draft = newItem(); draft.name = '合成蛋糕'; draft.attributes.size = '08.00'; draft.attributes.base = ' '; draft.attributes.filling = '';

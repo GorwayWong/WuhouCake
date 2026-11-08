@@ -323,7 +323,7 @@ class OrderExportIT {
         assertEquals(200, all.statusCode(), text(all));
         assertEquals(List.of(filename(a), filename(b), filename(c)), entries(all));
         assertEquals(0, exportCount());
-        var filtered = new LinkedHashMap<String, Object>(range()); filtered.put("status", "WAITING_PRODUCTION"); filtered.put("paymentStatus", "UNPAID"); filtered.put("fulfillmentType", "DELIVERY");
+        var filtered = new LinkedHashMap<String, Object>(range()); filtered.put("status", "CAKE_BASE"); filtered.put("paymentStatus", "UNPAID"); filtered.put("fulfillmentType", "DELIVERY");
         assertEquals(List.of(filename(a)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
         filtered = new LinkedHashMap<>(range()); filtered.put("paymentStatus", "PAID"); assertEquals(List.of(filename(b)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
         filtered = new LinkedHashMap<>(range()); filtered.put("status", "CANCELLED"); assertEquals(List.of(filename(c)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
@@ -485,14 +485,14 @@ class OrderExportIT {
         jdbc.execute("CREATE CONSTRAINT TRIGGER reject_production_commit AFTER INSERT ON cake_order_activity DEFERRABLE INITIALLY DEFERRED"
                 + " FOR EACH ROW EXECUTE FUNCTION reject_production_commit()");
         try {
-            var response = staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "START_PRODUCTION"));
+            var response = staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE"));
             assertEquals(503, response.statusCode(), text(response));
             assertEquals(original, data(staff.request("GET", "/api/orders/" + id, null)));
             assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Integer.class, id));
             assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND production_status<>'NOT_STARTED'", Integer.class, id));
             assertTrue(changes.events.isEmpty());
         } finally { jdbc.execute("DROP FUNCTION reject_production_commit() CASCADE"); }
-        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "START_PRODUCTION")).statusCode());
+        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE")).statusCode());
         assertEquals(1, changes.events.size());
     }
     @ParameterizedTest @ValueSource(booleans = {false, true})

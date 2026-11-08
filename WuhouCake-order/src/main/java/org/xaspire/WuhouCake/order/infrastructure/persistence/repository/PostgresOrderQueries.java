@@ -10,6 +10,17 @@ import org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderQueryM
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
 
 public final class PostgresOrderQueries implements OrderQueries {
+    @Override public List<ProductionDay> productionCounts(Instant from, Instant to, Set<String> stages) {
+        return mapper.productionCounts(from, to, stages).stream().map(row -> new ProductionDay(row.date(), row.orderCount())).toList();
+    }
+    @Override public long productionOrderCount(Instant from, Instant to, Set<String> stages) {
+        return mapper.productionOrderCount(from, to, stages);
+    }
+    @Override public List<ProductionOrder> productionOrders(Instant from, Instant to, Set<String> stages, int limit, long offset) {
+        return mapper.productionOrders(from, to, stages, limit, offset).stream()
+                .map(row -> new ProductionOrder(UUID.fromString(row.orderId()), row.orderNo(), row.itemName(), row.status(),
+                        row.plannedFinishAt(), row.pickupAt(), row.pickupDate())).toList();
+    }
     @Override public long paymentOrderCount(LocalDate date, String kind, Instant from, Instant to) {
         return mapper.paymentOrderCount(date, kind, from, to);
     }

@@ -66,8 +66,8 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
     private static String yuan(String cents) { return new BigDecimal(cents).movePointLeft(2).toPlainString(); }
     private static String label(String value) {
         if (value == null) return "全部";
-        return Map.ofEntries(Map.entry("WAITING_PRODUCTION", "待制作"), Map.entry("PROCESSING", "生胚中"), Map.entry("WAITING_DELIVERY", "待配送"),
-                Map.entry("WAITING_PICKUP", "待自提"), Map.entry("DELIVERING", "配送中"), Map.entry("COMPLETED", "已完成"), Map.entry("CANCELLED", "已取消"),
+        return Map.ofEntries(Map.entry("CAKE_BASE", "出胚"), Map.entry("LAYER", "夹层"), Map.entry("FROSTING", "抹面"),
+                Map.entry("DECORATING", "装饰"), Map.entry("WAITING_DELIVERY", "待配送"), Map.entry("COMPLETED", "已配送"), Map.entry("CANCELLED", "已取消"),
                 Map.entry("PAID", "已付款"), Map.entry("UNPAID", "未付款"), Map.entry("PICKUP", "自提"), Map.entry("DELIVERY", "配送")).getOrDefault(value, value);
     }
     private static void row(org.apache.poi.ss.usermodel.Sheet sheet, Object... values) {

@@ -4,7 +4,7 @@ import { canEditItems, canRemoveItem, itemChangeRequest, itemDraft, itemInput, n
 import type { Detail } from '../src/types.ts';
 
 const order: Detail = {
-  orderId: 'items-test', orderNo: '0000012', version: 2, status: 'PROCESSING', currentStageCode: 'LAYER_DONE', paymentStatus: 'PAID',
+  orderId: 'items-test', orderNo: '0000012', version: 2, status: 'LAYER', currentStageCode: null, paymentStatus: 'PAID',
   customer: { customerName: '合成客户', phone: '13800001111', memberPhone: null, buyerName: null },
   fulfillment: { type: 'PICKUP', address: null, requestedReceiveDate: '2026-10-14', plannedHandoffAt: '2026-10-14T10:00:00Z', plannedFinishAt: null },
   totalAmountCents: 32000, createdAt: '2026-10-14T01:00:00Z', updatedAt: '2026-10-14T01:00:00Z',
@@ -46,10 +46,10 @@ test('数量限制与合法状态，禁止移除最后一件有效商品', () =>
   assert.equal(canRemoveItem(order, 'first'), true);
   assert.equal(canRemoveItem({ ...order, items: [order.items[0]] }, 'first'), false);
   assert.equal(canRemoveItem(order, 'missing'), false);
-  for (const status of ['WAITING_DELIVERY', 'WAITING_PICKUP', 'DELIVERING', 'COMPLETED', 'CANCELLED']) {
+  for (const status of ['WAITING_DELIVERY', 'COMPLETED', 'CANCELLED']) {
     assert.equal(canEditItems({ status }), false); assert.equal(canRemoveItem({ ...order, status }, 'first'), false);
   }
-  assert.equal(canEditItems({ status: 'WAITING_PRODUCTION' }), true);
+  for (const status of ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING']) assert.equal(canEditItems({ status }), true);
 });
 
 test('409 复核基线保留草稿，仅提交员工改动，不回写同事规格，已移除商品不能保存', () => {

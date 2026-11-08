@@ -4,7 +4,7 @@ import { amountInformationRequest, informationDraft, informationRequest } from '
 import type { Detail } from '../src/types.ts';
 
 const order: Detail = {
-  orderId: 'information-test', orderNo: '0000011', version: 2, status: 'WAITING_DELIVERY', paymentStatus: 'PAID', currentStageCode: 'LAYER_DONE',
+  orderId: 'information-test', orderNo: '0000011', version: 2, status: 'WAITING_DELIVERY', paymentStatus: 'PAID', currentStageCode: null,
   customer: { customerName: '合成客户', phone: '13800001111', memberPhone: '13800002222', buyerName: '合成前台' },
   fulfillment: { type: 'DELIVERY', address: '合成配送地址', requestedReceiveDate: '2026-10-14', plannedHandoffAt: '2026-10-14T16:15:27.123456Z', plannedFinishAt: '2026-10-14T10:00:30.987654Z' },
   totalAmountCents: 16800, createdAt: '2026-10-14T01:00:00Z', updatedAt: '2026-10-14T01:00:00Z', items: [],

@@ -288,7 +288,7 @@ class WorkflowManagementIT {
     @Test void managementExportHandlesMoreThanOneHundredOrdersAndLegacyUnassignedOrders() throws Exception {
         a.data("POST", "/api/orders", create(a.id));
         jdbc.update("WITH new_orders AS (INSERT INTO cake_order(id,order_no,version,status,payment_status,customer_phone,fulfillment_type,requested_receive_date,planned_handoff_at,created_by,created_at,confirmed_at,updated_at)"
-                + " SELECT gen_random_uuid(),'legacy-'||n,0,'WAITING_PRODUCTION','UNPAID','13900000000','PICKUP',DATE '2026-10-17',TIMESTAMPTZ '2026-10-17T06:00:00Z',?::uuid,now(),now(),now() FROM generate_series(1,105)n RETURNING id)"
+                + " SELECT gen_random_uuid(),'legacy-'||n,0,'CAKE_BASE','UNPAID','13900000000','PICKUP',DATE '2026-10-17',TIMESTAMPTZ '2026-10-17T06:00:00Z',?::uuid,now(),now(),now() FROM generate_series(1,105)n RETURNING id)"
                 + " INSERT INTO cake_order_item(id,order_id,name,product_type,quantity,attributes,production_status,is_removed,created_at,updated_at) SELECT gen_random_uuid(),id,'旧蛋糕','CAKE',1,'{}'::jsonb,'NOT_STARTED',false,now(),now() FROM new_orders", a.id);
         var data = admin.data("GET", search("&unassigned=true&size=100"), null); assertEquals(105, data.at("/totals/orderCount").asInt()); assertEquals(100, data.path("items").size());
         var result = admin.raw("GET", search("&unassigned=true").replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
@@ -422,7 +422,7 @@ class WorkflowManagementIT {
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
     }
     @Test void deletionIsReadOnlyIdempotentAndSeparateFromNormalQueriesAndReports() throws Exception {
-        for (String status : List.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING", "COMPLETED", "CANCELLED")) {
+        for (String status : List.of("CAKE_BASE", "LAYER", "FROSTING", "DECORATING", "WAITING_DELIVERY", "COMPLETED", "CANCELLED")) {
             var original = a.data("POST", "/api/orders", create(a.id)); String id = original.path("orderId").asText();
             jdbc.update("UPDATE cake_order SET status=?,payment_status='PAID',paid_at=CURRENT_TIMESTAMP WHERE id=?::uuid", status, id);
             assertEquals(403, a.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "无权限")).statusCode());
@@ -492,6 +492,7 @@ class WorkflowManagementIT {
     @Test void sixJobsProjectPhoneAndTimesAndOnlyStoreManagersAreAdministrators() throws Exception {
         var command = new LinkedHashMap<>(create(b.id));
         command.put("customer", Map.of("customerName", "隐私客户", "phone", "13900000000", "memberPhone", "13811112222", "buyerName", "隐私订购人"));
+        command.put("orderingMethod", "到店");
         var order = a.data("POST", "/api/orders", command); String id = order.path("orderId").asText();
         for (String role : List.of("STORE_MANAGER", "FRONT_DESK_SUPERVISOR", "FRONT_DESK_CLERK", "PASTRY_SUPERVISOR", "DECORATOR", "BAKER")) {
             var current = admin.data("GET", "/api/admin/employees?employeeNumber=A001", null).at("/items/0");
@@ -501,12 +502,14 @@ class WorkflowManagementIT {
             var detail = a.data("GET", "/api/orders/" + id, null); assertEquals("13900000000", detail.at("/customer/phone").asText());
             boolean production = Set.of("PASTRY_SUPERVISOR", "DECORATOR", "BAKER").contains(role);
             assertEquals(production, detail.at("/customer/customerName").isNull()); assertEquals(production, detail.at("/customer/memberPhone").isNull());
-            assertEquals(production, detail.at("/customer/buyerName").isNull()); assertEquals(production, detail.path("totalAmountCents").isNull());
+            assertEquals("隐私订购人", detail.at("/customer/buyerName").asText()); assertEquals("到店", detail.path("orderingMethod").asText());
+            assertEquals(production, detail.path("totalAmountCents").isNull());
             assertEquals("2026-10-17", detail.at("/fulfillment/requestedReceiveDate").asText());
             if (production) {
                 assertEquals(403, a.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "越权")).statusCode());
-                var updated = a.data("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", detail.path("version").asLong(), "action", "START_PRODUCTION"));
+                var updated = a.data("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", detail.path("version").asLong(), "action", "COMPLETE_BASE"));
                 assertEquals("13900000000", updated.at("/customer/phone").asText()); assertTrue(updated.at("/customer/customerName").isNull());
+                assertEquals("隐私订购人", updated.at("/customer/buyerName").asText()); assertEquals("到店", updated.path("orderingMethod").asText());
                 a.data("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", updated.path("version").asLong(), "action", "ROLLBACK_PRODUCTION"));
             }
         }

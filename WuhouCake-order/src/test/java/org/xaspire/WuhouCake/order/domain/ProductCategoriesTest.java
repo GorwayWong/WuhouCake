@@ -16,13 +16,16 @@ class ProductCategoriesTest {
                 new org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.CustomerContact(null, "13800000000", null, null),
                 new org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.FulfillmentPlan(org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.FulfillmentType.DELIVERY, "合成地址", java.time.LocalDate.of(2026, 10, 25), null, null),
                 null, java.util.List.of(item), UUID.randomUUID(), now);
-        order.applyProductionAction("START_PRODUCTION", Instant.now());
-        order.completeSimpleItem(item.itemId(), true, Instant.now());
-        assertThrows(org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure.class, () -> order.applyProductionAction("COMPLETE_OTHER", Instant.now()));
+        assertThrows(org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure.class,
+                () -> order.applyProductionAction("COMPLETE_LAYER", Instant.now()));
+        order.applyProductionAction("COMPLETE_BASE", Instant.now());
         order.applyProductionAction("COMPLETE_LAYER", Instant.now());
+        assertEquals("FROSTING", order.status());
         order.applyProductionAction("COMPLETE_FROSTING", Instant.now());
-        order.applyProductionAction("COMPLETE_OTHER", Instant.now());
-        order.applyProductionAction("COMPLETE_PRODUCTION", Instant.now());
+        assertEquals("OTHER_ITEMS_INCOMPLETE", assertThrows(org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure.class,
+                () -> order.applyProductionAction("COMPLETE_DECORATION", Instant.now())).code());
+        order.completeSimpleItem(item.itemId(), true, Instant.now());
+        order.applyProductionAction("COMPLETE_DECORATION", Instant.now());
         assertEquals("WAITING_DELIVERY", order.status());
     }
     @Test void oldCodesWriteCanonicalCategoriesWithoutAddingCakeDefaults() {

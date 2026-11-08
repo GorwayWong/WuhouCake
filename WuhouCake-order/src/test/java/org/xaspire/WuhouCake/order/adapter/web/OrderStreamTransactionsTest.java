@@ -269,10 +269,10 @@ class OrderStreamTransactionsTest {
     }
     private long prepare(boolean fulfillment) {
         if (fulfillment) {
-            order.applyProductionAction("START_PRODUCTION", NOW);
+            order.applyProductionAction("COMPLETE_BASE", NOW);
             order.applyProductionAction("COMPLETE_LAYER", NOW); order.applyProductionAction("COMPLETE_FROSTING", NOW);
             for (var item : order.activeItems()) order.completeSimpleItem(item.itemId(), true, NOW);
-            order.applyProductionAction("COMPLETE_OTHER", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW);
+            order.applyProductionAction("COMPLETE_DECORATION", NOW);
         }
         return order.version();
     }

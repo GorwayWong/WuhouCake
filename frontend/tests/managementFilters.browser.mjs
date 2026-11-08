@@ -21,7 +21,7 @@ test('管理筛选双列布局、组合查询、导出、分页和详情返回�
       }
       calls.push(url.searchParams);
       return route.fulfill({ json: { success: true, data: { items: [{ orderId, orderNo: 'TEST-IMAGE', receiveDate: '2026-11-05',
-        status: 'WAITING_PRODUCTION', paymentStatus: 'UNPAID', customerName: '合成客户', phone: '13800000000',
+        status: 'CAKE_BASE', paymentStatus: 'UNPAID', customerName: '合成客户', phone: '13800000000',
         totalAmountCents: '52000', matchingQuantity: 2, cakeQuantity: 2, products: '草莓蛋糕 ×2', productTypes: ['CAKE'] }],
         totals: { orderCount: 12, matchingQuantity: 24, cakeQuantity: 24, unclassifiedCakeQuantity: 0,
           totalAmountCents: '624000', paidAmountCents: '0', unpaidAmountCents: '624000', missingAmountOrders: 0 },
@@ -65,7 +65,7 @@ test('管理筛选双列布局、组合查询、导出、分页和详情返回�
     await page.getByRole('dialog', { name: '选择开始日期', exact: true }).waitFor();
     await page.keyboard.press('Escape');
     const status = filters.locator('[data-control-label="订单状态"] .choice-trigger');
-    await status.focus(); await page.keyboard.press('Enter'); await page.getByRole('option', { name: '待制作', exact: true }).click();
+    await status.focus(); await page.keyboard.press('Enter'); await page.getByRole('option', { name: '出胚', exact: true }).click();
     await filters.locator('[data-control-label="配送或自提"] .choice-trigger').click();
     await page.getByRole('option', { name: '自提', exact: true }).click();
     await filters.getByRole('textbox', { name: '蛋糕尺寸（寸）', exact: true }).fill('8');
@@ -89,7 +89,7 @@ test('管理筛选双列布局、组合查询、导出、分页和详情返回�
     await Promise.all([page.waitForResponse(response => response.url().includes('/api/admin/orders?') && response.url().includes('productName=')),
       page.getByRole('button', { name: '查询', exact: true }).click()]);
     assert.equal(calls.at(-1).get('productName'), '草莓%_蛋糕'); assert.equal(calls.at(-1).get('keyword'), '138');
-    assert.equal(calls.at(-1).get('status'), 'WAITING_PRODUCTION'); assert.equal(calls.at(-1).get('fulfillmentType'), 'PICKUP');
+    assert.equal(calls.at(-1).get('status'), 'CAKE_BASE'); assert.equal(calls.at(-1).get('fulfillmentType'), 'PICKUP');
     assert.equal(calls.at(-1).get('sizeInches'), '8');
     assert.equal(calls.at(-1).get('orderingMethod'), '微信%_');
     for (const name of ['导出统计汇总 Excel', '导出逐单 Excel ZIP']) {

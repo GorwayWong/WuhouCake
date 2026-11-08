@@ -5,11 +5,11 @@ import { calendarOrderHref, orderHref, workspaceRoute } from '../src/routes.ts';
 import type { PendingOrder, Item, Note } from '../src/types.ts';
 
 test('只有过去日期未完成交付标红，付款不参与，取消删除和完成排除', () => {
-  const orders = ['WAITING_PRODUCTION', 'PROCESSING', 'WAITING_DELIVERY', 'WAITING_PICKUP', 'DELIVERING', 'COMPLETED', 'CANCELLED'].map(status => ({ status, paymentStatus: 'UNPAID' }));
+  const orders = ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING', 'WAITING_DELIVERY', 'COMPLETED', 'CANCELLED'].map(status => ({ status, paymentStatus: 'UNPAID' }));
   assert.equal(overdueOrderCount('2026-10-24', orders, '2026-10-25'), 5);
   assert.equal(overdueOrderCount('2026-10-25', orders, '2026-10-25'), 0);
   assert.equal(overdueOrderCount('2026-10-26', orders, '2026-10-25'), 0);
-  assert.equal(overdueOrderCount('2026-10-24', [{ status: 'PROCESSING', deleted: true }, { status: 'DELIVERING', deletion: {} }], '2026-10-25'), 0);
+  assert.equal(overdueOrderCount('2026-10-24', [{ status: 'LAYER', deleted: true }, { status: 'WAITING_DELIVERY', deletion: {} }], '2026-10-25'), 0);
 });
 
 const order = (orderNo: string, at: string | null) => ({ orderNo, plannedHandoffAt: at, items: [] }) as unknown as PendingOrder;
@@ -96,11 +96,11 @@ test('日期概览的首单排序不依赖查询返回顺序', () => {
   assert.equal([...orders].sort(compareCalendarOrders)[0].orderNo, '001');
 });
 
-test('时间轴分开统计待处理、已完成和已取消，删除订单不参与', async () => {
+test('时间轴分开统计待处理、已配送和已取消，删除订单不参与', async () => {
   const { timelinePartitions } = await import('../src/calendarView.ts');
-  const orders = ['WAITING_PRODUCTION', 'PROCESSING', 'COMPLETED', 'COMPLETED', 'CANCELLED'].map((status, i) => ({ ...order(String(i), null), status }));
+  const orders = ['CAKE_BASE', 'LAYER', 'COMPLETED', 'COMPLETED', 'CANCELLED'].map((status, i) => ({ ...order(String(i), null), status }));
   const groups = timelinePartitions([...orders, { ...order('deleted', null), status: 'COMPLETED', deleted: true }], '');
-  assert.deepEqual(groups.map(group => [group.label, group.orders.length, group.expanded]), [['待处理', 2, true], ['已完成', 2, false], ['已取消', 1, false]]);
+  assert.deepEqual(groups.map(group => [group.label, group.orders.length, group.expanded]), [['待处理', 2, true], ['已配送', 2, false], ['已取消', 1, false]]);
   assert.deepEqual(timelinePartitions([], ''), []);
 });
 test('具体状态筛选直接展开对应分组，回到今天保留月模式并展开当天', async () => {

@@ -73,6 +73,130 @@ class OrderIT {
         var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys);
     }
 
+    @Test void sixNodeMigrationPreservesOldOrdersAndActivity() throws Exception {
+        String schema = "workflow_migration_" + UUID.randomUUID().toString().replace("-", "");
+        try (var connection = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
+            var source = new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection, true);
+            var flyway = org.flywaydb.core.Flyway.configure().dataSource(source).schemas(schema).defaultSchema(schema)
+                    .locations("classpath:db/migration");
+            flyway.target("24").load().migrate();
+            connection.setSchema(schema);
+            var legacy = new JdbcTemplate(source);
+            String[][] cases = {
+                    {"WAITING_PRODUCTION", null, "DELIVERY", "CAKE_BASE"},
+                    {"PROCESSING", null, "PICKUP", "CAKE_BASE"},
+                    {"PROCESSING", "LAYER_DONE", "DELIVERY", "FROSTING"},
+                    {"PROCESSING", "FROSTING_DONE", "DELIVERY", "DECORATING"},
+                    {"PROCESSING", "OTHER_DONE", "PICKUP", "DECORATING"},
+                    {"WAITING_PICKUP", "OTHER_DONE", "PICKUP", "WAITING_DELIVERY"},
+                    {"DELIVERING", "OTHER_DONE", "DELIVERY", "WAITING_DELIVERY"},
+                    {"WAITING_DELIVERY", "OTHER_DONE", "DELIVERY", "WAITING_DELIVERY"},
+                    {"COMPLETED", null, "PICKUP", "COMPLETED"},
+                    {"CANCELLED", "LAYER_DONE", "DELIVERY", "CANCELLED"}
+            };
+            var actor = UUID.randomUUID();
+            for (int index = 0; index < cases.length; index++) {
+                var state = cases[index];
+                var order = UUID.randomUUID();
+                legacy.update("""
+                        INSERT INTO cake_order(id,order_no,status,current_stage_code,customer_phone,fulfillment_type,
+                            delivery_address,requested_receive_date,created_by,created_at,confirmed_at,updated_at,version,payment_status,paid_at)
+                        VALUES (?,?,?,?,'13800000000',?,'测试地址',DATE '2026-10-17',?,now(),now(),now(),7,'PAID','2026-10-17T08:00:00Z')
+                        """, order, "OLD-" + index, state[0], state[1], state[2], actor);
+                legacy.update("""
+                        INSERT INTO cake_order_item(id,order_id,name,product_type,quantity,production_status,created_at,updated_at)
+                        VALUES (?,?,'蛋糕','CAKE',1,'COMPLETED',now(),now())
+                        """, UUID.randomUUID(), order);
+                legacy.update("""
+                        INSERT INTO cake_order_activity(order_id,type,content,details,actor_id,actor_name_snapshot,created_at)
+                        VALUES (?,'ORDER_PRODUCTION_CHANGED','历史活动',jsonb_build_object('after',jsonb_build_object('status',?::text)),?,'测试员工',now())
+                        """, order, state[0], actor);
+            }
+            flyway.target("25").load().migrate();
+            connection.setSchema(schema);
+            var rows = legacy.queryForList("""
+                    SELECT o.status,o.current_stage_code,o.fulfillment_type,o.version,o.payment_status,o.paid_at,
+                           i.production_status,a.details#>>'{after,status}' AS historic_status
+                    FROM cake_order o JOIN cake_order_item i ON i.order_id=o.id JOIN cake_order_activity a ON a.order_id=o.id
+                    ORDER BY o.order_no
+                    """);
+            assertEquals(cases.length, rows.size());
+            for (int index = 0; index < cases.length; index++) {
+                var row = rows.get(index);
+                assertEquals(cases[index][3], row.get("status"));
+                assertNull(row.get("current_stage_code"));
+                assertEquals(cases[index][2], row.get("fulfillment_type"));
+                assertEquals(7L, row.get("version"));
+                assertEquals("PAID", row.get("payment_status"));
+                assertEquals(Instant.parse("2026-10-17T08:00:00Z"), ((java.sql.Timestamp) row.get("paid_at")).toInstant());
+                assertEquals("COMPLETED", row.get("production_status"));
+                assertEquals(cases[index][0], row.get("historic_status"));
+            }
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+    @Test void productionQueryCountsByShanghaiFinishDayAndReturnsOnlyMatchingOrders() throws Exception {
+        var staff = staff();
+        String[][] fixtures = {
+                {"CAKE_BASE", "2026-10-31T15:59:59Z"},
+                {"LAYER", "2026-10-31T16:00:00Z"},
+                {"FROSTING", "2026-10-31T16:00:00Z"},
+                {"DECORATING", null},
+                {"WAITING_DELIVERY", "2026-10-31T16:00:00Z"},
+                {"COMPLETED", null},
+                {"CANCELLED", "2026-10-31T16:00:00Z"},
+                {"CAKE_BASE", "2026-11-02T16:00:00Z"}
+        };
+        var ids = new ArrayList<String>();
+        for (var fixture : fixtures) {
+            var order = createCakeOn(staff, "2026-12-01", "10:00", "PICKUP");
+            String id = order.path("orderId").asText();
+            ids.add(id);
+            jdbc.update("UPDATE cake_order SET status=?, planned_finish_at=?::timestamptz WHERE id=?::uuid", fixture[0], fixture[1], id);
+        }
+        jdbc.update("""
+                UPDATE cake_order SET deleted_at=now(), deleted_by=created_by, deleted_by_name='测试', deletion_reason='测试'
+                WHERE id=?::uuid
+                """, ids.getLast());
+        String summary = "/api/orders/workbench/production-summary?from=2026-10-31&to=2026-11-03";
+        String orders = "/api/orders/workbench/production-orders?";
+        assertEquals(401, new Client().request("GET", summary, null).status);
+        var data = query(staff, summary);
+        assertEquals(3, data.path("total").asLong());
+        assertEquals(1, data.path("unscheduled").asLong());
+        assertEquals(1, data.at("/days/0/orderCount").asLong());
+        assertEquals("2026-11-01", data.at("/days/1/date").asText());
+        assertEquals(2, data.at("/days/1/orderCount").asLong());
+        assertEquals(0, data.at("/days/2/orderCount").asLong());
+        var day = query(staff, orders + "date=2026-11-01&page=9");
+        assertEquals(2, day.path("total").asLong());
+        assertEquals(1, day.path("page").asInt());
+        assertEquals(List.of(ids.get(1), ids.get(2)), orderIds(day.path("orders")));
+        assertEquals("2026-12-01", day.at("/orders/0/pickupDate").asText());
+        assertFalse(day.at("/orders/0/itemName").asText().isBlank());
+        assertEquals(Set.of("orderId", "orderNo", "itemName", "status", "plannedFinishAt", "pickupAt", "pickupDate"),
+                json.convertValue(day.at("/orders/0"), Map.class).keySet());
+        var unscheduled = query(staff, orders + "unscheduled=true&stage=DECORATING");
+        assertEquals(List.of(ids.get(3)), orderIds(unscheduled.path("orders")));
+        assertEquals(0, query(staff, summary + "&stage=LAYER").path("unscheduled").asLong());
+        assertEquals(1, query(staff, summary + "&stage=LAYER").path("total").asLong());
+        for (var suffix : List.of("unscheduled=true&date=2026-11-01", "stage=LAYER", "date=2026-11-01&stage=CANCELLED", "date=2026-11-01&page=0"))
+            assertEquals(400, staff.request("GET", orders + suffix, null).status);
+
+        var moved = staff.request("PATCH", "/api/orders/" + ids.get(1) + "/information", Map.of("expectedVersion", 0,
+                "changes", Map.of("plannedFinishAt", "2026-11-02T09:00:00+08:00")));
+        assertEquals(200, moved.status, moved.body.toString());
+        assertEquals(1, query(staff, summary).at("/days/2/orderCount").asLong());
+        assertEquals(200, staff.request("POST", "/api/orders/" + ids.get(2) + "/cancel",
+                Map.of("expectedVersion", 0, "reason", "测试取消")).status);
+        assertEquals(0, query(staff, orders + "date=2026-11-01").path("total").asLong());
+        jdbc.update("UPDATE cake_order_item SET production_status='COMPLETED' WHERE order_id=?::uuid", ids.get(3));
+        production(staff, ids.get(3), 0, "COMPLETE_DECORATION");
+        assertEquals(0, query(staff, summary).path("unscheduled").asLong());
+        assertEquals(0, query(staff, orders + "unscheduled=true").path("total").asLong());
+    }
+
     @Test void orderingMethodPersistsClearsAndUsesOptimisticConcurrency() throws Exception {
         var staff = staff(); var input = new LinkedHashMap<>(create()); input.put("orderingMethod", "  微信  ");
         var response = staff.request("POST", "/api/orders", input);
@@ -173,7 +297,7 @@ class OrderIT {
         var created = staff.request("POST", "/api/orders", create()); assertEquals(201, created.status, created.body.toString());
         var original = created.body.path("data"); String orderId = original.path("orderId").asText();
         String first = idForName(original, "蛋糕"), second = idForName(original, "纸杯");
-        assertNotEquals(first, second); assertEquals("WAITING_PRODUCTION", original.path("status").asText());
+        assertNotEquals(first, second); assertEquals("CAKE_BASE", original.path("status").asText());
         assertEquals("UNPAID", original.path("paymentStatus").asText()); assertEquals(0, original.path("version").asLong());
         assertEquals(staff.accountId, original.path("createdBy").asText());
         assertEquals(start, Instant.parse(original.path("updatedAt").asText()));
@@ -271,13 +395,13 @@ class OrderIT {
         assertEquals(401, anonymous.request("POST", "/api/orders/" + id + "/notes", Map.of("content", "备注")).status);
         assertEquals(401, anonymous.request("GET", "/api/orders/" + id + "/activities", null).status);
         assertEquals(401, anonymous.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
-        assertEquals(401, anonymous.request("POST", "/api/orders/" + id + "/production-actions", action(0, "START_PRODUCTION")).status);
+        assertEquals(401, anonymous.request("POST", "/api/orders/" + id + "/production-actions", action(0, "COMPLETE_BASE")).status);
         assertEquals(401, anonymous.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("phone", "13900000000"))).status);
         assertEquals(401, anonymous.request("POST", "/api/orders/" + id + "/items", Map.of("expectedVersion", 0, "item", Map.of("name", "C", "quantity", 1))).status);
         assertEquals(401, anonymous.request("POST", "/api/orders/" + id + "/items/" + itemId + "/remove", Map.of("expectedVersion", 0)).status);
         assertEquals(404, staff.request("GET", "/api/orders/" + UUID.randomUUID(), null).status);
         assertEquals(404, staff.request("PATCH", "/api/orders/" + UUID.randomUUID() + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
-        assertEquals(404, staff.request("POST", "/api/orders/" + UUID.randomUUID() + "/production-actions", action(0, "START_PRODUCTION")).status);
+        assertEquals(404, staff.request("POST", "/api/orders/" + UUID.randomUUID() + "/production-actions", action(0, "COMPLETE_BASE")).status);
         assertEquals(404, staff.request("PATCH", "/api/orders/" + id, patch(foreign, 0, Map.of("quantity", 2))).status);
         assertEquals(404, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", foreign, "content", "串单")).status);
         assertEquals(404, staff.request("GET", "/api/orders/" + id + "/activities?itemId=" + foreign, null).status);
@@ -293,8 +417,8 @@ class OrderIT {
         assertEquals(400, staff.request("PATCH", "/api/orders/" + id, patch(itemId, 0, Map.of("quantity", 1.5))).status);
         assertEquals(400, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("content", " ")).status);
         assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("paymentStatus", "PAID")).status);
-        assertEquals(400, staff.request("POST", "/api/orders/" + id + "/production-actions", action(0.5, "START_PRODUCTION")).status);
-        assertEquals(400, staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "START_PRODUCTION", "status", "WAITING_DELIVERY")).status);
+        assertEquals(400, staff.request("POST", "/api/orders/" + id + "/production-actions", action(0.5, "COMPLETE_BASE")).status);
+        assertEquals(400, staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE", "status", "WAITING_DELIVERY")).status);
         var forged = new LinkedHashMap<>(create()); forged.put("actorId", UUID.randomUUID());
         assertEquals(400, staff.request("POST", "/api/orders", forged).status);
         forged.remove("actorId"); forged.put("status", "COMPLETED");
@@ -320,64 +444,64 @@ class OrderIT {
         var noop = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID"));
         assertEquals(200, noop.status); assertEquals(paid.body.path("data"), noop.body.path("data"));
         assertEquals(409, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
-        var started = production(staff, id, 1, "START_PRODUCTION");
-        assertEquals("PROCESSING", started.path("status").asText()); assertEquals(2, started.path("version").asLong());
+        var started = production(staff, id, 1, "COMPLETE_BASE");
+        assertEquals("LAYER", started.path("status").asText()); assertEquals(2, started.path("version").asLong());
         for (var item : started.path("items")) {
             assertEquals("IN_PROGRESS", item.path("productionStatus").asText());
             assertEquals(start.plusSeconds(2), Instant.parse(item.path("updatedAt").asText()));
         }
         doReturn(start.plusSeconds(3)).when(clock).instant();
         var layer = production(staff, id, 2, "COMPLETE_LAYER");
-        assertEquals("LAYER_DONE", layer.path("currentStageCode").asText()); assertEquals(started.path("items"), layer.path("items"));
+        assertEquals("FROSTING", layer.path("status").asText()); assertEquals(started.path("items"), layer.path("items"));
         assertEquals(start.plusSeconds(3), Instant.parse(layer.path("updatedAt").asText()));
         doReturn(start.plusSeconds(4)).when(clock).instant();
         var frosted = production(staff, id, 3, "COMPLETE_FROSTING");
-        assertEquals("FROSTING_DONE", frosted.path("currentStageCode").asText()); assertEquals(started.path("items"), frosted.path("items"));
+        assertEquals("DECORATING", frosted.path("status").asText()); assertEquals(started.path("items"), frosted.path("items"));
         doReturn(start.plusSeconds(5)).when(clock).instant();
         var completed = finishProduction(staff, id, 4);
-        assertEquals("WAITING_DELIVERY", completed.path("status").asText()); assertEquals(8, completed.path("version").asLong());
+        assertEquals("WAITING_DELIVERY", completed.path("status").asText()); assertEquals(7, completed.path("version").asLong());
         for (var item : completed.path("items")) {
             assertEquals("COMPLETED", item.path("productionStatus").asText()); assertTrue(item.path("currentStageCode").isNull());
             assertEquals(start.plusSeconds(5), Instant.parse(item.path("updatedAt").asText()));
         }
         assertEquals(completed, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
-        assertEquals("OTHER_DONE", jdbc.queryForObject("SELECT current_stage_code FROM cake_order WHERE id=?::uuid", String.class, id));
-        assertEquals(409, staff.request("PATCH", "/api/orders/" + id, patch(first, 8, Map.of("quantity", 2))).status);
+        assertNull(jdbc.queryForObject("SELECT current_stage_code FROM cake_order WHERE id=?::uuid", String.class, id));
+        assertEquals(409, staff.request("PATCH", "/api/orders/" + id, patch(first, 7, Map.of("quantity", 2))).status);
         assertEquals(completed, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
         doReturn(start.plusSeconds(6)).when(clock).instant();
-        var reopened = production(staff, id, 8, "REOPEN_PRODUCTION");
-        assertEquals("PROCESSING", reopened.path("status").asText()); assertEquals("OTHER_DONE", reopened.path("currentStageCode").asText());
+        var reopened = production(staff, id, 7, "REOPEN_PRODUCTION");
+        assertEquals("DECORATING", reopened.path("status").asText()); assertTrue(reopened.path("currentStageCode").isNull());
         assertEquals("COMPLETED", item(reopened, first).path("productionStatus").asText());
         doReturn(start.plusSeconds(7)).when(clock).instant();
-        var revised = staff.request("PATCH", "/api/orders/" + id, patch(first, 9, Map.of("quantity", 2)));
+        var revised = staff.request("PATCH", "/api/orders/" + id, patch(first, 8, Map.of("quantity", 2)));
         assertEquals(200, revised.status); assertEquals(item(reopened, second), item(revised.body.path("data"), second));
         doReturn(start.plusSeconds(8)).when(clock).instant();
-        var confirmed = finishProduction(staff, id, 10);
-        assertEquals("WAITING_DELIVERY", confirmed.path("status").asText()); assertEquals(13, confirmed.path("version").asLong());
+        var confirmed = finishProduction(staff, id, 9);
+        assertEquals("WAITING_DELIVERY", confirmed.path("status").asText()); assertEquals(11, confirmed.path("version").asLong());
         var payments = staff.request("GET", "/api/orders/" + id + "/activities?type=PAYMENT_STATUS_CHANGED", null);
         assertEquals(200, payments.status); assertEquals(1, payments.body.at("/data/total").asLong());
         var paymentLog = payments.body.at("/data/items/0");
         assertEquals("UNPAID", paymentLog.at("/details/before/paymentStatus").asText());
         assertEquals("PAID", paymentLog.at("/details/after/paymentStatus").asText());
         var productions = staff.request("GET", "/api/orders/" + id + "/activities?type=ORDER_PRODUCTION_CHANGED", null);
-        assertEquals(200, productions.status); assertEquals(11, productions.body.at("/data/total").asLong());
+        assertEquals(200, productions.status); assertEquals(9, productions.body.at("/data/total").asLong());
         for (var log : productions.body.at("/data/items")) {
             assertEquals(staff.accountId, log.path("actorId").asText());
             if (!log.path("itemId").isNull()) assertTrue(Set.of(first, second).contains(log.path("itemId").asText()));
             assertEquals("前台员工", log.path("actorNameSnapshot").asText());
             if (log.at("/details/action").asText().equals("COMPLETE_LAYER")) {
-                assertTrue(log.at("/details/before/currentStageCode").isNull());
-                assertEquals("LAYER_DONE", log.at("/details/after/currentStageCode").asText());
+                assertEquals("LAYER", log.at("/details/before/status").asText());
+                assertEquals("FROSTING", log.at("/details/after/status").asText());
                 assertEquals(0, log.at("/details/itemChanges").size());
             } else if (log.at("/details/action").asText().equals("REOPEN_PRODUCTION")) {
                 assertEquals("WAITING_DELIVERY", log.at("/details/before/status").asText());
-                assertEquals("PROCESSING", log.at("/details/after/status").asText());
-                assertEquals("OTHER_DONE", log.at("/details/after/currentStageCode").asText()); assertEquals(0, log.at("/details/itemChanges").size());
+                assertEquals("DECORATING", log.at("/details/after/status").asText());
+                assertEquals(0, log.at("/details/itemChanges").size());
             }
         }
         assertEquals(staff.accountId, paymentLog.path("actorId").asText());
         assertEquals(start.plusSeconds(1), Instant.parse(paymentLog.path("createdAt").asText()));
-        assertEquals(14, staff.request("GET", "/api/orders/" + id + "/activities", null).body.at("/data/total").asLong());
+        assertEquals(12, staff.request("GET", "/api/orders/" + id + "/activities", null).body.at("/data/total").asLong());
     }
     @Test void requiredStagesInvalidActionsAndPaymentCorrectionsPreserveSavedData() throws Exception {
         var staff = staff();
@@ -385,24 +509,24 @@ class OrderIT {
             var request = new LinkedHashMap<String, Object>(cakeOrder());
             request.put("fulfillment", Map.of("type", type, "address", "示例地址", "requestedReceiveDate", "2026-10-16", "plannedHandoffAt", "2026-10-16T10:00:00+08:00"));
             var original = staff.request("POST", "/api/orders", request).body.path("data"); String id = original.path("orderId").asText();
-            for (var action : List.of("COMPLETE_LAYER", "COMPLETE_FROSTING", "COMPLETE_PRODUCTION", "REOPEN_PRODUCTION"))
+            for (var action : List.of("COMPLETE_LAYER", "COMPLETE_FROSTING", "COMPLETE_DECORATION", "REOPEN_PRODUCTION"))
                 assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(0, action)).status);
             assertEquals(400, staff.request("POST", "/api/orders/" + id + "/production-actions", action(0, "CANCEL")).status);
             assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "REFUNDED")).status);
             assertEquals(original, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
-            var started = production(staff, id, 0, "START_PRODUCTION");
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(1, "START_PRODUCTION")).status);
+            var started = production(staff, id, 0, "COMPLETE_BASE");
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(1, "COMPLETE_BASE")).status);
             assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(1, "COMPLETE_FROSTING")).status);
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(0, "COMPLETE_PRODUCTION")).status);
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(0, "COMPLETE_DECORATION")).status);
             assertEquals(started, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
             var completed = finishProduction(staff, id, 1);
-            assertEquals(type.equals("DELIVERY") ? "WAITING_DELIVERY" : "WAITING_PICKUP", completed.path("status").asText());
-            assertEquals("OTHER_DONE", completed.path("currentStageCode").asText());
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(7, "COMPLETE_PRODUCTION")).status);
+            assertEquals("WAITING_DELIVERY", completed.path("status").asText());
+            assertTrue(completed.path("currentStageCode").isNull());
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(6, "COMPLETE_DECORATION")).status);
             assertEquals(completed, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
-            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 7, "paymentStatus", "PAID")).status);
-            var corrected = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 8, "paymentStatus", "UNPAID"));
-            assertEquals(200, corrected.status); assertEquals(9, corrected.body.at("/data/version").asLong());
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 6, "paymentStatus", "PAID")).status);
+            var corrected = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 7, "paymentStatus", "UNPAID"));
+            assertEquals(200, corrected.status); assertEquals(8, corrected.body.at("/data/version").asLong());
             assertEquals(completed.path("items"), corrected.body.at("/data/items"));
         }
     }
@@ -411,7 +535,7 @@ class OrderIT {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var start = new CountDownLatch(1);
             var a = executor.submit(() -> { start.await(); return staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")); });
-            var b = executor.submit(() -> { start.await(); return staff.request("POST", "/api/orders/" + id + "/production-actions", action(0, "START_PRODUCTION")); });
+            var b = executor.submit(() -> { start.await(); return staff.request("POST", "/api/orders/" + id + "/production-actions", action(0, "COMPLETE_BASE")); });
             start.countDown(); var responses = List.of(a.get(), b.get());
             assertEquals(Set.of(200, 409), Set.of(responses.get(0).status, responses.get(1).status));
             var winner = responses.stream().filter(response -> response.status == 200).findFirst().orElseThrow();
@@ -447,8 +571,8 @@ class OrderIT {
             assertEquals(503, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
             stream.noChange();
             reset(activities); assertEquals(original, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
-            for (var action : List.of("START_PRODUCTION", "COMPLETE_LAYER", "COMPLETE_FROSTING", "COMPLETE_OTHER", "COMPLETE_PRODUCTION", "REOPEN_PRODUCTION")) {
-                if (action.equals("COMPLETE_OTHER")) {
+            for (var action : List.of("COMPLETE_BASE", "COMPLETE_LAYER", "COMPLETE_FROSTING", "COMPLETE_DECORATION", "REOPEN_PRODUCTION")) {
+                if (action.equals("COMPLETE_DECORATION")) {
                     var current = staff.request("GET", "/api/orders/" + id, null).body.path("data");
                     for (var item : current.path("items")) {
                         String itemId = item.path("itemId").asText();
@@ -482,12 +606,12 @@ class OrderIT {
             for (var stream : List.of(a, b)) stream.changed(id, itemId, "ITEM_CHANGED", 1);
             assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID")).status);
             for (var stream : List.of(a, b)) stream.changed(id, null, "PAYMENT_STATUS_CHANGED", 2);
-            production(staff, id, 2, "START_PRODUCTION");
+            production(staff, id, 2, "COMPLETE_BASE");
             for (var stream : List.of(a, b)) stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 3);
             production(staff, id, 3, "COMPLETE_LAYER");
             for (var stream : List.of(a, b)) stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 4);
             var latest = peer.request("GET", "/api/orders/" + id, null).body.path("data");
-            assertEquals("LAYER_DONE", latest.path("currentStageCode").asText()); assertEquals(4, latest.path("version").asLong());
+            assertEquals("FROSTING", latest.path("status").asText()); assertEquals(4, latest.path("version").asLong());
             for (var item : latest.path("items")) assertTrue(item.path("currentStageCode").isNull());
             assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", itemId, "content", "客户要求少糖")).status);
             for (var stream : List.of(a, b)) stream.changed(id, itemId, "NOTE", 4);
@@ -520,15 +644,15 @@ class OrderIT {
     private JsonNode finishProduction(Client staff, String id, long version) throws Exception {
         var detail = staff.request("GET", "/api/orders/" + id, null).body.path("data");
         assertEquals(version, detail.path("version").asLong());
-        if (detail.path("currentStageCode").isNull()) detail = production(staff, id, detail.path("version").asLong(), "COMPLETE_LAYER");
-        if (detail.path("currentStageCode").asText().equals("LAYER_DONE")) detail = production(staff, id, detail.path("version").asLong(), "COMPLETE_FROSTING");
+        if (detail.path("status").asText().equals("CAKE_BASE")) detail = production(staff, id, detail.path("version").asLong(), "COMPLETE_BASE");
+        if (detail.path("status").asText().equals("LAYER")) detail = production(staff, id, detail.path("version").asLong(), "COMPLETE_LAYER");
+        if (detail.path("status").asText().equals("FROSTING")) detail = production(staff, id, detail.path("version").asLong(), "COMPLETE_FROSTING");
         for (var item : detail.path("items")) {
             var checked = staff.request("PATCH", "/api/orders/" + id + "/items/" + item.path("itemId").asText() + "/production-status",
                     Map.of("expectedVersion", detail.path("version").asLong(), "completed", true));
             assertEquals(200, checked.status, checked.body.toString()); detail = checked.body.path("data");
         }
-        if (detail.path("currentStageCode").asText().equals("FROSTING_DONE")) detail = production(staff, id, detail.path("version").asLong(), "COMPLETE_OTHER");
-        return production(staff, id, detail.path("version").asLong(), "COMPLETE_PRODUCTION");
+        return production(staff, id, detail.path("version").asLong(), "COMPLETE_DECORATION");
     }
     private static Map<String, Object> action(Number version, String action) { return Map.of("expectedVersion", version, "action", action); }
     @Test void deliveryAndPickupCloseOrdersWithAuditedRealtimeHandoff() throws Exception {
@@ -537,33 +661,28 @@ class OrderIT {
             var request = new LinkedHashMap<String, Object>(cakeOrder());
             request.put("fulfillment", Map.of("type", type, "address", "示例地址", "requestedReceiveDate", "2026-10-16", "plannedHandoffAt", "2026-10-16T10:00:00+08:00"));
             var original = staff.request("POST", "/api/orders", request).body.path("data"); String id = original.path("orderId").asText();
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(0, "START_DELIVERY")).status);
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(0, "COMPLETE_DELIVERY")).status);
             assertEquals(400, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(0, "SHIP")).status);
-            production(staff, id, 0, "START_PRODUCTION"); production(staff, id, 1, "COMPLETE_LAYER");
+            production(staff, id, 0, "COMPLETE_BASE"); production(staff, id, 1, "COMPLETE_LAYER");
             var ready = finishProduction(staff, id, 2);
-            assertEquals(type.equals("DELIVERY") ? "WAITING_DELIVERY" : "WAITING_PICKUP", ready.path("status").asText());
+            assertEquals("WAITING_DELIVERY", ready.path("status").asText());
             try (var stream = peer.stream()) {
-                var wrongActions = type.equals("DELIVERY") ? List.of("CONFIRM_PICKUP", "COMPLETE_DELIVERY") : List.of("START_DELIVERY", "COMPLETE_DELIVERY");
-                for (var wrong : wrongActions)
-                    assertEquals(409, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(7, wrong)).status);
+                String wrong = type.equals("DELIVERY") ? "CONFIRM_PICKUP" : "COMPLETE_DELIVERY";
+                assertEquals(409, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(ready.path("version").asLong(), wrong)).status);
+                assertEquals(400, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(ready.path("version").asLong(), "START_DELIVERY")).status);
                 stream.noChange(); assertEquals(ready, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
-                JsonNode completed;
-                if (type.equals("DELIVERY")) {
-                    var delivering = fulfillment(staff, id, 7, "START_DELIVERY"); stream.changed(id, null, "ORDER_FULFILLMENT_CHANGED", 8);
-                    assertEquals("DELIVERING", delivering.path("status").asText()); assertEquals(ready.path("items"), delivering.path("items"));
-                    assertEquals(delivering, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
-                    completed = fulfillment(staff, id, 8, "COMPLETE_DELIVERY");
-                } else completed = fulfillment(staff, id, 7, "CONFIRM_PICKUP");
+                var completed = fulfillment(staff, id, ready.path("version").asLong(),
+                        type.equals("DELIVERY") ? "COMPLETE_DELIVERY" : "CONFIRM_PICKUP");
                 long version = completed.path("version").asLong(); stream.changed(id, null, "ORDER_FULFILLMENT_CHANGED", version);
                 assertEquals("COMPLETED", completed.path("status").asText()); assertEquals("UNPAID", completed.path("paymentStatus").asText());
-                assertEquals("OTHER_DONE", completed.path("currentStageCode").asText()); assertEquals(ready.path("items"), completed.path("items"));
+                assertTrue(completed.path("currentStageCode").isNull()); assertEquals(ready.path("items"), completed.path("items"));
                 assertEquals(completed, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
                 assertEquals("COMPLETED", jdbc.queryForObject("SELECT status FROM cake_order WHERE id=?::uuid", String.class, id));
                 assertEquals(version, jdbc.queryForObject("SELECT version FROM cake_order WHERE id=?::uuid", Long.class, id));
                 var logs = peer.request("GET", "/api/orders/" + id + "/activities?type=ORDER_FULFILLMENT_CHANGED", null);
-                assertEquals(type.equals("DELIVERY") ? 2 : 1, logs.body.at("/data/total").asLong()); var log = logs.body.at("/data/items/0");
+                assertEquals(1, logs.body.at("/data/total").asLong()); var log = logs.body.at("/data/items/0");
                 assertEquals(type.equals("DELIVERY") ? "COMPLETE_DELIVERY" : "CONFIRM_PICKUP", log.at("/details/action").asText());
-                assertEquals(type.equals("DELIVERY") ? "DELIVERING" : "WAITING_PICKUP", log.at("/details/before/status").asText());
+                assertEquals("WAITING_DELIVERY", log.at("/details/before/status").asText());
                 assertEquals("COMPLETED", log.at("/details/after/status").asText()); assertTrue(log.path("itemId").isNull());
                 assertEquals(staff.accountId, log.path("actorId").asText()); assertEquals("前台员工", log.path("actorNameSnapshot").asText());
                 assertEquals(completed.path("updatedAt"), log.path("createdAt"));
@@ -585,57 +704,56 @@ class OrderIT {
         var staff = staff(); var peer = new Client(); peer.login("0001", PASSWORD);
         var original = staff.request("POST", "/api/orders", cakeOrder()).body.path("data"); String id = original.path("orderId").asText(), itemId = idForName(original, "蛋糕");
         assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
-        production(staff, id, 1, "START_PRODUCTION"); production(staff, id, 2, "COMPLETE_LAYER"); finishProduction(staff, id, 3);
-        fulfillment(staff, id, 8, "START_DELIVERY");
+        production(staff, id, 1, "COMPLETE_BASE"); production(staff, id, 2, "COMPLETE_LAYER"); finishProduction(staff, id, 3);
         assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", itemId, "content", "原有备注")).status);
         var before = peer.request("GET", "/api/orders/" + id, null).body.path("data");
         long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id);
         try (var stream = peer.stream()) {
-            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 9, "reason", " ")).status);
+            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 7, "reason", " ")).status);
             assertEquals(400, staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 5)).status);
-            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 9.5, "reason", "取消")).status);
-            var stale = staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 8, "reason", "取消"));
+            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 7.5, "reason", "取消")).status);
+            var stale = staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 6, "reason", "取消"));
             assertEquals(409, stale.status); assertEquals("CONCURRENT_MODIFICATION", stale.body.path("code").asText());
             stream.noChange(); assertEquals(before, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
             assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id));
-            var result = staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 9, "reason", " 配送异常，客户确认取消 "));
-            assertEquals(200, result.status, result.body.toString()); stream.changed(id, null, "ORDER_CANCELLED", 10);
+            var result = staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 7, "reason", " 配送异常，客户确认取消 "));
+            assertEquals(200, result.status, result.body.toString()); stream.changed(id, null, "ORDER_CANCELLED", 8);
             var cancelled = peer.request("GET", "/api/orders/" + id, null).body.path("data"); assertEquals(result.body.path("data"), cancelled);
             assertEquals("CANCELLED", cancelled.path("status").asText()); assertEquals("PAID", cancelled.path("paymentStatus").asText());
-            assertEquals("OTHER_DONE", cancelled.path("currentStageCode").asText()); assertEquals(before.path("items"), cancelled.path("items"));
-            assertEquals(10, cancelled.path("version").asLong()); assertEquals(count + 1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id));
+            assertTrue(cancelled.path("currentStageCode").isNull()); assertEquals(before.path("items"), cancelled.path("items"));
+            assertEquals(8, cancelled.path("version").asLong()); assertEquals(count + 1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id));
             var logs = peer.request("GET", "/api/orders/" + id + "/activities?type=ORDER_CANCELLED", null);
             assertEquals(1, logs.body.at("/data/total").asLong()); var log = logs.body.at("/data/items/0");
-            assertEquals("配送异常，客户确认取消", log.path("content").asText()); assertEquals("DELIVERING", log.at("/details/before/status").asText());
+            assertEquals("配送异常，客户确认取消", log.path("content").asText()); assertEquals("WAITING_DELIVERY", log.at("/details/before/status").asText());
             assertEquals("CANCELLED", log.at("/details/after/status").asText()); assertEquals(staff.accountId, log.path("actorId").asText());
             assertEquals("前台员工", log.path("actorNameSnapshot").asText()); assertEquals(cancelled.path("updatedAt"), log.path("createdAt"));
-            assertEquals(409, staff.request("PATCH", "/api/orders/" + id, patch(itemId, 10, Map.of("quantity", 2))).status);
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(10, "REOPEN_PRODUCTION")).status);
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(10, "COMPLETE_DELIVERY")).status);
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 10, "reason", "重复取消")).status);
+            assertEquals(409, staff.request("PATCH", "/api/orders/" + id, patch(itemId, 8, Map.of("quantity", 2))).status);
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(8, "REOPEN_PRODUCTION")).status);
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(8, "COMPLETE_DELIVERY")).status);
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 8, "reason", "重复取消")).status);
             stream.noChange();
-            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 10, "paymentStatus", "UNPAID")).status);
-            stream.changed(id, null, "PAYMENT_STATUS_CHANGED", 11);
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 8, "paymentStatus", "UNPAID")).status);
+            stream.changed(id, null, "PAYMENT_STATUS_CHANGED", 9);
             assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", itemId, "content", "人工退款处理备注")).status);
-            stream.changed(id, itemId, "NOTE", 11);
+            stream.changed(id, itemId, "NOTE", 9);
             var after = peer.request("GET", "/api/orders/" + id, null).body.path("data"); assertEquals("CANCELLED", after.path("status").asText());
             assertEquals("UNPAID", after.path("paymentStatus").asText()); assertEquals(List.of("人工退款处理备注", "原有备注"), contents(item(after, itemId).path("recentNotes")));
         }
     }
     @Test void sameVersionFulfillmentAndCancellationHaveOneCommitLogAndNotification() throws Exception {
         var staff = staff(); var original = staff.request("POST", "/api/orders", cakeOrder()).body.path("data"); String id = original.path("orderId").asText();
-        production(staff, id, 0, "START_PRODUCTION"); var ready = finishProduction(staff, id, 1);
+        production(staff, id, 0, "COMPLETE_BASE"); var ready = finishProduction(staff, id, 1);
         try (var stream = staff.stream(); var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var start = new CountDownLatch(1);
-            var a = executor.submit(() -> { start.await(); return staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(7, "START_DELIVERY")); });
-            var b = executor.submit(() -> { start.await(); return staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 7, "reason", "取消")); });
+            var a = executor.submit(() -> { start.await(); return staff.request("POST", "/api/orders/" + id + "/fulfillment-actions", action(6, "COMPLETE_DELIVERY")); });
+            var b = executor.submit(() -> { start.await(); return staff.request("POST", "/api/orders/" + id + "/cancel", Map.of("expectedVersion", 6, "reason", "取消")); });
             start.countDown(); var responses = List.of(a.get(10, TimeUnit.SECONDS), b.get(10, TimeUnit.SECONDS));
             assertEquals(Set.of(200, 409), Set.of(responses.get(0).status, responses.get(1).status));
             var winner = responses.stream().filter(response -> response.status == 200).findFirst().orElseThrow();
             var loser = responses.stream().filter(response -> response.status == 409).findFirst().orElseThrow(); assertEquals("CONCURRENT_MODIFICATION", loser.body.path("code").asText());
             var latest = staff.request("GET", "/api/orders/" + id, null).body.path("data"); assertEquals(winner.body.path("data"), latest);
-            assertEquals(8, latest.path("version").asLong()); assertEquals(ready.path("items"), latest.path("items"));
-            stream.changed(id, null, latest.path("status").asText().equals("CANCELLED") ? "ORDER_CANCELLED" : "ORDER_FULFILLMENT_CHANGED", 8); stream.noChange();
+            assertEquals(7, latest.path("version").asLong()); assertEquals(ready.path("items"), latest.path("items"));
+            stream.changed(id, null, latest.path("status").asText().equals("CANCELLED") ? "ORDER_CANCELLED" : "ORDER_FULFILLMENT_CHANGED", 7); stream.noChange();
             assertEquals(1L, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type IN ('ORDER_FULFILLMENT_CHANGED', 'ORDER_CANCELLED')", Long.class, id));
         }
     }
@@ -643,21 +761,21 @@ class OrderIT {
         var staff = staff(); var request = new LinkedHashMap<String, Object>(cakeOrder());
         request.put("fulfillment", Map.of("type", "PICKUP", "requestedReceiveDate", "2026-10-16", "plannedHandoffAt", "2026-10-16T10:00:00+08:00"));
         var original = staff.request("POST", "/api/orders", request).body.path("data"); String id = original.path("orderId").asText();
-        production(staff, id, 0, "START_PRODUCTION"); var ready = finishProduction(staff, id, 1);
+        production(staff, id, 0, "COMPLETE_BASE"); var ready = finishProduction(staff, id, 1);
         long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id);
         try (var stream = staff.stream()) {
             for (boolean fulfillment : List.of(true, false)) {
                 String type = fulfillment ? "ORDER_FULFILLMENT_CHANGED" : "ORDER_CANCELLED";
                 doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> activity.type().equals(type)));
                 var failed = staff.request("POST", "/api/orders/" + id + (fulfillment ? "/fulfillment-actions" : "/cancel"),
-                        fulfillment ? action(7, "CONFIRM_PICKUP") : Map.of("expectedVersion", 7, "reason", "取消"));
+                        fulfillment ? action(6, "CONFIRM_PICKUP") : Map.of("expectedVersion", 6, "reason", "取消"));
                 assertEquals(503, failed.status); reset(activities); stream.noChange();
                 assertEquals(ready, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
                 assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id));
                 new TransactionTemplate(transactions).executeWithoutResult(status -> {
                     var actor = new OrderCommands.Operator(UUID.fromString(staff.accountId), "前台员工");
-                    if (fulfillment) orderService.fulfillmentAction(UUID.fromString(id), new OrderCommands.FulfillmentAction(7, "CONFIRM_PICKUP"), actor);
-                    else orderService.cancel(UUID.fromString(id), new OrderCommands.Cancel(7, "取消"), actor);
+                    if (fulfillment) orderService.fulfillmentAction(UUID.fromString(id), new OrderCommands.FulfillmentAction(6, "CONFIRM_PICKUP"), actor);
+                    else orderService.cancel(UUID.fromString(id), new OrderCommands.Cancel(6, "取消"), actor);
                     status.setRollbackOnly();
                 });
                 stream.noChange(); assertEquals(ready, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
@@ -673,12 +791,12 @@ class OrderIT {
         var staff = staff(); var original = staff.request("POST", "/api/orders", cakeOrder()).body.path("data");
         String id = original.path("orderId").asText(), first = idForName(original, "蛋糕"), second = idForName(original, "纸杯造型蛋糕");
         assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", second, "content", "原商品备注")).status);
-        production(staff, id, 0, "START_PRODUCTION"); var ready = finishProduction(staff, id, 1);
-        assertEquals(409, staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 7)).status);
-        var reopened = production(staff, id, 7, "REOPEN_PRODUCTION");
+        production(staff, id, 0, "COMPLETE_BASE"); var ready = finishProduction(staff, id, 1);
+        assertEquals(409, staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 6)).status);
+        var reopened = production(staff, id, 6, "REOPEN_PRODUCTION");
         try (var stream = staff.stream()) {
-            var removed = staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 8));
-            assertEquals(200, removed.status, removed.body.toString()); stream.changed(id, second, "ITEM_REMOVED", 9);
+            var removed = staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 7));
+            assertEquals(200, removed.status, removed.body.toString()); stream.changed(id, second, "ITEM_REMOVED", 8);
             var latest = removed.body.path("data"); assertEquals(1, latest.path("items").size()); assertEquals(item(reopened, first), item(latest, first));
             assertTrue(jdbc.queryForObject("SELECT is_removed FROM cake_order_item WHERE id=?::uuid", Boolean.class, second));
             assertEquals("纸杯造型蛋糕", jdbc.queryForObject("SELECT name FROM cake_order_item WHERE id=?::uuid", String.class, second));
@@ -688,9 +806,9 @@ class OrderIT {
             var log = history.body.at("/data/items/0"); assertEquals("ITEM_REMOVED", log.path("type").asText());
             assertEquals("纸杯造型蛋糕", log.at("/details/before/name").asText()); assertFalse(log.at("/details/before/isRemoved").asBoolean());
             assertTrue(log.at("/details/after/isRemoved").asBoolean());
-            assertEquals(latest, staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 9)).body.path("data"));
-            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 8)).status);
-            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/items/" + first + "/remove", Map.of("expectedVersion", 9)).status);
+            assertEquals(latest, staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 8)).body.path("data"));
+            assertEquals(409, staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 7)).status);
+            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/items/" + first + "/remove", Map.of("expectedVersion", 8)).status);
             assertEquals(404, staff.request("GET", "/api/orders/" + id + "/activities?itemId=" + UUID.randomUUID(), null).status);
             assertEquals(404, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", second, "content", "不可修改已移除商品")).status);
             stream.noChange(); assertEquals(latest, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
@@ -719,7 +837,7 @@ class OrderIT {
         var original = staff.request("POST", "/api/orders", request).body.path("data");
         String id = original.path("orderId").asText(), first = idForName(original, "蛋糕"), second = idForName(original, "纸杯");
         assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", second, "content", "B 原有备注")).status);
-        production(staff, id, 0, "START_PRODUCTION"); production(staff, id, 1, "COMPLETE_LAYER");
+        production(staff, id, 0, "COMPLETE_BASE"); production(staff, id, 1, "COMPLETE_LAYER");
         var frosted = production(staff, id, 2, "COMPLETE_FROSTING");
         try (var stream = peer.stream()) {
             var changes = new LinkedHashMap<String, Object>();
@@ -730,7 +848,7 @@ class OrderIT {
             changes.put("totalAmountCents", 28000);
             var corrected = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 3, "changes", changes));
             assertEquals(200, corrected.status, corrected.body.toString()); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 4);
-            var correctedData = corrected.body.path("data"); assertEquals("FROSTING_DONE", correctedData.path("currentStageCode").asText());
+            var correctedData = corrected.body.path("data"); assertEquals("DECORATING", correctedData.path("status").asText());
             assertEquals(frosted.path("items"), correctedData.path("items")); assertEquals(correctedData, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
             var log = peer.request("GET", "/api/orders/" + id + "/activities?type=ORDER_INFORMATION_CHANGED", null).body.at("/data/items/0");
             assertEquals("13800000000", log.at("/details/before/phone").asText()); assertEquals("13900000000", log.at("/details/after/phone").asText());
@@ -740,12 +858,12 @@ class OrderIT {
                     "item", Map.of("name", "商品 C", "productType", "OTHER", "quantity", 1, "unitPriceCents", 500, "attributes", Map.of("flavor", "香草"))));
             assertEquals(201, added.status, added.body.toString()); var addedData = added.body.path("data"); String third = idForName(addedData, "商品 C");
             assertNotEquals(first, third); assertNotEquals(second, third); stream.changed(id, third, "ITEM_ADDED", 5);
-            assertEquals(3, addedData.path("items").size()); assertEquals("PROCESSING", addedData.path("status").asText()); assertTrue(addedData.path("currentStageCode").isNull());
-            assertEquals("IN_PROGRESS", item(addedData, third).path("productionStatus").asText()); assertTrue(item(addedData, third).path("currentStageCode").isNull());
-            assertEquals(item(correctedData, first), item(addedData, first)); assertEquals(item(correctedData, second), item(addedData, second));
+            assertEquals(3, addedData.path("items").size()); assertEquals("CAKE_BASE", addedData.path("status").asText()); assertTrue(addedData.path("currentStageCode").isNull());
+            assertEquals("NOT_STARTED", item(addedData, third).path("productionStatus").asText()); assertTrue(item(addedData, third).path("currentStageCode").isNull());
+            for (var product : addedData.path("items")) assertEquals("NOT_STARTED", product.path("productionStatus").asText());
             assertEquals(28000, addedData.path("totalAmountCents").asLong()); assertEquals(addedData, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
             var addLog = peer.request("GET", "/api/orders/" + id + "/activities?itemId=" + third + "&type=ITEM_ADDED", null).body.at("/data/items/0");
-            assertEquals("FROSTING_DONE", addLog.at("/details/before/currentStageCode").asText()); assertTrue(addLog.at("/details/after/currentStageCode").isNull());
+            assertEquals("DECORATING", addLog.at("/details/before/status").asText()); assertEquals("CAKE_BASE", addLog.at("/details/after/status").asText());
             assertEquals("商品 C", addLog.at("/details/after/item/name").asText());
             var removed = staff.request("POST", "/api/orders/" + id + "/items/" + second + "/remove", Map.of("expectedVersion", 5));
             assertEquals(200, removed.status, removed.body.toString()); stream.changed(id, second, "ITEM_REMOVED", 6);
@@ -757,25 +875,25 @@ class OrderIT {
             assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(6, "COMPLETE_FROSTING")).status);
             assertEquals(409, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 5, "changes", Map.of("phone", "13900000000"))).status);
             assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 6, "changes", changes)).status);
-            stream.noChange(); var layer = production(staff, id, 6, "COMPLETE_LAYER"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 7);
-            assertEquals("LAYER_DONE", layer.path("currentStageCode").asText());
-            production(staff, id, 7, "COMPLETE_FROSTING"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 8);
-            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/items/" + third + "/production-status", Map.of("expectedVersion", 8, "completed", true)).status);
-            stream.changed(id, third, "ORDER_PRODUCTION_CHANGED", 9);
-            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/items/" + first + "/production-status", Map.of("expectedVersion", 9, "completed", true)).status);
-            stream.changed(id, first, "ORDER_PRODUCTION_CHANGED", 10);
-            production(staff, id, 10, "COMPLETE_OTHER"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 11);
-            var complete = production(staff, id, 11, "COMPLETE_PRODUCTION"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 12);
+            stream.noChange(); var layer = production(staff, id, 6, "COMPLETE_BASE"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 7);
+            assertEquals("LAYER", layer.path("status").asText());
+            production(staff, id, 7, "COMPLETE_LAYER"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 8);
+            production(staff, id, 8, "COMPLETE_FROSTING"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 9);
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/items/" + third + "/production-status", Map.of("expectedVersion", 9, "completed", true)).status);
+            stream.changed(id, third, "ORDER_PRODUCTION_CHANGED", 10);
+            assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/items/" + first + "/production-status", Map.of("expectedVersion", 10, "completed", true)).status);
+            stream.changed(id, first, "ORDER_PRODUCTION_CHANGED", 11);
+            var complete = production(staff, id, 11, "COMPLETE_DECORATION"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", 12);
             assertEquals("WAITING_DELIVERY", complete.path("status").asText());
             assertTrue(jdbc.queryForObject("SELECT is_removed FROM cake_order_item WHERE id=?::uuid", Boolean.class, second));
-            assertEquals("IN_PROGRESS", jdbc.queryForObject("SELECT production_status FROM cake_order_item WHERE id=?::uuid", String.class, second));
+            assertEquals("NOT_STARTED", jdbc.queryForObject("SELECT production_status FROM cake_order_item WHERE id=?::uuid", String.class, second));
             assertEquals(complete, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
         }
     }
     @Test void informationAndAdditionFailuresAndOuterRollbacksRestoreDatabaseAndSuppressSse() throws Exception {
         var staff = staff(); var request = new LinkedHashMap<String, Object>(create()); request.put("totalAmountCents", 25000);
         var original = staff.request("POST", "/api/orders", request).body.path("data"); String id = original.path("orderId").asText();
-        production(staff, id, 0, "START_PRODUCTION"); var before = production(staff, id, 1, "COMPLETE_LAYER");
+        production(staff, id, 0, "COMPLETE_BASE"); var before = production(staff, id, 1, "COMPLETE_LAYER");
         long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id);
         try (var stream = staff.stream()) {
             for (boolean information : List.of(true, false)) {
@@ -794,7 +912,7 @@ class OrderIT {
                 });
                 stream.noChange(); assertEquals(before, staff.request("GET", "/api/orders/" + id, null).body.path("data"));
                 assertEquals(2L, jdbc.queryForObject("SELECT version FROM cake_order WHERE id=?::uuid", Long.class, id));
-                assertEquals("LAYER_DONE", jdbc.queryForObject("SELECT current_stage_code FROM cake_order WHERE id=?::uuid", String.class, id));
+                assertEquals("FROSTING", jdbc.queryForObject("SELECT status FROM cake_order WHERE id=?::uuid", String.class, id));
                 assertEquals(25000L, jdbc.queryForObject("SELECT total_amount_cents FROM cake_order WHERE id=?::uuid", Long.class, id));
                 assertEquals(2L, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid", Long.class, id));
                 assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id));
@@ -811,7 +929,7 @@ class OrderIT {
         doAnswer(invocation -> {
             prepared.countDown(); if (!prepared.await(10, TimeUnit.SECONDS)) throw new AssertionError("both mutations must reach persistence");
             return invocation.callRealMethod();
-        }).when(orders).addItem(any(), eq(0L), any());
+        }).when(orders).addItem(any(), eq(0L), any(), anyList());
         try (var stream = staff.stream(); var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var start = new CountDownLatch(1);
             var a = executor.submit(() -> { start.await(); return staff.request("PATCH", "/api/orders/" + id + "/information",
@@ -874,48 +992,46 @@ class OrderIT {
     @Test void fulfillmentTypeCorrectionsPersistAuditAndNotifyAcrossHandoffAndTerminalStates() throws Exception {
         var staff = staff(); var peer = new Client(); peer.login("0001", PASSWORD);
         var original = staff.request("POST", "/api/orders", cakeOrder()).body.path("data"); String id = original.path("orderId").asText();
-        production(staff, id, 0, "START_PRODUCTION"); production(staff, id, 1, "COMPLETE_LAYER");
+        production(staff, id, 0, "COMPLETE_BASE"); production(staff, id, 1, "COMPLETE_LAYER");
         var ready = finishProduction(staff, id, 2);
         try (var stream = peer.stream()) {
             var pickup = new LinkedHashMap<String, Object>(); pickup.put("fulfillmentType", "PICKUP"); pickup.put("address", null);
             doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> activity.type().equals("ORDER_INFORMATION_CHANGED")));
-            assertEquals(503, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 7, "changes", pickup)).status);
+            assertEquals(503, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 6, "changes", pickup)).status);
             reset(activities); stream.noChange(); assertEquals(ready, peer.request("GET", "/api/orders/" + id, null).body.path("data"));
-            var corrected = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 7, "changes", pickup));
-            assertEquals(200, corrected.status, corrected.body.toString()); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 8);
+            var corrected = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 6, "changes", pickup));
+            assertEquals(200, corrected.status, corrected.body.toString()); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 7);
             var waitingPickup = peer.request("GET", "/api/orders/" + id, null).body.path("data"); assertEquals(corrected.body.path("data"), waitingPickup);
-            assertEquals("WAITING_PICKUP", waitingPickup.path("status").asText()); assertTrue(waitingPickup.at("/fulfillment/address").isNull());
-            assertEquals("OTHER_DONE", waitingPickup.path("currentStageCode").asText()); assertEquals(ready.path("items"), waitingPickup.path("items"));
-            assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 8, "changes", Map.of("fulfillmentType", "DELIVERY"))).status);
-            var delivery = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 8,
+            assertEquals("WAITING_DELIVERY", waitingPickup.path("status").asText()); assertTrue(waitingPickup.at("/fulfillment/address").isNull());
+            assertTrue(waitingPickup.path("currentStageCode").isNull()); assertEquals(ready.path("items"), waitingPickup.path("items"));
+            assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 7, "changes", Map.of("fulfillmentType", "DELIVERY"))).status);
+            var delivery = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 7,
                     "changes", Map.of("fulfillmentType", "DELIVERY", "address", "更正地址")));
-            assertEquals(200, delivery.status); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 9);
-            var delivering = fulfillment(staff, id, 9, "START_DELIVERY"); stream.changed(id, null, "ORDER_FULFILLMENT_CHANGED", 10);
-            var handoff = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 10, "changes", Map.of("fulfillmentType", "PICKUP")));
-            assertEquals(200, handoff.status, handoff.body.toString()); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 11);
-            assertEquals("WAITING_PICKUP", handoff.body.at("/data/status").asText()); assertEquals(delivering.path("items"), handoff.body.at("/data/items"));
+            assertEquals(200, delivery.status); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 8);
+            var handoff = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 8, "changes", Map.of("fulfillmentType", "PICKUP")));
+            assertEquals(200, handoff.status, handoff.body.toString()); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 9);
+            assertEquals("WAITING_DELIVERY", handoff.body.at("/data/status").asText()); assertEquals(delivery.body.at("/data/items"), handoff.body.at("/data/items"));
             var log = peer.request("GET", "/api/orders/" + id + "/activities?type=ORDER_INFORMATION_CHANGED", null).body.at("/data/items/0");
-            assertEquals("DELIVERING", log.at("/details/before/status").asText()); assertEquals("WAITING_PICKUP", log.at("/details/after/status").asText());
+            assertTrue(log.at("/details/before/status").isMissingNode()); assertTrue(log.at("/details/after/status").isMissingNode());
             assertEquals("DELIVERY", log.at("/details/before/fulfillmentType").asText()); assertEquals("PICKUP", log.at("/details/after/fulfillmentType").asText());
             assertEquals(staff.accountId, log.path("actorId").asText()); assertEquals("前台员工", log.path("actorNameSnapshot").asText());
-            var completed = fulfillment(staff, id, 11, "CONFIRM_PICKUP"); stream.changed(id, null, "ORDER_FULFILLMENT_CHANGED", 12);
-            var terminal = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 12,
+            var completed = fulfillment(staff, id, 9, "CONFIRM_PICKUP"); stream.changed(id, null, "ORDER_FULFILLMENT_CHANGED", 10);
+            var terminal = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 10,
                     "changes", Map.of("fulfillmentType", "DELIVERY", "phone", "13900000000", "totalAmountCents", 20000)));
-            assertEquals(200, terminal.status); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 13);
+            assertEquals(200, terminal.status); stream.changed(id, null, "ORDER_INFORMATION_CHANGED", 11);
             assertEquals("COMPLETED", terminal.body.at("/data/status").asText()); assertEquals(completed.path("items"), terminal.body.at("/data/items"));
             assertEquals(terminal.body.path("data"), peer.request("GET", "/api/orders/" + id, null).body.path("data"));
             assertEquals("DELIVERY", jdbc.queryForObject("SELECT fulfillment_type FROM cake_order WHERE id=?::uuid", String.class, id));
-            var noop = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 13, "changes", Map.of("fulfillmentType", "DELIVERY")));
+            var noop = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 11, "changes", Map.of("fulfillmentType", "DELIVERY")));
             assertEquals(200, noop.status); assertEquals(terminal.body.path("data"), noop.body.path("data")); stream.noChange();
         }
         var another = staff.request("POST", "/api/orders", cakeOrder()).body.path("data"); String cancelledId = another.path("orderId").asText();
-        production(staff, cancelledId, 0, "START_PRODUCTION"); finishProduction(staff, cancelledId, 1);
-        fulfillment(staff, cancelledId, 7, "START_DELIVERY");
-        var cancelled = staff.request("POST", "/api/orders/" + cancelledId + "/cancel", Map.of("expectedVersion", 8, "reason", "人工取消")).body.path("data");
+        production(staff, cancelledId, 0, "COMPLETE_BASE"); finishProduction(staff, cancelledId, 1);
+        var cancelled = staff.request("POST", "/api/orders/" + cancelledId + "/cancel", Map.of("expectedVersion", 6, "reason", "人工取消")).body.path("data");
         try (var stream = peer.stream()) {
-            var corrected = staff.request("PATCH", "/api/orders/" + cancelledId + "/information", Map.of("expectedVersion", 9,
+            var corrected = staff.request("PATCH", "/api/orders/" + cancelledId + "/information", Map.of("expectedVersion", 7,
                     "changes", Map.of("fulfillmentType", "PICKUP", "phone", "13900000000")));
-            assertEquals(200, corrected.status); stream.changed(cancelledId, null, "ORDER_INFORMATION_CHANGED", 10);
+            assertEquals(200, corrected.status); stream.changed(cancelledId, null, "ORDER_INFORMATION_CHANGED", 8);
             assertEquals("CANCELLED", corrected.body.at("/data/status").asText()); assertEquals(cancelled.path("items"), corrected.body.at("/data/items"));
             assertEquals(corrected.body.path("data"), peer.request("GET", "/api/orders/" + cancelledId, null).body.path("data"));
         }
@@ -1072,14 +1188,13 @@ class OrderIT {
         var other = createCakeOn(staff, "2026-10-01", "10:00", "DELIVERY");
         String processingId = processing.path("orderId").asText(), readyId = ready.path("orderId").asText();
         String deliveringId = delivering.path("orderId").asText(), completedId = completed.path("orderId").asText();
-        production(staff, processingId, 0, "START_PRODUCTION"); production(staff, processingId, 1, "COMPLETE_LAYER");
+        production(staff, processingId, 0, "COMPLETE_BASE"); production(staff, processingId, 1, "COMPLETE_LAYER");
         assertEquals(200, staff.request("PATCH", "/api/orders/" + processingId + "/payment-status",
                 Map.of("expectedVersion", 2, "paymentStatus", "PAID")).status);
         for (var id : List.of(readyId, deliveringId, completedId)) {
-            production(staff, id, 0, "START_PRODUCTION"); finishProduction(staff, id, 1);
+            production(staff, id, 0, "COMPLETE_BASE"); finishProduction(staff, id, 1);
         }
-        fulfillment(staff, deliveringId, 7, "START_DELIVERY");
-        fulfillment(staff, completedId, 7, "START_DELIVERY"); fulfillment(staff, completedId, 8, "COMPLETE_DELIVERY");
+        fulfillment(staff, completedId, 6, "COMPLETE_DELIVERY");
         assertEquals(200, staff.request("POST", "/api/orders/" + cancelled.path("orderId").asText() + "/cancel",
                 Map.of("expectedVersion", 0, "reason", "客户取消")).status);
         jdbc.update("UPDATE cake_order SET created_at='2026-09-29T15:59:59.999999Z'::timestamptz");
@@ -1092,11 +1207,11 @@ class OrderIT {
         assertEquals(4, workbench.at("/metrics/deliveryDueOnDate").asLong());
         var pending = workbench.path("pendingOrders"); assertEquals(7, pending.size());
         assertEquals(waiting.path("orderId"), pending.get(0).path("orderId"));
-        assertEquals("PROCESSING", pending.get(1).path("status").asText());
+        assertEquals("FROSTING", pending.get(1).path("status").asText());
         assertEquals("PAID", pending.get(1).path("paymentStatus").asText());
-        assertEquals("LAYER_DONE", pending.get(1).path("currentStageCode").asText());
+        assertTrue(pending.get(1).path("currentStageCode").isNull());
         assertEquals("WAITING_DELIVERY", pending.get(2).path("status").asText());
-        assertEquals("DELIVERING", pending.get(3).path("status").asText());
+        assertEquals("WAITING_DELIVERY", pending.get(3).path("status").asText());
         for (var order : pending) for (var item : order.path("items")) assertTrue(item.path("recentNotes").isEmpty());
         var calendar = query(staff, "/api/orders/calendar?from=2026-09-30&to=2026-10-01"); assertEquals(7, calendar.size());
         assertEquals("COMPLETED", calendar.get(4).path("status").asText()); assertEquals("CANCELLED", calendar.get(5).path("status").asText());
@@ -1128,10 +1243,10 @@ class OrderIT {
         jdbc.update("UPDATE cake_order SET total_amount_cents=0 WHERE id=?::uuid", zeroId);
         jdbc.update("UPDATE cake_order SET total_amount_cents=NULL WHERE id=?::uuid", missingId);
         assertEquals(200, staff.request("PATCH", "/api/orders/" + paidId + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")).status);
-        production(staff, completedId, 0, "START_PRODUCTION"); finishProduction(staff, completedId, 1);
-        fulfillment(staff, completedId, 7, "START_DELIVERY"); fulfillment(staff, completedId, 8, "COMPLETE_DELIVERY");
-        assertEquals(200, staff.request("PATCH", "/api/orders/" + completedId + "/payment-status", Map.of("expectedVersion", 9, "paymentStatus", "PAID")).status);
-        production(staff, missingId, 0, "START_PRODUCTION"); finishProduction(staff, missingId, 1);
+        production(staff, completedId, 0, "COMPLETE_BASE"); finishProduction(staff, completedId, 1);
+        fulfillment(staff, completedId, 6, "COMPLETE_DELIVERY");
+        assertEquals(200, staff.request("PATCH", "/api/orders/" + completedId + "/payment-status", Map.of("expectedVersion", 7, "paymentStatus", "PAID")).status);
+        production(staff, missingId, 0, "COMPLETE_BASE"); finishProduction(staff, missingId, 1);
         assertEquals(200, staff.request("POST", "/api/orders/" + cancelledId + "/cancel", Map.of("expectedVersion", 0, "reason", "取消")).status);
         long activities = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
         var summary = query(staff, path);
@@ -1159,7 +1274,7 @@ class OrderIT {
         assertEquals(400, staff.request("GET", listPath + "RECEIPT&page=0", null).status);
         assertEquals(401, new Client().request("GET", listPath + "RECEIPT", null).status);
         assertEquals(0, summary.path("paidWithoutDateOrderCount").asLong());
-        for (var filters : List.of("&status=CANCELLED", "&paymentStatus=PAID", "&status=PROCESSING&paymentStatus=UNPAID")) assertEquals(summary, query(staff, path + filters));
+        for (var filters : List.of("&status=CANCELLED", "&paymentStatus=PAID", "&status=FROSTING&paymentStatus=UNPAID")) assertEquals(summary, query(staff, path + filters));
         assertEquals(activities, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
         jdbc.update("UPDATE cake_order SET paid_at=NULL WHERE id=?::uuid", paidId);
         var withoutDate = query(staff, path);
@@ -1262,16 +1377,24 @@ class OrderIT {
     }
 
     @Test void defaultProductionJobHidesNonProductionDataButKeepsProductionAndNotes() throws Exception {
-        var staff = staff(); var order = createOn(staff, "2026-10-23", "09:00", "DELIVERY"); String id = order.path("orderId").asText();
+        var staff = staff();
+        var input = new LinkedHashMap<String, Object>(create());
+        input.put("customer", Map.of("customerName", "客户", "phone", "13800000000", "memberPhone", "13800000001", "buyerName", "下单人"));
+        input.put("orderingMethod", "微信");
+        var order = createOn(staff, "2026-10-23", "09:00", "DELIVERY", input); String id = order.path("orderId").asText();
         var admin = new Client(); admin.login("0001", PASSWORD);
         var provisioned = admin.request("POST", "/api/admin/employees", Map.of("employeeNumber", "CHEF01", "nickname", "制作师傅", "jobRoles", List.of("PASTRY_CHEF")));
         var chef = new Client(); String temporary = provisioned.body.at("/data/temporaryPassword").asText();
         chef.login("CHEF01", temporary); chef.changePassword(temporary); chef.login("CHEF01", PASSWORD);
         String originalToken = chef.token;
+        var workload = query(chef, "/api/orders/workbench/production-orders?unscheduled=true");
+        assertEquals(List.of(id), orderIds(workload.path("orders")));
+        assertFalse(workload.at("/orders/0").has("customer"));
+        assertFalse(workload.at("/orders/0").has("totalAmountCents"));
         var detail = query(chef, "/api/orders/" + id);
         for (var field : List.of("totalAmountCents", "createdAt", "createdBy", "creditedEmployee", "paymentStatus")) assertTrue(detail.path(field).isNull(), field);
         assertEquals(order.at("/customer/phone").asText(), detail.at("/customer/phone").asText());
-        for (var field : List.of("customerName", "memberPhone", "buyerName")) assertTrue(detail.path("customer").path(field).isNull(), field);
+        for (var field : List.of("customerName", "memberPhone")) assertTrue(detail.path("customer").path(field).isNull(), field);
         assertTrue(detail.at("/fulfillment/address").isNull()); assertTrue(detail.at("/items/0/createdAt").isNull());
         assertEquals(403, chef.request("GET", "/api/orders/workbench/payment-summary?date=2026-10-23", null).status);
         assertEquals(403, chef.request("GET", "/api/orders/" + id + "/activities", null).status);
@@ -1280,7 +1403,12 @@ class OrderIT {
         var notes = query(chef, "/api/orders/" + id + "/notes?type=CREATED");
         assertEquals(1, notes.path("total").asLong()); assertEquals("NOTE", notes.at("/items/0/type").asText());
         assertTrue(notes.at("/items/0/details").isEmpty());
-        production(chef, id, 0, "START_PRODUCTION");
+        assertEquals("下单人", detail.at("/customer/buyerName").asText());
+        assertEquals("微信", detail.path("orderingMethod").asText());
+        var updated = production(chef, id, 0, "COMPLETE_BASE");
+        assertEquals(detail.path("customer"), updated.path("customer"));
+        assertEquals(detail.path("orderingMethod"), updated.path("orderingMethod"));
+        assertTrue(updated.at("/fulfillment/address").isNull());
         assertEquals(200, chef.request("GET", "/api/orders/" + id + "/images", null).status);
         var profile = query(chef, "/api/me");
         var revised = admin.request("PATCH", "/api/admin/employees/" + profile.path("accountId").asText(), Map.of("expectedVersion", profile.path("version").asLong(), "nickname", "兼岗师傅", "jobRoles", List.of("PASTRY_CHEF", "FRONT_DESK")));
@@ -1354,15 +1482,15 @@ class OrderIT {
         assertEquals(201, created.status, created.body.toString());
         String id = created.body.at("/data/orderId").asText();
         String cupcake = idForName(created.body.path("data"), "纸杯");
-        production(admin, id, 0, "START_PRODUCTION");
+        production(admin, id, 0, "COMPLETE_BASE");
         production(admin, id, 1, "COMPLETE_LAYER");
         production(admin, id, 2, "COMPLETE_FROSTING");
-        var blocked = admin.request("POST", "/api/orders/" + id + "/production-actions", action(3, "COMPLETE_OTHER"));
+        var blocked = admin.request("POST", "/api/orders/" + id + "/production-actions", action(3, "COMPLETE_DECORATION"));
         assertEquals(409, blocked.status); assertEquals("OTHER_ITEMS_INCOMPLETE", blocked.body.path("code").asText());
         var checked = admin.request("PATCH", "/api/orders/" + id + "/items/" + cupcake + "/production-status", Map.of("expectedVersion", 3, "completed", true));
         assertEquals(200, checked.status, checked.body.toString());
         assertEquals("COMPLETED", item(checked.body.path("data"), cupcake).path("productionStatus").asText());
-        assertEquals(409, admin.request("POST", "/api/orders/" + id + "/production-actions", action(4, "COMPLETE_OTHER")).status);
+        assertEquals(409, admin.request("POST", "/api/orders/" + id + "/production-actions", action(4, "COMPLETE_DECORATION")).status);
         String cake = idForName(created.body.path("data"), "蛋糕");
         var cakeChecked = admin.request("PATCH", "/api/orders/" + id + "/items/" + cake + "/production-status", Map.of("expectedVersion", 4, "completed", true));
         assertEquals(200, cakeChecked.status, cakeChecked.body.toString());
@@ -1372,18 +1500,16 @@ class OrderIT {
         assertEquals("IN_PROGRESS", cakeLog.at("/details/before/productionStatus").asText());
         assertEquals("COMPLETED", cakeLog.at("/details/after/productionStatus").asText());
         assertEquals(409, admin.request("PATCH", "/api/orders/" + id + "/items/" + cake + "/production-status", Map.of("expectedVersion", 4, "completed", false)).status);
-        assertEquals(409, admin.request("POST", "/api/orders/" + id + "/production-actions", action(5, "COMPLETE_PRODUCTION")).status);
-        production(admin, id, 5, "COMPLETE_OTHER");
-        production(admin, id, 6, "COMPLETE_PRODUCTION");
+        production(admin, id, 5, "COMPLETE_DECORATION");
         assertEquals("WAITING_DELIVERY", staff.request("GET", "/api/orders/" + id, null).body.at("/data/status").asText());
         jdbc.update("UPDATE cake_order SET created_at='2020-01-01T00:00:00Z' WHERE id=?::uuid", id);
-        var paid = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 7, "paymentStatus", "PAID"));
+        var paid = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 6, "paymentStatus", "PAID"));
         assertEquals(200, paid.status, paid.body.toString()); assertFalse(paid.body.at("/data/paidAt").isNull());
         String date = Instant.parse(paid.body.at("/data/paidAt").asText()).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString();
         var receipt = staff.request("GET", "/api/orders/workbench/receipt-summary?date=" + date, null);
         assertEquals(200, receipt.status, receipt.body.toString()); assertEquals("16000", receipt.body.at("/data/amountCents").asText());
         assertEquals(1, receipt.body.at("/data/orderCount").asInt());
-        var repeated = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 8, "paymentStatus", "PAID"));
+        var repeated = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 7, "paymentStatus", "PAID"));
         assertEquals(paid.body.at("/data/paidAt"), repeated.body.at("/data/paidAt"));
         jdbc.update("UPDATE cake_order SET paid_at='2026-10-22T16:00:00Z' WHERE id=?::uuid", id);
         assertEquals(1, query(staff, "/api/orders/workbench/receipt-summary?date=2026-10-23").path("orderCount").asInt());
@@ -1425,14 +1551,12 @@ class OrderIT {
         var staff = staff();
         for (var type : List.of("DELIVERY", "PICKUP")) {
             var original = createCakeOn(staff, "2026-10-23", "13:00", type); String id = original.path("orderId").asText();
-            production(staff, id, 0, "START_PRODUCTION");
+            production(staff, id, 0, "COMPLETE_BASE");
             var ready = finishProduction(staff, id, 1);
             var paid = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", ready.path("version").asLong(), "paymentStatus", "PAID")).body.path("data");
             long version = paid.path("version").asLong();
-            if (type.equals("DELIVERY")) { fulfillment(staff, id, version++, "START_DELIVERY"); }
             var completed = fulfillment(staff, id, version, type.equals("DELIVERY") ? "COMPLETE_DELIVERY" : "CONFIRM_PICKUP");
             version = completed.path("version").asLong();
-            jdbc.update("UPDATE cake_order SET current_stage_code=NULL WHERE id=?::uuid", id);
             try (var stream = staff.stream()) {
                 var historical = query(staff, "/api/orders/" + id);
                 doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> "ROLLBACK_FULFILLMENT".equals(activity.details().get("action"))));
@@ -1440,21 +1564,20 @@ class OrderIT {
                 reset(activities); stream.noChange(); assertEquals(historical, query(staff, "/api/orders/" + id));
                 var back = fulfillment(staff, id, version++, "ROLLBACK_FULFILLMENT");
                 stream.changed(id, null, "ORDER_FULFILLMENT_CHANGED", version);
-                assertEquals(type.equals("DELIVERY") ? "DELIVERING" : "WAITING_PICKUP", back.path("status").asText());
-                if (type.equals("DELIVERY")) { fulfillment(staff, id, version++, "ROLLBACK_FULFILLMENT"); stream.changed(id, null, "ORDER_FULFILLMENT_CHANGED", version); }
+                assertEquals("WAITING_DELIVERY", back.path("status").asText());
                 back = production(staff, id, version++, "REOPEN_PRODUCTION"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", version);
-                assertEquals("OTHER_DONE", back.path("currentStageCode").asText()); assertEquals(completed.path("items"), back.path("items"));
+                assertEquals("DECORATING", back.path("status").asText()); assertEquals(completed.path("items"), back.path("items"));
                 var beforeFailure = back;
                 doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> "ROLLBACK_PRODUCTION".equals(activity.details().get("action"))));
                 assertEquals(503, staff.request("POST", "/api/orders/" + id + "/production-actions", action(version, "ROLLBACK_PRODUCTION")).status);
                 reset(activities); stream.noChange(); assertEquals(beforeFailure, query(staff, "/api/orders/" + id));
-                for (var stage : Arrays.asList("FROSTING_DONE", "LAYER_DONE", null)) {
+                for (var stage : List.of("FROSTING", "LAYER")) {
                     back = production(staff, id, version++, "ROLLBACK_PRODUCTION"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", version);
-                    assertEquals(stage, back.path("currentStageCode").isNull() ? null : back.path("currentStageCode").asText());
+                    assertEquals(stage, back.path("status").asText());
                     assertEquals(completed.path("items"), back.path("items"));
                 }
                 back = production(staff, id, version++, "ROLLBACK_PRODUCTION"); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", version);
-                assertEquals("WAITING_PRODUCTION", back.path("status").asText()); assertTrue(back.path("currentStageCode").isNull());
+                assertEquals("CAKE_BASE", back.path("status").asText()); assertTrue(back.path("currentStageCode").isNull());
                 for (var item : back.path("items")) assertEquals("NOT_STARTED", item.path("productionStatus").asText());
                 assertEquals(paid.path("paymentStatus"), back.path("paymentStatus")); assertEquals(paid.path("paidAt"), back.path("paidAt"));
                 assertEquals(original.path("customer"), back.path("customer")); assertEquals(original.path("fulfillment"), back.path("fulfillment"));
@@ -1462,13 +1585,13 @@ class OrderIT {
                 assertEquals(409, staff.request("POST", "/api/orders/" + id + "/production-actions", action(version - 1, "ROLLBACK_PRODUCTION")).status);
                 stream.noChange();
                 assertEquals(back, query(staff, "/api/orders/" + id));
-                assertEquals("WAITING_PRODUCTION", jdbc.queryForObject("SELECT status FROM cake_order WHERE id=?::uuid", String.class, id));
+                assertEquals("CAKE_BASE", jdbc.queryForObject("SELECT status FROM cake_order WHERE id=?::uuid", String.class, id));
             }
         }
     }
     @Test void cancelledRestartRequiresBothPermissionsIsAtomicAndPreservesHistoryAndPayment() throws Exception {
         var staff = staff(); var original = staff.request("POST", "/api/orders", cakeOrder()).body.path("data"); String id = original.path("orderId").asText();
-        production(staff, id, 0, "START_PRODUCTION"); var ready = finishProduction(staff, id, 1);
+        production(staff, id, 0, "COMPLETE_BASE"); var ready = finishProduction(staff, id, 1);
         long version = ready.path("version").asLong();
         var paid = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", version++, "paymentStatus", "PAID")).body.path("data");
         assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("content", "恢复后仍须保留")).status);
@@ -1496,7 +1619,7 @@ class OrderIT {
             assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id));
             var restarted = staff.request("POST", "/api/orders/" + id + "/restart", Map.of("expectedVersion", expected));
             assertEquals(200, restarted.status, restarted.body.toString()); stream.changed(id, null, "ORDER_PRODUCTION_CHANGED", expected + 1);
-            var data = restarted.body.path("data"); assertEquals("WAITING_PRODUCTION", data.path("status").asText()); assertTrue(data.path("currentStageCode").isNull());
+            var data = restarted.body.path("data"); assertEquals("CAKE_BASE", data.path("status").asText()); assertTrue(data.path("currentStageCode").isNull());
             assertEquals(original.path("orderNo"), data.path("orderNo")); assertEquals(original.path("customer"), data.path("customer"));
             assertEquals(original.path("fulfillment"), data.path("fulfillment")); assertEquals(paid.path("paidAt"), data.path("paidAt")); assertEquals("PAID", data.path("paymentStatus").asText());
             for (var item : data.path("items")) assertEquals("NOT_STARTED", item.path("productionStatus").asText());

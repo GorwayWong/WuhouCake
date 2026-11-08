@@ -16,6 +16,31 @@ import static org.mockito.Mockito.*;
 class OrderQueryServiceTest {
     private final OrderQueries queries = mock(OrderQueries.class);
     private final OrderQueryService service = new OrderQueryService(queries);
+    @Test void productionSummaryUsesShanghaiBoundariesAndFillsZeroDays() {
+        var from = LocalDate.of(2026, 10, 31);
+        var to = LocalDate.of(2026, 11, 2);
+        when(queries.productionCounts(Instant.parse("2026-10-30T16:00:00Z"), Instant.parse("2026-11-01T16:00:00Z"), java.util.Set.of("LAYER")))
+                .thenReturn(List.of(new OrderQueries.ProductionDay(from, 3), new OrderQueries.ProductionDay(null, 2)));
+        var summary = service.productionSummary(from, to, "LAYER");
+        assertEquals(3, summary.total());
+        assertEquals(2, summary.unscheduled());
+        assertEquals(0, summary.days().getLast().orderCount());
+        assertThrows(OrderFailure.class, () -> service.productionSummary(from, from.plusDays(43), null));
+        assertThrows(OrderFailure.class, () -> service.productionSummary(from, to, "WAITING_DELIVERY"));
+    }
+
+    @Test void unscheduledProductionDetailsClampThePageAndRejectConflictingBuckets() {
+        var stages = java.util.Set.of("DECORATING");
+        when(queries.productionOrderCount(null, null, stages)).thenReturn(21L);
+        var result = service.productionOrders(null, true, "DECORATING", 9);
+        assertEquals(2, result.page());
+        assertEquals(21, result.total());
+        verify(queries).productionOrders(null, null, stages, 20, 20);
+        assertThrows(OrderFailure.class, () -> service.productionOrders(LocalDate.of(2026, 11, 1), true, null, 1));
+        assertThrows(OrderFailure.class, () -> service.productionOrders(null, false, null, 1));
+        assertThrows(OrderFailure.class, () -> service.productionOrders(null, true, null, 0));
+    }
+
     @Test void workbenchPreservesRequestedReceiveTimeIndependentlyOfHandoffAndProductionTimes() {
         var date = LocalDate.of(2026, 11, 2);
         var receiveAt = Instant.parse("2026-11-02T10:00:00Z");
@@ -23,9 +48,9 @@ class OrderQueryServiceTest {
         var finishAt = Instant.parse("2026-11-02T08:00:00Z");
         var id = UUID.randomUUID();
         when(queries.pending(date)).thenReturn(List.of(
-                new OrderQueries.PendingOrder(id, "001", date, "WAITING_PRODUCTION", null, "UNPAID", "DELIVERY",
+                new OrderQueries.PendingOrder(id, "001", date, "CAKE_BASE", null, "UNPAID", "DELIVERY",
                         handoffAt, null, "13800000000", null, null, null, finishAt, receiveAt),
-                new OrderQueries.PendingOrder(UUID.randomUUID(), "002", date, "WAITING_PRODUCTION", null, "UNPAID", "DELIVERY",
+                new OrderQueries.PendingOrder(UUID.randomUUID(), "002", date, "CAKE_BASE", null, "UNPAID", "DELIVERY",
                         handoffAt, null, "13800000000", null, null, null, finishAt, null)));
         var result = service.workbench(date, false);
         var productionAccess = EmployeeAccess.of(java.util.Set.of(EmployeeAccess.Permission.ORDER_READ));

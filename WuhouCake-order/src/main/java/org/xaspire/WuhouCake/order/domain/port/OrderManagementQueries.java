@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
+import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.ORDER_STATUSES;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
 
 public interface OrderManagementQueries {
@@ -33,7 +34,7 @@ public interface OrderManagementQueries {
                 from = null; to = null; status = null; paymentStatus = "UNPAID"; fulfillmentType = null; size = null;
                 creditedEmployeeId = null; unassigned = false; includeCancelled = true; keyword = null; productName = null; orderingMethod = null; dateBasis = "CREATED";
             } else if (from == null || to == null || from.getYear() < 1 || to.getYear() > 9999 || !from.isBefore(to) || ChronoUnit.DAYS.between(from, to) > 366) throw invalid();
-            status = option(status, Set.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP", "DELIVERING", "COMPLETED", "CANCELLED"));
+            status = option(status, ORDER_STATUSES);
             paymentStatus = option(paymentStatus, Set.of("PAID", "UNPAID"));
             fulfillmentType = option(fulfillmentType, Set.of("DELIVERY", "PICKUP"));
             dateBasis = option(dateBasis, Set.of("RECEIVE", "CREATED"));

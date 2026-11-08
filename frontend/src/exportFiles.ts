@@ -1,7 +1,7 @@
 import { ApiError, authenticatedFetch, creationResultUnknown, errorText } from './api.ts';
 import { shiftDate, workbenchDate } from './dates.ts';
 import type { ExportFilters } from './types.ts';
-import { orderStatusNames } from './orderStates.ts';
+import { historicalStatusNames, orderStatusNames } from './orderStates.ts';
 
 export const exportOptions: Record<'status' | 'fulfillmentType' | 'paymentStatus', Record<string, string>> = {
   status: orderStatusNames,
@@ -74,7 +74,8 @@ export function exportActivitySummary(details: Record<string, unknown>): string[
   if (filters && typeof filters === 'object') {
     const filter = filters as Record<string, unknown>;
     if (typeof filter.from === 'string' && typeof filter.to === 'string' && workbenchDate(`#/?date=${filter.from}`) && workbenchDate(`#/?date=${filter.to}`)) lines.push(`取货日期：${filter.from} 至 ${shiftDate(filter.to, -1)}（含首尾）`);
-    lines.push(`订单状态：${exportOptions.status[String(filter.status)] || '全部'}；交接：${exportOptions.fulfillmentType[String(filter.fulfillmentType)] || '全部'}；付款：${exportOptions.paymentStatus[String(filter.paymentStatus)] || '全部'}`);
+    const status = String(filter.status);
+    lines.push(`订单状态：${historicalStatusNames[status] || orderStatusNames[status] || '全部'}；交接：${exportOptions.fulfillmentType[String(filter.fulfillmentType)] || '全部'}；付款：${exportOptions.paymentStatus[String(filter.paymentStatus)] || '全部'}`);
   }
   if (typeof details.snapshotVersion === 'number') lines.push(`导出时订单版本：${details.snapshotVersion}`);
   if (Array.isArray(details.imageIds)) lines.push(`参考图片：${details.imageIds.length} 张`);

@@ -1,4 +1,5 @@
 import { calendarHref, readCalendarView } from './calendarView.ts';
+import { readProductionQuery } from './productionQueryRoute.ts';
 import { readPaymentList } from './paymentListRoute.ts';
 import type { CalendarView } from './calendarView.ts';
 
@@ -7,6 +8,7 @@ export function workspaceRoute(hash: string, systemRole?: string): { kind: strin
   if (submission) return { kind: 'submission', id: submission[1] };
   if (hash === '#/customer-submissions') return { kind: 'submissions' };
   const [path, query] = hash.split('?');
+  if (path === '#/production-query') return { kind: 'production-query' };
   const order = /^#\/orders\/([a-f\d-]{36})(\/activities)?$/i.exec(path);
   if (order) {
     const params = new URLSearchParams(query);
@@ -14,7 +16,7 @@ export function workspaceRoute(hash: string, systemRole?: string): { kind: strin
     const view = from ? readCalendarView(from) : null;
     const payment = from ? readPaymentList(from) : null;
     return { kind: order[2] ? 'history' : 'order', id: order[1], type: params.get('type') || undefined,
-      ...(view ? { returnToCalendar: calendarHref(view) } : payment ? { returnToCalendar: from! } : {}) };
+      ...(view ? { returnToCalendar: calendarHref(view) } : payment || from && readProductionQuery(from) ? { returnToCalendar: from! } : {}) };
   }
   const paymentList = readPaymentList(hash);
   if (paymentList) return { kind: 'payment-orders', returnToCalendar: paymentList.from };
@@ -31,6 +33,6 @@ export function calendarOrderHref(view: CalendarView, orderId: string): string {
 export function orderHref(orderId: string, from?: string, type?: string, history = false): string {
   const params = new URLSearchParams();
   if (type) params.set('type', type);
-  if (from && (readCalendarView(from) || readPaymentList(from))) params.set('from', from);
+  if (from && (readCalendarView(from) || readPaymentList(from) || readProductionQuery(from))) params.set('from', from);
   return `#/orders/${orderId}${history ? '/activities' : ''}${params.size ? `?${params}` : ''}`;
 }

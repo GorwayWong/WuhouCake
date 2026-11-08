@@ -1,3 +1,4 @@
+import { productionStatuses } from './orderStates.ts';
 import { pickupInstant, pickupDate, defaultFinishTime } from './orderTimes.ts';
 import type { FinishTimeMode } from './orderTimes.ts';
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
@@ -98,7 +99,7 @@ export function itemDraft(item: Item): ItemDraft {
     unitPrice: hasUnitPrices(item.productType) ? amount(item.unitPriceCents) : '', memberPrice: hasUnitPrices(item.productType) ? amount(item.memberPriceCents) : '', preservedAttributes: item.attributes,
     attributes: Object.fromEntries(specificationFields.map(([key]) => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
 }
-export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && ['WAITING_PRODUCTION', 'PROCESSING'].includes(order.status); }
+export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && productionStatuses.includes(order.status); }
 export function withoutCakeUnitPrices(draft: OrderDraft): OrderDraft {
   return { ...draft, items: draft.items.map(item => hasUnitPrices(item.productType) ? item : { ...item, unitPrice: '', memberPrice: '' }) };
 }

@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OrderCreationCompatibilityTest {
     @Test void orderingMethodIsOnlyReturnedWithBusinessDetailsPermission() {
-        var source = new org.xaspire.WuhouCake.order.api.dto.OrderViews.Detail(UUID.randomUUID(), "0000001", 0, "WAITING_PRODUCTION", "UNPAID", null,
+        var source = new org.xaspire.WuhouCake.order.api.dto.OrderViews.Detail(UUID.randomUUID(), "0000001", 0, "CAKE_BASE", "UNPAID", null,
                 null, null, null, null, null, null, null, List.of(), null, null, null, "微信");
         var production = org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.of(Set.of(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_READ));
         assertNull(org.xaspire.WuhouCake.order.application.service.OrderViewAccess.detail(source, production).orderingMethod());

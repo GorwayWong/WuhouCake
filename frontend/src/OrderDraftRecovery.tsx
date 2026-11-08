@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
+import { OrderDraftDiscard } from './OrderDraftDiscard';
 import { X } from '@phosphor-icons/react';
 import type { DraftCandidate } from './useOrderDraft';
 
 export function OrderDraftRecovery({ candidate, accept, discard, dismiss, blocked }: {
-  candidate: DraftCandidate; accept: () => void; discard: () => void; dismiss: () => void; blocked: boolean;
+  candidate: DraftCandidate; accept: () => void; discard: () => boolean; dismiss: () => void; blocked: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -20,6 +21,6 @@ export function OrderDraftRecovery({ candidate, accept, discard, dismiss, blocke
     {record?.createdOrderId ? <p className="notice error">订单已创建，仍有本机图片待处理。继续后可重试保存图片队列，或先<a href={`#/orders/${record.createdOrderId}`} onClick={dismiss}>查看订单详情</a>。</p> : record?.pending && <p className="notice error">订单可能已经创建，请先核对工作台。继续后可重试确认原订单。</p>}
     {blocked && <p className="notice error">其他标签页已修改草稿，请重新载入后再选择恢复。<button type="button" className="text-button" onClick={() => window.location.reload()}>重新载入</button></p>}
     <p className="form-help">“放弃并新建”会删除原草稿；关闭弹窗会返回工作台并保留草稿。</p>
-    <div className="actions">{record && <button type="button" className="primary" autoFocus disabled={blocked} onClick={accept}>继续填写</button>}<button type="button" className="secondary" disabled={blocked} onClick={discard}>放弃并新建</button></div>
+    <OrderDraftDiscard label="放弃并新建" blocked={blocked} conflict={blocked} warning={Boolean(record?.pending || record?.createdOrderId)} discard={discard}>{record && <button type="button" className="primary" autoFocus disabled={blocked} onClick={accept}>继续填写</button>}</OrderDraftDiscard>
   </dialog>;
 }

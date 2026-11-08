@@ -149,7 +149,7 @@ class CustomerSubmissionIT {
         var order = staff.data("GET", "/api/orders/" + orderId, null);
         assertTrue(order.path("orderingMethod").isNull(), "客户填单不能自动归为小程序");
         assertEquals(staff.id, order.at("/creditedEmployee/accountId").asText()); assertEquals(staff.id, order.path("createdBy").asText());
-        assertEquals("WAITING_PRODUCTION", order.path("status").asText()); assertEquals("UNPAID", order.path("paymentStatus").asText());
+        assertEquals("CAKE_BASE", order.path("status").asText()); assertEquals("UNPAID", order.path("paymentStatus").asText());
         assertEquals(12300, order.path("totalAmountCents").asLong()); assertEquals(2, order.path("items").size());
         order.path("items").forEach(product -> {
             if ("CAKE".equals(product.path("productType").asText())) assertEquals("原味奶油", product.at("/attributes/flavor").asText());

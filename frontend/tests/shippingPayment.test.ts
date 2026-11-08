@@ -6,8 +6,13 @@ import { matchesCalendarFilters } from '../src/calendarFilters.ts';
 import { receiveEvent } from '../src/realtime.ts';
 
 test('付款筛选只影响列表，全日统计包含完成单且排除取消单', () => {
-  const orders = [{ status: 'WAITING_DELIVERY', paymentStatus: 'UNPAID' }, { status: 'COMPLETED', paymentStatus: 'PAID' }, { status: 'CANCELLED', paymentStatus: 'PAID' }];
-  const expected = { totalOrderCount: 2, waitingDeliveryOrderCount: 1 };
+  const orders = [
+    { status: 'WAITING_DELIVERY', fulfillmentType: 'DELIVERY', paymentStatus: 'UNPAID' },
+    { status: 'WAITING_DELIVERY', fulfillmentType: 'PICKUP', paymentStatus: 'UNPAID' },
+    { status: 'COMPLETED', fulfillmentType: 'DELIVERY', paymentStatus: 'PAID' },
+    { status: 'CANCELLED', fulfillmentType: 'DELIVERY', paymentStatus: 'PAID' },
+  ];
+  const expected = { totalOrderCount: 3, waitingDeliveryOrderCount: 1 };
   for (const status of ['', 'COMPLETED', 'WAITING_DELIVERY', 'CANCELLED']) for (const paymentStatus of ['', 'PAID', 'UNPAID']) {
     const filtered = orders.filter(order => matchesCalendarFilters(order, { status, paymentStatus }));
     assert.ok(filtered.length <= orders.length);
@@ -42,5 +47,5 @@ test('汇总缓存按日期隔离，付款改动和订单迁日通知触发刷�
 });
 
 test('制作统计排除两种删除标记和取消订单，保留已完成订单', () => {
-  assert.deepEqual(dailyOperationalCounts([{ status: 'COMPLETED' }, { status: 'WAITING_PRODUCTION' }, { status: 'CANCELLED' }, { status: 'COMPLETED', deleted: true }, { status: 'WAITING_DELIVERY', deletion: {} }]), { totalOrderCount: 2, waitingDeliveryOrderCount: 0 });
+  assert.deepEqual(dailyOperationalCounts([{ status: 'COMPLETED' }, { status: 'CAKE_BASE' }, { status: 'CANCELLED' }, { status: 'COMPLETED', deleted: true }, { status: 'WAITING_DELIVERY', deletion: {} }].map(order => ({ ...order, fulfillmentType: 'DELIVERY' }))), { totalOrderCount: 2, waitingDeliveryOrderCount: 0 });
 });

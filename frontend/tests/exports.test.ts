@@ -11,7 +11,7 @@ test('结束日期包含当天；跨年、闰月和 42 天边界转换为后端 
   assert.match(exportFilters({ ...draft, from: '2026-10-01', through: '2026-11-12' }).error!, /42 天/);
   assert.match(exportFilters({ ...draft, through: '2026-12-30' }).error!, /不能早于/);
   assert.ok(exportFilters({ ...draft, from: '2026-02-29' }).error);
-  assert.ok(exportFilters({ ...draft, status: 'LAYER_DONE' }).error);
+  assert.ok(exportFilters({ ...draft, status: 'NOT_A_STATUS' }).error);
 });
 
 test('导出携带 Bearer 并复用 401 刷新，区分单单 XLSX 和筛选 ZIP，失败不自动重试', async () => {
@@ -39,7 +39,7 @@ test('导出携带 Bearer 并复用 401 刷新，区分单单 XLSX 和筛选 ZIP
     assert.equal(single.filename, '订单-0000001.xlsx'); assert.equal(await single.blob.text(), 'PK-file');
     assert.equal(refreshes, 1); assert.equal(writes.length, 2); assert.equal(writes[1].path, '/api/orders/order-a/exports/xlsx');
     assert.equal(writes[1].init.body, undefined);
-    const filters = { from: '2026-10-15', to: '2026-10-17', status: 'WAITING_PRODUCTION', fulfillmentType: 'PICKUP', paymentStatus: 'UNPAID' };
+    const filters = { from: '2026-10-15', to: '2026-10-17', status: 'CAKE_BASE', fulfillmentType: 'PICKUP', paymentStatus: 'UNPAID' };
     const batch = await fetchOrderExport({ filters }, signal);
     assert.equal(batch.filename, 'orders-20261015-20261016.zip');
     assert.equal(writes[2].path, '/api/orders/exports/zip'); assert.deepEqual(JSON.parse(writes[2].init.body as string), filters);

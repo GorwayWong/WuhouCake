@@ -14,7 +14,7 @@ public interface Orders {
     default void delete(Order order, long expectedVersion) { throw new UnsupportedOperationException(); }
     void reviseItem(Order order, long expectedVersion, UUID itemId);
     void reviseInformation(Order order, long expectedVersion);
-    void addItem(Order order, long expectedVersion, UUID itemId);
+    void addItem(Order order, long expectedVersion, UUID itemId, List<UUID> changedItemIds);
     void removeItem(Order order, long expectedVersion, UUID itemId);
     void changePaymentStatus(Order order, long expectedVersion);
     void changeProduction(Order order, long expectedVersion, List<UUID> changedItemIds);

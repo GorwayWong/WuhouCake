@@ -106,9 +106,9 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             var info = sheet(book, "订单信息", "项目", "内容");
             info.setColumnWidth(0, 22 * 256); info.setColumnWidth(1, 64 * 256);
             row(info, "订单号", order.orderNo());
-            row(info, "订单状态", order.deletion() == null ? status(order.status(), order.currentStageCode()) : "已删除");
+            row(info, "订单状态", order.deletion() == null ? label(order.status()) : "已删除");
             if (order.deletion() != null) {
-                row(info, "删除前状态", status(order.status(), order.currentStageCode()));
+                row(info, "删除前状态", label(order.status()));
                 row(info, "删除时间", time(order.deletion().deletedAt())); row(info, "删除员工", order.deletion().employeeName());
                 row(info, "删除原因", order.deletion().reason()); row(info, "保留截止时间", time(order.deletion().expiresAt()));
             }
@@ -202,14 +202,11 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
     private static String money(Long cents) { return cents == null ? "未填写" : BigDecimal.valueOf(cents, 2).toPlainString(); }
     private static String time(Instant instant) { return instant == null ? "未填写" : TIME.format(instant); }
     private static String scope(UUID itemId, Map<UUID, String> names) { return itemId == null ? "整张订单" : names.getOrDefault(itemId, "历史商品"); }
-    private static String status(String status, String stage) { return label("PROCESSING".equals(status) && stage != null ? stage : status); }
     private static String label(String code) {
         if (code == null || code.isBlank()) return "未填写";
         return switch (code) {
-            case "WAITING_PRODUCTION" -> "待制作"; case "PROCESSING" -> "生胚中";
-            case "WAITING_DELIVERY" -> "待配送"; case "WAITING_PICKUP" -> "待自提";
-            case "DELIVERING" -> "配送中"; case "COMPLETED" -> "已完成"; case "CANCELLED" -> "已取消";
-            case "LAYER_DONE" -> "已夹层"; case "FROSTING_DONE" -> "已抹面"; case "OTHER_DONE" -> "其他已确认";
+            case "CAKE_BASE" -> "出胚"; case "LAYER" -> "夹层"; case "FROSTING" -> "抹面"; case "DECORATING" -> "装饰";
+            case "WAITING_DELIVERY" -> "待配送"; case "COMPLETED" -> "已配送"; case "CANCELLED" -> "已取消";
             case "PAID" -> "已付款"; case "UNPAID" -> "未付款";
             case "DELIVERY" -> "配送上门"; case "PICKUP" -> "门店自提";
 case "CAKE", "DONUT", "CUPCAKE", "BREAD", "DRINK", "OTHER", "TEA_BREAK", "COOKIE", "SNACK", "READY_BAKERY" -> ProductCategories.label(code);

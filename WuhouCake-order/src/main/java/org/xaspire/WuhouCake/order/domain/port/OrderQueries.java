@@ -6,6 +6,13 @@ import java.util.*;
 
 /** 订单只读投影；批量结果保留日期、交接时间、订单号或商品创建顺序。 */
 public interface OrderQueries {
+    List<ProductionDay> productionCounts(Instant from, Instant to, Set<String> stages);
+    long productionOrderCount(Instant from, Instant to, Set<String> stages);
+    List<ProductionOrder> productionOrders(Instant from, Instant to, Set<String> stages, int limit, long offset);
+    record ProductionDay(LocalDate date, long orderCount) { }
+    record ProductionOrder(UUID orderId, String orderNo, String itemName, String status,
+            Instant plannedFinishAt, Instant pickupAt, LocalDate pickupDate) { }
+
     long paymentOrderCount(LocalDate date, String kind, Instant from, Instant to);
     List<PaymentOrder> paymentOrders(LocalDate date, String kind, Instant from, Instant to, long offset);
     record PaymentOrder(UUID orderId, String orderNo, Instant createdAt, LocalDate calendarDate,
