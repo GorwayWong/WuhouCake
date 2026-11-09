@@ -2,36 +2,101 @@ package org.xaspire.WuhouCake.order.domain.service;
 
 import java.math.*;
 import java.time.*;
-import java.time.format.*;
 import java.util.*;
 import java.util.regex.*;
 
 public final class RecognitionValues {
     private RecognitionValues() { }
-    private static final Pattern DATE = Pattern.compile("(?<![\\d+-])(\\d{4})[年.\\-/](\\d{1,2})[月.\\-/](\\d{1,2})日?(?!\\d)");
-    private static final Pattern TIME = Pattern.compile("(?<!\\d)(\\d{1,2})(?::|：|点|时)(\\d{1,2})(?:分)?(?!\\d)");
-    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("uuuu-M-d").withResolverStyle(ResolverStyle.STRICT);
-    public static String date(String text) {
-        var matcher = DATE.matcher(text);
-        if (!matcher.find()) throw new IllegalArgumentException("需要带年份的明确日期");
+    private static final Pattern DATE = Pattern.compile("(?:(\\d{4})([-/.])(\\d{1,2})\\2(\\d{1,2})(?!\\d)|(?:(\\d{4})年\\h*)?(\\d{1,2})月\\h*(\\d{1,2})(?:[日号]|(?=$|\\h))|今天|明天|后天)");
+    private static final String CLOCK_NUMBER = "[0-9]{1,2}|[零〇一二两三四五六七八九十]{1,3}";
+    private static final String PERIOD = "凌晨|早上|上午|中午|下午|晚上";
+    private static final Pattern TIME = Pattern.compile("(" + PERIOD + ")?\\h*(" + CLOCK_NUMBER
+            + ")\\h*(?::\\h*([0-9]{1,2})|[点时](?:\\h*(半|" + CLOCK_NUMBER + ")分?)?)");
+
+    record DatedValue(String date, String remainder) { }
+
+    static String normalizeTimeText(String text) {
+        var normalized = new StringBuilder(text.length());
+        for (char c : text.toCharArray()) {
+            if (c >= '０' && c <= '９') c = (char) ('0' + c - '０');
+            normalized.append(c == '：' ? ':' : c == '　' ? ' ' : c);
+        }
+        return normalized.toString();
+    }
+
+    static DatedValue datePrefix(String text, LocalDate today) {
+        var match = DATE.matcher(text);
+        if (!match.lookingAt()) return new DatedValue(null, text);
         String date;
-        try {
-            if (Integer.parseInt(matcher.group(1)) < 1) throw new DateTimeException("year");
-            date = LocalDate.parse(matcher.group(1) + "-" + matcher.group(2) + "-" + matcher.group(3), DATE_FORMAT).toString();
-        } catch (DateTimeException invalid) { throw new IllegalArgumentException("日期无效，请核对完整年月日", invalid); }
-        if (matcher.find()) throw new IllegalArgumentException("存在多个日期，需要核对");
-        return date;
+        if (match.group(1) != null) {
+            date = explicitDate(match.group(1), match.group(3), match.group(4));
+        } else if (match.group(6) != null) {
+            date = match.group(5) == null ? MonthDay.of(Integer.parseInt(match.group(6)), Integer.parseInt(match.group(7))).toString()
+                    : explicitDate(match.group(5), match.group(6), match.group(7));
+        } else {
+            date = today.plusDays(switch (match.group()) { case "明天" -> 1; case "后天" -> 2; default -> 0; }).toString();
+        }
+        String remainder = text.substring(match.end()).stripLeading();
+        if (remainder.startsWith("T") && remainder.length() > 1) remainder = remainder.substring(1);
+        if (DATE.matcher(remainder).find()) throw new IllegalArgumentException("存在多个日期，请核对");
+        if (!remainder.isEmpty() && !remainder.equals("待定") && !remainder.matches(PERIOD) && !TIME.matcher(remainder).lookingAt()) {
+            throw new IllegalArgumentException("日期含范围或无法识别的内容，请手工填写");
+        }
+        return new DatedValue(date, remainder);
     }
-    public static boolean containsDate(String text) { return DATE.matcher(text).find(); }
-    public static String time(String text) {
-        var matcher = TIME.matcher(text);
-        if (!matcher.find()) throw new IllegalArgumentException("请填写完整的24小时制时刻（HH:mm）");
-        var time = LocalTime.of(Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2)));
-        if (matcher.find() || text.contains("下午") || text.contains("上午") || text.contains("晚上"))
-            throw new IllegalArgumentException("请核对并填写24小时制时刻");
-        return time.toString().length() == 5 ? time.toString() : time.format(DateTimeFormatter.ofPattern("HH:mm"));
+
+    private static String explicitDate(String year, String month, String day) {
+        int y = Integer.parseInt(year);
+        if (y == 0) throw new DateTimeException("year");
+        return LocalDate.of(y, Integer.parseInt(month), Integer.parseInt(day)).toString();
     }
-    public static boolean containsTime(String text) { return TIME.matcher(text).find(); }
+
+    static LocalDate nextDate(MonthDay monthDay, LocalDate today) {
+        for (int year = today.getYear(); year <= Math.min(today.getYear() + 8, 9999); year++) {
+            if (monthDay.isValidYear(year) && !monthDay.atYear(year).isBefore(today)) return monthDay.atYear(year);
+        }
+        throw new DateTimeException("没有可用日期");
+    }
+
+    static String time(String text) {
+        var match = TIME.matcher(text);
+        if (!match.matches()) throw new IllegalArgumentException("时刻格式不明确，请填写具体时刻");
+        int hour = clockNumber(match.group(2));
+        String period = match.group(1);
+        int minute = match.group(3) != null ? Integer.parseInt(match.group(3))
+                : match.group(4) == null ? 0 : match.group(4).equals("半") ? 30 : clockNumber(match.group(4));
+        if (hour > 23 || minute > 59) throw new IllegalArgumentException("时刻无效，请核对小时和分钟");
+        if (period == null && match.group(3) == null && hour >= 1 && hour <= 12) {
+            throw new IllegalArgumentException("时刻缺少上午或下午，请核对");
+        }
+        if ("中午".equals(period)) {
+            if (hour == 1) hour = 13;
+            if (hour < 11 || hour > 13) throw new IllegalArgumentException("时段与时刻冲突，请核对");
+        } else if ("下午".equals(period) || "晚上".equals(period)) {
+            if (hour == 0) throw new IllegalArgumentException("时段与时刻冲突，请核对");
+            if (hour == 12 && "晚上".equals(period)) throw new IllegalArgumentException("晚上12点的日期不明确，请核对");
+            if (hour < 12) hour += 12;
+        } else if (period != null && hour >= 12) {
+            throw new IllegalArgumentException("时段与时刻冲突，请核对");
+        }
+        return LocalTime.of(hour, minute).toString();
+    }
+
+    private static int clockNumber(String text) {
+        if (text.charAt(0) <= '9') return Integer.parseInt(text);
+        int tens = text.indexOf('十');
+        if (tens < 0 && text.length() == 1) return chineseDigit(text.charAt(0));
+        if (tens >= 0 && tens <= 1 && text.length() - tens <= 2) {
+            return (tens == 0 ? 1 : chineseDigit(text.charAt(0))) * 10
+                    + (tens == text.length() - 1 ? 0 : chineseDigit(text.charAt(tens + 1)));
+        }
+        throw new IllegalArgumentException("中文时刻格式不明确，请手工填写");
+    }
+
+    private static int chineseDigit(char digit) {
+        return digit == '〇' ? 0 : digit == '两' ? 2 : "零一二三四五六七八九".indexOf(digit);
+    }
+
     public static String phone(String text) {
         String value = text.replaceAll("[\\s-]", "");
         if (!value.matches("(?:\\+?86)?1[3-9]\\d{9}|0\\d{9,11}")) throw new IllegalArgumentException("电话号码无效或存在多个号码");

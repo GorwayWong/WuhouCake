@@ -14,7 +14,8 @@ async function fixture() {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
   context.setDefaultTimeout(10000);
   await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
-  const model = { account: 'alice', permitted: true, loseResponse: false, reject: false, orders: new Map(), requests: [], recognitionFields: {}, extraPermissions: [] };
+  const model = { account: 'alice', permitted: true, loseResponse: false, reject: false, orders: new Map(), requests: [],
+    recognitionFields: {}, recognitionRequests: [], recognitionFailures: 0, recognitionInvalid: 0, extraPermissions: [] };
   await context.route('**/api/**', async route => {
     const req = route.request(), path = new URL(req.url()).pathname;
     const ok = data => route.fulfill({ json: { success: true, data } });
@@ -29,10 +30,15 @@ async function fixture() {
       paid: { orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 }, unpaid: { orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 } });
     if (path === '/api/orders/workbench/receipt-summary') return ok({ date: '2026-11-04', orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 });
     if (path === '/api/orders/workbench/cake-bases') return ok({ date: '2026-11-04', items: [] });
-    if (path === '/api/orders/recognition/parse') return ok({
-      fields: { customerName: { value: '识别姓名', source: 'RULE', needsReview: false, evidence: [], issues: [] }, phone: { value: '13900000000', source: 'RULE', needsReview: true, evidence: [], issues: [] }, ...model.recognitionFields },
-      items: [], issues: ['请核对原文'], fragments: [], unmappedText: ['其他客户备注'], assistAvailable: false,
-    });
+    if (path === '/api/orders/recognition/parse') {
+      model.recognitionRequests.push(req.postDataJSON().text);
+      if (model.recognitionFailures > 0) { model.recognitionFailures--; return route.abort('failed'); }
+      if (model.recognitionInvalid > 0) { model.recognitionInvalid--; return ok({ fields: {}, items: null }); }
+      return ok({
+        fields: { customerName: { value: '识别姓名', source: 'RULE', needsReview: false, evidence: [], issues: [] }, phone: { value: '13900000000', source: 'RULE', needsReview: true, evidence: [], issues: [] }, ...model.recognitionFields },
+        items: [], issues: ['请核对原文'], fragments: [{ itemId: 'item-1', text: '合成片段' }], unmappedText: ['其他客户备注'], assistAvailable: true,
+      });
+    }
     if (path === '/api/order-packages') return ok({ items: [], total: 0, page: 1, size: 20 });
     if (path === '/api/orders' && req.method() === 'POST') {
       const id = req.headers()['idempotency-key'], body = req.postDataJSON();
@@ -396,6 +402,108 @@ test('识别带入的取货和出品时间在顶部显示，草稿恢复保留�
     assert.equal(await page.locator('input[name="requestedReceiveAt"]').inputValue(), '2026-11-08T15:30');
     assert.equal(await page.locator('input[name="plannedFinishAt"]').inputValue(), '2026-11-08T13:00');
     assert.equal(await page.locator('.create-time-grid > label[data-recognition="true"]').count(), 2);
+  } finally { await context.close(); }
+});
+
+test('移动端字段显示补年与时刻异常，同一原文在手改、撤销和换原文后均不重放', async () => {
+  const { context, page, model, errors } = await fixture();
+  try {
+    const candidate = (value, issue) => ({ value, source: 'RULE', needsReview: true, evidence: [], issues: [issue] });
+    model.recognitionFields = {
+      requestedReceiveDate: candidate('2027-11-02', '原文未写年份，已按最近日期补为2027年。'),
+      plannedHandoffAt: candidate(null, '时段与时刻冲突，请核对'),
+    };
+    const panel = page.locator('.recognition-panel');
+    const parse = page.getByRole('button', { name: '识别并填入', exact: true });
+    const enter = async text => {
+      if (await panel.getAttribute('open') === null) await panel.locator('summary').click();
+      await page.locator('#recognition-text').fill(text);
+    };
+    const original = '取货时间：11月2号上午17:00\n电话：13900000000';
+    await enter(original);
+    await page.evaluate(() => {
+      const button = document.querySelector('.recognition-panel button.primary');
+      button.click();
+      button.click();
+    });
+    const pickup = page.locator('.create-time-grid > label').first();
+    await pickup.getByText('原文未写年份，已按最近日期补为2027年。').waitFor();
+    await pickup.getByText('时段与时刻冲突，请核对').waitFor();
+    assert.equal(model.recognitionRequests.length, 1);
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.equal(await page.getByText('AI 补充（可选）', { exact: true }).count(), 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal((await saved(page)).value.requestedReceiveAt, '2027-11-02');
+    await page.locator('#phone').fill('13800000012');
+    await enter('  ' + original + '  ');
+    await parse.click();
+    assert.equal(await page.locator('#phone').inputValue(), '13800000012');
+    await page.getByRole('button', { name: '撤销本次填入', exact: true }).click();
+    const undone = (await saved(page)).value;
+    await parse.click();
+    assert.deepEqual((await saved(page)).value, undone);
+
+    model.recognitionFailures = 1;
+    model.recognitionInvalid = 1;
+    await enter('另一张合成原文');
+    for (let i = 0; i < 2; i++) {
+      await parse.click();
+      await page.getByText(/识别暂不可用，原文和表单已保留/).waitFor();
+      assert.deepEqual((await saved(page)).value, undone);
+    }
+    await parse.click();
+    await pickup.getByText('原文未写年份，已按最近日期补为2027年。').waitFor();
+    await enter(original);
+    await parse.click();
+    assert.deepEqual(model.recognitionRequests, [original, '另一张合成原文', '另一张合成原文', '另一张合成原文']);
+
+    await page.getByRole('button', { name: '放弃草稿', exact: true }).click();
+    await page.getByRole('button', { name: '确认放弃', exact: true }).click();
+    await enter(original);
+    await parse.click();
+    await pickup.getByText('原文未写年份，已按最近日期补为2027年。').waitFor();
+    assert.equal(model.recognitionRequests.length, 5);
+    assert.equal(model.recognitionRequests.at(-1), original);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('移动端取货优先，同日仅日期清除自动时刻，撤销恢复且相同原文不重放', async () => {
+  const { context, page, model, errors } = await fixture();
+  try {
+    const field = value => ({ value, source: 'RULE', needsReview: false, evidence: [], issues: [] });
+    const panel = page.locator('.recognition-panel');
+    const button = page.getByRole('button', { name: '识别并填入', exact: true });
+    const paste = async text => {
+      if (await panel.getAttribute('open') === null) await panel.locator('summary').click();
+      await page.locator('#recognition-text').fill(text);
+      await button.click();
+    };
+    model.recognitionFields = {
+      requestedReceiveAt: field('2026-11-13T18:00'),
+      plannedHandoffAt: field('2026-11-12T17:00'),
+    };
+    await paste('收货时间：2026-11-13 18:00\n取货时间：2026-11-12 17:00');
+    await waitFor(async () => (await saved(page))?.value.requestedReceiveAt === '2026-11-12T17:00');
+    assert.equal((await saved(page)).value.plannedFinishAt, '2026-11-12T16:00');
+
+    const dateOnly = '取货日期：2026-11-12';
+    model.recognitionFields = {
+      requestedReceiveDate: field('2026-11-12'),
+      requestedReceiveAt: field('2026-11-13T18:00'),
+      plannedHandoffAt: field(null),
+    };
+    await paste(dateOnly);
+    await waitFor(async () => (await saved(page))?.value.requestedReceiveAt === '2026-11-12');
+    assert.equal((await saved(page)).value.plannedFinishAt, '');
+    await page.getByRole('button', { name: '撤销本次填入', exact: true }).click();
+    assert.equal((await saved(page)).value.requestedReceiveAt, '2026-11-12T17:00');
+    assert.equal((await saved(page)).value.plannedFinishAt, '2026-11-12T16:00');
+    await paste(dateOnly);
+    assert.equal(model.recognitionRequests.length, 2);
+    assert.equal((await saved(page)).value.requestedReceiveAt, '2026-11-12T17:00');
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
 

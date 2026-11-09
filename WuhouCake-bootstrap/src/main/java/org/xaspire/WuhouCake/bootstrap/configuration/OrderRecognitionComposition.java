@@ -3,6 +3,7 @@ package org.xaspire.WuhouCake.bootstrap.configuration;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.time.Clock;
 import java.util.Map;
 import org.springframework.context.annotation.*;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -18,10 +19,10 @@ import org.xaspire.WuhouCake.order.infrastructure.client.BailianRecognitionAssis
 public class OrderRecognitionComposition {
     @Bean @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
     OrderRecognitionController orderRecognitionController(OrderRecognitionService recognition) { return new OrderRecognitionController(recognition); }
-    @Bean OrderRecognition orderRecognition(ObjectMapper json) throws IOException {
+    @Bean OrderRecognition orderRecognition(ObjectMapper json, Clock clock) throws IOException {
         try (var input = OrderRecognition.class.getResourceAsStream("/order/cake-defaults.json")) {
             if (input == null) throw new IllegalStateException("Cake defaults resource missing");
-            return new OrderRecognition(json.readValue(input, new TypeReference<Map<String, String>>() { }));
+            return new OrderRecognition(json.readValue(input, new TypeReference<Map<String, String>>() { }), clock);
         }
     }
     @Bean(destroyMethod = "close") BailianRecognitionAssistant recognitionAssistant(RecognitionAssistProperties properties, ObjectMapper json) throws IOException {

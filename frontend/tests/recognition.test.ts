@@ -17,6 +17,90 @@ const candidate = (): RecognitionDraft => ({
 });
 const apply = (draft = newDraft('2026-10-16'), result = candidate()) => applyRecognition(draft, newDraft('2026-10-16'), result, new Set());
 
+test('取货日期的补年说明与旧取货字段的空值诊断合并，其他字段继续填入', () => {
+  const result = candidate();
+  result.fields.requestedReceiveDate = { ...field('2027-01-02', 'RULE', true), issues: ['已补为2027年'] };
+  result.fields.plannedHandoffAt = { ...field(null, 'RULE', true), issues: ['时段与时刻冲突'] };
+  const filled = apply(newDraft('2026-10-16'), orderEntryRecognition(result, new Set()));
+  const mark = filled.feedback[feedbackKey('requestedReceiveAt')];
+  assert.equal(filled.draft.requestedReceiveAt, '2027-01-02');
+  assert.equal(filled.draft.phone, '13800000012');
+  assert.equal(mark.hint, '已补为2027年');
+  assert.equal(mark.error, '时段与时刻冲突');
+});
+
+test('空值诊断保留手工取货时间，手改后移除提示', () => {
+  const result = candidate(), initial = newDraft('2026-10-16');
+  const current = setCandidate(initial, 'requestedReceiveAt', '2026-10-17T18:30');
+  result.fields.plannedHandoffAt = { ...field(null, 'RULE', true), issues: ['日期相互冲突'] };
+  const manual = new Set(['requestedReceiveAt', 'requestedReceiveDate']);
+  const filled = applyRecognition(current, initial, orderEntryRecognition(result, manual), manual);
+  const key = feedbackKey('requestedReceiveAt');
+  assert.equal(filled.draft.requestedReceiveAt, current.requestedReceiveAt);
+  assert.match(filled.feedback[key].error!, /日期相互冲突.*原值未修改/);
+  assert.equal(retainRecognitionFeedback(setCandidate(filled.draft, 'requestedReceiveAt', '2026-10-17T19:30'), filled.feedback)[key], undefined);
+});
+
+test('不同原文只写相同日期时清除已识别取货时刻及自动出品，撤销恢复两者', () => {
+  const initial = newDraft('2026-11-12'), result = { ...candidate(), items: [] };
+  const timed = setCandidate(initial, 'requestedReceiveAt', '2026-11-12T17:00');
+  result.fields = { requestedReceiveDate: field('2026-11-12') };
+  const next = applyRecognition(timed, initial, orderEntryRecognition(result, new Set()), new Set()).draft;
+  assert.equal(next.requestedReceiveAt, '2026-11-12');
+  assert.equal(next.plannedFinishAt, '');
+  assert.equal(next.finishTimeMode, 'AUTO');
+  assert.deepEqual(undoRecognition(next, timed, next), timed);
+
+  const manualFinish = setCandidate(timed, 'plannedFinishAt', '2026-11-12T15:00');
+  const finishProtected = applyRecognition(manualFinish, initial, orderEntryRecognition(result, new Set(['plannedFinishAt'])), new Set(['plannedFinishAt'])).draft;
+  assert.equal(finishProtected.requestedReceiveAt, '2026-11-12');
+  assert.equal(finishProtected.plannedFinishAt, manualFinish.plannedFinishAt);
+  assert.equal(finishProtected.finishTimeMode, 'MANUAL');
+  for (const field of ['requestedReceiveAt', 'requestedReceiveDate']) {
+    const manual = new Set([field]);
+    assert.deepEqual(applyRecognition(timed, initial, orderEntryRecognition(result, manual), manual).draft, timed);
+  }
+});
+
+test('独立取货采用自己的完整日期和时刻，取货冲突时不退回旧收货时刻', () => {
+  const result = { ...candidate(), items: [], fields: {
+    requestedReceiveDate: field('2026-11-13'),
+    requestedReceiveAt: { ...field('2026-11-13T18:00', 'RULE', true), issues: ['旧收货提示'] },
+    plannedHandoffAt: field('2026-11-12T17:00'),
+  } };
+  const filled = apply(newDraft('2026-11-09'), orderEntryRecognition(result, new Set()));
+  const key = feedbackKey('requestedReceiveAt');
+  assert.equal(filled.draft.requestedReceiveDate, '2026-11-12');
+  assert.equal(filled.draft.requestedReceiveAt, '2026-11-12T17:00');
+  assert.equal(filled.feedback[key].hint, undefined);
+  result.fields.plannedHandoffAt = { ...field(null, 'RULE', true), issues: ['时刻相互冲突，请核对'] };
+  const conflicted = apply(newDraft('2026-11-09'), orderEntryRecognition(result, new Set()));
+  assert.equal(conflicted.draft.requestedReceiveAt, '2026-11-13');
+  assert.equal(conflicted.feedback[key].error, '时刻相互冲突，请核对');
+});
+
+test('明确的取货日期不会被旧收货时刻覆盖，只有旧收货字段时仍兼容带入', () => {
+  const initial = newDraft('2026-11-09');
+  const current = setCandidate(initial, 'requestedReceiveAt', '2026-11-12T17:00');
+  const result = { ...candidate(), items: [], fields: {
+    requestedReceiveDate: field('2026-11-12'),
+    requestedReceiveAt: field('2026-11-13T18:00'),
+    plannedHandoffAt: field(null, 'RULE'),
+  } };
+  const normalizeAndFill = (manual = new Set<string>()) =>
+    applyRecognition(current, initial, orderEntryRecognition(result, manual), manual).draft;
+  const filled = normalizeAndFill();
+  assert.equal(filled.requestedReceiveAt, '2026-11-12');
+  assert.equal(filled.plannedFinishAt, '');
+  assert.deepEqual(undoRecognition(filled, current, filled), current);
+  assert.equal(normalizeAndFill(new Set(['requestedReceiveAt'])).requestedReceiveAt, current.requestedReceiveAt);
+
+  result.fields.requestedReceiveAt = field('2026-11-12T18:00');
+  assert.equal(normalizeAndFill().requestedReceiveAt, '2026-11-12');
+  result.fields.plannedHandoffAt = field(null);
+  assert.equal(normalizeAndFill().requestedReceiveAt, '2026-11-12T18:00');
+});
+
 test('蛋糕识别不带入单价或价格错误，其他商品按类型优先处理单价，不推算整单金额', () => {
   const cake = candidate(); cake.items[0].fields.unitPriceCents = field('非法金额'); cake.items[0].fields.memberPriceCents = field('10000');
   const ignored = apply(newDraft('2026-10-16'), cake);
@@ -66,14 +150,18 @@ test('一次填入明确及疑义字段，默认来源明确，不造名称、�
   const invalid = createOrderRequest(filled.draft);
   assert(invalid.errors['items.0.name'] && invalid.errors['items.0.quantity']);
 });
-test('有效值覆盖手工内容，缺失字段保留，金额按元写入并计数覆盖', () => {
-  const initial = newDraft('2026-10-16'), current = structuredClone(initial), result = candidate();
+test('录单识别保护手工电话、地址和取货时刻，仍带入有效金额', () => {
+  const initial = newDraft('2026-10-16'), result = candidate();
+  const current = setCandidate(initial, 'requestedReceiveAt', '2026-10-16T18:30');
   current.phone = '13900000013'; current.address = '旧地址'; current.buyerName = '原订购人'; current.totalAmount = '100';
-  result.fields.totalAmountCents = field('169900'); result.fields.phone.needsReview = true;
-  const filled = applyRecognition(current, initial, result, new Set(['phone', 'address', 'totalAmountCents']));
-  assert.equal(filled.draft.phone, '13800000012'); assert.equal(filled.draft.address, '合成市验收路1号');
+  result.fields.totalAmountCents = field('169900');
+  result.fields.plannedHandoffAt = field('2026-09-30T17:00');
+  const manual = new Set(['phone', 'address', 'requestedReceiveAt']);
+  const filled = applyRecognition(current, initial, orderEntryRecognition(result, manual), manual);
+  assert.equal(filled.draft.phone, current.phone);
+  assert.equal(filled.draft.address, current.address);
+  assert.equal(filled.draft.requestedReceiveAt, current.requestedReceiveAt);
   assert.equal(filled.draft.buyerName, current.buyerName); assert.equal(filled.draft.totalAmount, '1699.00');
-  assert(filled.overwritten >= 3);
 });
 test('多商品替换整个列表，重复识别不追加；无效值不妨碍其他字段', () => {
   const current = newDraft('2026-10-16'); current.items[0].name = '原蛋糕'; current.items.push(newItem());

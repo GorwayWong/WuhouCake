@@ -36,6 +36,7 @@ function Field({ label, name, error, children, wide = false, className = '' }: {
   return <label className={[wide ? 'form-wide' : '', imported ? 'recognition-filled' : '', className].filter(Boolean).join(' ') || undefined} htmlFor={name} data-recognition={mark ? 'true' : undefined}>
     <span className="form-field-heading">{label}{mark && !mark.error && (mark.source !== 'DEFAULT' || mark.needsReview) && <span className="recognition-field-badge">{mark.needsReview ? '请核对' : '已带入'}</span>}</span>
     {children}{message && <span className="field-error" id={`${name}-error`}>{message}</span>}
+    {mark?.hint && <span className="form-help" id={`${name}-recognition-hint`}>{mark.hint}</span>}
   </label>;
 }
 function PriceHint({ label, summary }: { label: string; summary: PriceSummary }) {
@@ -125,7 +126,10 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
     }
     change({ ...draft, items: draft.items.map(item => item.key === key ? changeItemDraft(item, changes, editedSpecification) : item) });
   };
-  const inputProps = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': errors[name] || feedbackByName[name]?.error ? `${name}-error` : undefined });
+  const inputProps = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': [
+    errors[name] || feedbackByName[name]?.error ? `${name}-error` : '',
+    feedbackByName[name]?.hint ? `${name}-recognition-hint` : '',
+  ].filter(Boolean).join(' ') || undefined });
   const customerFields = [['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32]] as const;
   const submittedDate = submitted?.fulfillment.requestedReceiveDate || draft.requestedReceiveDate;
   const submittedPhone = submitted?.customer.phone || draft.phone;

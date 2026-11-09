@@ -145,7 +145,7 @@ export function mergeModelFields(rules: RecognitionDraft, suggestions: { itemId:
 }
 export const recognitionRowKey = (field: string, itemId?: string) => (itemId || 'order') + '.' + field;
 export interface RecognitionFeedback {
-  field: string; itemKey?: string; value: string; source: RecognitionField['source']; needsReview: boolean; error?: string;
+  field: string; itemKey?: string; value: string; source: RecognitionField['source']; needsReview: boolean; error?: string; hint?: string;
 }
 export type RecognitionFeedbackMap = Record<string, RecognitionFeedback>;
 export function feedbackKey(field: string, itemKey?: string): string {
@@ -168,14 +168,18 @@ export function orderEntryRecognition(result: RecognitionDraft, manualFields: Re
   const next = structuredClone(result), fields = next.fields;
   const pickup = fields.fulfillmentType;
   if (pickup?.value === 'PICKUP') fields.address = { ...pickup, value: '自提' };
-  if (fields.plannedHandoffAt?.value) {
-    fields.requestedReceiveAt = fields.plannedHandoffAt;
+  const handoff = fields.plannedHandoffAt;
+  if (handoff?.value || handoff?.needsReview || handoff?.source === 'RULE') {
+    fields.requestedReceiveAt = handoff;
+    if (handoff.value) delete fields.requestedReceiveDate;
   }
   delete fields.fulfillmentType;
   delete fields.plannedHandoffAt;
   const manualReceive = manualFields.has('requestedReceiveAt') || manualFields.has('requestedReceiveDate');
   for (const field of Object.keys(fields)) {
-    if (manualFields.has(field) || (manualReceive && (field === 'requestedReceiveAt' || field === 'requestedReceiveDate'))) delete fields[field];
+    if (manualFields.has(field) || (manualReceive && (field === 'requestedReceiveAt' || field === 'requestedReceiveDate'))) {
+      if (fields[field].value || !fields[field].needsReview) delete fields[field];
+    }
   }
   return next;
 }
@@ -196,17 +200,26 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   }
   const write = (field: string, candidate: RecognitionField, itemKey?: string, onlyErrors = false) => {
     if (itemKey && (field === 'unitPriceCents' || field === 'memberPriceCents') && !hasUnitPrices(next.items.find(item => item.key === itemKey)?.productType)) return;
-    if (!candidate.value?.trim()) return;
     const displayField = field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field;
+    const key = feedbackKey(field, itemKey), previous = feedback[key];
+    const mark = (error?: string, hints: string[] = []) => {
+      const hint = [...new Set([...(previous?.hint?.split('；') ?? []), ...hints])].join('；');
+      const problems = [...new Set([...(previous?.error?.split('；') ?? []), ...(error ? error.split('；') : [])])].join('；');
+      feedback[key] = { field: displayField, itemKey, value: currentValue(next, displayField, itemKey),
+        source: candidate.source, needsReview: Boolean(previous?.needsReview || candidate.needsReview || candidate.source === 'MODEL'),
+        ...(problems ? { error: problems } : {}), ...(hint ? { hint } : {}) };
+    };
+    if (!candidate.value?.trim()) {
+      if (candidate.needsReview && candidate.issues.length) mark(candidate.issues.join('；'));
+      return;
+    }
     try {
       const value = validateCandidate(field, recognitionValue(field, candidate.value));
       if (onlyErrors) return;
       next = setCandidate(next, field, value, itemKey, candidate.source);
-      feedback[feedbackKey(field, itemKey)] = { field: displayField, itemKey, value: currentValue(next, displayField, itemKey),
-        source: candidate.source, needsReview: candidate.needsReview || candidate.source === 'MODEL' };
+      mark(undefined, candidate.issues);
     } catch (error) {
-      feedback[feedbackKey(field, itemKey)] = { field: displayField, itemKey, value: currentValue(next, displayField, itemKey),
-        source: candidate.source, needsReview: false, error: (error as Error).message };
+      mark((error as Error).message);
     }
   };
   if (!options.supplement) {
@@ -215,10 +228,13 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
       && !manualFields.has('requestedReceiveDate') && !manualFields.has('requestedReceiveAt')
       && next.requestedReceiveDate === initial.requestedReceiveDate && next.requestedReceiveAt === initial.requestedReceiveAt) {
       next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared = 1;
-      feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填取货日期。' };
+      if (![result.fields.requestedReceiveDate, result.fields.requestedReceiveAt].some(field => field?.needsReview && field.issues.length)) {
+        feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填取货日期。' };
+      }
     }
     // 日期先于完整时刻写入，避免服务端字段顺序影响最终值。
-    const fields = Object.entries(result.fields).sort(([a], [b]) => Number(a === 'requestedReceiveAt') - Number(b === 'requestedReceiveAt'));
+    const order = ['requestedReceiveDate', 'requestedReceiveAt', 'plannedFinishAt'];
+    const fields = Object.entries(result.fields).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
     fields.forEach(([field, candidate]) => write(field, candidate));
   }
   for (const [index, item] of result.items.entries()) {
@@ -228,6 +244,13 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     Object.entries(item.fields).sort(([a], [b]) => Number(b === 'productType') - Number(a === 'productType')).forEach(([field, candidate]) => {
       if (!options.supplement || candidate.source === 'MODEL') write(field, candidate, itemKey, onlyErrors);
     });
+  }
+  for (const mark of Object.values(feedback)) {
+    if (mark.hint && mark.error) {
+      const hints = new Set(mark.hint.split('；'));
+      mark.error = mark.error.split('；').filter(issue => !hints.has(issue)).join('；') || undefined;
+    }
+    if (mark.error && mark.value && mark.value === currentValue(draft, mark.field, mark.itemKey)) mark.error += '。原值未修改。';
   }
   const changed = Object.values(feedback).filter(mark => !mark.error && currentValue(draft, mark.field, mark.itemKey) !== mark.value);
   const applied = changed.length, overwritten = changed.filter(mark => currentValue(draft, mark.field, mark.itemKey)).length;

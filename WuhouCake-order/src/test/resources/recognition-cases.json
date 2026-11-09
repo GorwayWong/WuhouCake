@@ -11,7 +11,7 @@
   {"id":"missing-required","text":"【蛋糕预定单】\n尺寸：8寸\n收货日期：2026年9月30日","fields":{"customerName":null,"phone":null,"plannedHandoffAt":null,"requestedReceiveDate":"2026-09-30"},"items":[{"name":null,"quantity":null,"base":"原味","filling":"芒果"}]},
   {"id":"iso-date","text":"收货日期：2027-01-01\n联系电话：13800000003","fields":{"requestedReceiveDate":"2027-01-01","plannedHandoffAt":null},"items":[]},
   {"id":"chinese-date-time","text":"收货时间：2026年9月30日 18:30\n电话：13800000004","fields":{"requestedReceiveDate":"2026-09-30","requestedReceiveAt":"2026-09-30T18:30"},"items":[]},
-  {"id":"no-year","text":"【蛋糕预定单】\n收货日期：9月30日\n交接时间：18:30\n尺寸：8","fields":{"requestedReceiveDate":null,"plannedHandoffAt":null},"items":[{"size":"8"}],"review":["requestedReceiveDate","plannedHandoffAt"]},
+  {"id":"no-year","text":"【蛋糕预定单】\n收货日期：9月30日\n交接时间：18:30\n尺寸：8","fields":{"requestedReceiveDate":"2027-09-30","plannedHandoffAt":"2027-09-30T18:30"},"items":[{"size":"8"}],"review":["requestedReceiveDate","plannedHandoffAt"]},
   {"id":"two-cakes","text":"【蛋糕预定单】\n蛋糕1：芒果蛋糕\n尺寸：8寸\n数量：1\n夹馅：芒果\n蛋糕2：巧克力蛋糕\n数量：2\n尺寸：6寸\n夹馅：奥利奥\n祝福语：合成祝福","fields":{},"items":[{"name":"芒果蛋糕","quantity":"1","size":"8","filling":"芒果","message":null},{"name":"巧克力蛋糕","quantity":"2","size":"6","filling":"奥利奥","message":"合成祝福"}]},
   {"id":"cake-and-cupcakes","text":"商品1：生日蛋糕\n数量：1\n尺寸：8寸\n商品2：杯子蛋糕\n数量：6\n奶油：香草奶油","fields":{},"items":[{"name":"生日蛋糕","productType":"CAKE","base":"原味","filling":"芒果"},{"name":"杯子蛋糕","productType":"TEA_BREAK","quantity":"6","base":null,"filling":null,"flavor":"香草奶油"}]},
   {"id":"only-defaults","text":"【蛋糕预定单】\n商品名称：裸蛋糕\n数量：1","fields":{},"items":[{"base":"原味","filling":"芒果","flavor":"原味奶油"}],"defaults":["base","filling"]},

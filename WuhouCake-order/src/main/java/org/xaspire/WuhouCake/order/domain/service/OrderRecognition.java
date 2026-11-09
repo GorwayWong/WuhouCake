@@ -1,6 +1,6 @@
 package org.xaspire.WuhouCake.order.domain.service;
 
-import java.time.DateTimeException;
+import java.time.*;
 import java.util.*;
 import java.util.regex.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.RecognitionDraft;
@@ -17,34 +17,56 @@ public final class OrderRecognition {
             + ")([（(][^）)\\n]{0,80}[）)])?\\s*[:：]\\s*");
     private static final Pattern ITEM_HEADING = Pattern.compile("^(?:[【\\[])?(蛋糕|商品|小产品)\\s*[一二三四五六七八九十\\dA-Z]+[】\\]]?\\s*[:：、.]?\\s*(.*)$");
     private static final Pattern NOTICE = Pattern.compile("^[【\\[（(\\s]*[一二三四五六七八九十\\d、.\\s]*(?:订购须知|订购需知|预订须知|温馨提示|配送规则|配送说明|配套餐具|餐具说明|可选口味|注意事项).*");
-    private static final Pattern NOTICE_SECTION = Pattern.compile("[【\\[]\\s*(?:订购须知|订购需知|预订须知|温馨提示|配送规则|配套餐具[^】\\]]*|餐具说明)\\s*[】\\]]|(?:^|\\s)(?:订购须知|订购需知|预订须知|温馨提示|配送规则)\\s*[:：]");
-    private static final Pattern TITLE = Pattern.compile("^[【\\[](?:蛋糕预定单|蛋糕预订单|蛋糕订购单)[】\\]]\\s*");
+    private static final String ORDER_NOTICE = "[【\\[]\\h*订购[须需]知\\h*[】\\]]";
+    private static final Pattern NOTICE_SECTION = Pattern.compile("(?m)^\\h*" + ORDER_NOTICE + "(?=\\h*(?:[:：]|$))"
+            + "|(?<!\\h)\\h++" + ORDER_NOTICE + "\\h*[:：]"
+            + "|[【\\[]\\s*(?:预订须知|温馨提示|配送规则|配套餐具[^】\\]]*|餐具说明)\\s*[】\\]]"
+            + "|(?:^|\\s)(?:订购须知|订购需知|预订须知|温馨提示|配送规则)\\s*[:：]");
+    private static final String BRACKETED_TITLE = "[【\\[](?:蛋糕预定单|蛋糕预订单|蛋糕订购单)[】\\]]";
+    private static final Pattern TITLE = Pattern.compile("^" + BRACKETED_TITLE + "\\s*");
+    private static final Pattern INLINE_TITLE = Pattern.compile(BRACKETED_TITLE + "\\h*(?=" + LABEL.pattern() + ")");
     private static final Pattern SIZE = Pattern.compile("\\d+(?:\\.\\d+)?\\s*(?:英寸|寸)");
     private static final Pattern QUANTITY = Pattern.compile("(?<![\\d一二两三四五六七八九十百千万零〇])([一二两三四五六七八九\\d]+)\\s*(?:个|只|份|盒)");
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private final Map<String, String> cakeDefaults;
-    public OrderRecognition(Map<String, String> cakeDefaults) { this.cakeDefaults = Map.copyOf(cakeDefaults); }
+    private final Clock clock;
+    public OrderRecognition(Map<String, String> cakeDefaults, Clock clock) {
+        this.cakeDefaults = Map.copyOf(cakeDefaults);
+        this.clock = Objects.requireNonNull(clock);
+    }
     public RecognitionDraft parse(String text) {
         if (text == null || text.isBlank() || text.length() > MAX_TEXT) throw new IllegalArgumentException("识别文本需为1–12000个字符");
+        LocalDate today = LocalDate.ofInstant(clock.instant(), BUSINESS_ZONE);
         var fields = empty(ORDER_FIELDS); var items = new ArrayList<MutableItem>(); var issues = new ArrayList<String>();
         var fragments = new ArrayList<Fragment>(); var unmapped = new ArrayList<String>(); MutableItem current = null;
-        var times = new LinkedHashMap<String, List<String>>();
-        boolean notice = false, itemOverflow = false;
+        var pickupTimes = new ArrayList<TimeInput>(); var finishTimes = new ArrayList<TimeInput>();
+        boolean foundOrderTitle = false, stopAfterLine = false, itemOverflow = false;
         var contactLines = new ArrayList<String>();
         String body = text.replace("\r\n", "\n").replace('\r', '\n');
         var section = NOTICE_SECTION.matcher(body);
         if (section.find()) body = body.substring(0, section.start());
         for (String original : body.split("[\\n；;]")) {
+            if (stopAfterLine) break;
             String line = original.strip(); if (line.isEmpty()) continue;
-            if (NOTICE.matcher(line).matches()) { notice = true; continue; }
-            if (notice) continue;
+            if (NOTICE.matcher(line).matches()) break;
             var title = TITLE.matcher(line);
             boolean hasTitle = title.find();
             if (hasTitle || line.matches("蛋糕预定单|蛋糕预订单|蛋糕订购单")) {
+                if (foundOrderTitle) break;
+                foundOrderTitle = true;
                 if (items.size() >= 20) { itemOverflow = true; current = null; issues.add("商品区块超过20个，请手工补充，原文已保留"); unmapped.add(line); continue; }
                 current = addItem(items); itemOverflow = false;
                 put(current.fields, "productType", field("CAKE", hasTitle ? line.substring(0, title.end()).strip() : line));
                 line = hasTitle ? line.substring(title.end()).strip() : "";
                 if (line.isEmpty()) continue;
+            }
+            if (foundOrderTitle) {
+                var inlineTitle = INLINE_TITLE.matcher(line);
+                if (inlineTitle.find()) {
+                    line = line.substring(0, inlineTitle.start()).stripTrailing();
+                    stopAfterLine = true;
+                    if (line.isEmpty()) continue;
+                }
             }
             var heading = ITEM_HEADING.matcher(line);
             if (heading.matches()) {
@@ -67,15 +89,20 @@ public final class OrderRecognition {
             }
             for (int i = 0; i < matches.size(); i++) {
                 var match = matches.get(i);
-                String value = line.substring(match.end, i + 1 < matches.size() ? matches.get(i + 1).start : line.length()).strip().replaceFirst("[，,\\s]+$", "");
+                int end = i + 1 < matches.size() ? matches.get(i + 1).start : line.length();
+                String value = trimValue(line.substring(match.end, end));
                 String key = LABELS.get(match.label), evidence = line.substring(match.start, i + 1 < matches.size() ? matches.get(i + 1).start : line.length()).strip();
                 if (key.equals("unmapped")) { unmapped.add(evidence); continue; }
-                if (key.equals("receiveTime")) {
-                    assign(fields, "requestedReceiveDate", value, evidence);
-                    if (RecognitionValues.containsTime(value)) times.computeIfAbsent("requestedReceiveAt", k -> new ArrayList<>()).add(value);
+                if (key.equals("plannedFinishAt")) {
+                    if (!value.isBlank()) finishTimes.add(new TimeInput(key, value, evidence));
                     continue;
                 }
-                if (key.equals("plannedHandoffAt") || key.equals("plannedFinishAt")) { if (!value.isBlank()) times.computeIfAbsent(key, k -> new ArrayList<>()).add(value); continue; }
+                if (key.equals("receiveTime") || key.equals("plannedHandoffAt") || key.endsWith("Date")) {
+                    if (!value.isBlank() && !value.equals("待定")) {
+                        pickupTimes.add(new TimeInput(key.equals("receiveTime") ? "requestedReceiveAt" : key, value, evidence));
+                    }
+                    continue;
+                }
                 if (ORDER_FIELDS.contains(key)) {
                     if (Set.of("phone", "address", "customerName").contains(key)
                             && (businessContext || ContactRecognition.businessPrefix(line.substring(0, match.start)))
@@ -92,19 +119,11 @@ public final class OrderRecognition {
         ContactRecognition.extract(contactLines, fields.get("phone").value(), fields.get("address").value()).forEach((key, value) -> {
             if (fields.get(key).source() == null) fields.put(key, value);
         });
-        for (var time : times.entrySet()) for (String raw : time.getValue()) {
-            try {
-                String date;
-                try { date = RecognitionValues.date(raw); }
-                catch (IllegalArgumentException missingDate) {
-                    if (RecognitionValues.containsDate(raw)) throw missingDate;
-                    date = fields.get("requestedReceiveDate").value();
-                    if (date == null) throw new IllegalArgumentException("缺少与时刻对应的明确日期");
-                }
-                String value = date + "T" + RecognitionValues.time(raw);
-                var evidence = new ArrayList<>(fields.get("requestedReceiveDate").evidence()); evidence.add(raw);
-                put(fields, time.getKey(), new Field(value, Source.RULE, evidence, false, List.of()));
-            } catch (IllegalArgumentException | DateTimeException invalid) { put(fields, time.getKey(), invalid(raw, invalid.getMessage())); }
+        Field pickupDate = resolvePickupTimes(pickupTimes, today, fields);
+        if (!finishTimes.isEmpty()) {
+            var finish = collectTimes(finishTimes, today);
+            Field date = resolveDate(finish.date().source() == null ? pickupDate : finish.date(), today);
+            fields.put("plannedFinishAt", combineTime(date, finish.time(), true));
         }
         for (var item : items) {
             if ("CAKE".equals(item.fields.get("productType").value())) for (String key : List.of("unitPriceCents", "memberPriceCents")) item.fields.put(key, Field.missing());
@@ -118,6 +137,127 @@ public final class OrderRecognition {
         if (fields.values().stream().noneMatch(f -> f.value() != null) && items.isEmpty()) issues.add("未找到明确订单字段，原文未填入表单");
         return new RecognitionDraft(fields, items.stream().map(x -> new Item(x.id, x.fields)).toList(), issues, fragments, unmapped);
     }
+    private record TimeInput(String field, String value, String evidence) { }
+
+    private static String trimValue(String value) {
+        int end = value.length();
+        while (end > 0 && (Character.isWhitespace(value.charAt(end - 1)) || value.charAt(end - 1) == '，' || value.charAt(end - 1) == ',')) end--;
+        return value.substring(0, end).stripLeading();
+    }
+
+    private record TimeParts(Field date, Field time) { }
+
+    private static Field resolvePickupTimes(List<TimeInput> inputs, LocalDate today, Map<String, Field> fields) {
+        Field sharedDate = collectTimes(timeInputs(inputs, "requestedReceiveDate"), today).date();
+        var receiveInputs = timeInputs(inputs, "requestedReceiveAt", "receiveDate");
+        var handoffInputs = timeInputs(inputs, "plannedHandoffAt", "handoffDate");
+        var receive = collectTimes(receiveInputs, today);
+        var handoff = collectTimes(handoffInputs, today);
+        Field receiveDate = resolveDate(bindPickupDate(mergeDates(receive.date(), sharedDate), handoff.date()), today);
+        Field handoffDate = resolveDate(bindPickupDate(mergeDates(handoff.date(), sharedDate), receive.date()), today);
+        if (!receiveInputs.isEmpty()) fields.put("requestedReceiveAt", combineTime(receiveDate, receive.time(), false));
+        if (!handoffInputs.isEmpty()) {
+            Field handoffTime = combineTime(handoffDate, handoff.time(), false);
+            // A date-only pickup reserves the pickup field without inventing a clock time.
+            if (handoffTime.source() == null && handoffDate.value() != null) {
+                handoffTime = new Field(null, Source.RULE, handoffDate.evidence(), false, List.of());
+            }
+            fields.put("plannedHandoffAt", handoffTime);
+        }
+        Field pickupDate = handoffInputs.isEmpty() ? receiveDate : handoffDate;
+        fields.put("requestedReceiveDate", pickupDate);
+        return pickupDate;
+    }
+
+    private static List<TimeInput> timeInputs(List<TimeInput> inputs, String... keys) {
+        var accepted = List.of(keys);
+        return inputs.stream().filter(input -> accepted.contains(input.field())).toList();
+    }
+
+    private static TimeParts collectTimes(List<TimeInput> inputs, LocalDate today) {
+        Field date = Field.missing(), time = Field.missing();
+        for (var input : inputs) {
+            String text = RecognitionValues.normalizeTimeText(input.value());
+            boolean dateOnly = input.field().endsWith("Date");
+            var parsed = parseDate(text, today, input.evidence(), dateOnly);
+            date = mergeDates(date, parsed.field());
+            if (dateOnly || parsed.field().needsReview() || parsed.remainder().isEmpty() || parsed.remainder().equals("待定")) continue;
+            try {
+                time = mergeTemporal(time, field(RecognitionValues.time(parsed.remainder()), input.evidence()), "时刻相互冲突，请核对");
+            } catch (IllegalArgumentException | DateTimeException invalid) {
+                time = mergeTemporal(time, invalid(input.evidence(), invalid.getMessage()), "时刻相互冲突，请核对");
+            }
+        }
+        return new TimeParts(date, time);
+    }
+
+    private static Field bindPickupDate(Field date, Field other) {
+        if (date.source() == null) return other;
+        // A complete date belongs to its own time. A short date still needs to agree with the available explicit date.
+        if (date.value() != null && date.value().startsWith("--") && other.value() != null && !other.value().startsWith("--")) {
+            return mergeDates(date, other);
+        }
+        return date;
+    }
+
+    private static Field resolveDate(Field date, LocalDate today) {
+        if (date.value() == null || !date.value().startsWith("--")) return date;
+        try {
+            LocalDate nearest = RecognitionValues.nextDate(MonthDay.parse(date.value()), today);
+            return new Field(nearest.toString(), Source.RULE, date.evidence(), true,
+                    List.of("原文未写年份，已按最近日期补为" + nearest.getYear() + "年。"));
+        } catch (DateTimeException invalid) {
+            return new Field(null, Source.RULE, date.evidence(), true, List.of("无法补齐有效年份，请手工填写"));
+        }
+    }
+
+    private static Field combineTime(Field date, Field time, boolean finish) {
+        String value = date.value() != null && time.value() != null ? date.value() + "T" + time.value() : null;
+        var issues = new LinkedHashSet<>(time.issues());
+        if (value != null || date.value() == null) issues.addAll(date.issues());
+        if (date.source() == null && time.value() != null) issues.add("时刻缺少对应日期，请手工填写");
+        if (finish && time.source() == null && issues.isEmpty()) issues.add("请填写具体出品时刻");
+        if (value == null && issues.isEmpty()) return Field.missing();
+        var evidence = new LinkedHashSet<>(date.evidence()); evidence.addAll(time.evidence());
+        return new Field(value, Source.RULE, List.copyOf(evidence), !issues.isEmpty(), List.copyOf(issues));
+    }
+
+    private record ParsedDate(Field field, String remainder) { }
+
+    private static ParsedDate parseDate(String text, LocalDate today, String evidence, boolean dateOnly) {
+        try {
+            var parsed = RecognitionValues.datePrefix(text, today);
+            if (dateOnly && (parsed.date() == null || !parsed.remainder().isEmpty())) {
+                throw new IllegalArgumentException("日期格式不明确，请填写具体日期");
+            }
+            return new ParsedDate(parsed.date() == null ? Field.missing() : field(parsed.date(), evidence), parsed.remainder());
+        } catch (DateTimeException invalid) {
+            return new ParsedDate(invalid(evidence, "日期无效，请核对年月日"), "");
+        } catch (IllegalArgumentException invalid) {
+            return new ParsedDate(invalid(evidence, invalid.getMessage()), "");
+        }
+    }
+
+    private static Field mergeDates(Field before, Field next) {
+        if (before.value() != null && next.value() != null && before.value().startsWith("--") != next.value().startsWith("--")) {
+            Field complete = before.value().startsWith("--") ? next : before;
+            Field partial = complete == before ? next : before;
+            if (complete.value().substring(5).equals(partial.value().substring(2))) {
+                return mergeTemporal(complete, new Field(complete.value(), Source.RULE, partial.evidence(), false, List.of()), "");
+            }
+        }
+        return mergeTemporal(before, next, "日期相互冲突，请核对");
+    }
+
+    private static Field mergeTemporal(Field before, Field next, String conflict) {
+        if (before.source() == null) return next;
+        if (next.source() == null) return before;
+        var evidence = new ArrayList<>(before.evidence()); evidence.addAll(next.evidence());
+        var issues = new LinkedHashSet<>(before.issues()); issues.addAll(next.issues());
+        if (before.value() != null && next.value() != null && !before.value().equals(next.value())) issues.add(conflict);
+        return new Field(issues.isEmpty() ? before.value() : null, Source.RULE, evidence, !issues.isEmpty(), List.copyOf(issues));
+    }
+
     public List<Fragment> assistFragments(RecognitionDraft draft) {
         var values = new LinkedHashSet<String>();
         for (String field : List.of("customerName", "phone", "memberPhone", "buyerName", "address")) {
@@ -140,7 +280,6 @@ public final class OrderRecognition {
         try {
             String normalized = switch (key) {
                 case "phone", "memberPhone" -> RecognitionValues.phone(value);
-                case "requestedReceiveDate" -> RecognitionValues.date(value);
                 case "quantity" -> RecognitionValues.quantity(value);
                 case "size" -> RecognitionValues.size(value);
                 case "unitPriceCents", "memberPriceCents", "totalAmountCents" -> RecognitionValues.money(value);
@@ -236,7 +375,8 @@ if (value.contains("杯子蛋糕") || value.contains("纸杯蛋糕") || value.co
         add(map, "customerName", "客户姓名", "收货人", "收件人", "联系人", "姓名"); add(map, "phone", "联系电话", "收货电话", "收件电话", "手机号", "电话");
         add(map, "memberPhone", "会员手机号", "会员手机", "会员电话"); add(map, "buyerName", "订购人姓名", "订购人", "客户订购人", "客户下单人", "下单人");
         add(map, "address", "配送地址", "收货地址", "地址"); add(map, "fulfillmentType", "配送方式", "交接方式", "交付方式", "取货方式");
-        add(map, "requestedReceiveDate", "收货日期", "取货日期", "配送日期", "日期"); add(map, "receiveTime", "客户收货时间", "收货时间", "期望收货时间");
+        add(map, "requestedReceiveDate", "日期"); add(map, "receiveDate", "收货日期", "配送日期"); add(map, "handoffDate", "取货日期");
+        add(map, "receiveTime", "客户收货时间", "收货时间", "期望收货时间");
         add(map, "plannedHandoffAt", "到店取货时间", "取货时间", "计划交接时间", "交接时间"); add(map, "plannedFinishAt", "计划出品时间", "出品时间");
         add(map, "totalAmountCents", "订单总金额", "约定总金额", "订单总价", "总金额", "总价", "合计");
         add(map, "name", "商品名称", "蛋糕名称", "小产品名称", "商品"); add(map, "productType", "商品类型", "类型"); add(map, "quantity", "数量");

@@ -10,8 +10,17 @@ import static org.mockito.Mockito.*;
 
 class OrderRecognitionServiceTest {
     private final RecognitionAssistant assistant = mock(RecognitionAssistant.class);
-    private final OrderRecognitionService service = new OrderRecognitionService(new OrderRecognition(Map.of("base", "原味", "filling", "芒果")), assistant);
+    private final OrderRecognitionService service = new OrderRecognitionService(new OrderRecognition(Map.of("base", "原味", "filling", "芒果"), java.time.Clock.systemUTC()), assistant);
     private static final String TEXT = "【蛋糕预定单】\n客户姓名：合成客户\n电话：13800000001\n地址：合成市验收路1号\n奶油用动物的";
+    @Test void parseReturnsDateOnlyPickupWithRuleSourceAlongsideLegacyTime() {
+        var fields = service.parse("取货日期：2026-11-12\n收货时间：2026-11-13 18:00").fields();
+        assertEquals("2026-11-12", fields.get("requestedReceiveDate").value());
+        var pickup = fields.get("plannedHandoffAt");
+        assertEquals("RULE", pickup.source());
+        assertNull(pickup.value());
+        assertFalse(pickup.needsReview());
+        assertEquals("2026-11-13T18:00", fields.get("requestedReceiveAt").value());
+    }
     @Test void rulesReturnImmediatelyAndAssistSendsNoParsedPersonalData() {
         when(assistant.available()).thenReturn(true);
         when(assistant.suggest(anyList())).thenReturn(new Result("OK", List.of(new Suggestion("item-1", "flavor", "动物奶油", "奶油用动物的")), List.of()));
