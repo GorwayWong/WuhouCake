@@ -2132,6 +2132,15 @@ button,a{
 
 .finish-time-help { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; }
 .finish-time-help .text-button { min-height: 44px; }
+.finish-date-warning {
+  flex: 1 0 100%;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #e0c789;
+  border-radius: 6px;
+  background: #fff8e7;
+  color: #63480b;
+  font-weight: 600;
+}
 
 .draft-image-thumbnail{display:block;width:100%;height:160px;object-fit:contain;background:#f1f3f1;border-radius:10px}
 .draft-item-images .actions{flex-wrap:wrap;align-items:center}

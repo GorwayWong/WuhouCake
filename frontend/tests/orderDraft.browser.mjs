@@ -537,6 +537,41 @@ test('出品自动随动、手动保留、刷新恢复及恢复自动，移动�
   } finally { await context.close(); }
 });
 
+test('手动调整或识别带入不同日期的出品时就地提醒，日期一致后清除', async () => {
+  const { context, page, model, errors } = await fixture();
+  const warning = page.locator('.finish-date-warning');
+  try {
+    const date = await page.locator('input[name="requestedReceiveAt"]').inputValue();
+    await selectTime(page, 'requestedReceiveAt', 'hour', '17');
+    assert.equal(await warning.count(), 0);
+
+    await page.locator('#plannedFinishAt').click();
+    await page.locator('.date-calendar [role="button"]:not([data-selected]):not([data-outside-month]):not([data-disabled])').first().click();
+    await warning.waitFor();
+    assert.match(await warning.innerText(), /出品和取货不在同一天/);
+    await page.getByRole('button', { name: '恢复自动计算', exact: true }).click();
+    await warning.waitFor({ state: 'detached' });
+
+    const nextDate = new Date(Date.parse(date + 'T12:00:00Z') + 86400000).toISOString().slice(0, 10);
+    model.recognitionFields = { plannedFinishAt: { value: nextDate + 'T16:00', source: 'RULE', needsReview: false, evidence: [], issues: [] } };
+    await page.locator('.recognition-panel summary').click();
+    await page.locator('#recognition-text').fill('出品时间：' + nextDate + ' 16:00');
+    await page.getByRole('button', { name: '识别并填入', exact: true }).click();
+    await warning.waitFor();
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    if (process.env.TIME_WARNING_SCREENSHOT) {
+      await page.locator('.create-order-info').scrollIntoViewIfNeeded();
+      await page.locator('.create-order-info').screenshot({ path: process.env.TIME_WARNING_SCREENSHOT });
+    }
+    await page.setViewportSize({ width: 320, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.locator('#plannedFinishAt').click();
+    await page.getByRole('button', { name: '今天', exact: true }).click();
+    await warning.waitFor({ state: 'detached' });
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
 test('历史订单编辑只展示取货和出品，保留原始差异，不改时间只提交电话', async () => {
   const { context, page, model, errors } = await fixture();
   const patches = [];
