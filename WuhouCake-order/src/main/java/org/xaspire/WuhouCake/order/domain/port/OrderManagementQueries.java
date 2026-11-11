@@ -61,7 +61,7 @@ public interface OrderManagementQueries {
     record EmployeeSummary(String employeeId, String employeeNumber, String employeeName, long orderCount, long matchingQuantity,
             long cakeQuantity, String totalAmountCents, String paidAmountCents, String unpaidAmountCents, long missingAmountOrders) { }
     record ProductRow(String orderNo, String name, String productType, long quantity, String size, String flavor, String base,
-            String filling, String message, String requirements, Long unitPriceCents, Long memberPriceCents) { }
+            String filling, String message, String requirements, String specification, Long unitPriceCents, Long memberPriceCents) { }
     List<Row> search(Filter filter, int limit, long offset);
     default long count(Filter filter) { return totals(filter).orderCount(); }
     Totals totals(Filter filter);

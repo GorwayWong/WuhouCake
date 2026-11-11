@@ -107,6 +107,36 @@ class WorkflowManagementIT {
         assertEquals(2, admin.data("GET", search("&includeCancelled=true"), null).at("/totals/orderCount").asInt());
         assertEquals(1, admin.data("GET", search("&status=CANCELLED"), null).at("/totals/orderCount").asInt());
     }
+    @Test void filteredReportPreservesLongProductSpecificationWithoutDuplicatingQuantity() throws Exception {
+        var input = new LinkedHashMap<>(create(a.id));
+        String specification = "茶".repeat(319) + "😀\n" + "备注".repeat(16400);
+        input.put("items", List.of(Map.of("name", "合成长规格饮品", "productType", "OTHER", "quantity", 3,
+                "attributes", Map.of("specification", specification), "referenceUnitPriceCents", 1230),
+                Map.of("name", "不匹配商品", "productType", "OTHER", "quantity", 9, "attributes", Map.of())));
+        var order = a.data("POST", "/api/orders", input);
+        String suffix = "&productName=" + java.net.URLEncoder.encode("长规格饮品", java.nio.charset.StandardCharsets.UTF_8);
+        var filtered = admin.data("GET", search(suffix), null);
+        assertEquals(1, filtered.at("/totals/orderCount").asInt());
+        assertEquals(3, filtered.at("/totals/matchingQuantity").asInt());
+        var response = admin.raw("GET", search(suffix).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, response.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
+            var detail = book.getSheet("商品明细");
+            var text = new StringBuilder(); double quantity = 0;
+            for (var row : detail) {
+                if (row.getRowNum() == 0) continue;
+                assertEquals(order.path("orderNo").asText(), row.getCell(0).getStringCellValue());
+                if (row.getCell(3).getCellType() == org.apache.poi.ss.usermodel.CellType.NUMERIC)
+                    quantity += row.getCell(3).getNumericCellValue();
+                text.append(row.getCell(10).getStringCellValue());
+            }
+            assertEquals(specification + "\n原商品单价：12.30 元（仅供参考）", text.toString());
+            assertEquals(filtered.at("/totals/matchingQuantity").asDouble(), quantity);
+            assertEquals(quantity, book.getSheet("订单明细").getRow(1).getCell(10).getNumericCellValue());
+            assertEquals(quantity, book.getSheet("员工业绩").getRow(1).getCell(3).getNumericCellValue());
+        }
+    }
+
     @Test void orderingMethodFiltersEveryReportAndExportUsingTheSameExactValue() throws Exception {
         var names = List.of("下单人", "小程序", "到店", "客服号", "微信%_'\\");
         var created = new LinkedHashMap<String, JsonNode>();

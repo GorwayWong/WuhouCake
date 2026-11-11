@@ -59,7 +59,7 @@ public interface OrderManagementMapper {
             + " CASE WHEN upper(i.product_type)='CAKE' THEN COALESCE(NULLIF(regexp_replace(i.attributes->>'flavor','^[[:space:]]+|[[:space:]]+$','','g'),''),'原味奶油') ELSE i.attributes->>'flavor' END AS flavor,"
             + " CASE WHEN upper(i.product_type)='CAKE' THEN COALESCE(NULLIF(regexp_replace(i.attributes->>'base','^[[:space:]]+|[[:space:]]+$','','g'),''),'原味') ELSE i.attributes->>'base' END AS base,"
             + " CASE WHEN upper(i.product_type)='CAKE' THEN COALESCE(NULLIF(regexp_replace(i.attributes->>'filling','^[[:space:]]+|[[:space:]]+$','','g'),''),'芒果') ELSE i.attributes->>'filling' END AS filling,"
-            + " i.attributes->>'message' AS message,i.attributes->>'requirements' AS requirements,i.unit_price_cents,i.member_price_cents"
+            + " i.attributes->>'message' AS message,i.attributes->>'requirements' AS requirements,i.attributes->>'specification' AS specification,i.unit_price_cents,i.member_price_cents"
             + " FROM (SELECT o.id,o.order_no," + ORDER_PICKUP_DATE + " AS requested_receive_date" + SOURCE + ") selected JOIN cake_order_item i ON i.order_id=selected.id"
             + " WHERE NOT i.is_removed" + ITEM_MATCH + " ORDER BY selected.requested_receive_date,selected.order_no,i.created_at,i.id LIMIT #{limit}</script>")
     List<ProductRow> products(@Param("filter") Filter filter, @Param("limit") int limit);

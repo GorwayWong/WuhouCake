@@ -2,24 +2,44 @@ package org.xaspire.WuhouCake.order.infrastructure.files;
 
 import java.io.*;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import org.apache.poi.ss.SpreadsheetVersion;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.*;
 import org.xaspire.WuhouCake.order.domain.port.OrderReportFiles;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 
 public final class PoiOrderReportFiles implements OrderReportFiles {
+    private static final long MAX_TEXT_BYTES = 8 * 1024 * 1024L;
+    private static final int MAX_CELL_CHARS = SpreadsheetVersion.EXCEL2007.getMaxTextLength();
+    private static final int SPEC_COLUMN = 10;
+    private static final int SPEC_CHUNK_CHARS = 320;
+    private static final int SPEC_CHUNK_NEWLINES = 12;
+
     @Override public byte[] generate(Filter filter, List<Row> rows, Totals totals, List<SizeSummary> sizes, List<EmployeeSummary> employees, List<ProductRow> products) {
-        if (rows.stream().mapToLong(r -> r.products() == null ? 0 : r.products().getBytes(java.nio.charset.StandardCharsets.UTF_8).length).sum() > 8 * 1024 * 1024L
-                || rows.stream().anyMatch(r -> r.products() != null && r.products().length() > 32767))
-            throw new org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure("REPORT_LIMIT_EXCEEDED");
+        if (rows.stream().mapToLong(r -> r.products() == null ? 0 : r.products().getBytes(StandardCharsets.UTF_8).length).sum() > MAX_TEXT_BYTES
+                || rows.stream().anyMatch(r -> r.products() != null && r.products().length() > MAX_CELL_CHARS))
+            throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
+        var specifications = new ArrayList<String>(products.size());
         long textBytes = 0;
-        for (var product : products) for (String value : new String[]{product.name(), product.size(), product.flavor(), product.base(), product.filling(), product.message(), product.requirements()}) {
-            if (value == null) continue;
-            textBytes += value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
-            if (value.length() > 32767 || textBytes > 8 * 1024 * 1024L) throw new org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure("REPORT_LIMIT_EXCEEDED");
+        for (var product : products) {
+            String specification = CakeSpecifications.historicalSpecification(product.specification(), product.unitPriceCents(), product.memberPriceCents());
+            specifications.add(specification);
+            textBytes += specification.getBytes(StandardCharsets.UTF_8).length;
+            for (String value : new String[]{product.name(), product.size(), product.flavor(), product.base(), product.filling(), product.message(), product.requirements()}) {
+                if (value == null) continue;
+                if (value.length() > MAX_CELL_CHARS) throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
+                textBytes += value.getBytes(StandardCharsets.UTF_8).length;
+            }
+            if (textBytes > MAX_TEXT_BYTES) throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
         }
         try (var book = new XSSFWorkbook(); var output = new ByteArrayOutputStream()) {
             var summary = book.createSheet("统计");
@@ -50,8 +70,9 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                     r.matchingQuantity(), r.cakeQuantity(), r.products());
             var productSheet = book.createSheet("商品明细");
             row(productSheet, "订单号", "商品名称", "商品类型", "数量", "尺寸原值（寸）", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "规格");
-            for (var r : products) row(productSheet, r.orderNo(), r.name(), ProductCategories.label(r.productType()), r.quantity(), r.size(), r.flavor(), r.base(), r.filling(), r.message(), r.requirements(),
-                    text(org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications.withHistoricalPrices(r.attributes(), r.unitPriceCents(), r.memberPriceCents()).get("specification")));
+            var wrap = book.createCellStyle();
+            wrap.setWrapText(true);
+            for (int i = 0; i < products.size(); i++) productRows(productSheet, products.get(i), specifications.get(i), wrap);
             var header = book.createCellStyle(); var font = book.createFont(); font.setBold(true); header.setFont(font);
             for (var s : List.of(summary, sizeSheet, employeeSheet, sheet, productSheet)) {
                 for (int i = 0; i < s.getRow(0).getLastCellNum(); i++) s.setColumnWidth(i, (i == 12 ? 60 : 24) * 256);
@@ -61,12 +82,38 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                     for (var cell : s.getRow(0)) cell.setCellStyle(header);
                 }
             }
-            productSheet.setColumnWidth(10, 52 * 256);
-            var wrap = book.createCellStyle(); wrap.setWrapText(true);
-            for (var row : productSheet) if (row.getRowNum() != 0) row.getCell(10).setCellStyle(wrap);
+            productSheet.setColumnWidth(SPEC_COLUMN, 52 * 256);
             book.write(output); return output.toByteArray();
         } catch (IOException failure) { throw new UncheckedIOException(failure); }
     }
+    private static void productRows(Sheet sheet, ProductRow product, String specification, CellStyle wrap) {
+        int start = 0, part = 1;
+        do {
+            if (sheet.getLastRowNum() + 1 >= SpreadsheetVersion.EXCEL2007.getMaxRows())
+                throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
+            int end = specificationEnd(specification, start);
+            String text = specification.substring(start, end);
+            var detail = part == 1
+                    ? row(sheet, product.orderNo(), product.name(), ProductCategories.label(product.productType()), product.quantity(),
+                            product.size(), product.flavor(), product.base(), product.filling(), product.message(), product.requirements(), text)
+                    : row(sheet, product.orderNo(), product.name() + "（续 " + part + "）", "", null, "", "", "", "", "", "", text);
+            detail.getCell(SPEC_COLUMN).setCellStyle(wrap);
+            int lines = Arrays.stream(text.split("\n", -1)).mapToInt(line -> Math.max(1, (line.length() + 25) / 26)).sum();
+            detail.setHeightInPoints(Math.min(409, Math.max(sheet.getDefaultRowHeightInPoints(), lines * 15 + 6)));
+            start = end;
+            part++;
+        } while (start < specification.length());
+    }
+
+    private static int specificationEnd(String text, int start) {
+        int end = Math.min(text.length(), start + SPEC_CHUNK_CHARS), newlines = 0;
+        for (int i = start; i < end; i++) {
+            if (text.charAt(i) == '\n' && ++newlines == SPEC_CHUNK_NEWLINES) return i + 1;
+        }
+        if (end < text.length() && Character.isSurrogatePair(text.charAt(end - 1), text.charAt(end))) return end - 1;
+        return end;
+    }
+
     private static String yuan(String cents) { return new BigDecimal(cents).movePointLeft(2).toPlainString(); }
     private static String label(String value) {
         if (value == null) return "全部";
@@ -74,7 +121,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                 Map.entry("DECORATING", "装饰"), Map.entry("WAITING_DELIVERY", "待配送"), Map.entry("COMPLETED", "已配送"), Map.entry("CANCELLED", "已取消"),
                 Map.entry("PAID", "已付款"), Map.entry("UNPAID", "未付款"), Map.entry("PICKUP", "自提"), Map.entry("DELIVERY", "配送")).getOrDefault(value, value);
     }
-    private static void row(org.apache.poi.ss.usermodel.Sheet sheet, Object... values) {
+    private static org.apache.poi.ss.usermodel.Row row(Sheet sheet, Object... values) {
         var row = sheet.createRow(sheet.getPhysicalNumberOfRows());
         for (int i = 0; i < values.length; i++) {
             String text = values[i] == null ? "" : String.valueOf(values[i]);
@@ -82,5 +129,6 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             if (values[i] instanceof Number number && Math.abs(number.doubleValue()) < 1_000_000_000_000_000d) cell.setCellValue(number.doubleValue());
             else cell.setCellValue(text);
         }
+        return row;
     }
 }
