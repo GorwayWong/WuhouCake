@@ -71,8 +71,10 @@ class WorkflowManagementIT {
 
     @Test void mixedProductsAreCountedByQuantityAndFilteredExportMatchesTheListWithoutLogs() throws Exception {
         var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
-        assertEquals(a.id, order.path("createdBy").asText()); assertEquals(b.id, order.at("/creditedEmployee/accountId").asText());
-        var cancelled = a.data("POST", "/api/orders", create(b.id));
+        assertEquals(a.id, order.path("createdBy").asText());
+        assertEquals(a.id, order.at("/creditedEmployee/accountId").asText());
+        a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("creditedEmployeeId", b.id)));
+        var cancelled = a.data("POST", "/api/orders", create(a.id));
         a.data("POST", "/api/orders/" + cancelled.path("orderId").asText() + "/cancel", Map.of("expectedVersion", 0, "reason", "合成取消"));
         assertEquals(1, management.totals(new org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.Filter(java.time.LocalDate.of(2026,10,1), java.time.LocalDate.of(2026,11,1), null,null,null,null,null,false,false,null,null)).orderCount());
         var all = admin.data("GET", search(""), null);
@@ -248,15 +250,20 @@ class WorkflowManagementIT {
         assertEquals(1, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
     }
     @Test void ownershipChangesRecordRealActorAndArchivedEmployeeKeepsHistoricalAttribution() throws Exception {
-        var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
-        b.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("creditedEmployeeId", a.id)));
+        var order = b.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        admin.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("creditedEmployeeId", a.id)));
         var activity = a.data("GET", "/api/orders/" + id + "/activities?type=ORDER_INFORMATION_CHANGED", null).at("/items/0");
-        assertEquals(b.id, activity.path("actorId").asText()); assertEquals(b.id, activity.at("/details/before/creditedEmployeeId").asText()); assertEquals(a.id, activity.at("/details/after/creditedEmployeeId").asText());
-        var historical = a.data("POST", "/api/orders", create(b.id));
+        assertEquals(admin.id, activity.path("actorId").asText());
+        assertEquals(b.id, activity.at("/details/before/creditedEmployeeId").asText());
+        assertEquals(a.id, activity.at("/details/after/creditedEmployeeId").asText());
+        var historical = b.data("POST", "/api/orders", create(b.id));
         admin.data("POST", "/api/admin/employees/" + b.id + "/archive", null);
         assertEquals("师傅 B", a.data("GET", "/api/orders/" + historical.path("orderId").asText(), null).at("/creditedEmployee/nickname").asText());
         assertEquals(1, admin.data("GET", search("&creditedEmployeeId=" + b.id), null).at("/totals/orderCount").asInt());
-        assertEquals(409, a.raw("POST", "/api/orders", create(b.id)).statusCode());
+        var rejected = a.raw("PATCH", "/api/orders/" + id + "/information",
+                Map.of("expectedVersion", 1, "changes", Map.of("creditedEmployeeId", b.id)));
+        assertEquals(409, rejected.statusCode());
+        assertEquals("ACCOUNT_ARCHIVED", json.readTree(rejected.body()).path("code").asText());
         assertFalse(a.data("GET", "/api/employees/options", null).toString().contains(b.id));
         assertTrue(a.data("GET", "/api/employees/options?includeArchived=true", null).toString().contains(b.id));
         assertEquals(admin.data("GET", search(""), null), a.data("GET", search(""), null));
@@ -296,12 +303,12 @@ class WorkflowManagementIT {
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_EXPORTED'", Integer.class));
     }
     @Test void employeeGroupsUseStableAccountsAndExposeUnknownAmountsWithoutDuplicatingMixedOrderMoney() throws Exception {
-        var first = a.data("POST", "/api/orders", create(b.id));
+        var first = b.data("POST", "/api/orders", create(b.id));
         a.data("PATCH", "/api/orders/" + first.path("orderId").asText() + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID"));
         var profile = admin.data("GET", "/api/admin/employees?employeeNumber=B001", null).at("/items/0");
         admin.data("PATCH", "/api/admin/employees/" + b.id, Map.of("expectedVersion", profile.path("version").asLong(), "nickname", "新名字", "jobRoles", List.of("FRONT_DESK")));
         var withoutAmount = new LinkedHashMap<>(create(b.id)); withoutAmount.remove("totalAmountCents");
-        a.data("POST", "/api/orders", withoutAmount);
+        b.data("POST", "/api/orders", withoutAmount);
         var data = admin.data("GET", search(""), null);
         assertEquals(1, data.path("employees").size()); assertEquals(b.id, data.at("/employees/0/employeeId").asText());
         assertEquals("新名字", data.at("/employees/0/employeeName").asText());
@@ -379,7 +386,13 @@ class WorkflowManagementIT {
         assertEquals("ACTIVE", archived.path("before.status").asText()); assertEquals("ARCHIVED", archived.path("after.status").asText());
     }
     @Test void exportKeepsOneSnapshotWhileAnotherEmployeeChangesTheMatchingOrder() throws Exception {
-        var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        var order = b.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        String listPath = search("&sizeInches=8&creditedEmployeeId=" + b.id
+                + "&paymentStatus=UNPAID&fulfillmentType=PICKUP&keyword=" + order.path("orderNo").asText());
+        var before = admin.data("GET", listPath, null);
+        assertEquals(1, before.at("/totals/orderCount").asInt());
+        assertEquals(id, before.at("/items/0/orderId").asText());
+        String exportPath = listPath.replace("/api/admin/orders?", "/api/admin/orders/export?");
         var totalsRead = new java.util.concurrent.CountDownLatch(1); var resumeExport = new java.util.concurrent.CountDownLatch(1);
         doAnswer(invocation -> {
             var result = invocation.callRealMethod(); totalsRead.countDown();
@@ -387,24 +400,27 @@ class WorkflowManagementIT {
             return result;
         }).when(management).totals(any());
         try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var export = executor.submit(() -> admin.raw("GET", search("&sizeInches=8&creditedEmployeeId=" + b.id + "&paymentStatus=UNPAID&fulfillmentType=PICKUP&keyword=" + order.path("orderNo").asText()).replace("/api/admin/orders?", "/api/admin/orders/export?"), null));
+            var export = executor.submit(() -> admin.raw("GET", exportPath, null));
             try {
                 assertTrue(totalsRead.await(10, java.util.concurrent.TimeUnit.SECONDS));
                 String itemId = null; for (var item : order.path("items")) if (item.path("name").asText().equals("八寸蛋糕")) itemId = item.path("itemId").asText();
                 assertNotNull(itemId);
-                b.data("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 0, "itemId", itemId, "changes", Map.of("quantity", 3)));
-                b.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("totalAmountCents", 60000)));
+                a.data("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 0, "itemId", itemId, "changes", Map.of("quantity", 3)));
+                a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("totalAmountCents", 60000)));
             } finally { resumeExport.countDown(); }
             var response = export.get(); assertEquals(200, response.statusCode());
             try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
-                assertEquals("520.00", book.getSheet("订单明细").getRow(1).getCell(9).getStringCellValue());
-                assertEquals(2d, book.getSheet("订单明细").getRow(1).getCell(10).getNumericCellValue());
+                var orderRow = book.getSheet("订单明细").getRow(1);
+                assertNotNull(orderRow, "筛选后的导出应包含目标订单");
+                assertEquals(order.path("orderNo").asText(), orderRow.getCell(0).getStringCellValue());
+                assertEquals("520.00", orderRow.getCell(9).getStringCellValue());
+                assertEquals(2d, orderRow.getCell(10).getNumericCellValue());
                 assertEquals(2d, book.getSheet("尺寸统计").getRow(1).getCell(2).getNumericCellValue());
                 assertEquals("520.00", book.getSheet("员工业绩").getRow(1).getCell(5).getStringCellValue());
                 assertEquals(2d, book.getSheet("商品明细").getRow(1).getCell(3).getNumericCellValue());
             }
         } finally { reset(management); }
-        var latest = admin.data("GET", search("&sizeInches=8"), null);
+        var latest = admin.data("GET", listPath, null);
         assertEquals("60000", latest.at("/totals/totalAmountCents").asText()); assertEquals(3, latest.at("/totals/matchingQuantity").asInt());
     }
     @Test void crossAttributedConcurrentCreationsDoNotDeadlock() throws Exception {
@@ -432,7 +448,14 @@ class WorkflowManagementIT {
             assertEquals(deleted, admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "重试不覆盖")));
             assertEquals(409, a.raw("POST", "/api/orders/" + id + "/notes", Map.of("content", "不得写入")).statusCode());
             assertEquals(409, a.raw("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "UNPAID")).statusCode());
-            assertEquals(409, a.raw("POST", "/api/orders/" + id + "/restart", Map.of("expectedVersion", 1)).statusCode());
+            String restartPath = "/api/orders/" + id + "/restart";
+            var restart = Map.of("expectedVersion", 1);
+            var forbidden = a.raw("POST", restartPath, restart);
+            assertEquals(403, forbidden.statusCode());
+            assertEquals("FORBIDDEN", json.readTree(forbidden.body()).path("code").asText());
+            var rejected = admin.raw("POST", restartPath, restart);
+            assertEquals(409, rejected.statusCode());
+            assertEquals("ORDER_DELETED", json.readTree(rejected.body()).path("code").asText());
             assertEquals(200, a.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
         }
         assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));

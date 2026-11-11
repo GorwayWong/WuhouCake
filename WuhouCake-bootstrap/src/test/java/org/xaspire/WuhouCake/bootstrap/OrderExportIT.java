@@ -479,20 +479,23 @@ class OrderExportIT {
     }
     @Test void deferredProductionCommitFailureRollsBackOrderItemsHistoryAndNotification() throws Exception {
         var staff = staff(); var original = data(staff.request("POST", "/api/orders", create("2026-10-16")));
-        String id = original.path("orderId").asText(); changes.events.clear();
+        String id = original.path("orderId").asText();
+        var manager = new Client(); manager.login("0001", PASSWORD);
+        changes.events.clear();
         jdbc.execute("CREATE FUNCTION reject_production_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN"
                 + " IF NEW.type='ORDER_PRODUCTION_CHANGED' THEN RAISE EXCEPTION 'test deferred commit failure' USING ERRCODE='23514'; END IF; RETURN NULL; END; $$");
         jdbc.execute("CREATE CONSTRAINT TRIGGER reject_production_commit AFTER INSERT ON cake_order_activity DEFERRABLE INITIALLY DEFERRED"
                 + " FOR EACH ROW EXECUTE FUNCTION reject_production_commit()");
         try {
-            var response = staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE"));
+            var response = manager.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE"));
             assertEquals(503, response.statusCode(), text(response));
+            assertEquals("SERVICE_UNAVAILABLE", json.readTree(response.body()).path("code").asText());
             assertEquals(original, data(staff.request("GET", "/api/orders/" + id, null)));
             assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Integer.class, id));
             assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND production_status<>'NOT_STARTED'", Integer.class, id));
             assertTrue(changes.events.isEmpty());
         } finally { jdbc.execute("DROP FUNCTION reject_production_commit() CASCADE"); }
-        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE")).statusCode());
+        assertEquals(200, manager.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE")).statusCode());
         assertEquals(1, changes.events.size());
     }
     @ParameterizedTest @ValueSource(booleans = {false, true})
