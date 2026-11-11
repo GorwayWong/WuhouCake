@@ -60,8 +60,7 @@ public class OrderService {
             if (item == null) throw invalid();
             var itemId = item.itemId() == null ? ids.nextId() : item.itemId();
             if (!itemIds.add(itemId)) throw invalid();
-            var created = OrderItem.create(itemId, item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
-            return submissionId == null ? created : created.retainHistoricalPrices(money(item.unitPriceCents()), money(item.memberPriceCents()));
+            return createItem(item, itemId, now, submissionId != null);
         }).toList();
         var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
         var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod());
@@ -116,8 +115,7 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now(); var input = command.item();
         if (input == null) throw invalid();
-        var item = OrderItem.create(input.itemId() == null ? ids.nextId() : input.itemId(), input.name(), input.productType(), input.quantity(), input.unitPriceCents(),
-                input.memberPriceCents(), input.attributes(), now);
+        var item = createItem(input, input.itemId() == null ? ids.nextId() : input.itemId(), now, false);
         var previousItems = order.activeItems();
         var changed = order.addItem(item, now);
         orders.addItem(order, expected, item.itemId(), changedProductionItems(previousItems, order));
@@ -125,6 +123,21 @@ public class OrderService {
         changed(order, item.itemId(), OrderChanged.Type.ITEM_ADDED);
         return detail(order, activities.recentItemNotes(id));
     }
+    private OrderItem createItem(OrderCommands.Item input, UUID itemId, Instant now, boolean customerSubmission) {
+        var legacy = org.xaspire.WuhouCake.order.domain.model.valobj.LegacyDraftQuote.extract(input.attributes());
+        var item = OrderItem.create(itemId, input.name(), input.productType(), input.quantity(), null, null, legacy.attributes(), now);
+        if (customerSubmission) return item.retainHistoricalPrices(money(input.unitPriceCents()), money(input.memberPriceCents()));
+        boolean quoted = input.referenceUnitPriceCents() != null || input.referenceMemberPriceCents() != null;
+        if (!quoted && legacy.unitPriceCents() == null && legacy.memberPriceCents() == null) return item;
+        if (!identity.me().access().allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_AMOUNT_READ)) {
+            if (quoted) throw new OrderFailure("FORBIDDEN");
+            return item;
+        }
+        return item.retainHistoricalPrices(
+                input.referenceUnitPriceCents() == null ? legacy.unitPriceCents() : money(input.referenceUnitPriceCents()),
+                input.referenceMemberPriceCents() == null ? legacy.memberPriceCents() : money(input.referenceMemberPriceCents()));
+    }
+
     @Transactional
     public OrderViews.Detail reviseInformation(UUID id, OrderCommands.Information command, Operator operator) {
         var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());

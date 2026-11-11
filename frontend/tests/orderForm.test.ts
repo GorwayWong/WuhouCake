@@ -2,17 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { changeItemDraft, itemInput, createOrderRequest, moneyToCents, newDraft, newItem, storeTime, validDate } from '../src/orderForm.ts';
 
-test('蛋糕和其他均忽略旧商品报价，切换分类不恢复报价', () => {
-  const cake = newItem(); cake.name = '生日蛋糕'; cake.unitPrice = '未完成'; cake.memberPrice = '-1';
-  assert.deepEqual(itemInput(cake).errors, {});
-  assert.equal(itemInput(cake).item?.unitPriceCents, null); assert.equal(itemInput(cake).item?.memberPriceCents, null);
-  const drink = changeItemDraft(cake, { productType: 'DRINK' });
-  assert.equal(drink.unitPrice, ''); assert.equal(drink.memberPrice, '');
-  assert.deepEqual(itemInput(drink).errors, {});
-  drink.unitPrice = '10.29'; drink.memberPrice = '0';
-  assert.equal(itemInput(drink).item?.unitPriceCents, null); assert.equal(itemInput(drink).item?.memberPriceCents, null);
-  const back = changeItemDraft(drink, { productType: 'CAKE' });
-  assert.equal(back.unitPrice, ''); assert.equal(back.memberPrice, '');
+test('切换分类保留参考报价，普通商品字段保持独立', () => {
+  const cake = { ...newItem(), name: '生日蛋糕', unitPrice: '10.29', memberPrice: '0.00' };
+  const other = changeItemDraft(cake, { productType: 'OTHER' });
+  assert.equal(other.unitPrice, '10.29'); assert.equal(other.memberPrice, '0.00');
+  assert.equal(itemInput(other).item?.unitPriceCents, null);
+  assert.equal(changeItemDraft(other, { productType: 'CAKE' }).memberPrice, '0.00');
 });
 
 test('蛋糕空规格提交使用三个默认值，手工规格保持，非蛋糕不补齐', () => {

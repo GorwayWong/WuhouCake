@@ -7,7 +7,7 @@ import java.time.Instant;
 import java.util.Optional;
 
 public interface OrderPackages {
-    record Item(UUID itemId, UUID imageId, String name, String productType, int quantity, Map<String, Object> attributes) { }
+    record Item(UUID itemId, UUID imageId, String name, String productType, int quantity, Map<String, Object> attributes, Long unitPriceCents, Long memberPriceCents) { }
     record Package(UUID id, String name, List<Item> items, Long originalAmountCents, Long memberAmountCents, long version, Instant updatedAt, Instant deletedAt) {
         public Package { items = List.copyOf(items); }
     }

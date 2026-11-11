@@ -73,7 +73,7 @@ class OrderPackageIT {
         assertEquals(403, staff.raw("POST", "/api/order-packages", body).statusCode());
         var created = manager.data("POST", "/api/order-packages", body); String id = created.path("id").asText();
         assertEquals("下午茶", created.path("name").asText()); assertEquals(0, created.path("version").asLong());
-        assertEquals(0, created.at("/items/0/attributes").size()); assertFalse(created.at("/items/0").has("unitPriceCents"));
+        assertEquals(0, created.at("/items/0/attributes").size()); assertTrue(created.at("/items/0/unitPriceCents").isNull()); assertTrue(created.at("/items/0/memberPriceCents").isNull());
         assertEquals(created, staff.data("GET", "/api/order-packages/" + id, null));
         assertEquals(1, staff.data("GET", "/api/order-packages?keyword=" + encode("下午") + "&size=1", null).path("total").asInt());
         var update = revised("新下午茶", 2, 0);
@@ -156,7 +156,7 @@ class OrderPackageIT {
     }
     @Test void multipartPicturesAreAtomicIdempotentAndBoundToStableRows() throws Exception {
         var row = UUID.randomUUID(); var image = UUID.randomUUID(); var key = UUID.randomUUID().toString();
-        var first = Map.of("itemId", row, "imageId", image, "productType", "OTHER", "name", "纸杯蛋糕", "quantity", 6,
+        var first = Map.of("itemId", row, "imageId", image, "productType", "OTHER", "name", "纸杯蛋糕", "quantity", 6, "unitPriceCents", 2000, "memberPriceCents", 0,
                 "attributes", Map.of("specification", "香草\n六只装"));
         var second = Map.of("itemId", UUID.randomUUID(), "productType", "OTHER", "name", "果汁", "quantity", 2);
         var body = Map.of("name", "图文茶歇", "items", List.of(first, second), "originalAmountCents", 20000, "memberAmountCents", 18000);
@@ -173,7 +173,12 @@ class OrderPackageIT {
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
         assertEquals(18000, saved.path("memberAmountCents").asInt());
         var baker = employee("BAKER", List.of("BAKER"), "STAFF");
-        assertTrue(baker.data("GET", "/api/order-packages/" + saved.path("id").asText(), null).path("originalAmountCents").isNull());
+        var hidden = baker.data("GET", "/api/order-packages/" + saved.path("id").asText(), null);
+        assertTrue(hidden.path("originalAmountCents").isNull());
+        assertTrue(hidden.at("/items/0/unitPriceCents").isNull());
+        assertTrue(hidden.at("/items/0/memberPriceCents").isNull());
+        assertEquals(2000, saved.at("/items/0/unitPriceCents").asInt());
+        assertEquals(0, saved.at("/items/0/memberPriceCents").asInt());
         String path = "/api/order-packages/" + saved.path("id").asText();
         String imagePath = path + "/items/" + row + "/images/" + image;
         assertEquals(401, new Client().raw("GET", imagePath, null).statusCode());
@@ -233,7 +238,15 @@ class OrderPackageIT {
             String original = "{\"items\":" + items + "}", reviewed = "{\"content\":" + original + "}";
             jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,reviewed,original_phone,requested_date,status,created_at,updated_at) VALUES (?::uuid,?::uuid,?::uuid,'客服',?::uuid,'synthetic',?::jsonb,?::jsonb,'13800000000',DATE '2026-10-25','PENDING',now(),now())", submission, entry, actor, UUID.randomUUID().toString(), original, reviewed);
             jdbc.update("INSERT INTO " + schema + ".cake_order_activity(order_id,type,content,details,actor_id,actor_name_snapshot,created_at) VALUES (?::uuid,'CREATED','创建订单',?::jsonb,?::uuid,'客服',now())", order, original, actor);
-            org.flywaydb.core.Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").schemas(schema).defaultSchema(schema).load().migrate();
+            var flyway = org.flywaydb.core.Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").schemas(schema).defaultSchema(schema);
+            flyway.target("27").load().migrate();
+            jdbc.update("UPDATE " + schema + ".cake_order_item SET attributes=jsonb_set(attributes,'{specification}',to_jsonb(attributes->>'specification' || ?::text)) WHERE name='CUPCAKE'",
+                    "\n原商品单价：12.30 元（仅供参考）\n原会员单价：0 元（仅供参考）");
+            var latest = flyway.target("28").load();
+            latest.migrate();
+            assertEquals(0, latest.migrate().migrationsExecuted);
+            assertEquals(1230L, jdbc.queryForObject("SELECT unit_price_cents FROM " + schema + ".cake_order_item WHERE name='CUPCAKE'", Long.class));
+            assertEquals(0L, jdbc.queryForObject("SELECT member_price_cents FROM " + schema + ".cake_order_item WHERE name='CUPCAKE'", Long.class));
             assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='OTHER'", Integer.class));
             String spec = "六只装\n夹馅：香草\n奶油：旧奶油";
             assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE attributes->>'specification'=?", Integer.class, spec));

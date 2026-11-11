@@ -73,7 +73,7 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       const value = await client.fetchQuery({ queryKey: key, queryFn: ({ signal }) => api<OrderPackage>(`/order-packages/${chosen.id}`, { signal }), staleTime: 0, gcTime: 0 });
       if (controller.signal.aborted || latest.current.disabled) return;
       const before = latest.current.getDraft();
-      if (isEmptyPackageDraft(before) && value.originalAmountCents !== null) {
+      if (isEmptyPackageDraft(before) && value.originalAmountCents !== null && (!before.paymentMethod || before.paymentMethod === 'UNPAID')) {
         writing = true; onImageWritingChange(true);
         await apply(value, previewPackage(before, value), before, controller);
       } else {
@@ -122,6 +122,7 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       </li>)}</ul>
       <dl className="package-amount-preview"><div><dt>订单原价</dt><dd>{money(preview.beforeOriginal)} → <strong>{money(preview.original)}</strong></dd></div>
         <div><dt>订单会员价</dt><dd>{money(preview.beforeMember)} → <strong>{money(preview.member)}</strong></dd></div></dl></>}
+      {preview?.resetPayment && <p className="notice">成交金额变化后将改为未付，请核对收款。</p>}
       {(reviewError || previewError) && <p className="field-error" role="alert">{reviewError || previewError}</p>}
       <div className="package-actions"><button type="button" className="secondary" disabled={busy} onClick={() => setReview(null)}>取消</button>
         <button type="button" className="primary" disabled={busy || disabled || !preview} onClick={() => void confirm()}>{busy ? '正在带入…' : '确认带入'}</button></div>

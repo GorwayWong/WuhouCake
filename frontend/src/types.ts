@@ -41,7 +41,7 @@ export interface CreateOrderRequest {
   creditedEmployeeId?: string;
   customer: Customer;
   fulfillment: Omit<Fulfillment, 'type'> & { type: 'DELIVERY' | 'PICKUP' };
-  items: (Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'> & { itemId?: string })[];
+  items: (Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'> & { itemId?: string; referenceUnitPriceCents?: number | null; referenceMemberPriceCents?: number | null })[];
   totalAmountCents: number | null;
 }
 export type InformationChanges = Partial<Customer & Omit<Fulfillment, 'type'> & {

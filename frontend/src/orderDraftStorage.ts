@@ -63,7 +63,7 @@ function request(value: unknown): value is CreateOrderRequest {
     && (value.memberAmountCents === undefined || money(value.memberAmountCents))
     && (value.paymentMethod === undefined || typeof value.paymentMethod === 'string' && Object.hasOwn(paymentMethods, value.paymentMethod)) && Array.isArray(value.items) && value.items.length > 0
     && value.items.every(item => object(item) && (item.itemId === undefined || typeof item.itemId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.itemId)) && typeof item.name === 'string' && nullableString(item.productType)
-      && Number.isInteger(item.quantity) && Number(item.quantity) > 0 && money(item.unitPriceCents) && money(item.memberPriceCents) && object(item.attributes));
+      && Number.isInteger(item.quantity) && Number(item.quantity) > 0 && money(item.unitPriceCents) && money(item.memberPriceCents) && (item.referenceUnitPriceCents === undefined || money(item.referenceUnitPriceCents)) && (item.referenceMemberPriceCents === undefined || money(item.referenceMemberPriceCents)) && object(item.attributes));
 }
 export function decodeOrderDraft(raw: string, accountId: string): OrderDraftRecord | null {
   try {

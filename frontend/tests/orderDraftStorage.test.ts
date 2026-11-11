@@ -16,14 +16,22 @@ test('下单方式其他选项的未完成输入可恢复，非法选择状态�
   const malformed = JSON.parse(JSON.stringify(saved)); malformed.value.orderingMethodCustom = 'OTHER';
   assert.equal(decodeOrderDraft(JSON.stringify(malformed), 'alice'), null);
 });
-test('旧蛋糕草稿恢复隐藏价格但不改原存储及结果待确认载荷', () => {
+test('旧蛋糕草稿恢复独立报价并保留结果待确认载荷', () => {
   const db = storage(), slot = new OrderDraftSlot('alice', () => db), record = freshOrderDraft('alice', '2026-11-04');
   record.value = structuredClone(record.value); record.value.items[0].name = '旧蛋糕'; record.value.phone = '13800000000'; record.value.address = '自提';
   record.value.items[0].unitPrice = '120'; record.value.items[0].memberPrice = '未完成';
-  record.pending = createOrderRequest(record.value).request!; record.pending.items[0].unitPriceCents = 12000;
+  record.pending = createOrderRequest(record.value).request!;
+  delete record.pending.items[0].referenceUnitPriceCents;
+  record.pending.items[0].unitPriceCents = 12000;
+  record.value.items[0].attributes.specification = '轻拿轻放\n原会员单价：0 元（仅供参考）';
   const saved = slot.write(record), before = db.getItem(draftStorageKey('alice'));
   const restored = slot.read().record!;
-  assert.equal(restored.value.items[0].unitPrice, ''); assert.equal(restored.value.items[0].memberPrice, '');
+  assert.equal(restored.value.items[0].unitPrice, '120.00'); assert.equal(restored.value.items[0].memberPrice, '0.00');
+  assert.equal(restored.value.items[0].attributes.specification, '轻拿轻放');
+  const item = createOrderRequest(restored.value).request!.items[0];
+  assert.equal(item.referenceUnitPriceCents, 12000);
+  assert.equal(item.referenceMemberPriceCents, 0);
+  assert.equal(item.attributes.specification, '轻拿轻放');
   assert.deepEqual(restored.pending, saved.pending); assert.equal(restored.pending!.items[0].unitPriceCents, 12000);
   assert.equal(db.getItem(draftStorageKey('alice')), before);
 });

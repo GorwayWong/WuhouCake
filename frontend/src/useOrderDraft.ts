@@ -23,13 +23,13 @@ export function useOrderDraft() {
   const showCandidate = useCallback((value: DraftCandidate | null) => { candidateRef.current = value; setCandidate(value); }, []);
   const saveStatus = useCallback((value: SaveStatus) => { statusRef.current = value; setStatus(value); }, []);
   const failed = useCallback((error: unknown) => { saveStatus(error instanceof DraftConflict ? 'conflict' : 'error'); }, [saveStatus]);
-  const persist = useCallback((record: OrderDraftRecord): boolean => {
+  const persist = useCallback((record: OrderDraftRecord, requireSaved = false): boolean => {
     if (statusRef.current === 'conflict' || !slot.current) return false;
     try {
       if (hasDraftContent(record)) { setLocal(slot.current.write(record)); saveStatus('saved'); }
       else { slot.current.remove(); setLocal({ ...record, updatedAt: '', revision: '' }); saveStatus('idle'); }
       return true;
-    } catch (error) { setLocal(record); failed(error); return false; }
+    } catch (error) { if (!requireSaved) setLocal(record); failed(error); return false; }
   }, [setLocal, saveStatus, failed]);
   const open = useCallback((id: string, canEnter: boolean, selectedDate?: string) => {
     if (accountId.current !== id || canEnter !== Boolean(slot.current)) {
@@ -88,10 +88,10 @@ export function useOrderDraft() {
     showCandidate(null); entered.current = false;
   }, [showCandidate, setLocal]);
   const leave = useCallback(() => { entered.current = false; }, []);
-  const change = useCallback((value: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages = false) => {
+  const change = useCallback((value: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages = false, requireSaved = false) => {
     const before = draftRef.current;
     if (!before) return false;
-    const saved = persist({ ...before, value, imageStorageUsed: before.imageStorageUsed || value.items.some(item => item.images?.length), editor: { ...before.editor, ...editor } });
+    const saved = persist({ ...before, value, imageStorageUsed: before.imageStorageUsed || value.items.some(item => item.images?.length), editor: { ...before.editor, ...editor } }, requireSaved);
     if (saved && !retainRemovedImages) for (const item of before.value.items) for (const image of item.images || []) {
       if (!value.items.some(next => next.key === item.key && next.images?.some(candidate => candidate.id === image.id)))
         void removeDraftImage(before, item.key, image.id).catch(error => { if (accountId.current === before.accountId) failed(error); });

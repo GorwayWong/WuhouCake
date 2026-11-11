@@ -59,21 +59,30 @@ export function asOtherDraft(draft: ItemDraft): ItemDraft {
   for (const key of draft.defaultSpecifications || [])
     if (values[key] === cakeDefaults[key]) delete values[key];
   const specification = otherAttributes(values);
-  return { ...draft, productType: 'OTHER', unitPrice: '', memberPrice: '', defaultSpecifications: [], preservedAttributes: undefined,
+  return { ...draft, productType: 'OTHER', defaultSpecifications: [], preservedAttributes: undefined,
     attributes: { size: '', flavor: '', filling: '', base: '', message: '', requirements: '', specification } };
 }
 export function migrateItemDraft(draft: ItemDraft): ItemDraft {
   const type = normalizeProductType(draft.productType);
-  const next = type === 'OTHER' ? asOtherDraft(draft) : { ...draft, productType: type, unitPrice: '', memberPrice: '' };
-  const legacyPrices = [['原商品单价', draft.unitPrice], ['原会员单价', draft.memberPrice]].flatMap(([label, value]) =>
-    value.trim() ? [`${label}：${value.trim()} 元（仅供参考）`] : []);
-  if (legacyPrices.length) next.attributes = { ...next.attributes, specification: [next.attributes.specification, ...legacyPrices].filter(Boolean).join('\n') };
+  const next = type === 'OTHER' ? asOtherDraft(draft) : { ...draft, productType: type };
+  const priceText = (value: string) => {
+    const cents = draftQuoteCents(value);
+    return cents === null ? '' : exactYuan(cents);
+  };
+  const prices = { unitPrice: priceText(draft.unitPrice), memberPrice: priceText(draft.memberPrice) };
+  const specification = next.attributes.specification.split(/\r?\n/).filter(line => {
+    const match = /^(原商品单价|原会员单价)：(.+) 元（仅供参考）$/.exec(line);
+    if (!match) return true;
+    const key = match[1] === '原商品单价' ? 'unitPrice' : 'memberPrice';
+    prices[key] ||= priceText(match[2]);
+    return false;
+  }).join('\n');
+  Object.assign(next, prices, { attributes: { ...next.attributes, specification } });
   return next;
 }
 export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, editedSpecification?: string): ItemDraft {
   const next = { ...draft, ...changes, attributes: { ...(changes.attributes || draft.attributes) },
     defaultSpecifications: [...(draft.defaultSpecifications || [])] };
-  next.unitPrice = ''; next.memberPrice = '';
   if (changes.productType !== undefined && draft.requiresTypeConfirmation && changes.productType.trim()) next.requiresTypeConfirmation = false;
   if (editedSpecification) next.defaultSpecifications = next.defaultSpecifications.filter(key => key !== editedSpecification);
   if (changes.productType !== undefined && normalizeProductType(changes.productType) === 'OTHER') {
@@ -97,6 +106,9 @@ export function moneyToCents(input: string): number | null {
   const cents = BigInt(yuan) * 100n + BigInt(fraction.padEnd(2, '0'));
   if (cents > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('金额过大，请核对后重新填写。');
   return Number(cents);
+}
+function draftQuoteCents(value: string): number | null {
+  try { return moneyToCents(value); } catch { return null; }
 }
 export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemInput | null; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
@@ -127,9 +139,15 @@ export function itemDraft(item: Item): ItemDraft {
 export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && productionStatuses.includes(order.status); }
 export function migrateOrderDraft(draft: OrderDraft): OrderDraft { return { ...draft, items: draft.items.map(migrateItemDraft) }; }
 export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
-export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original): { request: ItemChangeRequest | null; errors: Record<string, string> } {
+export function conversionNeedsReview(source: Item, current: Item, draft: ItemDraft, originalType = source.productType): boolean {
+  if (!isCake(originalType) || normalizeProductType(draft.productType) !== 'OTHER') return false;
+  return source.productType !== current.productType || JSON.stringify(source.attributes) !== JSON.stringify(current.attributes);
+}
+export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original, conversionSource?: Item): { request: ItemChangeRequest | null; errors: Record<string, string> } {
   const before = original.items.find(item => item.itemId === itemId), current = baseline.items.find(item => item.itemId === itemId);
   if (!before || !current) return { request: null, errors: { item: '此商品已被移除，输入已保留，请取消编辑并核对订单。' } };
+  if (conversionNeedsReview(conversionSource || before, current, draft, before.productType))
+    return { request: null, errors: { specification: '商品规格已更新，请基于最新商品重新转换。' } };
   const initial = itemDraft(before);
   const result = itemInput(draft, draft.attributes.size !== initial.attributes.size || draft.productType !== initial.productType);
   if (!result.item) return { request: null, errors: result.errors };
@@ -138,7 +156,7 @@ export function itemChangeRequest(original: Detail, itemId: string, draft: ItemD
     if (draft[field] !== initial[field] && result.item[field] !== before[field] && result.item[field] !== current[field]) Object.assign(changes, { [field]: result.item[field] });
   }
   const attributes: Record<string, unknown> = {};
-  if (result.item.productType === 'OTHER' && !isCake(draft.productType) && isCake(initial.productType)) {
+  if (result.item.productType === 'OTHER' && !isCake(draft.productType) && isCake(current.productType)) {
     for (const key of Object.keys(current.attributes)) if (key !== 'specification') attributes[key] = null;
     attributes.specification = result.item.attributes.specification ?? null;
   } else for (const [key] of specificationFields) {
@@ -214,7 +232,11 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
     items: draft.items.map((item, index) => {
       const result = itemInput(item);
       for (const [field, error] of Object.entries(result.errors)) errors[`items.${index}.${field}`] = error;
-      return result.item ? { ...result.item, itemId: item.key } : result.item!;
+      const unit = draftQuoteCents(item.unitPrice), member = draftQuoteCents(item.memberPrice);
+      return result.item ? { ...result.item, itemId: item.key,
+        ...(unit !== null ? { referenceUnitPriceCents: unit } : {}),
+        ...(member !== null ? { referenceMemberPriceCents: member } : {}),
+      } : result.item!;
     }),
     originalAmountCents: original, memberAmountCents: member, paymentMethod: method,
     totalAmountCents: effectiveOrderAmount(original, member),

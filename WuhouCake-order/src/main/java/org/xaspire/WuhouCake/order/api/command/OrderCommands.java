@@ -18,7 +18,12 @@ public final class OrderCommands {
     }
     public record Item(@NotBlank String name, String productType, @NotNull Number quantity,
             Number unitPriceCents, Number memberPriceCents, Map<String, Object> attributes,
-            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) UUID itemId) {
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) UUID itemId,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Number referenceUnitPriceCents,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Number referenceMemberPriceCents) {
+        public Item(String name, String productType, Number quantity, Number unitPriceCents, Number memberPriceCents, Map<String, Object> attributes, UUID itemId) {
+            this(name, productType, quantity, unitPriceCents, memberPriceCents, attributes, itemId, null, null);
+        }
         public Item(String name, String productType, Number quantity, Number unitPriceCents, Number memberPriceCents, Map<String, Object> attributes) {
             this(name, productType, quantity, unitPriceCents, memberPriceCents, attributes, null);
         }

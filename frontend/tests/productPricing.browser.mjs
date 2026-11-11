@@ -16,7 +16,7 @@ async function chooseType(page, type) {
   await page.locator('.create-item button.choice-trigger').last().click();
   await page.getByRole('option', { name: type, exact: true }).click();
 }
-test('旧草稿单价并入规格，其他商品无报价字段，切换分类不改整单金额', async () => {
+test('旧草稿报价独立提交，切换分类不改整单金额', async () => {
   const { context, page, model, saved, complete, errors } = await createOrderFixture(browser, base);
   try {
     await complete(); await page.locator('#totalAmount').fill('120.29');
@@ -30,7 +30,8 @@ test('旧草稿单价并入规格，其他商品无报价字段，切换分类�
     const spec = page.locator('[id="items.0.specification"]');
     const converted = await spec.inputValue();
     assert.match(converted, /特殊要求：少冰/);
-    assert.match(converted, /原会员单价：0 元（仅供参考）/);
+    assert.doesNotMatch(converted, /原会员单价|原商品单价/);
+    await page.getByText('参考会员价：¥0.00', { exact: false }).waitFor();
     assert.equal(await page.locator('[id="items.0.unitPrice"], [id="items.0.memberPrice"], [id="items.0.size"]').count(), 0);
     await chooseType(page, '蛋糕');
     assert.equal(await spec.inputValue(), converted);
@@ -41,9 +42,12 @@ test('旧草稿单价并入规格，其他商品无报价字段，切换分类�
     await page.getByRole('button', { name: '创建订单', exact: true }).click(); await until(() => Boolean(model.order));
     const request = model.createCalls[0].input;
     assert.equal(request.items[0].unitPriceCents, null); assert.equal(request.items[0].memberPriceCents, null);
+    assert.equal(request.items[0].referenceUnitPriceCents, 1029);
+    assert.equal(request.items[0].referenceMemberPriceCents, 0);
+    assert.equal(request.items[0].attributes.specification, converted);
     assert.equal(request.items[0].productType, 'OTHER'); assert.equal(request.totalAmountCents, 12029);
     await page.goto(`${base}/#/orders/${orderId}`); await page.locator('.front-product-details').waitFor();
-    assert.match(await page.locator('.front-product-details .product-spec-text').innerText(), /原商品单价：10.29 元（仅供参考）/);
+    assert.match(await page.locator('.front-product-details .product-spec-text').innerText(), /原商品单价：¥10.29（仅供参考）/);
     await page.locator('.front-product-details').getByRole('button', { name: '编辑', exact: true }).click();
     assert.equal(await page.locator('#item-unitPrice, #item-memberPrice, #item-size').count(), 0);
     assert.equal(await page.locator('#item-specification').inputValue(), converted);
@@ -74,5 +78,115 @@ test('客户填单核对不再编辑商品报价，规格和整单金额仍可�
     await page.getByRole('button', { name: '保存核对结果', exact: true }).click(); await until(() => Boolean(savedReview));
     assert.deepEqual(savedReview.prices, [{ unitPriceCents: null, memberPriceCents: null }, { unitPriceCents: null, memberPriceCents: null }]);
     assert.equal(savedReview.totalAmountCents, 15029); assert.equal(savedReview.content.items[1].attributes.specification, '小杯\n去冰'); assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('已付款草稿加购提示重新确认收款，取消不改草稿，确认后恢复及建单均为未付', async () => {
+  const { context, page, complete, saved, model, png, errors } = await createOrderFixture(browser, base);
+  try {
+    model.permissions.push('ORDER_PAYMENT_UPDATE');
+    await complete(); await page.locator('#totalAmount').fill('100');
+    await page.evaluate(() => {
+      const key = 'wuhou:order-draft:v1:alice';
+      const record = JSON.parse(localStorage.getItem(key));
+      record.value.paymentMethod = 'CASH';
+      localStorage.setItem(key, JSON.stringify(record));
+    });
+    const value = { id: crypto.randomUUID(), name: '加购套餐', version: 0, originalAmountCents: 9800, memberAmountCents: 8800,
+      items: [{ itemId: crypto.randomUUID(), name: '果汁', imageId: crypto.randomUUID(), quantity: 1, productType: 'OTHER', attributes: {} }] };
+    await context.route('**/api/order-packages**', route => route.fulfill({ json: { success: true,
+      data: new URL(route.request().url()).pathname === '/api/order-packages' ? { items: [value], total: 1, page: 1, size: 20 } : value } }));
+    let imageAvailable = false;
+    await context.route(`**/api/order-packages/${value.id}/items/*/images/*`, route => imageAvailable
+      ? route.fulfill({ contentType: 'image/png', body: png })
+      : route.fulfill({ status: 404, json: { success: false, code: 'IMAGE_NOT_FOUND' } }));
+    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.getByRole('button', { name: '使用套餐', exact: true }).click();
+    await page.getByRole('button', { name: /选择套餐/ }).click();
+    await page.getByRole('option', { name: /加购套餐/ }).click();
+    const add = page.getByRole('button', { name: '带入商品', exact: true });
+    await add.click();
+    const dialog = page.getByRole('dialog', { name: '确认带入套餐' });
+    await dialog.getByText('成交金额变化后将改为未付，请核对收款。').waitFor();
+    await dialog.getByRole('button', { name: '取消' }).click();
+    assert.equal((await saved()).value.paymentMethod, 'CASH');
+    assert.equal((await saved()).value.totalAmount, '100');
+    await add.click();
+    const confirm = dialog.getByRole('button', { name: '确认带入' });
+    await confirm.click();
+    await dialog.getByRole('alert').waitFor();
+    assert.equal((await saved()).value.paymentMethod, 'CASH');
+    assert.equal((await saved()).value.totalAmount, '100');
+    imageAvailable = true;
+    await page.evaluate(() => {
+      const write = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === 'wuhou:order-draft:v1:alice' && JSON.parse(value).value.totalAmount === '198.00') {
+          Storage.prototype.setItem = write;
+          throw new DOMException('测试配额', 'QuotaExceededError');
+        }
+        return write.call(this, key, value);
+      };
+    });
+    await confirm.click();
+    await dialog.getByText('草稿已有变化或无法保存，请核对后重试。').waitFor();
+    assert.equal((await saved()).value.paymentMethod, 'CASH');
+    assert.equal((await saved()).value.totalAmount, '100');
+    await confirm.click();
+    await until(async () => (await saved()).value.totalAmount === '198.00');
+    assert.equal((await saved()).value.paymentMethod, 'UNPAID');
+    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.getByRole('button', { name: '创建订单', exact: true }).click();
+    await until(() => Boolean(model.createCalls.length));
+    assert.equal(model.createCalls[0].input.paymentMethod, 'UNPAID');
+    assert.equal(model.createCalls[0].input.totalAmountCents, 18800);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('并发改分类保留最新制作要求与重新转换前的草稿', async () => {
+  const { context, page, complete, model, errors } = await createOrderFixture(browser, base);
+  try {
+    await complete(); await page.getByRole('button', { name: '创建订单', exact: true }).click();
+    await until(() => Boolean(model.order));
+    const item = model.order.items[0];
+    item.attributes.requirements = '少糖';
+    const patches = [];
+    await context.route(`**/api/orders/${orderId}`, async route => {
+      if (route.request().method() === 'PATCH') {
+        const patch = route.request().postDataJSON();
+        patches.push(patch);
+        if (patch.expectedVersion === 0) {
+          model.order.version = 1;
+          item.attributes.requirements = '不要坚果';
+          item.attributes.decoration = '红色';
+          return route.fulfill({ status: 409, json: { success: false, code: 'CONCURRENT_MODIFICATION' } });
+        }
+        model.order.version++;
+        Object.assign(item, patch.changes);
+      }
+      return route.fulfill({ json: { success: true, data: model.order } });
+    });
+    await page.goto(`${base}/#/orders/${orderId}`);
+    await page.locator('.front-product-details').getByRole('button', { name: '编辑', exact: true }).click();
+    await page.locator('#item-productType').click();
+    await page.getByRole('option', { name: '其他', exact: true }).click();
+    const spec = page.locator('#item-specification');
+    await spec.fill('我的待核对备注');
+    const save = page.locator('.item-form').getByRole('button', { name: '保存', exact: true });
+    await save.click();
+    const rebase = page.getByRole('button', { name: '基于最新商品重新转换' });
+    await rebase.waitFor();
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(await spec.inputValue(), '我的待核对备注');
+    await rebase.click();
+    assert.match(await spec.inputValue(), /不要坚果/);
+    assert.match(await spec.inputValue(), /红色/);
+    await page.getByText('我的待核对备注', { exact: true }).waitFor();
+    await save.click();
+    await until(() => patches.length === 2);
+    assert.equal(patches[1].expectedVersion, 1);
+    assert.match(patches[1].changes.attributes.specification, /不要坚果/);
+    assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

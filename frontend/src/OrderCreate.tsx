@@ -37,7 +37,7 @@ function Field({ label, name, error, children, wide = false, className = '' }: {
   </label>;
 }
 export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, error, submitted, editor, onEditorChange, blocked, imageScope, canUploadImages = false, canRecordPayment = false, onImageWritingChange, createdOrderId }: {
-  draft: OrderDraft; onChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
+  draft: OrderDraft; onChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean, requireSaved?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
   imageScope: ImageScope; canUploadImages?: boolean; canRecordPayment?: boolean; onImageWritingChange: (busy: boolean) => void; createdOrderId?: string;
   blocked: boolean; editor: DraftEditor; onEditorChange: (editor: Partial<DraftEditor>) => void;
   initialDraft: OrderDraft;
@@ -84,9 +84,9 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
   const latest = useRef(draft); latest.current = draft;
   const manualFields = useRef(new Set<string>(editor.manualFields));
   const getDraft = useCallback(() => latest.current, []);
-  const change = (next: OrderDraft) => {
+  const change = (next: OrderDraft, requireSaved = false) => {
+    const previousFields = requireSaved ? new Set(manualFields.current) : null;
     const selection = selectItemAfterChange(latest.current.items, next.items, activeItem?.key || '');
-    if (selection !== activeItem?.key) { selectItem(selection); setPendingTarget({}); }
     for (const field of Object.keys(next) as (keyof OrderDraft)[]) if (field !== 'items' && field !== 'finishTimeMode' && (field !== 'plannedFinishAt' || next.finishTimeMode === 'MANUAL') && next[field] !== latest.current[field]) manualFields.current.add(field === 'totalAmount' ? 'totalAmountCents' : field);
     for (const item of next.items) {
       const previous = latest.current.items.find(x => x.key === item.key);
@@ -98,8 +98,13 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
       }
     }
     if (next.finishTimeMode === 'AUTO') manualFields.current.delete('plannedFinishAt');
-    updateFeedback(retainRecognitionFeedback(next, feedbackRef.current));
-    latest.current = next; setErrors({}); return onChange(next, { feedback: feedbackRef.current, manualFields: [...manualFields.current], selectedItemKey: selection });
+    const feedback = retainRecognitionFeedback(next, feedbackRef.current);
+    const saved = onChange(next, { feedback, manualFields: [...manualFields.current], selectedItemKey: selection }, false, requireSaved);
+    if (!saved && previousFields) { manualFields.current = previousFields; return false; }
+    if (selection !== activeItem?.key) { selectItem(selection); setPendingTarget({}); }
+    updateFeedback(feedback);
+    latest.current = next; setErrors({});
+    return saved;
   };
   const recognitionChange = (next: OrderDraft, marks: RecognitionFeedbackMap, restore = false) => {
     const selection = selectItemAfterChange(latest.current.items, next.items, activeItem?.key || '', !restore);
@@ -157,7 +162,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
             <Field label="地址 *" name="address" error={errors.address} wide><textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} placeholder="配送填写地址，自提填写‘自提’" required /></Field>
         </div></section>
         <section className="panel create-group"><div className="section-heading"><h2><Cake />商品信息</h2><span className="muted">{draft.items.length} 项</span></div>
-          <OrderPackagePicker draft={draft} getDraft={getDraft} onChange={change} imageScope={imageScope} canUploadImages={canUploadImages} onImageWritingChange={imageWriting} disabled={editBlocked} />
+          <OrderPackagePicker draft={draft} getDraft={getDraft} onChange={next => change(next, true)} imageScope={imageScope} canUploadImages={canUploadImages} onImageWritingChange={imageWriting} disabled={editBlocked} />
           <div className="item-card-navigation" ref={cardStart} role="group" aria-label="商品切换">
             <button type="button" className="secondary icon-button" aria-label="上一个商品" disabled={activeIndex === 0} onClick={() => switchItem(-1)}><ArrowLeft /></button>
             <div className="item-card-caption"><span aria-live="polite">第 {activeIndex + 1} / {draft.items.length} 个商品</span><strong>{activeItem?.name.trim() || '未命名商品'}</strong></div>
@@ -178,6 +183,9 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
               </Field>;
               return <Field label={<ProductFieldLabel field={field} />} name={name} error={errors[name]}>
                 {(field === 'requirements' || field === 'filling' || field === 'specification') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} inputMode={field === 'size' ? 'decimal' : undefined} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
+                {field === 'specification' && (activeItem.unitPrice || activeItem.memberPrice) && <span className="form-help product-spec-text">
+                  {[activeItem.unitPrice && `参考单价：¥${activeItem.unitPrice}`, activeItem.memberPrice && `参考会员价：¥${activeItem.memberPrice}`].filter(Boolean).join('\n')}
+                </span>}
               </Field>;
             }} />
           </div>}

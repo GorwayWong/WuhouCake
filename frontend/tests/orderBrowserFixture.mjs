@@ -20,7 +20,7 @@ export async function createOrderFixture(browser, base) {
     if (path === '/api/orders' && request.method() === 'POST') {
       const input = request.postDataJSON(), key = request.headers()['idempotency-key']; model.createCalls.push({ key, input });
       if (!model.orders.has(key)) model.orders.set(key, { ...input, orderId, orderNo: 'TEST-IMAGE', status: 'CAKE_BASE', currentStageCode: null, paymentStatus: 'UNPAID', version: 0,
-        createdAt: '2026-11-04T08:00:00Z', updatedAt: '2026-11-04T08:00:00Z', createdBy: 'alice', items: input.items.map(item => ({ ...item, recentNotes: [], productionStatus: 'NOT_STARTED' })) });
+        createdAt: '2026-11-04T08:00:00Z', updatedAt: '2026-11-04T08:00:00Z', createdBy: 'alice', items: input.items.map(({ referenceUnitPriceCents, referenceMemberPriceCents, ...item }) => ({ ...item, unitPriceCents: referenceUnitPriceCents ?? item.unitPriceCents, memberPriceCents: referenceMemberPriceCents ?? item.memberPriceCents, recentNotes: [], productionStatus: 'NOT_STARTED' })) });
       model.order = model.orders.get(key);
       if (model.loseCreate) { model.loseCreate = false; return route.abort('failed'); }
       return ok(model.order, 201);

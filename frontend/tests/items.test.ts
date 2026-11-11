@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canEditItems, canRemoveItem, itemChangeRequest, itemDraft, itemInput, newItem } from '../src/orderForm.ts';
+import { canEditItems, canRemoveItem, changeItemDraft, itemChangeRequest, itemDraft, itemInput, newItem } from '../src/orderForm.ts';
 import type { Detail } from '../src/types.ts';
 
 const order: Detail = {
@@ -74,4 +74,30 @@ test('重新制作复核后使用响应版本，只提交原草稿差异并保�
   assert.deepEqual(itemChangeRequest(order, 'first', draft, reopened).request, { expectedVersion: 5, itemId: 'first', changes: { attributes: { size: '10' } } });
   assert.deepEqual(itemChangeRequest(order, 'first', draft, newer).request, { expectedVersion: 6, itemId: 'first', changes: { attributes: { size: '10' } } });
   assert.deepEqual(draft, snapshot);
+});
+
+test('蛋糕改其他必须使用最新属性，重转保留同事新增要求及结构化属性', () => {
+  const latest = structuredClone(order); latest.version++;
+  latest.items[0].attributes.requirements = '不要坚果';
+  latest.items[0].attributes.decoration = { color: '红色' };
+  const old = changeItemDraft(itemDraft(order.items[0]), { productType: 'OTHER' });
+  const blocked = itemChangeRequest(order, 'first', old, latest);
+  assert.equal(blocked.request, null);
+  assert.match(blocked.errors.specification, /重新转换/);
+  const fresh = changeItemDraft(itemDraft(latest.items[0]), { productType: 'OTHER' });
+  const retry = itemChangeRequest(order, 'first', fresh, latest, latest.items[0]).request!;
+  assert.equal(retry.expectedVersion, latest.version);
+  assert.match(String(retry.changes.attributes?.specification), /不要坚果/);
+  assert.match(String(retry.changes.attributes?.specification), /红色/);
+  assert.doesNotMatch(String(retry.changes.attributes?.specification), /少糖/);
+  const newer = structuredClone(latest); newer.version++;
+  newer.items[0].attributes.requirements = '不要牛奶';
+  assert.equal(itemChangeRequest(order, 'first', fresh, newer, latest.items[0]).request, null);
+  const convertedByPeer = structuredClone(latest); convertedByPeer.version++;
+  convertedByPeer.items[0].productType = 'OTHER';
+  convertedByPeer.items[0].attributes = { specification: '不要坚果' };
+  const reviewed = changeItemDraft(itemDraft(convertedByPeer.items[0]), { productType: 'OTHER' });
+  const subsequent = structuredClone(convertedByPeer); subsequent.version++;
+  subsequent.items[0].attributes.specification = '不要坚果\n不要牛奶';
+  assert.equal(itemChangeRequest(order, 'first', reviewed, subsequent, convertedByPeer.items[0]).request, null);
 });

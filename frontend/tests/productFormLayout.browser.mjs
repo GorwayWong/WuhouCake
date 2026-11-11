@@ -166,16 +166,22 @@ test('套餐表格在手机和桌面保持四列，多行规格可取消、确�
       if (width === 390 && process.env.LAYOUT_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.LAYOUT_SCREENSHOT_DIR}/wuhou-package-table-390.png` });
     }
     const spec = page.getByRole('button', { name: '编辑商品 1 的规格' });
-    await spec.click(); await page.getByLabel('规格说明').fill('临时内容');
+    await spec.click(); await page.getByLabel('商品备注').fill('临时内容');
     await page.getByRole('dialog').getByRole('button', { name: '取消' }).click();
     assert.equal(await spec.innerText(), '填写');
-    await spec.click(); await page.getByLabel('规格说明').fill('香草\n六只装');
+    await spec.click(); await page.getByLabel('商品备注').fill('香草\n六只装');
+    await page.getByRole('dialog').getByLabel('单价（元）', { exact: true }).fill('12.30');
     await page.getByRole('button', { name: '确认规格' }).click();
     await page.locator('#package-name').fill('通用套餐'); await page.getByLabel('商品 1 的名称').fill('纸杯蛋糕');
+    await page.getByLabel('商品 1 的数量').fill('2');
+    await page.getByRole('button', { name: '采用合计' }).click();
+    assert.equal(await page.locator('#package-original').inputValue(), '24.60');
+    assert.equal(await page.locator('#package-member').inputValue(), '24.60');
     await page.locator('#package-original').fill('200'); await page.locator('#package-member').fill('180');
     await page.getByRole('button', { name: '保存套餐', exact: true }).click(); await until(() => Boolean(body));
     assert.deepEqual(body.items[0].attributes, { specification: '香草\n六只装' });
     assert.equal(body.items[0].productType, 'OTHER'); assert.equal(body.items[0].imageId, null);
+    assert.equal(body.items[0].unitPriceCents, 1230); assert.equal(body.items[0].memberPriceCents, null);
     assert.equal(body.originalAmountCents, 20000); assert.equal(body.memberAmountCents, 18000);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }

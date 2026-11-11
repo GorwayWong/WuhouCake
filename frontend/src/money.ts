@@ -11,7 +11,7 @@ export function hasUnsafeMoneyNumber(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(hasUnsafeMoneyNumber);
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, child]) => {
-    if (['totalAmountCents', 'originalAmountCents', 'memberAmountCents', 'unitPriceCents', 'memberPriceCents', 'amountCents', 'paidAmountCents', 'unpaidAmountCents'].includes(key)
+    if (['totalAmountCents', 'originalAmountCents', 'memberAmountCents', 'unitPriceCents', 'memberPriceCents', 'referenceUnitPriceCents', 'referenceMemberPriceCents', 'amountCents', 'paidAmountCents', 'unpaidAmountCents'].includes(key)
         && typeof child === 'number' && !Number.isSafeInteger(child)) return true;
     return key !== 'attributes' && hasUnsafeMoneyNumber(child);
   });

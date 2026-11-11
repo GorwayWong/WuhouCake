@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
 import { api, ApiError, creationResultUnknown, errorText, fetchPackageImage } from './api';
-import { newPackageItem, packageDraft, packageImagePath, packageRequest, packageSummary } from './orderPackages';
+import { newPackageItem, packageDraft, packageImagePath, packageRequest, packageSummary, packageReferenceTotals } from './orderPackages';
 import type { OrderPackage, PackageBody, PackageRow } from './orderPackages';
 import type { Page } from './types';
 import { Empty, ErrorNotice, Loading, money } from './ui';
@@ -27,7 +27,7 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
   const [editing, setEditing] = useState<OrderPackage | 'new' | null>(null);
   const [name, setName] = useState(''), [items, setItems] = useState<PackageRow[]>([]);
   const [original, setOriginal] = useState(''), [member, setMember] = useState('');
-  const [specEditor, setSpecEditor] = useState<{ itemId: string; index: number; value: string } | null>(null);
+  const [specEditor, setSpecEditor] = useState<{ itemId: string; index: number; values: Pick<PackageRow, 'specification' | 'unitPrice' | 'memberPrice'> } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<unknown>(null), [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false), [pending, setPending] = useState<Pending | null>(null);
@@ -129,6 +129,7 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
     } catch (failure) { if (!controller.signal.aborted) setError(failure); }
     finally { if (active.current === controller) { active.current = null; setBusy(false); } }
   }
+  const reference = packageReferenceTotals(items);
   const disabled = busy || Boolean(pending);
   const inputProps = (field: string) => ({ name: field, id: `package-${field}`, 'aria-invalid': Boolean(errors[field]), 'aria-describedby': errors[field] ? `package-${field}-error` : undefined });
   const fieldError = (field: string) => errors[field] && <span className="field-error" id={`package-${field}-error`}>{errors[field]}</span>;
@@ -164,7 +165,10 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
                 <td><input {...inputProps(`items.${index}.name`)} aria-label={`商品 ${index + 1} 的名称`} value={item.name} maxLength={128} placeholder="商品名称" required onChange={event => updateItem(index, { name: event.target.value })} />
                   <button type="button" className="text-button danger package-row-action" disabled={items.length === 1} aria-label={`移除商品 ${index + 1}`} onClick={() => { setItems(items.filter((_, i) => i !== index)); setErrors({}); }}><Trash aria-hidden="true" />移除</button>
                 </td>
-                <td><button type="button" className="secondary package-spec-button" aria-label={`编辑商品 ${index + 1} 的规格`} onClick={() => setSpecEditor({ itemId: item.itemId, index, value: item.specification })}>{item.specification ? <span>{item.specification}</span> : '填写'}</button></td>
+                <td><button type="button" className="secondary package-spec-button" aria-label={`编辑商品 ${index + 1} 的规格`} onClick={() => setSpecEditor({ itemId: item.itemId, index, values: { specification: item.specification, unitPrice: item.unitPrice, memberPrice: item.memberPrice } })}>{item.specification ? <span>{item.specification}</span> : '填写'}</button>
+                  {!item.unitPrice.trim() && !item.memberPrice.trim() && <small className="form-help">未报价</small>}
+                  {fieldError(`items.${index}.unitPrice`)}{fieldError(`items.${index}.memberPrice`)}
+                </td>
                 <td><input {...inputProps(`items.${index}.quantity`)} aria-label={`商品 ${index + 1} 的数量`} value={item.quantity} inputMode="numeric" required onChange={event => updateItem(index, { quantity: event.target.value })} /></td>
               </tr>).flatMap((row, index) => [row, ...( ['image', 'name', 'quantity'].some(field => errors[`items.${index}.${field}`]) ?
                 [<tr key={`errors-${items[index].itemId}`}><td colSpan={4} className="package-row-errors">{['image', 'name', 'quantity'].map(field => <div key={field}>{fieldError(`items.${index}.${field}`)}</div>)}</td></tr>] : [])])}</tbody>
@@ -173,6 +177,16 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
           </section>
           <section className="panel create-group"><h2>套餐金额</h2>
             {editing !== 'new' && editing.originalAmountCents == null && <p className="form-help">此套餐尚未设置原价，请补齐后保存。</p>}
+            <dl className="package-amount-preview">
+              <div><dt>普通参考合计</dt><dd>{reference.original === null ? '未报价' : money(reference.original)}</dd></div>
+              <div><dt>会员参考合计</dt><dd>{reference.member === null ? '未报价' : money(reference.member)}</dd></div>
+            </dl>
+            {reference.invalid ? <p className="field-error">请核对商品数量和报价，合计不能超过金额上限。</p> : <p className="form-help">{reference.unpriced} 项商品未报价。</p>}
+            <button type="button" className="secondary compact" disabled={reference.invalid || reference.original === null && reference.member === null} onClick={() => {
+              if (reference.original !== null) setOriginal(exactYuan(reference.original));
+              if (reference.member !== null) setMember(exactYuan(reference.member));
+              setErrors({});
+            }}>采用合计</button>
             <div className="create-grid order-pricing-fields">
               <label>原价（元） *<input {...inputProps('original')} value={original} inputMode="decimal" required onChange={event => { setOriginal(event.target.value); setErrors({}); }} />{fieldError('original')}</label>
               <label>会员价（元）<input {...inputProps('member')} value={member} inputMode="decimal" onChange={event => { setMember(event.target.value); setErrors({}); }} />{fieldError('member')}</label>
@@ -181,9 +195,11 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
         </fieldset>
         {conflict && <section className="panel package-conflict"><h2>核对最新套餐</h2><p>套餐已被修改，请核对最新内容。当前编辑内容仍保留在上方。</p><button type="button" className="secondary" disabled={disabled} onClick={() => void readLatest()}>读取最新版本</button>{latest && <><h3>{latest.name} · 版本 {latest.version}</h3><p>原价 {money(latest.originalAmountCents)} · 会员价 {money(latest.memberAmountCents)}</p>{latest.items.map(item => <div key={item.itemId}><strong>{item.name} × {item.quantity}</strong><p className="product-spec-text">{String(item.attributes.specification ?? '规格未填写')}</p>{item.imageId && <PackageImagePreview path={packageImagePath(latest.id, item)} />}</div>)}<button type="button" className="secondary" disabled={disabled} onClick={() => { if (window.confirm('已核对最新套餐，下一次保存将使用上方当前输入更新此版本。确定继续吗？')) { setEditing(latest); setConflict(false); setLatest(null); setError(null); setMessage('已采用最新版本号，请继续调整上方内容后保存。'); } }}>已核对，继续编辑当前内容</button></>}</section>}
         {specEditor && <PackageDialog title={`商品 ${specEditor.index + 1} 的规格`} onCancel={() => setSpecEditor(null)}>
-          <label>规格说明<textarea autoFocus rows={5} placeholder="可换行填写，例如口味、包装和其他要求" value={specEditor.value} onChange={event => setSpecEditor({ ...specEditor, value: event.target.value })} /></label>
+          <label>单价（元）<input inputMode="decimal" value={specEditor.values.unitPrice} onChange={event => setSpecEditor({ ...specEditor, values: { ...specEditor.values, unitPrice: event.target.value } })} /></label>
+          <label>会员价（元）<input inputMode="decimal" value={specEditor.values.memberPrice} onChange={event => setSpecEditor({ ...specEditor, values: { ...specEditor.values, memberPrice: event.target.value } })} /></label>
+          <label>商品备注<textarea autoFocus rows={5} placeholder="可换行填写，例如口味、包装和其他要求" value={specEditor.values.specification} onChange={event => setSpecEditor({ ...specEditor, values: { ...specEditor.values, specification: event.target.value } })} /></label>
           <div className="package-actions"><button type="button" className="secondary" onClick={() => setSpecEditor(null)}>取消</button>
-            <button type="button" className="primary" onClick={() => { const index = items.findIndex(item => item.itemId === specEditor.itemId); if (index >= 0) updateItem(index, { specification: specEditor.value }); setSpecEditor(null); }}>确认规格</button></div>
+            <button type="button" className="primary" onClick={() => { const index = items.findIndex(item => item.itemId === specEditor.itemId); if (index >= 0) updateItem(index, specEditor.values); setSpecEditor(null); }}>确认规格</button></div>
         </PackageDialog>}
         <div className="create-submit package-actions"><button type="button" className="secondary" disabled={disabled} onClick={close}>取消</button><button className="primary" disabled={disabled || conflict}>{busy ? '正在保存…' : editing === 'new' ? '保存套餐' : '保存修改'}</button></div>
       </form>

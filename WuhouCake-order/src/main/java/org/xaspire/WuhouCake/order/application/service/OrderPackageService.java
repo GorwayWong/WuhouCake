@@ -140,7 +140,7 @@ public class OrderPackageService {
             var attributes = item.attributes() == null ? Map.<String, Object>of() : item.attributes();
             if (attributes.keySet().stream().anyMatch(key -> !"specification".equals(key)) ||
                     attributes.get("specification") != null && !(attributes.get("specification") instanceof String)) throw invalid();
-            return new OrderPackages.Item(item.itemId(), item.imageId(), requiredText(item.name(), 128), "OTHER", quantity(item.quantity()), CakeSpecifications.other(attributes));
+            return new OrderPackages.Item(item.itemId(), item.imageId(), requiredText(item.name(), 128), "OTHER", quantity(item.quantity()), CakeSpecifications.other(attributes), money(item.unitPriceCents()), money(item.memberPriceCents()));
         }).toList();
     }
     private void record(String action, IdentityFacade.AccountView me, OrderPackages.Package before, OrderPackages.Package after, String requestId) {
@@ -155,6 +155,6 @@ public class OrderPackageService {
     }
     private static OrderPackageViews.Package view(OrderPackages.Package value, boolean amounts) {
         return new OrderPackageViews.Package(value.id(), value.name(), value.items().stream()
-                .map(item -> new OrderPackageViews.Item(item.itemId(), item.imageId(), item.name(), item.productType(), item.quantity(), item.attributes())).toList(), amounts ? value.originalAmountCents() : null, amounts ? value.memberAmountCents() : null, value.version(), value.updatedAt());
+                .map(item -> new OrderPackageViews.Item(item.itemId(), item.imageId(), item.name(), item.productType(), item.quantity(), item.attributes(), amounts ? item.unitPriceCents() : null, amounts ? item.memberPriceCents() : null)).toList(), amounts ? value.originalAmountCents() : null, amounts ? value.memberAmountCents() : null, value.version(), value.updatedAt());
     }
 }

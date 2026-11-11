@@ -1374,18 +1374,37 @@ class OrderIT {
         var input = new LinkedHashMap<String, Object>(create());
         input.put("customer", Map.of("customerName", "客户", "phone", "13800000000", "memberPhone", "13800000001", "buyerName", "下单人"));
         input.put("orderingMethod", "微信");
+        input.put("items", List.of(
+                Map.of("name", "蛋糕", "quantity", 1, "referenceUnitPriceCents", 12000, "attributes", Map.of("specification", "少糖")),
+                Map.of("name", "旧草稿纸杯", "productType", "OTHER", "quantity", 6,
+                        "attributes", Map.of("specification", "独立包装\n原商品单价：12.30 元（仅供参考）\n原会员单价：0 元（仅供参考）"))));
         var order = createOn(staff, "2026-10-23", "09:00", "DELIVERY", input); String id = order.path("orderId").asText();
         var admin = new Client(); admin.login("0001", PASSWORD);
         var provisioned = admin.request("POST", "/api/admin/employees", Map.of("employeeNumber", "CHEF01", "nickname", "制作师傅", "jobRoles", List.of("PASTRY_CHEF")));
         var chef = new Client(); String temporary = provisioned.body.at("/data/temporaryPassword").asText();
         chef.login("CHEF01", temporary); chef.changePassword(temporary); chef.login("CHEF01", PASSWORD);
         String originalToken = chef.token;
+        var staffItems = query(staff, "/api/orders/" + id).path("items");
+        for (var item : staffItems) {
+            if (item.path("name").asText().equals("旧草稿纸杯")) {
+                assertEquals(1230L, item.path("unitPriceCents").asLong());
+                assertEquals(0L, item.path("memberPriceCents").asLong());
+                assertEquals("独立包装", item.at("/attributes/specification").asText());
+            } else assertEquals(12000L, item.path("unitPriceCents").asLong());
+        }
+        var unauthorizedQuote = chef.request("POST", "/api/orders", input);
+        assertEquals(403, unauthorizedQuote.status);
         var workload = query(chef, "/api/orders/workbench/production-orders?unscheduled=true");
         assertEquals(List.of(id), orderIds(workload.path("orders")));
         assertFalse(workload.at("/orders/0").has("customer"));
         assertFalse(workload.at("/orders/0").has("totalAmountCents"));
         var detail = query(chef, "/api/orders/" + id);
         for (var field : List.of("totalAmountCents", "createdAt", "createdBy", "creditedEmployee", "paymentStatus")) assertTrue(detail.path(field).isNull(), field);
+        for (var item : detail.path("items")) {
+            assertTrue(item.path("unitPriceCents").isNull());
+            assertTrue(item.path("memberPriceCents").isNull());
+            assertFalse(item.at("/attributes/specification").asText().contains("仅供参考"));
+        }
         assertEquals(order.at("/customer/phone").asText(), detail.at("/customer/phone").asText());
         for (var field : List.of("customerName", "memberPhone")) assertTrue(detail.path("customer").path(field).isNull(), field);
         assertTrue(detail.at("/fulfillment/address").isNull()); assertTrue(detail.at("/items/0/createdAt").isNull());

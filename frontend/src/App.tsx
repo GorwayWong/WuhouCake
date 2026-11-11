@@ -87,7 +87,7 @@ function Workspace({ refreshBlocked, token, hash, calendarView, onCalendarChange
   token: string; hash: string; draft: OrderDraftRecord | null; onAccount: (accountId: string, date?: string, canEnter?: boolean) => void;
   calendarView: CalendarView; onCalendarChange: (view: CalendarView) => void;
   draftAccountId: string; draftBlocked: boolean; draftControls: ReactNode; onEditorChange: (editor: Partial<DraftEditor>) => void;
-  onDraftChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void;
+  onDraftChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean, requireSaved?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void;
   creating: boolean; createError: unknown; submitted?: CreateOrderRequest; notice: string; dismissNotice: () => void; onLogout: () => Promise<boolean>;
   refreshBlocked: boolean; onEditDirtyChange: (dirty: boolean) => void;
   writing: boolean; onWritingChange: (pending: boolean) => void;
@@ -284,8 +284,8 @@ export function App() {
   </>;
   if (state.loading) return <Loading />;
   if (!state.token || state.token.passwordChangeRequired) return <>{notice && <p className="notice" role="status">{notice}</p>}{dirty && <div className="draft-session-notice notice" role="status">登录已失效，未提交草稿已保留。同一员工重新登录后可选择恢复；请留意本机保存是否成功。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={() => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
-  return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && ['error', 'conflict'].includes(draftStatus)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftStatus === 'conflict'} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={creation.error || (!creating && draft?.pending ? pendingCreationError : null)} submitted={draft?.pending || creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftChange={(value, editor, retainRemovedImages) => {
-    const saved = changeDraft(value, editor, retainRemovedImages);
+  return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && ['error', 'conflict'].includes(draftStatus)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftStatus === 'conflict'} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={creation.error || (!creating && draft?.pending ? pendingCreationError : null)} submitted={draft?.pending || creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftChange={(value, editor, retainRemovedImages, requireSaved) => {
+    const saved = changeDraft(value, editor, retainRemovedImages, requireSaved);
     if (!draftRef.current?.pending) creation.reset();
     return saved;
   }} onSubmit={request => {
