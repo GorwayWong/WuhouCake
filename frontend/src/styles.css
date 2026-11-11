@@ -2326,3 +2326,9 @@ button,a{
   .package-items-table th:last-child { width: 3rem; }
   .package-items-table td, .package-items-table th { padding-inline: .2rem; }
 }
+
+.package-conflict-choice { min-width: 0; margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.package-conflict-choice legend { padding: 0 4px; overflow-wrap: anywhere; }
+.package-conflict-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.package-conflict-option { display: flex; align-items: flex-start; gap: 6px; }
+.package-conflict-option input { width: auto; margin-top: 3px; }

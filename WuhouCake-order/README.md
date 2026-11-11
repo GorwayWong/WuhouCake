@@ -62,7 +62,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 
 带入时在草稿内按名称和规格合并其他商品，保留已有图、缺图才补；两种整单金额按份累计。没有会员价的部分按原价计入，有内容或金额的草稿先显示确认。带入后图片随草稿和订单独立保存，套餐修改或删除不影响已经带入的内容。
 
-PUT 与 DELETE 以 expectedVersion 条件更新，旧版本返回 409 CONCURRENT_MODIFICATION；已删除套餐详情返回 404 PACKAGE_NOT_FOUND。有效套餐同名写入由数据库唯一索引保证，返回 409 PACKAGE_NAME_CONFLICT。店长核对最新版本后可继续保存保留的输入，前端不会自动覆盖。
+PUT 与 DELETE 以 expectedVersion 条件更新，旧版本返回 409 CONCURRENT_MODIFICATION；已删除套餐详情返回 404 PACKAGE_NOT_FOUND。有效套餐同名写入由数据库唯一索引保证，返回 409 PACKAGE_NAME_CONFLICT。发生版本冲突后，店长可读取最新版本，按商品标识合并独立的图片、价格和备注修改。双方修改同一字段或发生删除与编辑冲突时，先选择保留的内容，再保存合并结果。
 
 创建请求携带 UUID Idempotency-Key，相同标识和相同内容返回原套餐，不增加套餐及审计记录；同标识并发请求在现有事务内串行核实，避免误报名称冲突。原套餐已被修改或删除时分别返回 409 PACKAGE_CREATION_CONFLICT 或 404 PACKAGE_NOT_FOUND。前端在结果未确认时锁住输入，按原标识确认创建；修改、删除先读取详情核实，必要时按原版本重试。新建、修改、删除与 order.package_created / order.package_updated / order.package_deleted 审计同事务提交。完整 before/after 保存在 cake_order_package_change，审计 details.changeId 关联快照，并含名称、版本和商品项数摘要，避免通用审计单字段长度限制影响套餐保存。
 
