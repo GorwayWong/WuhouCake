@@ -24,7 +24,7 @@ function ContentSummary({ content, historical = false }: { content: SubmissionCo
   const displayTime = historical ? (value: string) => time(value, true) : businessTime;
   const labels: Record<string, string> = { size: '尺寸（寸）', base: '内胚', filling: '夹心／口味', flavor: '奶油', message: '祝福语', requirements: '其他要求', specification: '规格' };
   return <div className="submission-summary"><p><strong>{content.phone}</strong>{content.memberPhone && ` · 会员 ${content.memberPhone}`}</p><p>取货时间：{displayTime(content.requestedReceiveAt)} · {content.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{content.address && <p>{content.address}</p>}
-    <ul>{content.items.map((item, index) => <li key={index}><strong>{item.name} × {item.quantity}</strong><p>{Object.entries(item.attributes).filter(([, value]) => value).map(([key, value]) => `${labels[key] || key}：${value}`).join('；')}</p></li>)}</ul>
+    <ul>{content.items.map((item, index) => <li key={index}><strong>{item.name} × {item.quantity}</strong><p className="product-spec-text">{Object.entries(item.attributes).filter(([, value]) => value).map(([key, value]) => `${labels[key] || key}：${value}`).join('；')}</p></li>)}</ul>
   </div>;
 }
 export function SubmissionHistory({ data }: { data: SubmissionDetail }) {

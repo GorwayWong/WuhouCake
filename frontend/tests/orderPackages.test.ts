@@ -1,74 +1,82 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendPackage, packageItems, newPackageItem, packageRequest } from '../src/orderPackages.ts';
-import { newItem, fieldsForProduct } from '../src/orderForm.ts';
+import { isEmptyPackageDraft, newPackageItem, packageRequest, previewPackage } from '../src/orderPackages.ts';
+import type { OrderPackage, PackageItem } from '../src/orderPackages.ts';
+import { newDraft, changeItemDraft, migrateItemDraft, newItem } from '../src/orderForm.ts';
 
-test('空名称但带图片的商品不被套餐替换，原商品标识和图片归属保留', () => {
-  const original = newItem();
-  original.images = [{ id: crypto.randomUUID(), name: 'reference.png', type: 'image/png', size: 100 }];
-  const snapshot = structuredClone(original);
-  const value = { items: [{ name: '模板蛋糕', productType: 'CAKE', quantity: 1, attributes: { size: '6' } }] };
-  const result = appendPackage([original], value);
-  assert.equal(result.length, 2); assert.equal(result[0].key, original.key);
-  assert.deepEqual(result[0], snapshot); assert.deepEqual(original, snapshot);
-  assert.notEqual(result[1].key, original.key); assert.equal(result[1].images, undefined);
-  assert.equal(appendPackage([newItem()], value).length, 1);
+const product = (name = '纸杯蛋糕', specification = '香草\n六只装'): PackageItem => ({
+  itemId: crypto.randomUUID(), imageId: crypto.randomUUID(), productType: 'OTHER', name, quantity: 6, attributes: { specification },
 });
-import { managementQuery, defaultManagementDraft } from '../src/management.ts';
-
-test('fixed packages create editable independent items and preserve existing custom products', () => {
-  const value = { id: 'package', name: '茶歇组合', items: [{ name: '面包', productType: 'BREAD', quantity: 6, attributes: { specification: '小份' } }, { name: '饮品', productType: 'DRINK', quantity: 6, attributes: { specification: '300ml' } }] };
-  const result = appendPackage([newItem()], value);
-  assert.equal(result.length, 2); assert.equal(result[0].attributes.specification, '小份');
-  const second = appendPackage(result, value); assert.equal(second.length, 4);
-  assert.notEqual(second[0].key, second[2].key);
-  second[2].quantity = '12'; assert.equal(value.items[0].quantity, 6);
-  assert.deepEqual(packageItems(result), value.items.map(item => ({ ...item, productType: item.productType === 'BREAD' ? 'READY_BAKERY' : item.productType })));
+const template = (items = [product()]): OrderPackage => ({
+  id: crypto.randomUUID(), version: 1, updatedAt: '', name: '茶歇', originalAmountCents: 20000, memberAmountCents: 18000, items,
 });
-test('历史非蛋糕规格在普通编辑后仍保留，清空可见规格能生效', () => {
-  const [draft] = appendPackage([], { items: [{ name: '旧纸杯', productType: 'CUPCAKE', quantity: 6, attributes: { flavor: '原有奶油', specification: '六只装', requirements: '少糖' } }] });
-  draft.name = '改名纸杯'; draft.attributes.requirements = '';
-  const saved = packageItems([draft])[0];
-  assert.equal(saved.productType, 'TEA_BREAK');
-  assert.deepEqual(saved.attributes, { flavor: '原有奶油', specification: '六只装' });
+test('空单带入模板金额、其他商品和图片来源，原草稿不变', () => {
+  const draft = newDraft('2026-11-11'), value = template(), before = structuredClone(draft);
+  assert(isEmptyPackageDraft(draft));
+  const plan = previewPackage(draft, value);
+  assert.equal(plan.next.items.length, 1);
+  assert.equal(plan.next.items[0].productType, 'OTHER');
+  assert.equal(plan.next.items[0].attributes.specification, '香草\n六只装');
+  assert.equal(plan.next.items[0].attributes.base, '');
+  assert.equal(plan.imageSources.get(plan.next.items[0].key)?.imageId, value.items[0].imageId);
+  assert.equal(plan.next.totalAmount, '200.00');
+  assert.equal(plan.next.memberAmount, '180.00');
+  assert.deepEqual(draft, before);
 });
-
-test('simple product forms expose specification without cake fields', () => {
-  for (const type of ['TEA_BREAK', 'COOKIE', 'SNACK', 'DRINK', 'READY_BAKERY']) assert.deepEqual(fieldsForProduct(type).map(([key]) => key), ['specification', 'requirements']);
-  assert.ok(fieldsForProduct('CAKE').some(([key]) => key === 'size'));
+test('同款只合并首个其他商品，保留已有图，套餐原价及会员价按份累计', () => {
+  const draft = newDraft('2026-11-11'), value = template();
+  const first = previewPackage(draft, value).next.items[0];
+  first.images = [{ id: 'customer', name: '客户参考图.png', type: 'image/png', size: 100 }];
+  draft.items = [first, { ...first, key: 'duplicate', quantity: '2' }, { ...newItem(), name: first.name }];
+  draft.totalAmount = '100';
+  const before = structuredClone(draft);
+  const plan = previewPackage(draft, { ...value, items: [...value.items, product(first.name, '巧克力')] });
+  assert.deepEqual(plan.next.items.map(item => item.quantity), ['12', '2', '1', '6']);
+  assert.equal(plan.next.items[0].images?.[0].id, 'customer');
+  assert.equal(plan.imageSources.has(first.key), false);
+  assert.equal(plan.changes[0].index, 0);
+  assert.equal(plan.changes[0].previousQuantity, 6);
+  assert.equal(plan.next.totalAmount, '300.00');
+  assert.equal(plan.next.memberAmount, '280.00');
+  assert.deepEqual(draft, before);
 });
-test('package specifications remain optional and never include prices or customer data', () => {
-  const draft = { ...newPackageItem(), name: '通用蛋糕', unitPrice: 'not a price', memberPrice: '999' };
-  const result = packageRequest('  下午茶  ', [draft]);
-  assert.deepEqual(result.errors, {});
-  assert.deepEqual(result.body, { name: '下午茶', items: [{ name: '通用蛋糕', productType: 'CAKE', quantity: 1, attributes: {} }] });
-  draft.attributes.size = '8.00';
-  assert.equal(packageItems([draft])[0].attributes.size, '8');
-  draft.attributes.size = '8寸';
-  assert.ok(packageRequest('下午茶', [draft]).errors['items.0.size']);
+test('空名称但有参考图的商品不会被替换，缺价、零价与溢出分别处理', () => {
+  const draft = newDraft('2026-11-11'), value = { ...template(), originalAmountCents: null, memberAmountCents: null };
+  draft.items[0].images = [{ id: 'original', name: 'reference.png', type: 'image/png', size: 10 }];
+  assert(!isEmptyPackageDraft(draft));
+  assert.throws(() => previewPackage(draft, value), /当前订单原价/);
+  assert.throws(() => previewPackage(draft, value, '0'), /此套餐原价/);
+  const filled = previewPackage(draft, value, '0', '0');
+  assert.equal(filled.next.items[0].key, draft.items[0].key);
+  assert.equal(filled.next.totalAmount, '0.00');
+  assert.equal(filled.next.memberAmount, '');
+  assert.throws(() => previewPackage({ ...draft, totalAmount: '90071992547409.91' }, template()), /累计金额过大/);
+  const existing = filled.next.items[1];
+  assert.throws(() => previewPackage({ ...filled.next, items: [{ ...existing, quantity: '2147483647' }] }, template()), /数量超过上限/);
 });
-test('package validation identifies the exact missing or invalid field', () => {
-  const item = { ...newPackageItem(), name: '蛋糕' };
-  assert.ok(packageRequest(' ', [item]).errors.name);
+test('套餐校验名称、数量和原价，套餐条目无蛋糕字段或商品报价', () => {
+  const row = { ...newPackageItem(), name: '纸杯蛋糕', specification: '香草\n六只装' };
+  assert.ok(packageRequest(' ', [row]).errors.name);
   assert.ok(packageRequest('套餐', []).errors.items);
-  assert.ok(packageRequest('套餐', [{ ...item, name: '' }]).errors['items.0.name']);
-  assert.ok(packageRequest('套餐', [{ ...item, productType: '' }]).errors['items.0.productType']);
-  for (const quantity of ['0', '-1', '1.2', '2147483648']) assert.ok(packageRequest('套餐', [{ ...item, quantity }]).errors['items.0.quantity']);
+  assert.ok(packageRequest('套餐', [{ ...row, name: '' }]).errors['items.0.name']);
+  assert.ok(packageRequest('套餐', [row]).errors.original);
+  for (const quantity of ['0', '-1', '1.2', '2147483648']) assert.ok(packageRequest('套餐', [{ ...row, quantity }], '10').errors['items.0.quantity']);
+  assert.deepEqual(packageRequest(' 套餐 ', [row], '10.29', '0').body, {
+    name: '套餐', originalAmountCents: 1029, memberAmountCents: 0,
+    items: [{ itemId: row.itemId, imageId: null, name: '纸杯蛋糕', productType: 'OTHER', quantity: 1, attributes: { specification: '香草\n六只装' } }],
+  });
 });
-test('append preserves custom rows and quotes and creates independent copies on every application', () => {
-  const value = { id: 'package', name: '蛋糕套餐', items: [{ name: '蛋糕', productType: 'CAKE', quantity: 1, attributes: { size: '8' } }] };
-  const existing = { ...newItem(), name: '定制蛋糕', unitPrice: '168', memberPrice: '128' };
-  const result = appendPackage([existing], value);
-  assert.strictEqual(result[0], existing);
-  assert.equal(result[0].unitPrice, '168'); assert.equal(result[1].unitPrice, ''); assert.equal(result[1].memberPrice, '');
-  result[1].attributes.size = '10';
-  assert.equal(value.items[0].attributes.size, '8');
-  const repeated = appendPackage(result, value);
-  assert.equal(repeated.length, 3); assert.notEqual(repeated[1].key, repeated[2].key);
-  assert.equal(repeated[2].attributes.size, '8');
-  assert.equal(appendPackage([{ ...newItem(), productType: 'DRINK' }], value).length, 2);
-  assert.equal(appendPackage([{ ...newItem(), quantity: '2' }], value).length, 2);
-});
-test('all historical unpaid ignores the current date range and filters', () => {
-  assert.equal(managementQuery({ ...defaultManagementDraft('2026-10-23'), from: '', keyword: '旧关键词', allUnpaid: true }), 'allUnpaid=true');
+test('旧草稿转换可重复执行，手动切换分类不会反向解析规格', () => {
+  const old = { ...newItem(), productType: 'CUPCAKE', unitPrice: '10.29', memberPrice: '0',
+    preservedAttributes: { decoration: { color: '粉色' } } };
+  old.attributes.requirements = '少糖';
+  const migrated = migrateItemDraft(old);
+  assert.deepEqual(migrateItemDraft(migrated), migrated);
+  assert.equal(migrated.productType, 'OTHER');
+  assert.match(migrated.attributes.specification, /特殊要求：少糖/);
+  assert.match(migrated.attributes.specification, /原会员单价：0 元/);
+  assert.match(migrated.attributes.specification, /粉色/);
+  const cake = changeItemDraft(migrated, { productType: 'CAKE' });
+  assert.equal(cake.attributes.specification, migrated.attributes.specification);
+  assert.equal(cake.attributes.requirements, '');
 });

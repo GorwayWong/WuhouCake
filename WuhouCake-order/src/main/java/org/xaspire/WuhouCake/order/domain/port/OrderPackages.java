@@ -7,10 +7,14 @@ import java.time.Instant;
 import java.util.Optional;
 
 public interface OrderPackages {
-    record Item(String name, String productType, int quantity, Map<String, Object> attributes) { }
-    record Package(UUID id, String name, List<Item> items, long version, Instant updatedAt, Instant deletedAt) {
+    record Item(UUID itemId, UUID imageId, String name, String productType, int quantity, Map<String, Object> attributes) { }
+    record Package(UUID id, String name, List<Item> items, Long originalAmountCents, Long memberAmountCents, long version, Instant updatedAt, Instant deletedAt) {
         public Package { items = List.copyOf(items); }
     }
+    record Image(String filename, String contentType, byte[] content, String fingerprint) { }
+    Optional<Image> image(UUID packageId, UUID itemId, UUID imageId);
+    void insertImage(UUID packageId, UUID itemId, UUID imageId, Image image);
+    void cleanImages(UUID packageId);
     List<Package> list(String keyword, int limit, long offset);
     long count(String keyword);
     Optional<Package> find(UUID id);

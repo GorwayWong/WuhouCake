@@ -48,8 +48,11 @@ async function read<T>(store: string, action: (store: IDBObjectStore) => IDBRequ
   });
 }
 export async function saveDraftImages(scope: ImageScope, itemId: string, files: File[], orderId?: string): Promise<DraftImage[]> {
+  return saveDraftImageBatch(scope, files.map(file => ({ itemId, file })), orderId);
+}
+export async function saveDraftImageBatch(scope: ImageScope, entries: { itemId: string; file: File }[], orderId?: string): Promise<DraftImage[]> {
   const records: StoredImage[] = [];
-  for (const file of files) {
+  for (const { itemId, file } of entries) {
     const problem = imageFileError(file); if (problem) throw new LocalImageError(`${file.name}：${problem}`);
     let bitmap: ImageBitmap;
     try { bitmap = await createImageBitmap(file); } catch { throw new LocalImageError(`${file.name}：图片内容损坏或无法读取。`); }
@@ -58,7 +61,7 @@ export async function saveDraftImages(scope: ImageScope, itemId: string, files: 
     const id = randomUUID();
     records.push({ id, name: file.name, type: file.type, size: file.size, key: key(scope, itemId, id), ...scope, itemId, file, orderId });
   }
-  await write(['files'], tx => { for (const record of records) tx.objectStore('files').add(record); });
+  if (records.length) await write(['files'], tx => { for (const record of records) tx.objectStore('files').add(record); });
   return records.map(({ id, name, type, size }) => ({ id, name, type, size }));
 }
 export function readDraftImage(scope: ImageScope, itemId: string, id: string) {

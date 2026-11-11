@@ -81,7 +81,7 @@ class OrderExportIT {
     }
     private void clearSessions() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
-    @Test void cakePricesAreHiddenWithoutRewritingHistoryAndMixedExportsKeepOtherPrices() throws Exception {
+    @Test void exportsPlaceLegacyPricesInSpecsWithoutWritingNewProductPrices() throws Exception {
         var staff = staff(); var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
         String cakeId = UUID.randomUUID().toString(), drinkId = UUID.randomUUID().toString();
         ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(0)).put("itemId", cakeId).put("memberPriceCents", 9000);
@@ -90,49 +90,54 @@ class OrderExportIT {
         String id = data(created).path("orderId").asText();
         assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
         assertNull(jdbc.queryForObject("SELECT member_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
+        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, drinkId));
         jdbc.update("UPDATE cake_order_item SET unit_price_cents=12000,member_price_cents=10000 WHERE id=?::uuid", cakeId);
+        jdbc.update("UPDATE cake_order_item SET unit_price_cents=2300,member_price_cents=0,attributes=jsonb_build_object('specification',?) WHERE id=?::uuid", "果汁\n少冰", drinkId);
         var detail = data(staff.request("GET", "/api/orders/" + id, null));
-        for (var item : detail.path("items")) if (item.path("itemId").asText().equals(cakeId)) { assertTrue(item.path("unitPriceCents").isNull()); assertTrue(item.path("memberPriceCents").isNull()); }
+        for (var item : detail.path("items")) if (item.path("itemId").asText().equals(cakeId)) { assertEquals(12000, item.path("unitPriceCents").asInt()); assertEquals(10000, item.path("memberPriceCents").asInt()); }
         var workbench = data(staff.request("GET", "/api/orders/workbench?date=2026-10-16", null));
-        for (var item : workbench.at("/pendingOrders/0/items")) if (item.path("itemId").asText().equals(cakeId)) assertTrue(item.path("unitPriceCents").isNull());
+        for (var item : workbench.at("/pendingOrders/0/items")) if (item.path("itemId").asText().equals(cakeId)) assertEquals(12000, item.path("unitPriceCents").asInt());
         var revised = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 0, "itemId", cakeId, "changes", Map.of("quantity", 2)));
         assertEquals(200, revised.statusCode(), text(revised));
         long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
         var ignored = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 1, "itemId", cakeId, "changes", Map.of("unitPriceCents", -1, "memberPriceCents", 5)));
-        assertEquals(200, ignored.statusCode(), text(ignored)); assertEquals(1, data(ignored).path("version").asLong());
+        assertEquals(400, ignored.statusCode(), text(ignored));
         assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
         assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
         var single = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, single.statusCode(), text(single));
-        try (var book = new XSSFWorkbook(new ByteArrayInputStream(single.body()))) { assertCakeAndDrinkPrices(book, 2, 4, 5); }
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(single.body()))) { assertHistoricalSpecs(book, 2, 4); }
         var batch = staff.request("POST", "/api/orders/exports/zip", range()); assertEquals(200, batch.statusCode(), text(batch));
         try (var zip = new ZipInputStream(new ByteArrayInputStream(batch.body()))) {
-            assertNotNull(zip.getNextEntry()); try (var book = new XSSFWorkbook(new ByteArrayInputStream(zip.readAllBytes()))) { assertCakeAndDrinkPrices(book, 2, 4, 5); }
+            assertNotNull(zip.getNextEntry()); try (var book = new XSSFWorkbook(new ByteArrayInputStream(zip.readAllBytes()))) { assertHistoricalSpecs(book, 2, 4); }
         }
         var report = staff.request("GET", "/api/admin/orders/export?from=2026-10-16&to=2026-10-17", null); assertEquals(200, report.statusCode(), text(report));
-        try (var book = new XSSFWorkbook(new ByteArrayInputStream(report.body()))) { assertCakeAndDrinkPrices(book, 2, 10, 11); }
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(report.body()))) { assertHistoricalSpecs(book, 2, 10); }
         assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
         assertEquals(12345L, jdbc.queryForObject("SELECT total_amount_cents FROM cake_order WHERE id=?::uuid", Long.class, id));
         var toCake = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 1, "itemId", drinkId, "changes", Map.of("productType", "CAKE")));
         assertEquals(200, toCake.statusCode(), text(toCake));
-        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, drinkId));
+        assertEquals(2300L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, drinkId));
         var toDrink = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 2, "itemId", cakeId, "changes", Map.of("productType", "DRINK")));
         assertEquals(200, toDrink.statusCode(), text(toDrink));
-        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
+        assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
         var added = staff.request("POST", "/api/orders/" + id + "/items", Map.of("expectedVersion", 3, "item", Map.of("name", "追加蛋糕", "productType", "CAKE", "quantity", 1, "unitPriceCents", 999, "memberPriceCents", 500)));
         assertEquals(201, added.statusCode(), text(added));
         assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE name='追加蛋糕'", Long.class));
     }
-    private static void assertCakeAndDrinkPrices(XSSFWorkbook book, int typeColumn, int regularColumn, int memberColumn) {
-        boolean cake = false, drink = false;
+    private static void assertHistoricalSpecs(XSSFWorkbook book, int typeColumn, int specificationColumn) {
+        boolean cake = false, other = false;
         for (var row : book.getSheet("商品明细")) {
             if (row.getRowNum() == 0) continue;
+            String specification = row.getCell(specificationColumn).getStringCellValue();
             if ("蛋糕".equals(row.getCell(typeColumn).getStringCellValue())) {
-                cake = true; assertEquals("", row.getCell(regularColumn).getStringCellValue()); assertEquals("", row.getCell(memberColumn).getStringCellValue());
-            } else if ("饮品".equals(row.getCell(typeColumn).getStringCellValue())) {
-                drink = true; assertEquals("23.00", row.getCell(regularColumn).getStringCellValue()); assertEquals("0.00", row.getCell(memberColumn).getStringCellValue());
+                cake = true; assertTrue(specification.contains("原商品单价：120.00 元（仅供参考）"));
+            } else if ("其他".equals(row.getCell(typeColumn).getStringCellValue())) {
+                other = true; assertTrue(specification.contains("果汁\n少冰"));
+                assertTrue(specification.contains("原商品单价：23.00 元（仅供参考）"));
+                assertTrue(specification.contains("原会员单价：0.00 元（仅供参考）"));
             }
         }
-        assertTrue(cake); assertTrue(drink);
+        assertTrue(cake); assertTrue(other);
     }
 
     @Test void stableItemIdentifiersAndImageRetriesKeepOwnershipAndFiveImagesPerItem() throws Exception {

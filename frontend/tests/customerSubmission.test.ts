@@ -8,7 +8,7 @@ function complete() {
   const draft = newSubmissionDraft(); draft.phone = '13800000000'; draft.memberPhone = '13800000088'; draft.address = '合成地址';
   draft.requestedReceiveAt = '2026-11-02T18:00'; draft.items[0].attributes.size = '8'; return draft;
 }
-test('核对草稿的总额、单价和会员价经过展示与保存仍逐分一致', () => {
+test('核对草稿只保存整单金额，重新打开仍逐分一致', () => {
   const draft = complete();
   draft.items[0] = changeItemDraft(draft.items[0], { productType: 'DRINK' });
   draft.totalAmount = '90071992547409.90';
@@ -18,8 +18,8 @@ test('核对草稿的总额、单价和会员价经过展示与保存仍逐分�
   assert.deepEqual(saved.errors, {});
   const reopened = draftFromSubmission({ original: saved.content, reviewed: saved.review } as Submission);
   assert.equal(reopened.totalAmount, draft.totalAmount);
-  assert.equal(reopened.items[0].unitPrice, draft.items[0].unitPrice);
-  assert.equal(reopened.items[0].memberPrice, draft.items[0].memberPrice);
+  assert.equal(reopened.items[0].unitPrice, '');
+  assert.equal(reopened.items[0].memberPrice, '');
   assert.deepEqual(submissionRequest(reopened, true).review, saved.review);
 });
 test('客户请求不含价格、归属和内部交接时间，蛋糕默认规格映射正确', () => {

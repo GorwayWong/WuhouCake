@@ -60,7 +60,8 @@ public class OrderService {
             if (item == null) throw invalid();
             var itemId = item.itemId() == null ? ids.nextId() : item.itemId();
             if (!itemIds.add(itemId)) throw invalid();
-            return OrderItem.create(itemId, item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
+            var created = OrderItem.create(itemId, item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
+            return submissionId == null ? created : created.retainHistoricalPrices(money(item.unitPriceCents()), money(item.memberPriceCents()));
         }).toList();
         var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
         var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod());

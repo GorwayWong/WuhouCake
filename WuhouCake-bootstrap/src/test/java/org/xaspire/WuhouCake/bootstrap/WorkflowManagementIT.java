@@ -78,7 +78,7 @@ class WorkflowManagementIT {
         a.data("POST", "/api/orders/" + cancelled.path("orderId").asText() + "/cancel", Map.of("expectedVersion", 0, "reason", "合成取消"));
         assertEquals(1, management.totals(new org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.Filter(java.time.LocalDate.of(2026,10,1), java.time.LocalDate.of(2026,11,1), null,null,null,null,null,false,false,null,null)).orderCount());
         var all = admin.data("GET", search(""), null);
-        assertEquals(Set.of("CAKE", "TEA_BREAK"), json.convertValue(all.at("/items/0/productTypes"), Set.class));
+        assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(all.at("/items/0/productTypes"), Set.class));
         assertEquals(1, all.at("/totals/orderCount").asLong()); assertEquals(9, all.at("/totals/matchingQuantity").asLong()); assertEquals(3, all.at("/totals/cakeQuantity").asLong());
         assertEquals(2, all.path("sizes").size()); assertEquals("8", all.at("/sizes/0/size").asText());
         assertEquals(2, all.at("/sizes/0/cakeQuantity").asInt()); assertEquals(1, all.at("/sizes/0/orderCount").asInt());
@@ -87,7 +87,7 @@ class WorkflowManagementIT {
         var filtered = admin.data("GET", search("&sizeInches=8.00&creditedEmployeeId=" + b.id), null);
         assertEquals(1, filtered.at("/totals/orderCount").asInt()); assertEquals(2, filtered.at("/totals/matchingQuantity").asInt()); assertEquals(2, filtered.at("/totals/cakeQuantity").asInt());
         assertEquals(id, filtered.at("/items/0/orderId").asText());
-        assertEquals(Set.of("CAKE", "TEA_BREAK"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
+        assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
         long before = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
         var response = admin.raw("GET", search("&sizeInches=8.00&creditedEmployeeId=" + b.id).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
         assertEquals(200, response.statusCode());
@@ -188,7 +188,7 @@ class WorkflowManagementIT {
         assertEquals("52000", filtered.at("/totals/totalAmountCents").asText());
         assertEquals(1, filtered.path("sizes").size()); assertEquals("8", filtered.at("/sizes/0/size").asText());
         assertEquals(2, filtered.at("/employees/0/matchingQuantity").asInt()); assertEquals("52000", filtered.at("/employees/0/totalAmountCents").asText());
-        assertEquals(Set.of("CAKE", "TEA_BREAK"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
+        assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
         assertFalse(filtered.at("/items/0/products").asText().contains("十寸"));
         assertEquals(0, admin.data("GET", search(suffix + "&sizeInches=10"), null).at("/totals/orderCount").asInt());
         assertEquals(0, admin.data("GET", search(suffix + "&keyword=nomatch"), null).at("/totals/orderCount").asInt());
@@ -215,7 +215,7 @@ class WorkflowManagementIT {
     @Test void productNameIsLiteralOptionalAndRespectsRemovedAndDeletedOrders() throws Exception {
         var order = a.data("POST", "/api/orders", create(a.id)); String id = order.path("orderId").asText();
         String name = "点心%_'\\";
-        jdbc.update("UPDATE cake_order_item SET name=? WHERE order_id=?::uuid AND product_type='TEA_BREAK'", name, id);
+        jdbc.update("UPDATE cake_order_item SET name=? WHERE order_id=?::uuid AND product_type='OTHER'", name, id);
         String suffix = "&productName=" + java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8);
         assertEquals(6, admin.data("GET", search(suffix), null).at("/totals/matchingQuantity").asInt());
         assertEquals(0, admin.data("GET", search("&productName=%25%25"), null).at("/totals/orderCount").asInt());

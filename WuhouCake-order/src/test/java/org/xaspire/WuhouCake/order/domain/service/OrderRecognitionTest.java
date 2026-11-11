@@ -22,7 +22,7 @@ class OrderRecognitionTest {
         var items = recognition().parse("商品1：蛋糕\n规格（寸）：6\n商品2：饮品\n规格：300ml").items();
         assertEquals("6", items.getFirst().fields().get("size").value()); assertNull(items.getFirst().fields().get("specification").value());
         assertEquals("300ml", items.getLast().fields().get("specification").value()); assertNull(items.getLast().fields().get("size").value());
-        assertEquals("DRINK", items.getLast().fields().get("productType").value());
+        assertEquals("OTHER", items.getLast().fields().get("productType").value());
     }
     @Test void creamDefaultsOnlyForCakesAndExplicitCreamKeepsItsEvidence() throws Exception {
         var cream = recognition().parse("商品：8寸蛋糕").items().getFirst().fields().get("flavor");

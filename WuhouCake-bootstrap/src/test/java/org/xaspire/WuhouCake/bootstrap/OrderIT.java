@@ -306,8 +306,7 @@ class OrderIT {
         assertEquals(item(original, second), item(before, second));
         doReturn(start.plusSeconds(1)).when(clock).instant();
         var changes = new LinkedHashMap<String, Object>();
-        changes.put("name", "生日蛋糕"); changes.put("quantity", 2); changes.put("unitPriceCents", 12000);
-        changes.put("memberPriceCents", null); changes.put("attributes", Map.of("size", "10", "flavors", List.of("草莓")));
+        changes.put("name", "生日蛋糕"); changes.put("quantity", 2); changes.put("attributes", Map.of("size", "10", "flavors", List.of("草莓")));
         var revised = staff.request("PATCH", "/api/orders/" + orderId, patch(first, 0, changes));
         assertEquals(200, revised.status, revised.body.toString()); assertEquals(1, revised.body.at("/data/version").asLong());
         var after = staff.request("GET", "/api/orders/" + orderId, null).body.path("data");
@@ -1302,20 +1301,14 @@ class OrderIT {
         var detail = created.body.path("data");
         String id = detail.path("orderId").asText(), itemId = detail.at("/items/0/itemId").asText();
         assertEquals(maximum, detail.path("totalAmountCents").asLong());
-        assertEquals(maximum, detail.at("/items/0/unitPriceCents").asLong());
-        assertEquals(maximum, detail.at("/items/0/memberPriceCents").asLong());
+        assertTrue(detail.at("/items/0/unitPriceCents").isNull());
+        assertTrue(detail.at("/items/0/memberPriceCents").isNull());
         var invalid = new LinkedHashMap<>(valid); invalid.put("totalAmountCents", maximum + 1);
         assertEquals(400, staff.request("POST", "/api/orders", invalid).status);
         assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/information",
                 Map.of("expectedVersion", 0, "changes", Map.of("totalAmountCents", maximum + 1))).status);
-        for (var field : List.of("unitPriceCents", "memberPriceCents")) {
-            invalid = new LinkedHashMap<>(valid);
-            invalid.put("items", List.of(Map.of("name", "超限商品", "productType", "DRINK", "quantity", 1, field, maximum + 1)));
-            assertEquals(400, staff.request("POST", "/api/orders", invalid).status);
+        for (var field : List.of("unitPriceCents", "memberPriceCents"))
             assertEquals(400, staff.request("PATCH", "/api/orders/" + id, patch(itemId, 0, Map.of(field, maximum + 1))).status);
-            assertEquals(400, staff.request("POST", "/api/orders/" + id + "/items",
-                    Map.of("expectedVersion", 0, "item", Map.of("name", "超限商品", "productType", "DRINK", "quantity", 1, field, maximum + 1))).status);
-        }
         var unchanged = query(staff, "/api/orders/" + id);
         assertEquals(0, unchanged.path("version").asLong());
         assertEquals(maximum, unchanged.path("totalAmountCents").asLong());
@@ -1472,7 +1465,7 @@ class OrderIT {
     @Test void simpleWorkflowPackagesAndReceiptDatePersist() throws Exception {
         var staff = staff();
         var admin = new Client(); admin.login("0001", PASSWORD);
-        var bundle = Map.of("name", "客服茶歇套餐", "items", List.of(Map.of("name", "面包", "productType", "BREAD", "quantity", 6, "attributes", Map.of("specification", "小份"))));
+        var bundle = Map.of("name", "客服茶歇套餐", "originalAmountCents", 10000, "items", List.of(Map.of("itemId", UUID.randomUUID(), "name", "面包", "productType", "OTHER", "quantity", 6, "attributes", Map.of("specification", "小份"))));
         var saved = admin.request("POST", "/api/order-packages", bundle);
         assertEquals(201, saved.status, saved.body.toString());
         String packageId = saved.body.at("/data/id").asText();

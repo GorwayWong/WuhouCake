@@ -69,11 +69,11 @@ class OrderFilesTest {
             assertFalse(values.contains("快照版本")); assertFalse(values.contains("CAKE_BASE"));
             var product = book.getSheet("商品明细").getRow(1);
             assertEquals("=蛋糕", product.getCell(1).getStringCellValue()); assertEquals(CellType.STRING, product.getCell(1).getCellType());
-            assertEquals("", product.getCell(4).getStringCellValue()); assertEquals("", product.getCell(5).getStringCellValue());
+            assertEquals("商品规格与要求", book.getSheet("商品明细").getRow(0).getCell(4).getStringCellValue());
             assertEquals("蛋糕", product.getCell(2).getStringCellValue());
-            assertTrue(product.getCell(6).getStringCellValue().contains("草莓、芒果"));
-            assertTrue(product.getCell(6).getStringCellValue().contains("内胚：原味"));
-            assertFalse(product.getCell(6).getStringCellValue().contains("{\""));
+            assertTrue(product.getCell(4).getStringCellValue().contains("草莓、芒果"));
+            assertTrue(product.getCell(4).getStringCellValue().contains("内胚：原味"));
+            assertFalse(product.getCell(4).getStringCellValue().contains("{\""));
             var restored = new StringBuilder();
             for (var row : book.getSheet("工作备注")) if (row.getRowNum() > 0) restored.append(row.getCell(1).getStringCellValue());
             assertEquals(longNote, restored.toString()); assertEquals(2, book.getAllPictures().size());

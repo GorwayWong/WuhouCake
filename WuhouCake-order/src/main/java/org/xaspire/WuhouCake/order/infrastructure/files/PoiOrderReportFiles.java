@@ -8,6 +8,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.*;
 import org.xaspire.WuhouCake.order.domain.port.OrderReportFiles;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
+import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 
 public final class PoiOrderReportFiles implements OrderReportFiles {
     @Override public byte[] generate(Filter filter, List<Row> rows, Totals totals, List<SizeSummary> sizes, List<EmployeeSummary> employees, List<ProductRow> products) {
@@ -48,9 +49,9 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                     r.employeeName() == null ? "未归属" : r.employeeName(), r.createdBy(), r.totalAmountCents() == null ? "" : BigDecimal.valueOf(r.totalAmountCents()).movePointLeft(2).toPlainString(),
                     r.matchingQuantity(), r.cakeQuantity(), r.products());
             var productSheet = book.createSheet("商品明细");
-            row(productSheet, "订单号", "商品名称", "商品类型", "数量", "尺寸原值（寸）", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "商品单价（元）", "会员单价（元）");
+            row(productSheet, "订单号", "商品名称", "商品类型", "数量", "尺寸原值（寸）", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "规格");
             for (var r : products) row(productSheet, r.orderNo(), r.name(), ProductCategories.label(r.productType()), r.quantity(), r.size(), r.flavor(), r.base(), r.filling(), r.message(), r.requirements(),
-                    !ProductCategories.hasUnitPrices(r.productType()) || r.unitPriceCents() == null ? "" : yuan(r.unitPriceCents().toString()), !ProductCategories.hasUnitPrices(r.productType()) || r.memberPriceCents() == null ? "" : yuan(r.memberPriceCents().toString()));
+                    text(org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications.withHistoricalPrices(r.attributes(), r.unitPriceCents(), r.memberPriceCents()).get("specification")));
             var header = book.createCellStyle(); var font = book.createFont(); font.setBold(true); header.setFont(font);
             for (var s : List.of(summary, sizeSheet, employeeSheet, sheet, productSheet)) {
                 for (int i = 0; i < s.getRow(0).getLastCellNum(); i++) s.setColumnWidth(i, (i == 12 ? 60 : 24) * 256);
@@ -60,6 +61,9 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                     for (var cell : s.getRow(0)) cell.setCellStyle(header);
                 }
             }
+            productSheet.setColumnWidth(10, 52 * 256);
+            var wrap = book.createCellStyle(); wrap.setWrapText(true);
+            for (var row : productSheet) if (row.getRowNum() != 0) row.getCell(10).setCellStyle(wrap);
             book.write(output); return output.toByteArray();
         } catch (IOException failure) { throw new UncheckedIOException(failure); }
     }

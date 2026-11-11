@@ -1,5 +1,5 @@
 import { paymentMethods } from './orderPayment.ts';
-import { newDraft, specificationFields, withoutCakeUnitPrices } from './orderForm.ts';
+import { newDraft, specificationFields, migrateOrderDraft } from './orderForm.ts';
 import type { OrderDraft } from './orderForm.ts';
 import type { RecognitionFeedbackMap } from './recognition.ts';
 import type { CreateOrderRequest } from './types.ts';
@@ -81,7 +81,7 @@ export function decodeOrderDraft(raw: string, accountId: string): OrderDraftReco
       || value.createdOrderId !== undefined && (typeof value.createdOrderId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.createdOrderId))
       || value.imageStorageUsed !== undefined && typeof value.imageStorageUsed !== 'boolean') return null;
     const record = value as unknown as OrderDraftRecord;
-    return { ...record, initial: withoutCakeUnitPrices(record.initial), value: withoutCakeUnitPrices(record.value) };
+    return { ...record, initial: migrateOrderDraft(record.initial), value: migrateOrderDraft(record.value) };
   } catch { return null; }
 }
 

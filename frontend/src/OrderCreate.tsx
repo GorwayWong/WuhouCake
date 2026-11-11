@@ -1,6 +1,5 @@
 import { Select } from './Select';
 import { paymentMethods } from './orderPayment';
-import { hasUnitPrices } from './productTypes';
 import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
 import { firstProductFormError } from './productFormLayout';
 import { DraftItemImages } from './DraftItemImages';
@@ -21,9 +20,7 @@ import { DateInput } from './DateInput';
 import { OrderingMethodInput } from './OrderingMethodInput';
 import { ProductTypeSelect } from './ProductTypeSelect';
 import { focusFormField } from './formFocus';
-import { itemKeyForField, selectItemAfterChange, summarizeItemPrices } from './orderItemView';
-import type { PriceSummary } from './orderItemView';
-import { exactYuan } from './money';
+import { itemKeyForField, selectItemAfterChange } from './orderItemView';
 import type { ItemDraft, OrderDraft } from './orderForm';
 import type { CreateOrderRequest } from './types';
 import type { DraftEditor } from './orderDraftStorage';
@@ -39,10 +36,6 @@ function Field({ label, name, error, children, wide = false, className = '' }: {
     {mark?.hint && <span className="form-help" id={`${name}-recognition-hint`}>{mark.hint}</span>}
   </label>;
 }
-function PriceHint({ label, summary }: { label: string; summary: PriceSummary }) {
-  const notes = [summary.missing ? '有商品未填价格' : '', summary.invalid ? '有商品数量或价格未完成' : ''].filter(Boolean);
-  return <div><dt>{label}</dt><dd><strong>{summary.included ? `¥${exactYuan(String(summary.cents))}` : '—'}</strong>{notes.length > 0 && <span>（{notes.join('；')}）</span>}</dd></div>;
-}
 export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, error, submitted, editor, onEditorChange, blocked, imageScope, canUploadImages = false, canRecordPayment = false, onImageWritingChange, createdOrderId }: {
   draft: OrderDraft; onChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
   imageScope: ImageScope; canUploadImages?: boolean; canRecordPayment?: boolean; onImageWritingChange: (busy: boolean) => void; createdOrderId?: string;
@@ -56,9 +49,6 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
   const setSelectedItemKey = (key: string) => { selectItem(key); onEditorChange({ selectedItemKey: key }); };
   const activeIndex = Math.max(0, draft.items.findIndex(item => item.key === selectedItemKey));
   const activeItem = draft.items[activeIndex];
-  const priceSummary = summarizeItemPrices(draft.items);
-  const pricedItems = draft.items.filter(item => hasUnitPrices(item.productType));
-  const mixedPrices = pricedItems.length !== draft.items.length;
   const cardStart = useRef<HTMLDivElement>(null);
   const [pendingTarget, setPendingTarget] = useState<{ field?: string; focus?: boolean } | null>(null);
   const [feedback, setFeedback] = useState<RecognitionFeedbackMap>(editor.feedback);
@@ -167,7 +157,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
             <Field label="地址 *" name="address" error={errors.address} wide><textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} placeholder="配送填写地址，自提填写‘自提’" required /></Field>
         </div></section>
         <section className="panel create-group"><div className="section-heading"><h2><Cake />商品信息</h2><span className="muted">{draft.items.length} 项</span></div>
-          <OrderPackagePicker items={draft.items} onChange={items => change({ ...draft, items })} disabled={editBlocked} />
+          <OrderPackagePicker draft={draft} getDraft={getDraft} onChange={change} imageScope={imageScope} canUploadImages={canUploadImages} onImageWritingChange={imageWriting} disabled={editBlocked} />
           <div className="item-card-navigation" ref={cardStart} role="group" aria-label="商品切换">
             <button type="button" className="secondary icon-button" aria-label="上一个商品" disabled={activeIndex === 0} onClick={() => switchItem(-1)}><ArrowLeft /></button>
             <div className="item-card-caption"><span aria-live="polite">第 {activeIndex + 1} / {draft.items.length} 个商品</span><strong>{activeItem?.name.trim() || '未命名商品'}</strong></div>
@@ -187,7 +177,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
                 <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={activeItem[field]} onChange={event => updateItem(activeItem.key, { [field]: event.target.value })} required={required} maxLength={field === 'name' ? 128 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} />
               </Field>;
               return <Field label={<ProductFieldLabel field={field} />} name={name} error={errors[name]}>
-                {(field === 'requirements' || field === 'filling') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} inputMode={field === 'size' ? 'decimal' : undefined} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
+                {(field === 'requirements' || field === 'filling' || field === 'specification') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} inputMode={field === 'size' ? 'decimal' : undefined} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
               </Field>;
             }} />
           </div>}
@@ -198,7 +188,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
           </div>}
           <DraftItemImages key={`images:${activeItem.key}`} scope={imageScope} itemId={activeItem.key} images={activeItem.images || []} disabled={editBlocked} allowed={canUploadImages} onBusyChange={imageWriting} onChange={images => change({ ...latest.current, items: latest.current.items.map(item => item.key === activeItem.key ? { ...item, images } : item) })} before={<button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}><Plus />添加商品</button>} />
         </section>
-        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2>{pricedItems.length > 0 && <dl className="item-price-summary" aria-label="商品价格参考合计"><PriceHint label={mixedPrices ? '其他商品普通价小计' : '普通价合计'} summary={priceSummary.regular} /><PriceHint label={mixedPrices ? '其他商品会员价小计' : '会员价合计'} summary={priceSummary.member} /></dl>}<div className="create-grid order-pricing-fields"><Field label="原价（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field><Field label="会员价（元）" name="memberAmount" error={errors.memberAmount}><input {...inputProps('memberAmount')} inputMode="decimal" value={draft.memberAmount || ''} onChange={event => change({ ...draft, memberAmount: event.target.value })} placeholder="未填写" /></Field><Field label="支付方式" name="paymentMethod" error={errors.paymentMethod} wide><Select label="支付方式" id="paymentMethod" value={draft.paymentMethod || 'UNPAID'} disabled={editBlocked} onChange={paymentMethod => change({ ...draft, paymentMethod })}>{Object.entries(paymentMethods).map(([value, label]) => <option key={value} value={value} disabled={!canRecordPayment && value !== 'UNPAID'}>{label}</option>)}</Select></Field></div><p className="form-help">填写会员价时按会员价成交，否则按原价。留空为未报价，0 为零元；支付方式仅登记，不实际扣款。</p></section>
+        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid order-pricing-fields"><Field label="原价（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field><Field label="会员价（元）" name="memberAmount" error={errors.memberAmount}><input {...inputProps('memberAmount')} inputMode="decimal" value={draft.memberAmount || ''} onChange={event => change({ ...draft, memberAmount: event.target.value })} placeholder="未填写" /></Field><Field label="支付方式" name="paymentMethod" error={errors.paymentMethod} wide><Select label="支付方式" id="paymentMethod" value={draft.paymentMethod || 'UNPAID'} disabled={editBlocked} onChange={paymentMethod => change({ ...draft, paymentMethod })}>{Object.entries(paymentMethods).map(([value, label]) => <option key={value} value={value} disabled={!canRecordPayment && value !== 'UNPAID'}>{label}</option>)}</Select></Field></div><p className="form-help">填写会员价时按会员价成交，否则按原价。调整商品或数量后，请核对整单金额。留空为未报价，0 为零元；支付方式仅登记。</p></section>
       </fieldset>
       {Object.keys(errors).length > 0 && <div className="notice error" role="alert">{errors.images || '请检查标出的内容后再创建订单。'}</div>}
       {error ? createdOrderId ? <div className="notice error" role="alert">订单已创建，图片队列尚未保存完成。本机草稿已保留，请重试保存队列；也可先<a href={`#/orders/${createdOrderId}`}>查看订单详情</a>。</div> : unknownResult ? <div className="notice error create-result" role="alert"><p>创建结果未确认，输入已保留。请先核对取货日期 <strong>{submittedDate}</strong>、电话 <strong>{submittedPhone}</strong>；也可重试确认原订单，不会重复建单。</p><a className="text-button" href={`#/?date=${submittedDate}`} target="_blank" rel="noreferrer">打开 {submittedDate} 工作台核对（新标签页）</a></div> : <div className="notice error" role="alert">本次请求未新增订单。{errorText(error)}</div> : null}

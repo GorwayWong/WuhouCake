@@ -191,7 +191,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       const amountOnly = variables.path === 'information' && informationChanges && Object.keys(informationChanges).every(key => ['totalAmountCents', 'originalAmountCents', 'memberAmountCents'].includes(key));
       const rollbackMessage = variables.path === 'restart' ? '订单已恢复至出胚，商品制作确认已重置，付款和历史记录保留。'
         : updated && ['ROLLBACK_PRODUCTION', 'REOPEN_PRODUCTION', 'ROLLBACK_FULFILLMENT'].includes(action || '') ? `订单已退回${statusLabel(updated)}。${updated.status === 'CAKE_BASE' ? '商品制作确认已重置。' : '商品制作勾选保留。'}` : '';
-      setMessage(variables.path === 'images-only' ? '资料未改动，图片正在转入上传队列。' : variables.path === '' ? '商品已保存' : variables.path === 'items' ? `商品已添加。${returnedToBase ? '制作节点已重置，请重新确认。' : ''}` : variables.path.endsWith('/remove') ? '商品已移除' : variables.path.endsWith('/production-status') ? '商品制作状态已保存' : variables.path === 'notes' ? '备注已发布' : variables.path === 'information' ? amountOnly ? '金额已保存' : '订单资料已保存' : variables.path === 'payment-status' ? '付款状态已更新' : variables.path === 'cancel' ? '订单已取消' : rollbackMessage || `${actionNames[action || '']}已确认`);
+      setMessage(variables.path === 'images-only' ? '资料未改动，图片正在转入上传队列。' : variables.path === '' ? '商品已保存，请核对整单金额。' : variables.path === 'items' ? `商品已添加。${returnedToBase ? '制作节点已重置，请重新确认。' : ''}` : variables.path.endsWith('/remove') ? '商品已移除' : variables.path.endsWith('/production-status') ? '商品制作状态已保存' : variables.path === 'notes' ? '备注已发布' : variables.path === 'information' ? amountOnly ? '金额已保存' : '订单资料已保存' : variables.path === 'payment-status' ? '付款状态已更新' : variables.path === 'cancel' ? '订单已取消' : rollbackMessage || `${actionNames[action || '']}已确认`);
       if (updated && variables.path === 'production-actions' && (variables.body as { action: string }).action === 'REOPEN_PRODUCTION') {
         setEditing(current => current?.kind === 'item' ? { ...current, reopened: updated } : current);
       }
@@ -306,7 +306,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
           <div className="detail-contact-phone"><dt>电话</dt><dd>{order.customer?.phone ? <a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a> : '未填写'}</dd></div>
           <div className="wide detail-contact-address"><dt>地址</dt><dd>{order.fulfillment.type === 'PICKUP' ? `门店自提${order.fulfillment.address ? ` · ${order.fulfillment.address}` : ''}` : order.fulfillment.address || '未填写'}</dd></div>
         </dl>
-        <section className="front-order-requirements" aria-labelledby="front-requirements-title"><h3 id="front-requirements-title">特殊要求</h3><p>{orderRequirements(currentProduct ? [currentProduct] : [])[0]?.text || '无'}</p></section>
+        {currentProduct?.productType === 'CAKE' && <section className="front-order-requirements" aria-labelledby="front-requirements-title"><h3 id="front-requirements-title">特殊要求</h3><p>{orderRequirements(currentProduct ? [currentProduct] : [])[0]?.text || '无'}</p></section>}
       </>}
       {images}
       <dl className="front-order-created"><div><dt>下单时间</dt><dd>{order.createdAt ? businessTime(order.createdAt) : '未填写'}</dd></div></dl>

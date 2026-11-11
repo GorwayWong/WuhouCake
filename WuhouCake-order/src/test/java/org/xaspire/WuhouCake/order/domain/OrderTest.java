@@ -43,7 +43,7 @@ class OrderTest {
         assertEquals(Map.of("quantity", BigDecimal.ONE, "attributes", first.attributes()), details.get("before"));
         assertEquals(Map.of("quantity", BigDecimal.valueOf(2), "attributes", order.requireActiveItem(first.itemId()).attributes()), details.get("after"));
     }
-    @Test void snapshotsDoNotShareMutableInputAndSupportAttributeDeletionAndPriceClearing() {
+    @Test void snapshotsDoNotShareMutableInputAndSupportAttributeDeletion() {
         var flavors = new ArrayList<>(List.of("芒果"));
         var attributes = new LinkedHashMap<String, Object>();
         attributes.put("flavors", flavors); attributes.put("greeting", "生日快乐"); attributes.put("decoration", Map.of("color", "粉", "shape", "兔子"));
@@ -52,7 +52,7 @@ class OrderTest {
         var patch = new LinkedHashMap<String, Object>();
         patch.put("greeting", null); patch.put("decoration", Map.of("color", "白"));
         var changes = new LinkedHashMap<String, Object>();
-        changes.put("attributes", patch); changes.put("memberPriceCents", null);
+        changes.put("attributes", patch);
         var log = order.reviseItem(item.itemId(), changes, NOW.plusSeconds(1));
         var revised = order.requireActiveItem(item.itemId());
         assertEquals(List.of("芒果"), revised.attributes().get("flavors"));
@@ -469,7 +469,7 @@ class OrderTest {
             assertEquals("OTHER_ITEMS_INCOMPLETE", assertThrows(OrderFailure.class, () -> order.applyProductionAction("COMPLETE_DECORATION", NOW)).code());
             order.completeSimpleItem(cake.itemId(), true, NOW);
         }
-        order.reviseItem(cake.itemId(), Map.of("unitPriceCents", 12000, "memberPriceCents", 9000), NOW);
+        assertThrows(OrderFailure.class, () -> order.reviseItem(cake.itemId(), Map.of("unitPriceCents", 12000), NOW));
         assertEquals("COMPLETED", order.requireActiveItem(cake.itemId()).productionStatus());
         order.completeSimpleItem(cake.itemId(), false, NOW);
         assertEquals("DECORATING", order.status());

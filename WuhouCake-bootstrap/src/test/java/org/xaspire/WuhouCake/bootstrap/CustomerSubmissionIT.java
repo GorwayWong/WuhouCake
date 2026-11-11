@@ -105,7 +105,7 @@ class CustomerSubmissionIT {
         assertEquals(0, front.data("GET", all + pending, null).path("total").asInt());
     }
 
-    @Test void cakeReviewPricesAreIgnoredAndLegacyReviewPricesAreOnlyHiddenBeforeConfirmation() throws Exception {
+    @Test void newReviewPricesAreIgnoredAndLegacyPricesAreRetainedOnConfirmation() throws Exception {
         var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
         var review = new LinkedHashMap<String, Object>(review(input, staff.id, 12300));
@@ -113,17 +113,17 @@ class CustomerSubmissionIT {
         var saved = staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review));
         assertTrue(saved.at("/submission/reviewed/prices/0/unitPriceCents").isNull());
         assertTrue(saved.at("/submission/reviewed/prices/0/memberPriceCents").isNull());
-        assertEquals(2300, saved.at("/submission/reviewed/prices/1/unitPriceCents").asInt());
+        assertTrue(saved.at("/submission/reviewed/prices/1/unitPriceCents").isNull());
         jdbc.update("UPDATE customer_order_submission SET reviewed=jsonb_set(jsonb_set(reviewed,'{prices,0,unitPriceCents}','12000'::jsonb),'{prices,0,memberPriceCents}','10000'::jsonb) WHERE id=?::uuid", id);
         var old = staff.data("GET", "/api/customer-submissions/" + id, null);
-        assertTrue(old.at("/submission/reviewed/prices/0/unitPriceCents").isNull());
+        assertEquals(12000, old.at("/submission/reviewed/prices/0/unitPriceCents").asInt());
         assertEquals(12000L, jdbc.queryForObject("SELECT (reviewed#>>'{prices,0,unitPriceCents}')::bigint FROM customer_order_submission WHERE id=?::uuid", Long.class, id));
         var invalid = new LinkedHashMap<>(review); invalid.put("prices", List.of(Map.of("unitPriceCents", 500), Map.of("unitPriceCents", -1)));
-        assertEquals(400, staff.request("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 1, "review", invalid)).status);
+        assertEquals(200, staff.request("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 1, "review", invalid)).status);
         var confirmed = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
         String orderId = confirmed.at("/submission/orderId").asText();
-        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND product_type='CAKE'", Long.class, orderId));
-        assertEquals(2300L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND product_type='TEA_BREAK'", Long.class, orderId));
+        assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND product_type='CAKE'", Long.class, orderId));
+        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND product_type='OTHER'", Long.class, orderId));
         assertEquals(12300L, jdbc.queryForObject("SELECT total_amount_cents FROM cake_order WHERE id=?::uuid", Long.class, orderId));
     }
 
@@ -401,13 +401,11 @@ class CustomerSubmissionIT {
         draft.put("prices", List.of(Map.of(), Map.of("unitPriceCents", maximum, "memberPriceCents", maximum)));
         var saved = staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", draft));
         assertEquals(maximum, saved.at("/submission/reviewed/totalAmountCents").asLong());
-        for (String field : List.of("totalAmountCents", "unitPriceCents", "memberPriceCents")) {
-            var invalid = new LinkedHashMap<>(draft);
-            if (field.equals("totalAmountCents")) invalid.put(field, maximum + 1);
-            else invalid.put("prices", List.of(Map.of(), Map.of(field, maximum + 1)));
-            assertEquals(400, staff.request("PATCH", "/api/customer-submissions/" + id,
-                    Map.of("expectedVersion", 1, "review", invalid)).status);
-        }
+        var invalid = new LinkedHashMap<>(draft);
+        invalid.put("totalAmountCents", maximum + 1);
+        assertEquals(400, staff.request("PATCH", "/api/customer-submissions/" + id,
+                Map.of("expectedVersion", 1, "review", invalid)).status);
+        assertTrue(saved.at("/submission/reviewed/prices/1/unitPriceCents").isNull());
         var unchanged = staff.data("GET", "/api/customer-submissions/" + id, null);
         assertEquals(1, unchanged.at("/submission/version").asLong());
         assertEquals(maximum, unchanged.at("/submission/reviewed/totalAmountCents").asLong());

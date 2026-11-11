@@ -13,6 +13,7 @@ import org.apache.poi.util.Units;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
+import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.port.*;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.*;
 
@@ -124,13 +125,13 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             row(info, "下单员工工号", order.creditedEmployee() == null ? null : order.creditedEmployee().employeeNumber());
             row(info, "下单员工", order.creditedEmployee() == null ? "未归属" : order.creditedEmployee().nickname());
             row(info, "最近更新时间", time(order.updatedAt()));
-            var items = sheet(book, "商品明细", "序号", "商品名称", "商品类型", "数量", "单价（元）", "会员价（元）", "商品规格与要求", "制作进度");
-            items.setColumnWidth(0, 8 * 256); items.setColumnWidth(3, 8 * 256); items.setColumnWidth(6, 52 * 256);
+            var items = sheet(book, "商品明细", "序号", "商品名称", "商品类型", "数量", "商品规格与要求", "制作进度");
+            items.setColumnWidth(0, 8 * 256); items.setColumnWidth(3, 8 * 256); items.setColumnWidth(4, 52 * 256);
             var itemNames = new HashMap<UUID, String>(); int sequence = 0;
             for (var item : order.activeItems()) {
                 itemNames.put(item.itemId(), "商品 " + (++sequence) + " · " + item.name());
-                row(items, sequence, item.name(), label(item.productType()), item.quantity(), ProductCategories.hasUnitPrices(item.productType()) ? money(item.unitPriceCents()) : "", ProductCategories.hasUnitPrices(item.productType()) ? money(item.memberPriceCents()) : "",
-                        specifications(item.attributes()), label(item.productionStatus()));
+                row(items, sequence, item.name(), label(item.productType()), item.quantity(),
+                        CakeSpecifications.historicalSpecification(specifications(item.attributes()), item.unitPriceCents(), item.memberPriceCents()), label(item.productionStatus()));
             }
             var notes = sheet(book, "工作备注", "所属商品", "备注内容", "记录员工", "记录时间");
             notes.setColumnWidth(1, 64 * 256);

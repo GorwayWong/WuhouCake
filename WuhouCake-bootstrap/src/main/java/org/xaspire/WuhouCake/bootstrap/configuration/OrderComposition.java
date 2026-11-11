@@ -25,7 +25,7 @@ import org.xaspire.WuhouCake.shared.json.JsonCodec;
 @MapperScan(basePackageClasses = OrderMapper.class)
 public class OrderComposition {
     @Bean OrderPackages orderPackages(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderPackageMapper mapper, JsonCodec json) { return new PostgresOrderPackages(mapper, json); }
-    @Bean OrderPackageService orderPackageService(OrderPackages packages, IdGenerator ids, Clock clock, IdentityFacade identity, AuditFacade audit, JsonCodec json, ApplicationEventPublisher events) { return new OrderPackageService(packages, ids, clock, identity, audit, json, events); }
+    @Bean OrderPackageService orderPackageService(OrderPackages packages, IdGenerator ids, Clock clock, IdentityFacade identity, AuditFacade audit, JsonCodec json, ApplicationEventPublisher events, OrderImageValidator validator) { return new OrderPackageService(packages, ids, clock, identity, audit, json, events, validator); }
     @Bean OrderCreations orderCreations(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderCreationMapper mapper) { return new PostgresOrderCreations(mapper); }
     @Bean OrderCreationService orderCreationService(OrderService orders, OrderCreations creations, JsonCodec json) { return new OrderCreationService(orders, creations, json); }
     @Bean OrderManagementQueries orderManagementQueries(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderManagementMapper mapper) {

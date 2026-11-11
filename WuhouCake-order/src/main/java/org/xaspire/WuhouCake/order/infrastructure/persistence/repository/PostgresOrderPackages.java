@@ -15,6 +15,13 @@ public final class PostgresOrderPackages implements OrderPackages {
     private final OrderPackageMapper mapper;
     private final JsonCodec json;
     public PostgresOrderPackages(OrderPackageMapper mapper, JsonCodec json) { this.mapper = mapper; this.json = json; }
+    @Override public Optional<Image> image(UUID packageId, UUID itemId, UUID imageId) {
+        return Optional.ofNullable(mapper.image(packageId.toString(), itemId.toString(), imageId.toString()));
+    }
+    @Override public void insertImage(UUID packageId, UUID itemId, UUID imageId, Image image) {
+        mapper.insertImage(packageId.toString(), itemId.toString(), imageId.toString(), image);
+    }
+    @Override public void cleanImages(UUID packageId) { mapper.cleanImages(packageId.toString()); }
     @Override public List<Package> list(String keyword, int limit, long offset) {
         return mapper.list(keyword, limit, offset).stream().map(this::value).toList();
     }
@@ -25,11 +32,11 @@ public final class PostgresOrderPackages implements OrderPackages {
         // 同标识串行核实，避免并发插入先命中名称索引而误报重名。
         mapper.lockCreation(key.toString());
         if (mapper.findCreation(key.toString()) != null) return false;
-        try { return mapper.create(value.id().toString(), value.name(), json.write(value.items()), key.toString(), value.updatedAt()) == 1; }
+        try { return mapper.create(value.id().toString(), value.name(), json.write(value.items()), value.originalAmountCents(), value.memberAmountCents(), key.toString(), value.updatedAt()) == 1; }
         catch (DuplicateKeyException failure) { throw nameConflict(failure); }
     }
     @Override public boolean update(Package value, long expectedVersion) {
-        try { return mapper.update(value.id().toString(), value.name(), json.write(value.items()), expectedVersion, value.updatedAt()) == 1; }
+        try { return mapper.update(value.id().toString(), value.name(), json.write(value.items()), value.originalAmountCents(), value.memberAmountCents(), expectedVersion, value.updatedAt()) == 1; }
         catch (DuplicateKeyException failure) { throw nameConflict(failure); }
     }
     @Override public boolean delete(UUID id, long expectedVersion, Instant now) { return mapper.delete(id.toString(), expectedVersion, now) == 1; }
@@ -40,6 +47,6 @@ public final class PostgresOrderPackages implements OrderPackages {
         return failure.getMostSpecificCause().getMessage().contains("cake_order_package_active_name") ? new OrderFailure("PACKAGE_NAME_CONFLICT") : failure;
     }
     private Package value(OrderPackageMapper.Row row) {
-        return new Package(UUID.fromString(row.id()), row.name(), Arrays.asList(json.read(row.items(), Item[].class)), row.version(), row.updatedAt(), row.deletedAt());
+        return new Package(UUID.fromString(row.id()), row.name(), Arrays.asList(json.read(row.items(), Item[].class)), row.originalAmountCents(), row.memberAmountCents(), row.version(), row.updatedAt(), row.deletedAt());
     }
 }

@@ -86,7 +86,7 @@ public class SecurityConfiguration {
             authorize.requestMatchers(GET, "/api/orders/{id}/customer-origin").access(permissions(ORDER_READ, ORDER_CUSTOMER_READ));
             authorize.requestMatchers(GET, "/api/orders/calendar", "/api/orders/workbench", "/api/orders/stream", "/api/orders/{id}",
                     "/api/orders/{id}/images", "/api/orders/{id}/images/{imageId}").access(permissions(ORDER_READ));
-            authorize.requestMatchers(GET, "/api/order-packages", "/api/order-packages/{id}").access(packageAccess(false));
+            authorize.requestMatchers(GET, "/api/order-packages", "/api/order-packages/{id}", "/api/order-packages/{id}/items/{itemId}/images/{imageId}").access(packageAccess(false));
             authorize.requestMatchers(POST, "/api/order-packages").access(packageAccess(true));
             authorize.requestMatchers(PUT, "/api/order-packages/{id}").access(packageAccess(true));
             authorize.requestMatchers(DELETE, "/api/order-packages/{id}").access(packageAccess(true));

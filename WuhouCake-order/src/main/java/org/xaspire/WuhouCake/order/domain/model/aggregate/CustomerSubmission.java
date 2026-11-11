@@ -21,12 +21,17 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
             var values = new TreeMap<String, String>();
             if (attributes != null) attributes.forEach((key, value) -> {
                 if (!ATTRIBUTES.contains(key)) throw invalid();
-                String text = optionalText(value, 2000); if (text != null) values.put(key, text);
+                String text = optionalText(value, key.equals("specification") ? 16000 : 2000); if (text != null) values.put(key, text);
             });
             if ("CAKE".equals(productType)) {
                 String size = CakeSpecifications.size(values.get("size"));
                 if (size == null) throw new OrderFailure("SUBMISSION_CAKE_SIZE_REQUIRED");
                 values.put("size", size); CakeSpecifications.DEFAULTS.forEach(values::putIfAbsent);
+            }
+            if ("OTHER".equals(productType)) {
+                var merged = CakeSpecifications.other(new LinkedHashMap<>(values));
+                values.clear();
+                if (merged.get("specification") instanceof String spec) values.put("specification", spec);
             }
             attributes = Collections.unmodifiableMap(values);
         }

@@ -25,18 +25,17 @@ test('单商品仅提交差异，结构化与未知 JSONB、其他商品、备�
   assert.deepEqual(order, snapshot);
 });
 
-test('规格删除提交 null，报价清空与 0 区分，金额精确转分且无变化不提交', () => {
-  const pricedOrder = structuredClone(order); pricedOrder.items[0].productType = 'DRINK';
+test('其他商品规格可清空，旧价格不可改写，新增不提交商品价格', () => {
+  const pricedOrder = structuredClone(order);
+  Object.assign(pricedOrder.items[0], { productType: 'OTHER', attributes: { specification: '少糖' } });
   const draft = itemDraft(pricedOrder.items[0]);
-  draft.unitPrice = '199.290';
-  assert.ok(itemChangeRequest(pricedOrder, 'first', draft).errors.unitPrice);
   draft.unitPrice = '199.29'; draft.memberPrice = '0';
   assert.equal(itemChangeRequest(pricedOrder, 'first', draft).request, null);
-  draft.attributes.requirements = ''; draft.unitPrice = '280.01'; draft.memberPrice = '';
-  assert.deepEqual(itemChangeRequest(pricedOrder, 'first', draft).request?.changes, { unitPriceCents: 28001, memberPriceCents: null, attributes: { requirements: null } });
-  const added = newItem(); added.name = '追加饮品'; added.productType = 'DRINK'; added.unitPrice = '199.29'; added.memberPrice = '0';
+  draft.attributes.specification = '';
+  assert.deepEqual(itemChangeRequest(pricedOrder, 'first', draft).request?.changes, { attributes: { specification: null } });
+  const added = newItem(); added.name = '追加饮品'; added.productType = 'OTHER'; added.unitPrice = '199.29'; added.memberPrice = '0';
   const result = itemInput(added);
-  assert.equal(result.item?.unitPriceCents, 19929); assert.equal(result.item?.memberPriceCents, 0);
+  assert.equal(result.item?.unitPriceCents, null); assert.equal(result.item?.memberPriceCents, null);
   assert.equal('itemId' in result.item!, false);
 });
 

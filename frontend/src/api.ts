@@ -58,7 +58,7 @@ export function errorText(error: unknown): string {
     SUBMISSION_NOT_FOUND: '填单不存在，请返回列表重新查看。',
     SUBMISSION_NOT_PENDING: '填单已确认或删除，请读取最新记录。',
     DUPLICATE_REVIEW_REQUIRED: '疑似重复记录尚未核实或已发生变化，请核对最新记录后再确认接单。',
-    SUBMISSION_PRODUCT_TYPE_INVALID: '商品类型不支持，请选择蛋糕、面包、甜甜圈、纸杯蛋糕或饮品。',
+    SUBMISSION_PRODUCT_TYPE_INVALID: '商品类型不支持，请选择蛋糕或其他。',
     SUBMISSION_QUANTITY_INVALID: '商品数量必须为正整数，请核对每一项商品。',
     SUBMISSION_CAKE_SIZE_REQUIRED: '蛋糕尺寸未填写，请补充蛋糕尺寸。',
     SUBMISSION_TOTAL_REQUIRED: '整单约定金额未填写，请填写并保存核对结果。',
@@ -161,11 +161,17 @@ export async function authenticatedFetch(path: string, init: RequestInit = {}): 
   return response;
 }
 export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {
+  const multipart = options.body instanceof FormData;
   return decode<T>(await authenticatedFetch(path, {
     method: options.method || 'GET', signal: options.signal,
-    headers: { ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    headers: { ...(options.body === undefined || multipart ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
+    body: multipart ? options.body as FormData : options.body === undefined ? undefined : JSON.stringify(options.body),
   }));
+}
+export async function fetchPackageImage(path: string, signal: AbortSignal) {
+  const response = await authenticatedFetch(path, { signal });
+  if (!response.ok) return decode<never>(response);
+  return response.blob();
 }
 export async function publicApi<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {
   return decode<T>(await fetch(`/api${path}`, {

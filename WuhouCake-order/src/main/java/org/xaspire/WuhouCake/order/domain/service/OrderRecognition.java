@@ -289,9 +289,10 @@ public final class OrderRecognition {
                     default -> throw new IllegalArgumentException("交接方式不明确，请保留原选择并核对");
                 };
                 case "productType" -> switch (value.toUpperCase(Locale.ROOT)) {
-case "蛋糕", "CAKE" -> "CAKE"; case "杯子蛋糕", "纸杯蛋糕", "甜甜圈", "茶歇", "其他茶歇", "CUPCAKE", "DONUT", "OTHER", "TEA_BREAK" -> "TEA_BREAK";
-                    case "饼干", "COOKIE" -> "COOKIE"; case "小吃", "SNACK" -> "SNACK"; case "饮品", "DRINK" -> "DRINK";
-                    case "面包", "现货面包甜点", "BREAD", "READY_BAKERY" -> "READY_BAKERY"; default -> RecognitionValues.text(value, 32);
+                    case "蛋糕", "CAKE" -> "CAKE";
+                    case "其他", "杯子蛋糕", "纸杯蛋糕", "甜甜圈", "茶歇", "其他茶歇", "CUPCAKE", "DONUT", "OTHER", "TEA_BREAK",
+                            "饼干", "COOKIE", "小吃", "SNACK", "饮品", "DRINK", "面包", "现货面包甜点", "BREAD", "READY_BAKERY" -> "OTHER";
+                    default -> RecognitionValues.text(value, 32);
                 };
                 case "filling" -> RecognitionValues.text(value, 1000).replaceAll("[,，、]\\s*", "、");
                 default -> RecognitionValues.text(value, key.equals("customerName") || key.equals("buyerName") ? 80 : key.equals("name") ? 128 : 2000);
@@ -303,11 +304,8 @@ case "蛋糕", "CAKE" -> "CAKE"; case "杯子蛋糕", "纸杯蛋糕", "甜甜圈
         if (value.isBlank()) return;
         String name = value.split("[，,]", 2)[0].strip();
         if (!SIZE.matcher(name).find() && !QUANTITY.matcher(name).find()) assign(item.fields, "name", name, evidence);
-if (value.contains("杯子蛋糕") || value.contains("纸杯蛋糕") || value.contains("甜甜圈") || value.contains("茶歇")) put(item.fields, "productType", field("TEA_BREAK", evidence));
-        else if (value.contains("饼干")) put(item.fields, "productType", field("COOKIE", evidence));
-        else if (value.contains("面包") || value.contains("现货甜点")) put(item.fields, "productType", field("READY_BAKERY", evidence));
-        else if (value.contains("饮品") || value.contains("饮料")) put(item.fields, "productType", field("DRINK", evidence));
-        else if (value.contains("小吃")) put(item.fields, "productType", field("SNACK", evidence));
+        if (List.of("杯子蛋糕", "纸杯蛋糕", "甜甜圈", "茶歇", "饼干", "面包", "现货甜点", "饮品", "饮料", "小吃").stream().anyMatch(value::contains))
+            put(item.fields, "productType", field("OTHER", evidence));
         else if (value.contains("蛋糕")) put(item.fields, "productType", field("CAKE", evidence));
         inline(item, value);
     }

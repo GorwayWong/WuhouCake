@@ -12,7 +12,7 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 public record OrderItem(UUID itemId, String name, String productType, int quantity,
         Long unitPriceCents, Long memberPriceCents, Map<String, Object> attributes,
         String productionStatus, String currentStageCode, boolean removed, Instant createdAt, Instant updatedAt) {
-    private static final Set<String> FIELDS = Set.of("name", "productType", "quantity", "unitPriceCents", "memberPriceCents", "attributes");
+    private static final Set<String> FIELDS = Set.of("name", "productType", "quantity", "attributes");
 
     public OrderItem {
         Objects.requireNonNull(itemId);
@@ -26,8 +26,11 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
     public static OrderItem create(UUID id, String name, String type, Number quantity, Number price, Number memberPrice,
             Map<String, Object> attributes, Instant now) {
         String category = ProductCategories.requireKnown(type == null ? "CAKE" : type);
-        return new OrderItem(id, name, category, OrderValues.quantity(quantity), ProductCategories.hasUnitPrices(category) ? money(price) : null, ProductCategories.hasUnitPrices(category) ? money(memberPrice) : null,
+        return new OrderItem(id, name, category, OrderValues.quantity(quantity), null, null,
                 CakeSpecifications.forWrite(type == null ? "CAKE" : type, attributes == null ? Map.of() : attributes), "NOT_STARTED", null, false, now, now);
+    }
+    public OrderItem retainHistoricalPrices(Long original, Long member) {
+        return new OrderItem(itemId, name, productType, quantity, original, member, attributes, productionStatus, currentStageCode, removed, createdAt, updatedAt);
     }
     public OrderItem revise(Map<String, Object> changes, Instant now) {
         if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !FIELDS.contains(key))) throw invalid();
@@ -43,15 +46,9 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
                 changes.containsKey("name") ? requiredText(changes.get("name"), 128) : name,
                 type,
                 changes.containsKey("quantity") ? OrderValues.quantity(changes.get("quantity")) : quantity,
-                revisedPrice(type, changes, "unitPriceCents", unitPriceCents), revisedPrice(type, changes, "memberPriceCents", memberPriceCents),
+                unitPriceCents, memberPriceCents,
                 sizeChanged || !type.equalsIgnoreCase(productType) ? CakeSpecifications.forWrite(type, merged) : CakeSpecifications.effective(type, merged),
                 productionStatus, currentStageCode, removed, createdAt, now);
-    }
-    private Long revisedPrice(String type, Map<String, Object> changes, String field, Long previous) {
-        boolean previouslyPriced = ProductCategories.hasUnitPrices(productType);
-        if (!ProductCategories.hasUnitPrices(type)) return previouslyPriced ? null : previous;
-        if (changes.containsKey(field)) return money(changes.get(field));
-        return previouslyPriced ? previous : null;
     }
     public Map<String, Object> businessValues() {
         var values = new LinkedHashMap<String, Object>();

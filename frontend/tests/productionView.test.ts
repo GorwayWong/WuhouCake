@@ -16,7 +16,7 @@ test('制作视图依有效能力，兼岗恢复信息，不按岗位名称猜�
 
 test('非蛋糕制作简表保留历史规格入口，排除价格和客户资料', () => {
   const item = { productType: 'TEA_BREAK', attributes: { specification: '六只装', flavor: '动物奶油', filling: '香草', requirements: '分装', price: 100, phone: '13900000000' } };
-  assert.deepEqual(productionFields(item), [['规格', '六只装'], ['特殊要求', '分装']]);
+  assert.deepEqual(productionFields(item), [['规格', '六只装']]);
   assert.deepEqual(historicalProductionFields(item), [['奶油', '动物奶油'], ['夹馅', '香草']]);
 });
 

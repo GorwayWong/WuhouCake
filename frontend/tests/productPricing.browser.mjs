@@ -16,51 +16,43 @@ async function chooseType(page, type) {
   await page.locator('.create-item button.choice-trigger').last().click();
   await page.getByRole('option', { name: type, exact: true }).click();
 }
-test('蛋糕恢复后没有单价或合计，混合订单只计算其他商品，详情和商品编辑按类型显示', async () => {
+test('旧草稿单价并入规格，其他商品无报价字段，切换分类不改整单金额', async () => {
   const { context, page, model, saved, complete, errors } = await createOrderFixture(browser, base);
   try {
     await complete(); await page.locator('#totalAmount').fill('120.29');
-    assert.equal(await page.locator('[id="items.0.unitPrice"], [id="items.0.memberPrice"], .item-price-summary').count(), 0);
     await page.evaluate(() => {
       const key = 'wuhou:order-draft:v1:alice', record = JSON.parse(localStorage.getItem(key));
-      record.value.items[0].unitPrice = '120'; record.value.items[0].memberPrice = '未完成'; localStorage.setItem(key, JSON.stringify(record));
+      Object.assign(record.value.items[0], { name: '茶饮', productType: 'DRINK', unitPrice: '10.29', memberPrice: '0' });
+      record.value.items[0].attributes.requirements = '少冰';
+      localStorage.setItem(key, JSON.stringify(record));
     });
     await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
-    assert.equal(await page.locator('[id="items.0.unitPrice"], [id="items.0.memberPrice"], .item-price-summary').count(), 0);
+    const spec = page.locator('[id="items.0.specification"]');
+    const converted = await spec.inputValue();
+    assert.match(converted, /特殊要求：少冰/);
+    assert.match(converted, /原会员单价：0 元（仅供参考）/);
+    assert.equal(await page.locator('[id="items.0.unitPrice"], [id="items.0.memberPrice"], [id="items.0.size"]').count(), 0);
+    await chooseType(page, '蛋糕');
+    assert.equal(await spec.inputValue(), converted);
+    assert.equal(await page.locator('[id="items.0.size"]').count(), 1);
+    await chooseType(page, '其他'); assert.equal(await spec.inputValue(), converted);
+    await page.locator('[id="items.0.quantity"]').fill('2');
     assert.equal(await page.locator('#totalAmount').inputValue(), '120.29');
-    if (process.env.PRICING_SCREENSHOT_DIR) { await page.locator('.create-item-heading').scrollIntoViewIfNeeded(); await page.screenshot({ path: `${process.env.PRICING_SCREENSHOT_DIR}/cake-no-unit-price-mobile.png` }); }
-    await page.getByRole('button', { name: '添加商品', exact: true }).click(); await chooseType(page, '饮品');
-    await page.locator('[id="items.1.name"]').fill('茶饮'); await page.locator('[id="items.1.quantity"]').fill('2');
-    await page.locator('[id="items.1.unitPrice"]').fill('10.29'); await page.locator('[id="items.1.memberPrice"]').fill('0');
-    assert.match(await page.locator('.item-price-summary').innerText(), /其他商品普通价小计[\s\S]*20.58/);
-    assert.match(await page.locator('.item-price-summary').innerText(), /其他商品会员价小计[\s\S]*0.00/);
-    assert.equal(await page.locator('#totalAmount').inputValue(), '120.29');
-    if (process.env.PRICING_SCREENSHOT_DIR) {
-      await page.locator('[id="items.1.unitPrice"]').scrollIntoViewIfNeeded(); await page.screenshot({ path: `${process.env.PRICING_SCREENSHOT_DIR}/mixed-unit-price-mobile.png` });
-      await page.setViewportSize({ width: 1440, height: 1000 }); await page.screenshot({ path: `${process.env.PRICING_SCREENSHOT_DIR}/mixed-unit-price-desktop.png` });
-    }
-    await chooseType(page, '蛋糕'); assert.equal(await page.locator('.item-price-summary').count(), 0);
-    await chooseType(page, '饮品'); assert.equal(await page.locator('[id="items.1.unitPrice"]').inputValue(), ''); assert.equal(await page.locator('[id="items.1.memberPrice"]').inputValue(), '');
-    await page.locator('[id="items.1.unitPrice"]').fill('10.29'); await page.locator('[id="items.1.memberPrice"]').fill('0');
     await page.getByRole('button', { name: '创建订单', exact: true }).click(); await until(() => Boolean(model.order));
-    const request = model.createCalls[0].input; assert.equal(request.items[0].unitPriceCents, null); assert.equal(request.items[0].memberPriceCents, null);
-    assert.equal(request.items[1].unitPriceCents, 1029); assert.equal(request.items[1].memberPriceCents, 0); assert.equal(request.totalAmountCents, 12029);
-    model.order.items[0].unitPriceCents = 99999; model.order.items[0].memberPriceCents = 88888;
+    const request = model.createCalls[0].input;
+    assert.equal(request.items[0].unitPriceCents, null); assert.equal(request.items[0].memberPriceCents, null);
+    assert.equal(request.items[0].productType, 'OTHER'); assert.equal(request.totalAmountCents, 12029);
     await page.goto(`${base}/#/orders/${orderId}`); await page.locator('.front-product-details').waitFor();
-    assert.equal(await page.locator('.front-product-details dt').getByText('价格', { exact: true }).count(), 0);
+    assert.match(await page.locator('.front-product-details .product-spec-text').innerText(), /原商品单价：10.29 元（仅供参考）/);
     await page.locator('.front-product-details').getByRole('button', { name: '编辑', exact: true }).click();
-    assert.equal(await page.locator('#item-unitPrice, #item-memberPrice').count(), 0);
-    await page.locator('.item-form').getByRole('button', { name: '取消', exact: true }).click();
-    await page.getByRole('button', { name: '下一个商品', exact: true }).click();
-    await page.locator('.front-product-details dt').getByText('价格', { exact: true }).waitFor();
-    await page.locator('.front-product-details').getByRole('button', { name: '编辑', exact: true }).click();
-    assert.equal(await page.locator('#item-unitPrice').inputValue(), '10.29'); assert.equal(await page.locator('#item-memberPrice').inputValue(), '0.00');
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); assert.deepEqual(errors, []);
-    assert.equal(await saved(), null);
+    assert.equal(await page.locator('#item-unitPrice, #item-memberPrice, #item-size').count(), 0);
+    assert.equal(await page.locator('#item-specification').inputValue(), converted);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.deepEqual(errors, []); assert.equal(await saved(), null);
   } finally { await context.close(); }
 });
 
-test('客户填单核对隐藏蛋糕历史价格，非蛋糕单价选填且整单总额保留', async () => {
+test('客户填单核对不再编辑商品报价，规格和整单金额仍可修改', async () => {
   const { context, page, model, errors } = await createOrderFixture(browser, base);
   try {
     model.permissions.push('CUSTOMER_SUBMISSION_PROCESS');
@@ -77,10 +69,10 @@ test('客户填单核对隐藏蛋糕历史价格，非蛋糕单价选填且整�
     });
     await page.goto(`${base}/#/customer-submissions/${id}`); await page.reload(); await page.locator('#totalAmount').waitFor();
     assert.equal(await page.locator('[id="items.0.unitPrice"], [id="items.0.memberPrice"]').count(), 0);
-    assert.equal(await page.locator('[id="items.1.unitPrice"]').inputValue(), '10.29'); assert.equal(await page.locator('#totalAmount').inputValue(), '150.29');
-    await page.locator('[id="items.1.unitPrice"]').fill(''); await page.locator('[id="items.1.memberPrice"]').fill('');
+    assert.equal(await page.locator('[id="items.1.unitPrice"], [id="items.1.memberPrice"]').count(), 0); assert.equal(await page.locator('#totalAmount').inputValue(), '150.29');
+    await page.locator('[id="items.1.specification"]').fill('小杯\n去冰');
     await page.getByRole('button', { name: '保存核对结果', exact: true }).click(); await until(() => Boolean(savedReview));
     assert.deepEqual(savedReview.prices, [{ unitPriceCents: null, memberPriceCents: null }, { unitPriceCents: null, memberPriceCents: null }]);
-    assert.equal(savedReview.totalAmountCents, 15029); assert.deepEqual(errors, []);
+    assert.equal(savedReview.totalAmountCents, 15029); assert.equal(savedReview.content.items[1].attributes.specification, '小杯\n去冰'); assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

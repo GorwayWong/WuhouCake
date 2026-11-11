@@ -71,17 +71,16 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     await panel.locator('.front-order-grid').waitFor(); assert.equal(await panel.locator('.front-order-grid dd').nth(1).innerText(), '电话');
     await page.getByText('补充资料', { exact: true }).click(); await page.getByRole('heading', { name: '全部商品', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '编辑', exact: true }).isVisible(), true);
-    assert.equal(await page.getByRole('button', { name: '确认已付款', exact: true }).isVisible(), true);
+    assert.equal(await page.locator('.payment-panel').isVisible(), true);
     assert.deepEqual(errors, []);
     model.permissions = ['ORDER_READ', 'ORDER_PHONE_READ', 'ORDER_PRODUCTION_UPDATE'];
     await page.reload(); await page.locator('.production-detail').waitFor();
     assert.equal(await page.locator('.front-order-information').count(), 0);
-    assert.equal(await page.locator('.production-times').isVisible(), true);
     assert.equal(await page.locator('.payment-panel').count(), 0);
   } finally { await context.close(); }
 });
 
-test('商品资料直接展开，蛋糕三列、非蛋糕价格两列，付款备注和商品操作保留', async () => {
+test('商品资料直接展开，其他商品统一展示规格，历史价格按权限显示', async () => {
   const { context, page, model, complete, errors } = await createOrderFixture(browser, base);
   let releasePayment = () => {};
   try {
@@ -90,8 +89,8 @@ test('商品资料直接展开，蛋糕三列、非蛋糕价格两列，付款�
     model.permissions.push('ORDER_EDIT', 'ORDER_PAYMENT_UPDATE', 'ORDER_NOTE_CREATE');
     const cake = model.order.items[0];
     cake.attributes = { size: '8', cakeBase: '巧克力内胚'.repeat(8), filling: '芒果夹馅'.repeat(8), flavor: '原味奶油'.repeat(8), greeting: '生日快乐', requirements: '不要坚果' };
-    model.order.items.push({ ...cake, itemId: '20000000-0000-4000-8000-000000000002', name: '果茶', productType: 'DRINK', quantity: 12,
-      attributes: { specification: '500ml\n少冰', base: '历史原味内胚', message: '聚会愉快' }, unitPriceCents: 1280, memberPriceCents: 1000 });
+    model.order.items.push({ ...cake, itemId: '20000000-0000-4000-8000-000000000002', name: '果茶', productType: 'OTHER', quantity: 12,
+      attributes: { specification: '500ml\n少冰\n内胚：历史原味内胚\n祝福语：聚会愉快' }, unitPriceCents: 1280, memberPriceCents: 1000 });
     model.order.totalAmountCents = 16800;
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     await context.route(`**/api/orders/${orderId}`, async route => {
@@ -116,7 +115,7 @@ test('商品资料直接展开，蛋糕三列、非蛋糕价格两列，付款�
     await context.route(`**/api/orders/${orderId}/payment-status`, async route => {
       const input = route.request().postDataJSON(); assert.equal(input.expectedVersion, model.order.version);
       assert.equal(input.paymentStatus, 'PAID'); assert.equal(Object.hasOwn(input, 'itemId'), false);
-      await gate; model.order.paymentStatus = 'PAID'; model.order.paidAt = '2026-11-05T04:00:00Z'; model.order.version++;
+      await gate; model.order.paymentMethod = input.paymentMethod; model.order.paymentStatus = 'PAID'; model.order.paidAt = '2026-11-05T04:00:00Z'; model.order.version++;
       await route.fulfill({ json: { success: true, data: model.order } });
     });
     const notes = [];
@@ -150,26 +149,27 @@ test('商品资料直接展开，蛋糕三列、非蛋糕价格两列，付款�
     await page.getByText('补充资料', { exact: true }).click();
     await page.getByRole('button', { name: '下一项', exact: true }).click();
     assert.equal(await product.locator('.front-product-triple').count(), 0);
-    assert.equal(await product.locator('.front-product-pair dd').nth(1).innerText(), '500ml\n少冰');
-    assert.equal(await product.locator('.front-product-prices dd').nth(0).innerText(), '¥12.80');
-    assert.equal(await product.locator('.front-product-prices dd').nth(1).innerText(), '¥10.00');
+    const spec = product.locator('.product-spec-text');
+    assert.match(await spec.innerText(), /^500ml\n少冰\n内胚：历史原味内胚/);
+    assert.match(await spec.innerText(), /原商品单价：¥12.80（仅供参考）/);
+    assert.match(await spec.innerText(), /原会员单价：¥10.00（仅供参考）/);
+    assert.equal(await product.locator('.front-product-prices').count(), 0);
     await page.setViewportSize({ width: 390, height: 1000 });
-    assert.equal(await product.locator('.front-product-prices').evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length), 2);
-    await product.scrollIntoViewIfNeeded(); await page.screenshot({ path: '/private/tmp/wuhou-product-prices-390.png', fullPage: true });
+    assert.equal(await spec.evaluate(el => getComputedStyle(el).whiteSpace), 'pre-wrap');
+    await product.scrollIntoViewIfNeeded(); await page.screenshot({ path: '/private/tmp/wuhou-product-spec-390.png', fullPage: true });
     model.permissions = model.permissions.filter(value => value !== 'ORDER_AMOUNT_READ');
     await page.reload(); await product.waitFor(); await page.getByRole('button', { name: '下一项', exact: true }).click();
-    assert.equal(await product.locator('.front-product-prices').count(), 0); assert.equal(await page.locator('.payment-panel').count(), 0);
+    assert.doesNotMatch(await spec.innerText(), /原商品单价|原会员单价/);
+    assert.equal(await page.locator('.payment-panel').count(), 0);
     model.permissions.push('ORDER_AMOUNT_READ');
     await page.reload(); await product.waitFor(); await page.getByRole('button', { name: '下一项', exact: true }).click();
 
-    await page.getByText('补充资料', { exact: true }).click();
-    await page.locator('.front-product-supplement').getByText('历史原味内胚', { exact: true }).waitFor();
-    await page.getByText('补充资料', { exact: true }).click();
     assert.equal(await page.locator('.order-amount').innerText(), '¥168.00');
+    await page.locator('.order-payment-editor .choice-trigger').click(); await page.getByRole('option', { name: '现金', exact: true }).click();
     const paymentRequest = page.waitForRequest(request => request.url().endsWith('/payment-status'));
     await page.getByRole('button', { name: '确认已付款', exact: true }).click(); await paymentRequest;
-    assert.equal(await page.getByRole('button', { name: '上一个商品', exact: true }).isDisabled(), true);
-    releasePayment(); await page.getByRole('button', { name: '改为未付款', exact: true }).waitFor();
+    await page.locator('button[aria-label="上一个商品"]:disabled').waitFor();
+    releasePayment(); await page.getByText('支付方式：现金', { exact: true }).waitFor();
     assert.equal(await page.locator('.order-amount').innerText(), '¥168.00');
     await product.getByRole('button', { name: '编辑', exact: true }).click();
     assert.equal(await page.getByRole('button', { name: '上一个商品', exact: true }).isDisabled(), true);

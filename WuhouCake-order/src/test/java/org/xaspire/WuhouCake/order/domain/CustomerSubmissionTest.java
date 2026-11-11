@@ -18,7 +18,7 @@ class CustomerSubmissionTest {
         assertEquals("8", cake.attributes().get("size")); assertEquals("原味", cake.attributes().get("base"));
         assertEquals("芒果，奥利奥", cake.attributes().get("filling")); assertEquals("动物奶油", cake.attributes().get("flavor"));
         var donut = new CustomerSubmission.Product("甜甜圈", "DONUT", 6, Map.of("filling", "巧克力"));
-        assertEquals(Map.of("filling", "巧克力"), donut.attributes());
+        assertEquals(Map.of("specification", "夹馅：巧克力"), donut.attributes());
         assertThrows(UnsupportedOperationException.class, () -> cake.attributes().put("size", "10"));
     }
     @Test void invalidCustomerFieldsCannotIntroduceInternalData() {

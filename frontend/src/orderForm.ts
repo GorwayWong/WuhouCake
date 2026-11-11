@@ -9,15 +9,14 @@ import type { CakeDefaultField } from './productRules.ts';
 import { orderingMethodError } from './orderingMethod.ts';
 import type { DraftImage } from './draftImages.ts';
 import { randomUUID } from './uuid.ts';
-import { hasUnitPrices, normalizeProductType, productTypes } from './productTypes.ts';
+import { isCake, normalizeProductType, productTypes } from './productTypes.ts';
 
 export const specificationFields = [
   ['size', '尺寸'], ['flavor', '奶油'], ['filling', '夹馅'],
   ['base', '内胚'], ['message', '祝福语'], ['requirements', '特殊要求'], ['specification', '规格'],
 ] as const;
 export function fieldsForProduct(type: string) {
-  return type.trim().toUpperCase() === 'CAKE' ? specificationFields.filter(([key]) => key !== 'specification')
-    : [specificationFields.find(([key]) => key === 'specification')!, specificationFields.find(([key]) => key === 'requirements')!];
+  return isCake(type) ? specificationFields : specificationFields.filter(([key]) => key === 'specification');
 }
 type Specification = typeof specificationFields[number][0];
 export interface ItemDraft {
@@ -41,18 +40,45 @@ export function newItem(): ItemDraft {
     attributes: { size: '', flavor: '', filling: cakeDefaults.filling, base: cakeDefaults.base, message: '', requirements: '', specification: '' },
     defaultSpecifications: ['base', 'filling'] };
 }
+const legacyLabels: Record<string, string> = { ...Object.fromEntries(specificationFields),
+  cakeBase: '内胚', greeting: '祝福语', otherRequirements: '特殊要求' };
+function otherAttributes(attributes: Record<string, unknown>): string {
+  const display = (value: unknown) => typeof value === 'string' ? value.trim() : value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const spec = display(attributes.specification);
+  const lines = Object.keys(attributes).sort().flatMap(key => {
+    const value = display(attributes[key]);
+    return key !== 'specification' && value ? [`${legacyLabels[key] || key}：${value}`] : [];
+  });
+  return [...new Set([spec, ...lines].filter(Boolean))].join('\n');
+}
+export function asOtherDraft(draft: ItemDraft): ItemDraft {
+  const values: Record<string, unknown> = { ...draft.preservedAttributes, ...draft.attributes };
+  // Preserve structured attributes that the old text fields could not edit.
+  for (const [key, value] of Object.entries(draft.preservedAttributes || {}))
+    if (!textSpecification(value) && !values[key]) values[key] = value;
+  for (const key of draft.defaultSpecifications || [])
+    if (values[key] === cakeDefaults[key]) delete values[key];
+  const specification = otherAttributes(values);
+  return { ...draft, productType: 'OTHER', unitPrice: '', memberPrice: '', defaultSpecifications: [], preservedAttributes: undefined,
+    attributes: { size: '', flavor: '', filling: '', base: '', message: '', requirements: '', specification } };
+}
+export function migrateItemDraft(draft: ItemDraft): ItemDraft {
+  const type = normalizeProductType(draft.productType);
+  const next = type === 'OTHER' ? asOtherDraft(draft) : { ...draft, productType: type, unitPrice: '', memberPrice: '' };
+  const legacyPrices = [['原商品单价', draft.unitPrice], ['原会员单价', draft.memberPrice]].flatMap(([label, value]) =>
+    value.trim() ? [`${label}：${value.trim()} 元（仅供参考）`] : []);
+  if (legacyPrices.length) next.attributes = { ...next.attributes, specification: [next.attributes.specification, ...legacyPrices].filter(Boolean).join('\n') };
+  return next;
+}
 export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, editedSpecification?: string): ItemDraft {
   const next = { ...draft, ...changes, attributes: { ...(changes.attributes || draft.attributes) },
     defaultSpecifications: [...(draft.defaultSpecifications || [])] };
-  if (!hasUnitPrices(next.productType) || changes.productType !== undefined && !hasUnitPrices(draft.productType)) {
-    next.unitPrice = ''; next.memberPrice = '';
-  }
+  next.unitPrice = ''; next.memberPrice = '';
   if (changes.productType !== undefined && draft.requiresTypeConfirmation && changes.productType.trim()) next.requiresTypeConfirmation = false;
   if (editedSpecification) next.defaultSpecifications = next.defaultSpecifications.filter(key => key !== editedSpecification);
-  if (changes.productType !== undefined && changes.productType.trim().toUpperCase() !== 'CAKE') {
-    for (const key of next.defaultSpecifications) if (next.attributes[key] === cakeDefaults[key]) next.attributes[key] = '';
-    next.defaultSpecifications = [];
-  } else if (changes.productType?.trim().toUpperCase() === 'CAKE') {
+  if (changes.productType !== undefined && normalizeProductType(changes.productType) === 'OTHER') {
+    return asOtherDraft(next);
+  } else if (changes.productType !== undefined && isCake(changes.productType)) {
     for (const key of ['base', 'filling'] as const) if (!next.attributes[key]) {
       next.attributes[key] = cakeDefaults[key]; next.defaultSpecifications.push(key);
     }
@@ -80,14 +106,12 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
   else if (!draft.productType.trim() || !Object.hasOwn(productTypes, normalizeProductType(draft.productType)) && draft.requiresTypeConfirmation) errors.productType = '请选择商品类型。';
   const quantity = Number(draft.quantity);
   if (!/^\d+$/.test(draft.quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) errors.quantity = '数量须为 1–2147483647 之间的整数。';
-  const amount = (field: 'unitPrice' | 'memberPrice') => {
-    if (!hasUnitPrices(draft.productType)) return null;
-    try { return moneyToCents(draft[field]); }
-    catch (error) { errors[field] = (error as Error).message; return null; }
-  };
-  const item: ItemInput = { name: draft.name.trim(), productType: normalizeProductType(draft.productType), quantity,
-    unitPriceCents: amount('unitPrice'), memberPriceCents: amount('memberPrice'),
-    attributes: { ...Object.fromEntries(Object.entries(draft.preservedAttributes || {}).filter(([key]) => !fieldsForProduct(draft.productType).some(([visible]) => visible === key))), ...Object.fromEntries(fieldsForProduct(draft.productType || 'CAKE').flatMap(([key]) => (draft.attributes[key] || '').trim() ? [[key, draft.attributes[key].trim()]] : [])) } };
+  const type = normalizeProductType(draft.productType);
+  const effective = type === 'OTHER' ? asOtherDraft(draft) : draft;
+  const item: ItemInput = { name: draft.name.trim(), productType: type, quantity,
+    unitPriceCents: null, memberPriceCents: null,
+    attributes: { ...Object.fromEntries(Object.entries(effective.preservedAttributes || {}).filter(([key]) => !fieldsForProduct(type).some(([visible]) => visible === key) || !textSpecification(effective.preservedAttributes?.[key]))),
+      ...Object.fromEntries(fieldsForProduct(type || 'CAKE').flatMap(([key]) => (effective.attributes[key] || '').trim() ? [[key, effective.attributes[key].trim()]] : [])) } };
   if (item.productType?.toUpperCase() === 'CAKE') {
     for (const [key, value] of Object.entries(cakeDefaults)) item.attributes[key] ||= value;
     if (validateSize && draft.attributes.size.trim()) { try { item.attributes.size = numericSize(draft.attributes.size); } catch (error) { errors.size = (error as Error).message; } }
@@ -96,15 +120,12 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
 }
 export function textSpecification(value: unknown): boolean { return value == null || typeof value === 'string'; }
 export function itemDraft(item: Item): ItemDraft {
-  const amount = (value: number | null) => value == null ? '' : `${BigInt(value) / 100n}.${String(BigInt(value) % 100n).padStart(2, '0')}`;
   return { key: item.itemId, name: item.name, productType: normalizeProductType(item.productType || ''), quantity: String(item.quantity),
-    unitPrice: hasUnitPrices(item.productType) ? amount(item.unitPriceCents) : '', memberPrice: hasUnitPrices(item.productType) ? amount(item.memberPriceCents) : '', preservedAttributes: item.attributes,
+    unitPrice: '', memberPrice: '', preservedAttributes: item.attributes,
     attributes: Object.fromEntries(specificationFields.map(([key]) => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
 }
 export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && productionStatuses.includes(order.status); }
-export function withoutCakeUnitPrices(draft: OrderDraft): OrderDraft {
-  return { ...draft, items: draft.items.map(item => hasUnitPrices(item.productType) ? item : { ...item, unitPrice: '', memberPrice: '' }) };
-}
+export function migrateOrderDraft(draft: OrderDraft): OrderDraft { return { ...draft, items: draft.items.map(migrateItemDraft) }; }
 export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
 export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original): { request: ItemChangeRequest | null; errors: Record<string, string> } {
   const before = original.items.find(item => item.itemId === itemId), current = baseline.items.find(item => item.itemId === itemId);
@@ -116,13 +137,13 @@ export function itemChangeRequest(original: Detail, itemId: string, draft: ItemD
   for (const field of ['name', 'productType', 'quantity'] as const) {
     if (draft[field] !== initial[field] && result.item[field] !== before[field] && result.item[field] !== current[field]) Object.assign(changes, { [field]: result.item[field] });
   }
-  for (const [field, key] of [['unitPrice', 'unitPriceCents'], ['memberPrice', 'memberPriceCents']] as const) {
-    if (draft[field] !== initial[field] && result.item[key] !== before[key] && result.item[key] !== current[key]) changes[key] = result.item[key];
-  }
   const attributes: Record<string, unknown> = {};
-  for (const [key] of specificationFields) {
-    // 文本框只修改文本规格；未知字段和结构化规格交由服务端保留。
-    if (!textSpecification(before.attributes[key]) || !textSpecification(current.attributes[key]) || draft.attributes[key] === initial.attributes[key]) continue;
+  if (result.item.productType === 'OTHER' && !isCake(draft.productType) && isCake(initial.productType)) {
+    for (const key of Object.keys(current.attributes)) if (key !== 'specification') attributes[key] = null;
+    attributes.specification = result.item.attributes.specification ?? null;
+  } else for (const [key] of specificationFields) {
+    if (!fieldsForProduct(draft.productType).some(([visible]) => visible === key) ||
+      !textSpecification(before.attributes[key]) || !textSpecification(current.attributes[key]) || draft.attributes[key] === initial.attributes[key]) continue;
     const value = draft.attributes[key].trim() || null;
     if (value !== (before.attributes[key] ?? null) && value !== (current.attributes[key] ?? null)) attributes[key] = value;
   }

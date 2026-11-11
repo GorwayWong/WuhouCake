@@ -1702,13 +1702,7 @@ button,a{
 .item-card-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px}
 .item-card-footer>button{min-height:44px}
 .item-card-footer>span{font-size:13px;color:var(--muted);white-space:nowrap}
-.item-price-summary{display:flex;flex-direction:column;gap:10px;padding:0 0 16px;margin:0 0 16px;border-bottom:1px solid var(--line)}
-.item-price-summary>div{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-.item-price-summary dt{font-size:14px;color:var(--muted)}
-.item-price-summary dd{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;margin:0;min-width:0}
-.item-price-summary strong{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.item-price-summary dd>span{font-size:12px;line-height:1.6;color:#765509}
-@media(max-width:640px){.item-card-navigation{gap:8px}.item-card-footer>button{padding:10px 12px}.item-price-summary>div{gap:4px 8px}}
+@media(max-width:640px){.item-card-navigation{gap:8px}.item-card-footer>button{padding:10px 12px}}
 .create-item-heading{
   display:flex;
   justify-content:space-between;
@@ -2299,3 +2293,36 @@ button,a{
 .staged-edit-image{margin:12px 0;list-style:none}
 
 .staged-image-list{padding:0;margin:0;list-style:none}
+
+.package-items-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
+.package-items-table th { font-weight: 600; padding: .55rem .3rem; }
+.package-items-table th:first-child { width: 4rem; }
+.package-items-table th:last-child { width: 3.75rem; }
+.package-items-table th:nth-child(3) { width: 28%; }
+.package-items-table td { vertical-align: top; padding: .55rem .3rem; border-top: 1px solid var(--line, #ded9d3); }
+.package-items-table input { width: 100%; min-width: 0; padding-inline: .4rem; }
+.package-items-table .package-row-errors { border-top: 0; padding-top: 0; }
+.package-thumbnail { display: flex; width: 2.75rem; height: 2.75rem; object-fit: cover; border-radius: .4rem; }
+.package-thumbnail-empty { align-items: center; justify-content: center; background: var(--surface-muted, #f4eee7); }
+.package-thumbnail-empty svg { width: 1.3rem; height: 1.3rem; }
+.package-image-select { position: relative; display: inline-flex; min-height: 2rem; align-items: center; cursor: pointer; text-decoration: underline; }
+.package-image-select input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.package-image-select:focus-within { outline: 2px solid currentColor; outline-offset: 2px; }
+.package-items-table .package-row-action { padding-inline: 0; font-size: .82rem; min-height: 2rem; }
+.package-spec-button { width: 100%; min-width: 0; padding-inline: .4rem; text-align: left; }
+.package-spec-button span { display: block; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.package-add-row { margin-top: .5rem; }
+.package-dialog { width: min(34rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow-y: auto; }
+.package-dialog textarea { width: 100%; resize: vertical; }
+.package-dialog .package-actions { justify-content: flex-end; margin-top: 1rem; }
+.package-price-input { display: grid; gap: .35rem; margin-block: .65rem; }
+.package-merge-list { list-style: none; padding: 0; }
+.package-merge-list li { display: grid; gap: .2rem; padding-block: .5rem; border-bottom: 1px solid var(--line, #ded9d3); }
+.package-amount-preview > div { display: flex; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
+.package-amount-preview dd { margin: 0; font-variant-numeric: tabular-nums; }
+.product-spec-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 375px) {
+  .package-items-table th:first-child { width: 3.25rem; }
+  .package-items-table th:last-child { width: 3rem; }
+  .package-items-table td, .package-items-table th { padding-inline: .2rem; }
+}

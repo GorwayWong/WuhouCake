@@ -1,4 +1,4 @@
-import { hasUnitPrices } from './productTypes.ts';
+import { asOtherDraft } from './orderForm.ts';
 import { defaultFinishTime } from './orderTimes.ts';
 import type { FinishTimeMode } from './orderTimes.ts';
 import { itemInput, newItem, moneyToCents } from './orderForm.ts';
@@ -60,9 +60,9 @@ export function draftFromSubmission(submission: Submission): SubmissionDraft {
     creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null), plannedFinishAt: localTime(review?.plannedFinishAt || null) || (!review ? defaultFinishTime(localTime(content.requestedReceiveAt)) : ''), finishTimeMode: review?.plannedFinishAt ? 'MANUAL' : 'AUTO',
     ...(review ? { originalTime: { requestedReceiveAt: content.requestedReceiveAt, plannedHandoffAt: review.plannedHandoffAt, plannedFinishAt: review.plannedFinishAt || null,
       pickupTime: localTime(review.plannedHandoffAt || content.requestedReceiveAt) } } : {}),
-    items: content.items.map((item, i) => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: randomUUID(), quantity: String(item.quantity),
-      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: item.attributes.specification || (item.productType !== 'CAKE' ? item.attributes.filling || '' : ''), ...item.attributes },
-      defaultSpecifications: [], unitPrice: hasUnitPrices(item.productType) ? amount(review?.prices[i]?.unitPriceCents) : '', memberPrice: hasUnitPrices(item.productType) ? amount(review?.prices[i]?.memberPriceCents) : '' })) };
+    items: content.items.map(item => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: randomUUID(), quantity: String(item.quantity),
+      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: '', ...item.attributes },
+      defaultSpecifications: [], unitPrice: '', memberPrice: '' })).map(item => item.productType === 'OTHER' ? asOtherDraft(item) : item) };
 }
 export function submissionRequest(draft: SubmissionDraft, staff = false) {
   const errors: Record<string, string> = {};
@@ -91,11 +91,11 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
     const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '',
       attributes: { ...item.attributes, ...(item.productType === 'CAKE' ? { flavor: item.attributes.flavor.trim() || '原味动物奶油' } : {}) } });
     const type = normalizeProductType(item.productType);
-    if (!Object.hasOwn(productTypes, type)) errors[`items.${index}.productType`] = '请选择蛋糕、茶歇、饼干、小吃、饮品或现货面包甜点。';
+    if (!Object.hasOwn(productTypes, type)) errors[`items.${index}.productType`] = '请选择蛋糕或其他。';
     if (result.item) result.item.productType = type;
     Object.entries(result.errors).forEach(([key, value]) => { errors[`items.${index}.${key}`] = value; });
     if (item.productType === 'CAKE' && !item.attributes.size.trim()) errors[`items.${index}.size`] = '请填写蛋糕尺寸。';
-    Object.entries(item.attributes).forEach(([key, value]) => { if (value.length > 2000) errors[`items.${index}.${key}`] = '最多填写 2000 个字符。'; });
+    Object.entries(item.attributes).forEach(([key, value]) => { if (value.length > (key === 'specification' ? 16000 : 2000)) errors[`items.${index}.${key}`] = key === 'specification' ? '最多填写 16000 个字符。' : '最多填写 2000 个字符。'; });
     return result.item;
   });
   const content: SubmissionContent = { phone: contactPhone, memberPhone, fulfillmentType: draft.fulfillmentType,

@@ -32,8 +32,9 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 | GET /api/orders/workbench/cake-bases | date，按取货日期汇总蛋糕尺寸、胚口味及数量 |
 | GET /api/order-packages | keyword 名称子串搜索、page 默认 1、size 默认 20/最大 50，返回 Page |
 | GET /api/order-packages/{id} | 有效套餐详情，包含 version 和 updatedAt |
-| POST /api/order-packages | name + items，必须带 UUID Idempotency-Key，返回 201 |
-| PUT /api/order-packages/{id} | expectedVersion + name + items，保存修改，返回 200 |
+| POST /api/order-packages | name + items + originalAmountCents + 可选 memberAmountCents；带 UUID Idempotency-Key，返回 201 |
+| PUT /api/order-packages/{id} | 同新建字段，另含 expectedVersion，返回 200 |
+| GET /api/order-packages/{id}/items/{itemId}/images/{imageId} | 经授权读取当前条目的图片 |
 | DELETE /api/order-packages/{id}?expectedVersion=版本号 | 软删除套餐，返回 200 JSON；不影响已带入订单的商品 |
 | GET /api/orders/stream | Bearer + Fetch SSE |
 | POST /api/orders/{id}/images | multipart file、必填有效 itemId，可选 UUID Idempotency-Key |
@@ -55,7 +56,11 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 
 套餐名称去掉首尾空白后为 1–80 个字符，有效套餐名称区分大小写且唯一，已删除套餐的名称可重新使用。套餐总数不设上限，列表按 updatedAt 降序和 ID 稳定分页；keyword 按普通文本子串匹配，不把 `%`、`_` 当通配符。
 
-每个套餐至少一项商品，保存名称、类型、正整数数量及按类型显示的文本规格，不保存客户、价格、金额或图片。规格可留空，不为套餐自动补齐蛋糕内胚和夹馅；填写的蛋糕尺寸仍须满足现有数值格式。员工新建订单时逐份追加，只有初始空白且未选图片的商品行会被替换；带图行保持原商品标识与图片归属，套餐追加其后，同名商品不合并。带入前重新读取有效详情；带入后为独立订单草稿，修改、删除套餐均不回写草稿或历史订单。
+每个套餐至少一项商品。条目使用稳定 UUID `itemId`、`name`、固定类型 `OTHER`、正整数 `quantity`、可选多行 `attributes.specification` 和可空 `imageId`。套餐原价必填、会员价可空，金额单位均为整数分。旧套餐未设价时保持空值，录单或编辑时补填。
+
+无新图片时可提交 JSON。带新图片的 POST/PUT 使用 multipart：`package` 部件为相同契约的 application/json，文件部件名为该行的新 `imageId`。每行最多一张，图片限 JPEG/PNG、单张 5 MiB、整次请求 64 MiB。保留原图时使用同一条目和图片 ID，无需再次上传。保存、替换、清理图片与套餐写入在同一事务；已删除或替换的图片不再可读。可下单的员工仍可读取模板与图片；只有店长或具备金额查看权限的员工可读取套餐价格。
+
+带入时在草稿内按名称和规格合并其他商品，保留已有图、缺图才补；两种整单金额按份累计。没有会员价的部分按原价计入，有内容或金额的草稿先显示确认。带入后图片随草稿和订单独立保存，套餐修改或删除不影响已经带入的内容。
 
 PUT 与 DELETE 以 expectedVersion 条件更新，旧版本返回 409 CONCURRENT_MODIFICATION；已删除套餐详情返回 404 PACKAGE_NOT_FOUND。有效套餐同名写入由数据库唯一索引保证，返回 409 PACKAGE_NAME_CONFLICT。店长核对最新版本后可继续保存保留的输入，前端不会自动覆盖。
 
@@ -84,8 +89,9 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 ~~~
 
 - phone、requestedReceiveDate 和至少一件有名称/数量的商品必填；DELIVERY 必须有非空地址，PICKUP 可空。客户姓名、会员电话、客户侧下单人、交接时间 plannedHandoffAt、计划出品时间、报价和总额可选。只填日期且无具体时刻时，取货时间保存为 null，之后可补填或清空。正式 API 的 phone 是最长 32 字符的非空文本，不提供电话真实性验证。
-- 数量为 1–2147483647 的整数；订单总额及非蛋糕商品的单价、会员价为 0–9007199254740991 的 Long 整数分，与前端 JavaScript 安全整数上限一致，超限、浮点小数或负数返回 400 VALIDATION_FAILED。前端以元输入；空值与 0 不同，不按商品报价自动计算订单总额。汇总金额不受单笔上限限制，以精确整数分字符串返回。
-- 蛋糕（CAKE）不使用普通或会员单价，新建、追加及非蛋糕转为蛋糕时保存 null；旧客户端传入的蛋糕价格被忽略。历史蛋糕原始单价保留，读取详情、工作台、客户填单核对时输出 null，不批量改库。历史蛋糕修改其他字段不清除原单价，仅改单价不产生业务变更；蛋糕改成其他类型时，未明确提交的新单价为空。客户核对保存及转订单按新写入规则执行，既有审计日志保留。单单 XLSX、ZIP 和经营报表保留列布局，蛋糕行两种单价为空，其他商品按原规则输出。
+- 数量为 1–2147483647 的整数；订单与套餐金额为 0–9007199254740991 的整数分，超限、小数或负数返回 400 VALIDATION_FAILED。空值与 0 不同；汇总金额以精确整数分字符串返回。
+- 商品类别为 `CAKE`（蛋糕）和 `OTHER`（其他）。V27 统一旧非蛋糕类别，将其业务属性整理进多行规格；所有历史套餐行转为其他。活动日志不重写。
+- 新商品不保存单价或会员单价。旧创建请求可重试，携带的旧商品报价不参与新计价。商品编辑不接受价格字段。历史金额保留原值，只向有金额权限的员工提供，详情与导出将其作为规格中的历史参考显示。
 - productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling/flavor 缺失、null、空字符串或纯空白时，写入和读取均使用原味/芒果/原味奶油；明确填写的值保留。历史读取不写库，以后保存时写入默认值；客户填单及核对复用相同默认值。新建、追加及明确修改的蛋糕 size 只接受正数、最多两位小数、整数部分最多九位，存为无单位数值文本；非法值返回 400。旧规格可读，未改尺寸时不会因旧尺寸异常阻止其他字段更正。
 - 商品分类统一为 CAKE、TEA_BREAK、COOKIE、SNACK、DRINK、READY_BAKERY。V22 归并订单商品、套餐、待确认核对数据中的旧分类，保留 attributes、原始填单和历史快照。写入时归一化 DONUT/CUPCAKE/OTHER→TEA_BREAK、BREAD→READY_BAKERY；未知历史类型保留读取。蛋糕统计仍只统计 CAKE。
 - 时间以 ISO 8601 带偏移输入、UTC 输出，界面统一为取货与出品。取货为客户或配送员从门店取走商品的时间。前端出品默认取货前一小时，手动值保持并可恢复自动；接口的 plannedFinishAt 接收最终安排，允许空值。

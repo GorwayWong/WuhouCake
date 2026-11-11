@@ -127,6 +127,8 @@ class OrderPackageIT {
         for (var count : List.of(0, -1, 1.5)) assertEquals(400, manager.raw("POST", "/api/order-packages", bundle("无效数量", count)).statusCode());
         assertEquals(400, manager.raw("POST", "/api/order-packages", Map.of("name", "无类型", "items", List.of(Map.of("name", "蛋糕", "quantity", 1)))).statusCode());
         assertEquals(400, manager.raw("POST", "/api/order-packages", Map.of("name", "无效规格", "items", List.of(Map.of("name", "蛋糕", "productType", "CAKE", "quantity", 1, "attributes", Map.of("size", "8寸"))))).statusCode());
+        assertEquals(400, manager.raw("POST", "/api/order-packages", Map.of("name", "不能保存蛋糕类型", "originalAmountCents", 0,
+                "items", List.of(Map.of("itemId", UUID.randomUUID(), "name", "蛋糕", "productType", "CAKE", "quantity", 1)))).statusCode());
         for (int i = 0; i < 23; i++) manager.data("POST", "/api/order-packages", bundle("分页套餐" + i, 1));
         var first = staff.data("GET", "/api/order-packages?size=20", null); var second = staff.data("GET", "/api/order-packages?size=20&page=2", null);
         assertEquals(23, first.path("total").asInt()); assertEquals(20, first.path("items").size()); assertEquals(3, second.path("items").size());
@@ -152,10 +154,45 @@ class OrderPackageIT {
         assertEquals(1, staff.data("GET", "/api/order-packages", null).path("total").asInt());
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_change", Integer.class));
     }
+    @Test void multipartPicturesAreAtomicIdempotentAndBoundToStableRows() throws Exception {
+        var row = UUID.randomUUID(); var image = UUID.randomUUID(); var key = UUID.randomUUID().toString();
+        var first = Map.of("itemId", row, "imageId", image, "productType", "OTHER", "name", "纸杯蛋糕", "quantity", 6,
+                "attributes", Map.of("specification", "香草\n六只装"));
+        var second = Map.of("itemId", UUID.randomUUID(), "productType", "OTHER", "name", "果汁", "quantity", 2);
+        var body = Map.of("name", "图文茶歇", "items", List.of(first, second), "originalAmountCents", 20000, "memberAmountCents", 18000);
+        var picture = new ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(10, 10, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", picture);
+        var invalid = manager.multipart(body, image, new byte[]{1, 2, 3}, key);
+        assertEquals(415, invalid.statusCode(), invalid.body());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package", Integer.class));
+        assertEquals(403, staff.multipart(body, image, picture.toByteArray(), key).statusCode());
+        var created = manager.multipart(body, image, picture.toByteArray(), key);
+        assertEquals(201, created.statusCode(), created.body());
+        var saved = json.readTree(created.body()).path("data");
+        assertEquals(saved, json.readTree(manager.multipart(body, image, picture.toByteArray(), key).body()).path("data"));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
+        assertEquals(18000, saved.path("memberAmountCents").asInt());
+        var baker = employee("BAKER", List.of("BAKER"), "STAFF");
+        assertTrue(baker.data("GET", "/api/order-packages/" + saved.path("id").asText(), null).path("originalAmountCents").isNull());
+        String path = "/api/order-packages/" + saved.path("id").asText();
+        String imagePath = path + "/items/" + row + "/images/" + image;
+        assertEquals(401, new Client().raw("GET", imagePath, null).statusCode());
+        assertEquals(404, staff.raw("GET", path + "/items/" + second.get("itemId") + "/images/" + image, null).statusCode());
+        assertEquals(200, staff.raw("GET", imagePath, null).statusCode());
+        var update = new LinkedHashMap<String, Object>(body); update.put("expectedVersion", 0); update.put("items", List.of(second, first));
+        var reordered = manager.data("PUT", path, update);
+        assertEquals(row.toString(), reordered.at("/items/1/itemId").asText());
+        assertEquals(200, staff.raw("GET", imagePath, null).statusCode());
+        update.put("expectedVersion", 1); update.put("items", List.of(second));
+        manager.data("PUT", path, update);
+        assertEquals(404, staff.raw("GET", imagePath, null).statusCode());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
+    }
+
     @Test void largePackageChangesKeepFullAuditSnapshots() throws Exception {
         String requirements = "通用商品要求".repeat(300);
-        var content = Map.of("name", "大型套餐", "items", java.util.stream.IntStream.range(0, 25).mapToObj(i ->
-                Map.of("name", "商品" + i, "productType", "BREAD", "quantity", 1, "attributes", Map.of("requirements", requirements))).toList());
+        var content = Map.of("name", "大型套餐", "originalAmountCents", 10000, "items", java.util.stream.IntStream.range(0, 25).mapToObj(i ->
+                Map.of("itemId", UUID.randomUUID(), "name", "商品" + i, "productType", "OTHER", "quantity", 1, "attributes", Map.of("specification", requirements))).toList());
         var saved = manager.data("POST", "/api/order-packages", content);
         var log = manager.data("GET", "/api/admin/audit-logs?action=order.package_created", null).at("/items/0");
         String snapshot = jdbc.queryForObject("SELECT after_content::text FROM cake_order_package_change WHERE id=?::uuid", String.class, log.at("/details/changeId").asText());
@@ -177,7 +214,9 @@ class OrderPackageIT {
             jdbc.update("UPDATE " + schema + ".cake_order_package SET name='旧套餐二' WHERE name=' 旧套餐 '");
             upgrade.migrate();
             assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_package WHERE version=0 AND updated_at=created_at AND deleted_at IS NULL", Integer.class));
-            assertEquals(true, jdbc.queryForObject("SELECT items=?::jsonb FROM " + schema + ".cake_order_package WHERE id=?::uuid", Boolean.class, content.replace("BREAD", "READY_BAKERY"), originalId));
+            assertEquals("OTHER", jdbc.queryForObject("SELECT items->0->>'productType' FROM " + schema + ".cake_order_package WHERE id=?::uuid", String.class, originalId));
+            assertEquals("小份", jdbc.queryForObject("SELECT items->0->'attributes'->>'specification' FROM " + schema + ".cake_order_package WHERE id=?::uuid", String.class, originalId));
+            assertNotNull(jdbc.queryForObject("SELECT items->0->>'itemId' FROM " + schema + ".cake_order_package WHERE id=?::uuid", String.class, originalId));
         } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
     }
     @Test void categoryMigrationPreservesOriginalsAttributesAndHistoricalSnapshots() throws Exception {
@@ -195,14 +234,13 @@ class OrderPackageIT {
             jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,reviewed,original_phone,requested_date,status,created_at,updated_at) VALUES (?::uuid,?::uuid,?::uuid,'客服',?::uuid,'synthetic',?::jsonb,?::jsonb,'13800000000',DATE '2026-10-25','PENDING',now(),now())", submission, entry, actor, UUID.randomUUID().toString(), original, reviewed);
             jdbc.update("INSERT INTO " + schema + ".cake_order_activity(order_id,type,content,details,actor_id,actor_name_snapshot,created_at) VALUES (?::uuid,'CREATED','创建订单',?::jsonb,?::uuid,'客服',now())", order, original, actor);
             org.flywaydb.core.Flyway.configure().dataSource(dataSource).locations("classpath:db/migration").schemas(schema).defaultSchema(schema).load().migrate();
-            assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='TEA_BREAK'", Integer.class));
-            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='READY_BAKERY'", Integer.class));
-            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='CUSTOM'", Integer.class));
-            assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE attributes=?::jsonb", Integer.class, attributes));
-            assertEquals("TEA_BREAK", jdbc.queryForObject("SELECT items->0->>'productType' FROM " + schema + ".cake_order_package", String.class));
-            assertTrue(jdbc.queryForObject("SELECT items->0->'attributes'=?::jsonb FROM " + schema + ".cake_order_package", Boolean.class, attributes));
-            assertEquals("TEA_BREAK", jdbc.queryForObject("SELECT reviewed->'content'->'items'->0->>'productType' FROM " + schema + ".customer_order_submission", String.class));
-            assertTrue(jdbc.queryForObject("SELECT original=?::jsonb FROM " + schema + ".customer_order_submission", Boolean.class, original));
+            assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE product_type='OTHER'", Integer.class));
+            String spec = "六只装\n夹馅：香草\n奶油：旧奶油";
+            assertEquals(5, jdbc.queryForObject("SELECT count(*) FROM " + schema + ".cake_order_item WHERE attributes->>'specification'=?", Integer.class, spec));
+            assertEquals("OTHER", jdbc.queryForObject("SELECT items->0->>'productType' FROM " + schema + ".cake_order_package", String.class));
+            assertEquals(spec, jdbc.queryForObject("SELECT items->0->'attributes'->>'specification' FROM " + schema + ".cake_order_package", String.class));
+            assertEquals("OTHER", jdbc.queryForObject("SELECT reviewed->'content'->'items'->0->>'productType' FROM " + schema + ".customer_order_submission", String.class));
+            assertEquals(spec, jdbc.queryForObject("SELECT original->'items'->0->'attributes'->>'specification' FROM " + schema + ".customer_order_submission", String.class));
             assertTrue(jdbc.queryForObject("SELECT details=?::jsonb FROM " + schema + ".cake_order_activity", Boolean.class, original));
         } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
     }
@@ -211,7 +249,7 @@ class OrderPackageIT {
         assertEquals(409, response.statusCode(), response.body()); assertEquals(code, json.readTree(response.body()).path("code").asText());
     }
     private static String encode(String value) { return URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8); }
-    private Map<String, Object> bundle(String name, Number quantity) { return Map.of("name", name, "items", List.of(Map.of("name", "蛋糕", "productType", "CAKE", "quantity", quantity, "attributes", Map.of()))); }
+    private Map<String, Object> bundle(String name, Number quantity) { return Map.of("name", name, "originalAmountCents", 10000, "items", List.of(Map.of("itemId", UUID.nameUUIDFromBytes("test-package-item".getBytes(java.nio.charset.StandardCharsets.UTF_8)), "name", "纸杯蛋糕", "productType", "OTHER", "quantity", quantity, "attributes", Map.of()))); }
     private Map<String, Object> revised(String name, int quantity, long version) { var value = new LinkedHashMap<>(bundle(name, quantity)); value.put("expectedVersion", version); return value; }
     private Client employee(String number, List<String> roles, String systemRole) throws Exception {
         var provisioned = manager.data("POST", "/api/admin/employees", Map.of("employeeNumber", number, "nickname", number, "jobRoles", roles, "systemRole", systemRole));
@@ -232,6 +270,18 @@ class OrderPackageIT {
         JsonNode data(String method, String path, Object body) throws Exception {
             var response = raw(method, path, body); assertTrue(response.statusCode() >= 200 && response.statusCode() < 300, method + " " + path + " " + response.statusCode() + " " + response.body());
             return json.readTree(response.body()).path("data");
+        }
+        HttpResponse<String> multipart(Object body, UUID imageId, byte[] image, String key) throws Exception {
+            String boundary = "wuhou-" + UUID.randomUUID();
+            var utf8 = java.nio.charset.StandardCharsets.UTF_8;
+            var content = HttpRequest.BodyPublishers.concat(
+                    HttpRequest.BodyPublishers.ofString("--" + boundary + "\r\nContent-Disposition: form-data; name=\"package\"; filename=\"manifest.json\"\r\nContent-Type: application/json\r\n\r\n" + json.writeValueAsString(body), utf8),
+                    HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + imageId + "\"; filename=\"item.png\"\r\nContent-Type: image/png\r\n\r\n", utf8),
+                    HttpRequest.BodyPublishers.ofByteArray(image),
+                    HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "--\r\n", utf8));
+            return client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/order-packages"))
+                    .header("Authorization", "Bearer " + token).header("Idempotency-Key", key)
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(content).build(), HttpResponse.BodyHandlers.ofString());
         }
         HttpResponse<String> raw(String method, String path, Object body) throws Exception { return raw(method, path, body, UUID.randomUUID().toString()); }
         HttpResponse<String> raw(String method, String path, Object body, String key) throws Exception {

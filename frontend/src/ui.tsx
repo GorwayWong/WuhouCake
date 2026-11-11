@@ -1,4 +1,3 @@
-import { hasUnitPrices } from './productTypes';
 import { CalendarBlank, Clock, Truck, CheckCircle, XCircle, Circle, Stack, Cake } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import type { Item, OrderStatus } from './types';
@@ -38,12 +37,20 @@ export function valueText(value: unknown): string {
   return String(value);
 }
 export function money(cents: number | null) { return cents == null ? '未填写' : `¥${exactYuan(cents)}`; }
+export function itemSpecification(item: Pick<Item, 'attributes' | 'unitPriceCents' | 'memberPriceCents'>, prices = false) {
+  const lines = [valueText(item.attributes.specification ?? '')];
+  if (prices) {
+    if (item.unitPriceCents != null) lines.push(`原商品单价：${money(item.unitPriceCents)}（仅供参考）`);
+    if (item.memberPriceCents != null) lines.push(`原会员单价：${money(item.memberPriceCents)}（仅供参考）`);
+  }
+  return lines.filter(Boolean).join('\n');
+}
 export function Product({ item, prices = false, children, actions, completion }: { item: Item; prices?: boolean; children?: ReactNode; actions?: ReactNode; completion?: ReactNode }) {
   return <section className="product" aria-label={`商品 ${item.name}`}>
     <div className="product-heading-row"><div className="product-heading"><span className="product-mark"><Cake size={24} /></span><div className="product-title"><h3>{item.name}</h3><span className="muted">{productTypeLabel(item.productType || 'CAKE')} · 数量 {item.quantity}</span></div></div>{completion}</div>
     {actions}
-    {children || <dl className="attributes">{Object.entries(item.attributes || {}).map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd>{valueText(value)}</dd></div>)}
-      {prices && hasUnitPrices(item.productType) && <><div><dt>单价</dt><dd>{money(item.unitPriceCents)}</dd></div><div><dt>会员单价</dt><dd>{money(item.memberPriceCents)}</dd></div></>}
+    {children || <dl className="attributes">{Object.entries(item.attributes || {}).filter(([key]) => key !== 'specification').map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd className="product-spec-text">{valueText(value)}</dd></div>)}
+      {itemSpecification(item, prices) && <div><dt>规格</dt><dd className="product-spec-text">{itemSpecification(item, prices)}</dd></div>}
     </dl>}
     <RecentProductNotes item={item} />
   </section>;

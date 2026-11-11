@@ -1,8 +1,8 @@
 import { changePickupTime, changeFinishTime, finishMode, restoreAutomaticFinish } from './orderTimes.ts';
 import type { OrderDraft, ItemDraft } from './orderForm.ts';
-import { moneyToCents, storeTime, validDate, newItem, withoutCakeUnitPrices } from './orderForm.ts';
+import { moneyToCents, storeTime, validDate, newItem, asOtherDraft } from './orderForm.ts';
 import { normalizeSize } from './productRules.ts';
-import { hasUnitPrices, normalizeProductType, productTypes } from './productTypes.ts';
+import { normalizeProductType, productTypes } from './productTypes.ts';
 import { randomUUID } from './uuid.ts';
 import type { RecognitionDraft, RecognitionField } from './types.ts';
 
@@ -52,8 +52,7 @@ export function currentValue(draft: OrderDraft, field: string, itemKey?: string)
   return rootFields.has(field) ? String(draft[key as keyof OrderDraft] ?? '') : '';
 }
 export function setCandidate(draft: OrderDraft, field: string, value: string, itemKey?: string, source?: RecognitionField['source']): OrderDraft {
-  const target = itemKey ? draft.items.find(item => item.key === itemKey) : undefined;
-  if (target && (field === 'unitPriceCents' || field === 'memberPriceCents') && !hasUnitPrices(target.productType)) return withoutCakeUnitPrices(draft);
+  if (field === 'unitPriceCents' || field === 'memberPriceCents') return draft;
   const text = validateCandidate(field, value), next = structuredClone(draft), key = moneyFields[field] || field;
   if (itemKey !== undefined) {
     const item = next.items.find(x => x.key === itemKey);
@@ -65,7 +64,6 @@ export function setCandidate(draft: OrderDraft, field: string, value: string, it
     } else if (['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'].includes(key)) {
       Object.assign(item, { [key]: text }); if (key === 'productType') {
         item.requiresTypeConfirmation = false;
-        if (!hasUnitPrices(text)) { item.unitPrice = ''; item.memberPrice = ''; }
       }
     }
     else throw new Error('不支持的商品字段。');
@@ -153,7 +151,7 @@ export function feedbackKey(field: string, itemKey?: string): string {
 }
 export function retainRecognitionFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
   return Object.fromEntries(Object.entries(feedback).filter(([, mark]) =>
-    (!(mark.field === 'unitPriceCents' || mark.field === 'memberPriceCents') || hasUnitPrices(draft.items.find(item => item.key === mark.itemKey)?.productType)) &&
+    mark.field !== 'unitPriceCents' && mark.field !== 'memberPriceCents' &&
     (!mark.itemKey || draft.items.some(item => item.key === mark.itemKey)) && currentValue(draft, mark.field, mark.itemKey) === mark.value));
 }
 export function formFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
@@ -189,7 +187,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   let next = structuredClone(draft), cleared = 0;
   const feedback: RecognitionFeedbackMap = {}, targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
   const validContent = (fields: Record<string, RecognitionField>) => Object.entries(fields).some(([field, candidate]) => {
-    if ((field === 'unitPriceCents' || field === 'memberPriceCents') && !hasUnitPrices(fields.productType?.value)) return false;
+    if (field === 'unitPriceCents' || field === 'memberPriceCents') return false;
     if (field === 'productType' || candidate.source === 'DEFAULT' || !candidate.value?.trim()) return false;
     try { validateCandidate(field, recognitionValue(field, candidate.value)); return true; } catch { return false; }
   });
@@ -199,7 +197,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     next.items = products.map(item => { const empty = emptyRecognitionItem(); targets[item.id] = empty.key; return empty; });
   }
   const write = (field: string, candidate: RecognitionField, itemKey?: string, onlyErrors = false) => {
-    if (itemKey && (field === 'unitPriceCents' || field === 'memberPriceCents') && !hasUnitPrices(next.items.find(item => item.key === itemKey)?.productType)) return;
+    if (field === 'unitPriceCents' || field === 'memberPriceCents') return;
     const displayField = field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field;
     const key = feedbackKey(field, itemKey), previous = feedback[key];
     const mark = (error?: string, hints: string[] = []) => {
@@ -254,6 +252,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   }
   const changed = Object.values(feedback).filter(mark => !mark.error && currentValue(draft, mark.field, mark.itemKey) !== mark.value);
   const applied = changed.length, overwritten = changed.filter(mark => currentValue(draft, mark.field, mark.itemKey)).length;
+  next.items = next.items.map(item => normalizeProductType(item.productType) === 'OTHER' ? asOtherDraft(item) : item);
   return { draft: next, targets, applied, overwritten, cleared, feedback, replacedItems };
 }
 export class RecognitionLifecycle {

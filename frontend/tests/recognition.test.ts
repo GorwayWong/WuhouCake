@@ -101,7 +101,7 @@ test('明确的取货日期不会被旧收货时刻覆盖，只有旧收货字�
   assert.equal(normalizeAndFill().requestedReceiveAt, '2026-11-12T18:00');
 });
 
-test('蛋糕识别不带入单价或价格错误，其他商品按类型优先处理单价，不推算整单金额', () => {
+test('识别不带入商品单价或价格错误，也不推算整单金额', () => {
   const cake = candidate(); cake.items[0].fields.unitPriceCents = field('非法金额'); cake.items[0].fields.memberPriceCents = field('10000');
   const ignored = apply(newDraft('2026-10-16'), cake);
   assert.equal(ignored.draft.items[0].unitPrice, ''); assert.equal(ignored.draft.items[0].memberPrice, '');
@@ -109,7 +109,7 @@ test('蛋糕识别不带入单价或价格错误，其他商品按类型优先�
   assert.equal(ignored.draft.totalAmount, '');
   const drink = candidate(); drink.items[0].fields = { unitPriceCents: field('1029'), memberPriceCents: field('0'), name: field('饮品'), quantity: field('2'), productType: field('DRINK') };
   const priced = apply(newDraft('2026-10-16'), drink).draft;
-  assert.equal(priced.items[0].unitPrice, '10.29'); assert.equal(priced.items[0].memberPrice, '0.00'); assert.equal(priced.totalAmount, '');
+  assert.equal(priced.items[0].unitPrice, ''); assert.equal(priced.items[0].memberPrice, ''); assert.equal(priced.totalAmount, '');
 });
 
 test('识别默认奶油在品类切换时清除，手工确认后的奶油保留', () => {
@@ -118,7 +118,7 @@ test('识别默认奶油在品类切换时清除，手工确认后的奶油保�
   assert.ok(filled.defaultSpecifications?.includes('flavor'));
   assert.equal(changeItemDraft(filled, { productType: 'BREAD' }).attributes.flavor, '');
   const manual = changeItemDraft(filled, { attributes: { ...filled.attributes, flavor: '巧克力奶油' } }, 'flavor');
-  assert.equal(changeItemDraft(manual, { productType: 'BREAD' }).attributes.flavor, '巧克力奶油');
+  assert.equal(changeItemDraft(manual, { productType: 'BREAD' }).attributes.specification, '奶油：巧克力奶油');
 });
 
 test('新建页识别将自提写入地址，仅有取货时间时带入收货时间，并保留手工地址和日期', () => {
@@ -170,7 +170,7 @@ test('多商品替换整个列表，重复识别不追加；无效值不妨碍�
   assert.equal(filled.replacedItems, true); assert.equal(filled.draft.items.length, 2);
   assert(!filled.draft.items.some(item => current.items.some(old => old.key === item.key)));
   assert.equal(filled.draft.items[1].quantity, '6'); assert.equal(filled.draft.items[1].unitPrice, '');
-  assert(filled.feedback[feedbackKey('unitPriceCents', filled.draft.items[1].key)].error);
+  assert.equal(filled.feedback[feedbackKey('unitPriceCents', filled.draft.items[1].key)], undefined);
   assert.equal(apply(filled.draft, result).draft.items.length, 2);
 });
 test('没有有效商品内容时保留已有商品，不因空标题或无效数量清空商品', () => {

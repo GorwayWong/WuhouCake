@@ -1,12 +1,12 @@
 export const productTypes: Readonly<Record<string, string>> = {
-  CAKE: '蛋糕', TEA_BREAK: '茶歇', COOKIE: '饼干', SNACK: '小吃', DRINK: '饮品', READY_BAKERY: '现货面包甜点',
+  CAKE: '蛋糕', OTHER: '其他',
 };
 
 export function normalizeProductType(value: string): string {
   const type = value.trim().toUpperCase();
-  return ({ DONUT: 'TEA_BREAK', CUPCAKE: 'TEA_BREAK', OTHER: 'TEA_BREAK', BREAD: 'READY_BAKERY' } as Record<string, string>)[type] || type;
+  return ['DONUT', 'CUPCAKE', 'TEA_BREAK', 'BREAD', 'COOKIE', 'SNACK', 'DRINK', 'READY_BAKERY'].includes(type) ? 'OTHER' : type;
 }
-export function hasUnitPrices(type: string | null | undefined): boolean { return normalizeProductType(type || 'CAKE') !== 'CAKE'; }
+export function isCake(type: string | null | undefined): boolean { return normalizeProductType(type || '') === 'CAKE'; }
 
 export function productTypeLabel(value: string | null | undefined): string {
   if (!value) return '未分类';

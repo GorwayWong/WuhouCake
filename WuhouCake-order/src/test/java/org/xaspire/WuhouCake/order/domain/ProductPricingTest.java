@@ -9,25 +9,21 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ProductPricingTest {
     private static final Instant NOW = Instant.EPOCH;
-    @Test void newCakesIgnoreBothPricesAndOtherProductsKeepExactOptionalPrices() {
-        for (String type : Arrays.asList(null, "CAKE", " cake ")) {
-            var cake = OrderItem.create(UUID.randomUUID(), "蛋糕", type, 1, -1, 1.234, Map.of(), NOW);
-            assertNull(cake.unitPriceCents()); assertNull(cake.memberPriceCents());
+    @Test void newProductsDoNotWritePrices() {
+        for (String type : Arrays.asList(null, "CAKE", " cake ", "DRINK", "OTHER")) {
+            var item = OrderItem.create(UUID.randomUUID(), "商品", type, 2, 101, 0, Map.of(), NOW);
+            assertNull(item.unitPriceCents()); assertNull(item.memberPriceCents());
+            assertThrows(OrderFailure.class, () -> item.revise(Map.of("unitPriceCents", 200), NOW));
         }
-        var drink = OrderItem.create(UUID.randomUUID(), "饮品", "DRINK", 2, 101, 0, Map.of(), NOW);
-        assertEquals(101L, drink.unitPriceCents()); assertEquals(0L, drink.memberPriceCents());
-        assertThrows(OrderFailure.class, () -> drink.revise(Map.of("unitPriceCents", -1), NOW));
-        assertNull(OrderItem.create(UUID.randomUUID(), "饮品", "DRINK", 1, null, null, Map.of(), NOW).unitPriceCents());
     }
-    @Test void historicalCakePricesRemainUntouchedUntilAnExplicitCategoryChange() {
-        var legacy = new OrderItem(UUID.randomUUID(), "历史蛋糕", "CAKE", 1, 12000L, 10000L, Map.of(), "NOT_STARTED", null, false, NOW, NOW);
-        var changed = legacy.revise(Map.of("quantity", 2, "unitPriceCents", -5, "memberPriceCents", 5000), NOW.plusSeconds(1));
-        assertEquals(12000L, changed.unitPriceCents()); assertEquals(10000L, changed.memberPriceCents());
-        var drink = legacy.revise(Map.of("productType", "DRINK"), NOW);
-        assertNull(drink.unitPriceCents()); assertNull(drink.memberPriceCents());
-        var explicit = legacy.revise(Map.of("productType", "DRINK", "unitPriceCents", 29, "memberPriceCents", 0), NOW);
-        assertEquals(29L, explicit.unitPriceCents()); assertEquals(0L, explicit.memberPriceCents());
-        var cake = explicit.revise(Map.of("productType", "CAKE", "unitPriceCents", 999), NOW);
-        assertNull(cake.unitPriceCents()); assertNull(cake.memberPriceCents());
+    @Test void historicalPricesSurviveTypeChangesAndRemainIndependentOfSpecs() {
+        var legacy = new OrderItem(UUID.randomUUID(), "历史蛋糕", "CAKE", 1, 12000L, 0L,
+                Map.of("requirements", "少糖", "specification", "六只装"), "NOT_STARTED", null, false, NOW, NOW);
+        var converted = legacy.revise(Map.of("quantity", 2, "productType", "OTHER"), NOW.plusSeconds(1));
+        assertEquals(12000L, converted.unitPriceCents()); assertEquals(0L, converted.memberPriceCents());
+        assertEquals(Set.of("specification"), converted.attributes().keySet());
+        assertTrue(converted.attributes().get("specification").toString().contains("特殊要求：少糖"));
+        assertFalse(converted.attributes().get("specification").toString().contains("120.00"));
+        assertEquals(converted.attributes(), converted.revise(Map.of("quantity", 3), NOW).attributes());
     }
 }

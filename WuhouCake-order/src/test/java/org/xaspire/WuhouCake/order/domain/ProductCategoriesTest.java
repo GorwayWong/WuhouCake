@@ -29,10 +29,10 @@ class ProductCategoriesTest {
         assertEquals("WAITING_DELIVERY", order.status());
     }
     @Test void oldCodesWriteCanonicalCategoriesWithoutAddingCakeDefaults() {
-        for (var old : Map.of("DONUT", "TEA_BREAK", "CUPCAKE", "TEA_BREAK", "OTHER", "TEA_BREAK", "BREAD", "READY_BAKERY").entrySet()) {
-            var item = OrderItem.create(UUID.randomUUID(), "历史商品", old.getKey(), 1, null, null, Map.of("flavor", "保留的奶油"), Instant.now());
-            assertEquals(old.getValue(), item.productType());
-            assertEquals(Map.of("flavor", "保留的奶油"), item.attributes());
+        for (var old : java.util.List.of("DONUT", "CUPCAKE", "OTHER", "BREAD", "TEA_BREAK", "READY_BAKERY", "DRINK", "COOKIE", "SNACK")) {
+            var item = OrderItem.create(UUID.randomUUID(), "历史商品", old, 1, null, null, Map.of("flavor", "保留的奶油"), Instant.now());
+            assertEquals("OTHER", item.productType());
+            assertEquals(Map.of("specification", "奶油：保留的奶油"), item.attributes());
             assertEquals(item.attributes(), item.revise(Map.of("name", "新名称"), Instant.now()).attributes());
         }
         assertEquals("历史分类", ProductCategories.label("历史分类"));
