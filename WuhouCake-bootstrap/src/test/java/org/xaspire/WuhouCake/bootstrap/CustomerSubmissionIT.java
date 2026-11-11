@@ -127,6 +127,63 @@ class CustomerSubmissionIT {
         assertEquals(12300L, jdbc.queryForObject("SELECT total_amount_cents FROM cake_order WHERE id=?::uuid", Long.class, orderId));
     }
 
+    @Test void actualV26SubmissionCanRetryAfterUpgradeWithoutReplacingOriginal() throws Exception {
+        JsonNode fixture;
+        try (var file = getClass().getResourceAsStream("/v26-submission-retry.json")) {
+            fixture = json.readTree(Objects.requireNonNull(file));
+        }
+        UUID requestId = UUID.fromString(fixture.path("requestId").asText());
+        UUID id = UUID.fromString(fixture.path("submissionId").asText());
+        String fingerprint = fixture.path("fingerprint").asText();
+        var staff = admin(); String token = entry(staff);
+        UUID entryId = jdbc.queryForObject("SELECT id FROM customer_order_entry WHERE token=?", UUID.class, token);
+        UUID owner = UUID.fromString(staff.id);
+        String schema = "retry_v26_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).locations("classpath:db/migration");
+            flyway.target("26").load().migrate();
+            jdbc.update("INSERT INTO " + schema + ".customer_order_entry(id,owner_id,owner_name,token,enabled) VALUES(?,?,?,'v26-retry-fixture',true)", entryId, owner, "合成客服");
+            jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,original_phone,requested_date,status,created_at,updated_at)"
+                            + " VALUES(?,?,?,'合成客服',?,?,?::jsonb,'13800000000',DATE '2026-11-02','PENDING',now(),now())",
+                    id, entryId, owner, requestId, fingerprint, fixture.path("original").toString());
+            flyway.target("29").load().migrate();
+            jdbc.update("INSERT INTO customer_order_submission SELECT * FROM " + schema + ".customer_order_submission WHERE id=?", id);
+        } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
+        jdbc.update("INSERT INTO customer_submission_activity(submission_id,type,actor_type,actor_name,details,created_at) VALUES(?,'SUBMITTED','CUSTOMER','合成客户','{}'::jsonb,now())", id);
+        var original = jdbc.queryForObject("SELECT original::text FROM customer_order_submission WHERE id=?", String.class, id);
+        var input = fixture.path("request");
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> submit(token, input, requestId));
+            var second = pool.submit(() -> submit(token, input, requestId));
+            assertEquals(id.toString(), first.get(10, TimeUnit.SECONDS).at("/data/submissionId").asText());
+            assertEquals(id.toString(), second.get(10, TimeUnit.SECONDS).at("/data/submissionId").asText());
+        }
+        assertEquals(original, jdbc.queryForObject("SELECT original::text FROM customer_order_submission WHERE id=?", String.class, id));
+        assertEquals(fingerprint, jdbc.queryForObject("SELECT fingerprint FROM customer_order_submission WHERE id=?", String.class, id));
+        assertEquals(1, count("customer_order_submission"));
+        assertEquals(1, count("customer_submission_activity"));
+        for (String field : List.of("quantity", "specification", "phone", "requestedReceiveAt")) {
+            var changed = ((com.fasterxml.jackson.databind.node.ObjectNode) input).deepCopy();
+            var product = (com.fasterxml.jackson.databind.node.ObjectNode) changed.path("items").get(1);
+            switch (field) {
+                case "quantity" -> product.put(field, 44);
+                case "specification" -> ((com.fasterxml.jackson.databind.node.ObjectNode) product.path("attributes")).put(field, "改备注");
+                case "phone" -> changed.put(field, "13800000001");
+                case "requestedReceiveAt" -> changed.put(field, "2026-11-02T19:00:00+08:00");
+                default -> throw new AssertionError(field);
+            }
+            var conflict = new Client().request("POST", submitPath(token), changed, requestId.toString());
+            assertEquals(409, conflict.status, field);
+            assertEquals("IDEMPOTENCY_KEY_CONFLICT", conflict.body.path("code").asText(), field);
+        }
+        String path = "/api/customer-submissions/" + id;
+        var review = Map.of("content", input, "totalAmountCents", 10000, "creditedEmployeeId", staff.id);
+        staff.data("PATCH", path, Map.of("expectedVersion", 0, "review", review));
+        staff.data("POST", path + "/confirm", Map.of("expectedVersion", 1));
+        assertEquals(id.toString(), submit(token, input, requestId).at("/data/submissionId").asText());
+        assertEquals(1, count("cake_order"));
+    }
+
     @Test void reviewedQuotesFollowIdsThroughDeletionReorderAndConfirmation() throws Exception {
         var staff = admin(); String token = entry(staff);
         var input = new LinkedHashMap<>(content("13800000000", "2026-11-02T18:00:00+08:00"));
@@ -578,7 +635,7 @@ class CustomerSubmissionIT {
     }
     @Test void twoDifferentSubmissionsHoldConcurrentSharedOwnerLocks() throws Exception {
         var staff = admin(); String token = entry(staff); var entered = new CountDownLatch(2); var release = new CountDownLatch(1);
-        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any());
+        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any(), any());
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
             var first = pool.submit(() -> new Client().request("POST", submitPath(token), content("13800000001", "2026-11-02T18:00:00+08:00"), UUID.randomUUID().toString()));
             var second = pool.submit(() -> new Client().request("POST", submitPath(token), content("13800000002", "2026-11-02T18:00:00+08:00"), UUID.randomUUID().toString()));
@@ -591,7 +648,7 @@ class CustomerSubmissionIT {
     @Test void ownerSharedLockBlocksArchivalUntilTheSubmissionCommits() throws Exception {
         var admin = admin(); var front = employee(admin, "0002", "FRONT_DESK"); String token = entry(front);
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
-        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any());
+        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any(), any());
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
             var post = pool.submit(() -> new Client().request("POST", submitPath(token), content("13800000001", "2026-11-02T18:00:00+08:00"), UUID.randomUUID().toString()));
             Future<Result> archive;

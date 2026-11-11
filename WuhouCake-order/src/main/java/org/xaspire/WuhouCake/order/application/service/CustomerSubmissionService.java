@@ -63,7 +63,9 @@ public class CustomerSubmissionService {
         if (content.items().stream().anyMatch(item -> item.itemId() != null))
             content = withProducts(content, content.items().stream().map(item -> item.withItemId(null)).toList());
         // Keep the public fingerprint in the same shape as before staff item IDs.
-        var submission = submissions.submit(entry, requestId, fingerprint(convert(content, SubmissionCommands.Content.class)), content, clock.instant());
+        String current = fingerprint(convert(content, SubmissionCommands.Content.class));
+        String legacy = LegacySubmissionFingerprint.v26(command, content).map(this::fingerprint).orElse(null);
+        var submission = submissions.submit(entry, requestId, current, legacy, content, clock.instant());
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
     @Transactional(readOnly = true) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {

@@ -18,12 +18,13 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
         mapper.saveEntry(new CustomerSubmissionMapper.EntryRow(UUID.randomUUID().toString(), ownerId.toString(), ownerName, token, enabled));
         return entryForOwner(ownerId);
     }
-    @Override public CustomerSubmission submit(Entry entry, UUID requestId, String fingerprint, CustomerSubmission.Content content, Instant now) {
+    @Override public CustomerSubmission submit(Entry entry, UUID requestId, String fingerprint, String legacyFingerprint, CustomerSubmission.Content content, Instant now) {
         var id = UUID.randomUUID();
         boolean inserted = mapper.insert(id.toString(), entry.id().toString(), entry.ownerId().toString(), entry.ownerName(), requestId.toString(),
                 fingerprint, json.write(content), content.phone(), content.requestedDate(), now) == 1;
         var claim = mapper.claim(entry.id().toString(), requestId.toString());
-        if (!claim.fingerprint().equals(fingerprint)) throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
+        if (!claim.fingerprint().equals(fingerprint) && (inserted || !claim.fingerprint().equals(legacyFingerprint)))
+            throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
         if (inserted) append(id, "SUBMITTED", null, "客户（手机号未验证）", Map.of("source", "CUSTOMER_SUBMITTED", "after", CustomerSubmission.customerFields(content)), now);
         var result = find(UUID.fromString(claim.id()), false);
         if (result == null) throw new OrderFailure("SUBMISSION_NOT_FOUND");

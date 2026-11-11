@@ -16,7 +16,7 @@ public interface CustomerSubmissions {
     Entry entryByToken(String token);
     Entry lockEntry(String token);
     Entry saveEntry(UUID ownerId, String ownerName, String token, boolean enabled);
-    CustomerSubmission submit(Entry entry, UUID requestId, String fingerprint, CustomerSubmission.Content content, Instant now);
+    CustomerSubmission submit(Entry entry, UUID requestId, String fingerprint, String legacyFingerprint, CustomerSubmission.Content content, Instant now);
     CustomerSubmission find(UUID id, boolean lock);
     CustomerSubmission findByOrder(UUID orderId);
     List<CustomerSubmission> search(UUID ownerId, String status, String keyword, int limit, long offset);
