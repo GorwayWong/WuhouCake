@@ -63,6 +63,7 @@ export function errorText(error: unknown): string {
     SUBMISSION_CAKE_SIZE_REQUIRED: '蛋糕尺寸未填写，请补充蛋糕尺寸。',
     SUBMISSION_TOTAL_REQUIRED: '整单约定金额未填写，请填写并保存核对结果。',
     SUBMISSION_EMPLOYEE_REQUIRED: '尚未选择业绩归属员工，请选择后保存。',
+    SUBMISSION_ITEM_ID_CONFLICT: '无法安全关联历史报价，输入已保留。请读取最新填单后重新核对商品。',
     SUBMISSION_PRICES_INVALID: '商品数量与报价行不一致，请重新读取并保存核对结果。',
     SUBMISSION_REVIEW_REQUIRED: '请先保存核对结果，再确认接单。',
     SUBMISSION_FORBIDDEN: '仅前台和管理人员可以处理客户填单。',

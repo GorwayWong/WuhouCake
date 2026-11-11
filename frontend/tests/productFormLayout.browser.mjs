@@ -365,3 +365,71 @@ test('新常用方式提交老板，历史下单人经恢复仍保留原文', as
     } finally { await context.close(); }
   }
 });
+
+test('非蛋糕空值冲突跟随商品备注展示并随草稿恢复', async () => {
+  const { context, page, model, errors } = await createOrderFixture(browser, base);
+  try {
+    const field = value => ({ value, source: 'RULE', evidence: [], needsReview: false, issues: [] });
+    model.recognitionDraft = { fields: { requestedReceiveDate: field('2026-11-05') }, items: [{ id: 'juice', fields: {
+      name: field('饮品'), quantity: field('1'), productType: field('OTHER'),
+      requirements: { ...field(null), needsReview: true, issues: ['内容冲突，请核对'] },
+    } }], issues: [], fragments: [], unmappedText: [], assistAvailable: false };
+    await page.getByText('粘贴下单信息', { exact: true }).click();
+    await page.locator('#recognition-text').fill('饮品 1 杯，特殊要求：多冰，特殊要求：去冰');
+    await page.getByRole('button', { name: '识别并填入', exact: true }).click();
+    const hint = page.getByText('其他要求：内容冲突，请核对', { exact: true });
+    const remark = page.locator('[id="items.0.specification"]');
+    await hint.waitFor();
+    assert.equal(await remark.inputValue(), '');
+    assert.match(await remark.getAttribute('aria-describedby'), /items\.0\.specification-error/);
+    await page.reload();
+    await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await hint.waitFor();
+    await remark.fill('已核对，去冰');
+    await hint.waitFor({ state: 'hidden' });
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('填单核对移除同名商品后按保留行 ID 保存并确认接单', async () => {
+  const { context, page, model, errors } = await createOrderFixture(browser, base);
+  try {
+    model.permissions.push('CUSTOMER_SUBMISSION_PROCESS');
+    const id = crypto.randomUUID(), first = crypto.randomUUID(), second = crypto.randomUUID();
+    const makeItem = (itemId, specification) => ({ itemId, name: '茶饮', productType: 'OTHER', quantity: 1, attributes: { specification } });
+    const content = { phone: '13800000000', memberPhone: null, fulfillmentType: 'PICKUP', address: null,
+      requestedReceiveAt: '2026-11-05T10:00:00Z', items: [makeItem(first, '多冰'), makeItem(second, '少冰')] };
+    const submission = { id, version: 1, status: 'PENDING', ownerName: 'alice', createdAt: '2026-11-04T08:00:00Z',
+      original: content, reviewed: { content, prices: [{ unitPriceCents: 1000 }, { unitPriceCents: 2200, memberPriceCents: 0 }],
+        totalAmountCents: 10000, creditedEmployeeId: 'alice', plannedHandoffAt: content.requestedReceiveAt }, orderId: null };
+    const detail = () => ({ success: true, data: { submission, duplicates: [], activities: [], duplicateCheckToken: 'test' } });
+    let saved, confirmed;
+    await context.route(`**/api/customer-submissions/${id}`, async route => {
+      if (route.request().method() === 'PATCH') {
+        saved = route.request().postDataJSON();
+        const quotes = new Map(submission.reviewed.content.items.map((item, index) => [item.itemId, submission.reviewed.prices[index]]));
+        submission.reviewed = { ...saved.review, prices: saved.review.content.items.map(item => quotes.get(item.itemId)) };
+        submission.version++;
+      }
+      await route.fulfill({ json: detail() });
+    });
+    await context.route(`**/api/customer-submissions/${id}/confirm`, async route => {
+      confirmed = route.request().postDataJSON();
+      submission.status = 'CONFIRMED';
+      submission.orderId = orderId;
+      await route.fulfill({ json: detail() });
+    });
+    await page.goto(`${base}/#/customer-submissions/${id}`);
+    await page.reload();
+    await page.getByRole('button', { name: '移除商品 1', exact: true }).click();
+    assert.equal(await page.locator('[id="items.0.specification"]').inputValue(), '少冰');
+    await page.getByRole('button', { name: '保存核对结果', exact: true }).click();
+    await page.getByText('核对结果已保存。', { exact: true }).waitFor();
+    assert.deepEqual(saved.review.content.items.map(item => item.itemId), [second]);
+    assert.equal(submission.reviewed.prices[0].unitPriceCents, 2200);
+    await page.getByRole('button', { name: '确认接单', exact: true }).click();
+    await page.getByRole('link', { name: '查看正式订单' }).waitFor();
+    assert.equal(confirmed.expectedVersion, 2);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});

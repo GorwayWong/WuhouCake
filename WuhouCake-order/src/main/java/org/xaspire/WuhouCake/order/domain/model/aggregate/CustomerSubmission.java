@@ -12,7 +12,14 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
         Content original, Review reviewed, UUID orderId, Instant createdAt, Instant updatedAt) {
     public static final Set<String> ATTRIBUTES = Set.of("size", "base", "filling", "flavor", "message", "requirements", "specification");
     public static final Set<String> PRODUCT_TYPES = ProductCategories.TYPES;
-    public record Product(String name, String productType, int quantity, Map<String, String> attributes) {
+    public record Product(String name, String productType, int quantity, Map<String, String> attributes,
+            UUID itemId) {
+        public Product(String name, String productType, int quantity, Map<String, String> attributes) {
+            this(name, productType, quantity, attributes, null);
+        }
+
+        public Product withItemId(UUID id) { return new Product(name, productType, quantity, attributes, id); }
+
         public Product {
             name = requiredText(name, 128);
             if (productType == null || !PRODUCT_TYPES.contains(ProductCategories.normalize(productType))) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
@@ -64,7 +71,7 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
         public Review {
             Objects.requireNonNull(content); money(totalAmountCents);
             content = new Content(content.phone(), content.memberPhone(), content.fulfillmentType(), content.address(), content.requestedReceiveAt(),
-                    content.items().stream().map(item -> new Product(item.name(), ProductCategories.normalize(item.productType()), item.quantity(), item.attributes())).toList());
+                    content.items().stream().map(item -> item.withItemId(item.itemId())).toList());
             if (prices == null) prices = Collections.nCopies(content.items().size(), new Price(null, null));
             if (prices.size() != content.items().size() || prices.stream().anyMatch(Objects::isNull)) throw new OrderFailure("SUBMISSION_PRICES_INVALID");
             prices = List.copyOf(prices);

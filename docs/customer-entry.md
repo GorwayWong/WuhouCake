@@ -75,6 +75,8 @@ V13 迁移只对已确认的客户来源订单回填核对后的期望时间，�
 
 `review` 包含客户 `content`、与商品逐项对应的可选 `prices`、`totalAmountCents`、`creditedEmployeeId`、`plannedHandoffAt`。金额单位为非负整数分，空与零不同。状态变化使用版本校验；`409 CONCURRENT_MODIFICATION` 后读取最新状态人工核对。保存与确认是两个独立操作，不自动覆盖他人核对结果。确认按钮旁列出尚未保存、缺少总额或归属员工等条件；品类、数量、蛋糕尺寸及确认必填项返回对应 SUBMISSION_* 错误码和具体中文提示。
 
+员工核对商品使用 UUID `itemId`。修改名称、数量、规格或顺序时继续提交原标识。历史报价由服务端按标识关联，新增商品报价为空。V29 为已核对的待处理填单补齐商品标识，保留原商品顺序及报价。旧请求未提交标识时，仅按唯一且完整的商品内容匹配。无法安全关联历史报价时返回 `409 SUBMISSION_ITEM_ID_CONFLICT`，页面保留输入并提供读取最新结果的入口。匿名客户提交的幂等指纹不包含员工商品标识。
+
 详情和列表项的 `duplicates` 返回记录种类、ID、版本、状态、订单号、联系电话、当前取货日期和时刻、商品名称与数量、总金额、经办员工、创建时间及 `requiresAcknowledgement`。`duplicateCheckToken` 绑定当前填单 ID／版本和完整候选集合，填单非待确认时为 null。确认事务内重新查询并比对 token；旧 `acknowledgedNewerSubmissionId` 请求字段仍可解析，但不作为放行依据。
 
 二维码 `CREATE` 创建启用入口，已有入口不受重复创建影响；`RESET` 仅轮换令牌，保留当前启停状态；只有 `ENABLE`／`DISABLE` 改变启停状态。实际创建、变更和重置通过审计模块 `appendChange()` 与二维码写入同一事务，审计失败整体回滚。审计动作是 `order.entry_created`、`order.entry_enabled`、`order.entry_disabled`、`order.entry_reset`，记录实际操作者、入口和所属员工、时间、服务端请求 ID、启停前后值及令牌是否轮换，不记录令牌或完整链接；无变化的幂等操作不新增变更日志。管理人员代操作时与所属员工分别记录。

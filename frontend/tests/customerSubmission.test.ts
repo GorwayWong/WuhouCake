@@ -28,7 +28,7 @@ test('客户请求不含价格、归属和内部交接时间，蛋糕默认规�
   assert.deepEqual(result.errors, {}); assert.equal(result.content.items[0].attributes.base, '原味'); assert.equal(result.content.items[0].attributes.filling, '芒果');
   assert.equal(result.content.items[0].attributes.flavor, '原味动物奶油');
   assert.equal(result.content.requestedReceiveAt, '2026-11-02T10:00:00.000Z'); assert.notEqual(result.content.phone, result.content.memberPhone);
-  assert.equal('unitPriceCents' in result.content.items[0], false); assert.equal('creditedEmployeeId' in result.content, false); assert.equal('totalAmountCents' in result.content, false);
+  assert.equal('unitPriceCents' in result.content.items[0], false); assert.equal('itemId' in result.content.items[0], false); assert.equal('creditedEmployeeId' in result.content, false); assert.equal('totalAmountCents' in result.content, false);
 });
 test('日期和时刻、配送地址及蛋糕尺寸必填，自提和非蛋糕不强制这些规格', () => {
   const empty = newSubmissionDraft(); assert.ok(submissionRequest(empty).errors.requestedReceiveAt); assert.ok(submissionRequest(empty).errors['items.0.size']);
@@ -106,4 +106,22 @@ test('客户奶油留空使用原味动物奶油，明确填写与员工核对�
   assert.equal(submissionRequest(draft, true).content.items[0].attributes.flavor, '原味奶油');
   draft.items[0].attributes.flavor = '巧克力动物奶油';
   assert.equal(submissionRequest(draft).content.items[0].attributes.flavor, '巧克力动物奶油');
+});
+
+test('核对草稿按接口商品 ID 往返，删行改名不改变其余商品标识', () => {
+  const original = submissionRequest(complete()).content;
+  const first = { ...original.items[0], itemId: crypto.randomUUID() };
+  const second = { ...first, itemId: crypto.randomUUID(), attributes: { ...first.attributes, specification: '分装' } };
+  const draft = draftFromSubmission({ original, reviewed: {
+    content: { ...original, items: [first, second] }, prices: [], totalAmountCents: 1000, creditedEmployeeId: null, plannedHandoffAt: null,
+  } } as Submission);
+  assert.deepEqual(draft.items.map(item => item.key), [first.itemId, second.itemId]);
+  draft.items.shift();
+  draft.items[0].name = '已核对商品';
+  draft.items[0].quantity = '3';
+  const saved = submissionRequest(draft, true);
+  assert.deepEqual(saved.errors, {});
+  assert.equal(saved.review.content.items[0].itemId, second.itemId);
+  assert.equal(saved.review.content.items[0].name, '已核对商品');
+  assert.equal(saved.review.content.items[0].quantity, 3);
 });

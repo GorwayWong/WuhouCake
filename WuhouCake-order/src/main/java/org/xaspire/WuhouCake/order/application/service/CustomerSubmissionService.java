@@ -58,8 +58,12 @@ public class CustomerSubmissionService {
     }
     @Transactional public SubmissionViews.Receipt submit(String token, UUID requestId, SubmissionCommands.Content command) {
         if (requestId == null || command == null) throw invalid();
-        var entry = validEntry(token, true); var content = convert(command, CustomerSubmission.Content.class);
-        var submission = submissions.submit(entry, requestId, fingerprint(content), content, clock.instant());
+        var entry = validEntry(token, true);
+        var content = convert(command, CustomerSubmission.Content.class);
+        if (content.items().stream().anyMatch(item -> item.itemId() != null))
+            content = withProducts(content, content.items().stream().map(item -> item.withItemId(null)).toList());
+        // Keep the public fingerprint in the same shape as before staff item IDs.
+        var submission = submissions.submit(entry, requestId, fingerprint(convert(content, SubmissionCommands.Content.class)), content, clock.instant());
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
     @Transactional(readOnly = true) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {
@@ -179,14 +183,58 @@ public class CustomerSubmissionService {
         var content = convert(command.content(), CustomerSubmission.Content.class);
         if (command.prices() != null && (command.prices().size() != content.items().size() || command.prices().stream().anyMatch(Objects::isNull)))
             throw new OrderFailure("SUBMISSION_PRICES_INVALID");
-        var prices = new ArrayList<CustomerSubmission.Price>();
-        for (int i = 0; i < content.items().size(); i++) {
-            var item = content.items().get(i);
-            var old = previous == null || previous.content().items().size() <= i ? null : previous.content().items().get(i);
-            prices.add(old != null && old.name().equals(item.name()) && old.productType().equals(item.productType())
-                    ? previous.prices().get(i) : new CustomerSubmission.Price(null, null));
+        var prior = reviewedProducts(previous);
+        var byId = new HashMap<UUID, ReviewedProduct>();
+        for (var row : prior) if (row.product().itemId() != null) byId.put(row.product().itemId(), row);
+        var usedIds = new HashSet<UUID>();
+        for (var item : content.items()) {
+            if (item.itemId() != null && !usedIds.add(item.itemId())) throw new OrderFailure("SUBMISSION_ITEM_ID_CONFLICT");
         }
-        return new CustomerSubmission.Review(content, prices, money(command.totalAmountCents()), command.creditedEmployeeId(), command.plannedHandoffAt(), command.plannedFinishAt());
+
+        var products = new ArrayList<CustomerSubmission.Product>();
+        var prices = new ArrayList<CustomerSubmission.Price>();
+        var retained = new HashSet<ReviewedProduct>();
+        boolean legacyRequest = content.items().stream().anyMatch(item -> item.itemId() == null);
+        for (var item : content.items()) {
+            UUID itemId = item.itemId();
+            var old = itemId == null ? findLegacyProduct(item, prior, usedIds, retained) : byId.get(itemId);
+            if (itemId == null && old != null) itemId = old.product().itemId();
+            if (itemId == null) {
+                do { itemId = UUID.randomUUID(); } while (usedIds.contains(itemId) || byId.containsKey(itemId));
+            }
+            usedIds.add(itemId);
+            products.add(item.withItemId(itemId));
+            prices.add(old == null ? new CustomerSubmission.Price(null, null) : old.price());
+            if (old != null) retained.add(old);
+        }
+        if ((legacyRequest || prior.stream().anyMatch(row -> row.product().itemId() == null)) &&
+                prior.stream().anyMatch(row -> row.hasQuote() && !retained.contains(row)))
+            throw new OrderFailure("SUBMISSION_ITEM_ID_CONFLICT");
+        return new CustomerSubmission.Review(withProducts(content, products), prices, money(command.totalAmountCents()),
+                command.creditedEmployeeId(), command.plannedHandoffAt(), command.plannedFinishAt());
+    }
+
+    private record ReviewedProduct(CustomerSubmission.Product product, CustomerSubmission.Price price) {
+        boolean hasQuote() { return price.unitPriceCents() != null || price.memberPriceCents() != null; }
+    }
+    private static List<ReviewedProduct> reviewedProducts(CustomerSubmission.Review review) {
+        if (review == null) return List.of();
+        var rows = new ArrayList<ReviewedProduct>();
+        for (int i = 0; i < review.content().items().size(); i++)
+            rows.add(new ReviewedProduct(review.content().items().get(i), review.prices().get(i)));
+        return rows;
+    }
+    private static ReviewedProduct findLegacyProduct(CustomerSubmission.Product item, List<ReviewedProduct> prior,
+            Set<UUID> usedIds, Set<ReviewedProduct> retained) {
+        var matches = prior.stream().filter(row -> row.product().withItemId(null).equals(item)).toList();
+        if (matches.size() == 1 && !usedIds.contains(matches.getFirst().product().itemId()) && !retained.contains(matches.getFirst()))
+            return matches.getFirst();
+        if (matches.stream().anyMatch(ReviewedProduct::hasQuote)) throw new OrderFailure("SUBMISSION_ITEM_ID_CONFLICT");
+        return null;
+    }
+    private static CustomerSubmission.Content withProducts(CustomerSubmission.Content content, List<CustomerSubmission.Product> products) {
+        return new CustomerSubmission.Content(content.phone(), content.memberPhone(), content.fulfillmentType(), content.address(),
+                content.requestedReceiveAt(), products);
     }
     private String duplicateCheckToken(CustomerSubmission submission, List<CustomerSubmissions.Duplicate> duplicates) {
         return fingerprint(List.of(submission.id(), submission.version(), duplicates));

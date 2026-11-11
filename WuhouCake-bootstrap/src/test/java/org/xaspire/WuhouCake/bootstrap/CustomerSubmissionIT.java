@@ -127,6 +127,86 @@ class CustomerSubmissionIT {
         assertEquals(12300L, jdbc.queryForObject("SELECT total_amount_cents FROM cake_order WHERE id=?::uuid", Long.class, orderId));
     }
 
+    @Test void reviewedQuotesFollowIdsThroughDeletionReorderAndConfirmation() throws Exception {
+        var staff = admin(); String token = entry(staff);
+        var input = new LinkedHashMap<>(content("13800000000", "2026-11-02T18:00:00+08:00"));
+        var a = Map.of("name", "茶饮", "productType", "OTHER", "quantity", 1, "attributes", Map.of("specification", "多冰"));
+        var b = Map.of("name", "茶饮", "productType", "OTHER", "quantity", 1, "attributes", Map.of("specification", "少冰"));
+        input.put("items", List.of(a, b, b));
+        UUID requestId = UUID.randomUUID();
+        var receipt = submit(token, input, requestId);
+        String path = "/api/customer-submissions/" + receipt.at("/data/submissionId").asText();
+        var withClientId = new LinkedHashMap<>(input);
+        var claimedId = new LinkedHashMap<String, Object>(a); claimedId.put("itemId", UUID.randomUUID());
+        withClientId.put("items", List.of(claimedId, b, b));
+        assertEquals(receipt, submit(token, withClientId, requestId));
+        var reviewed = staff.data("PATCH", path, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12000)));
+        assertTrue(reviewed.at("/submission/original/items/0/itemId").isMissingNode());
+        var savedItems = reviewed.at("/submission/reviewed/content/items");
+        String first = savedItems.get(0).path("itemId").asText(), second = savedItems.get(1).path("itemId").asText(), third = savedItems.get(2).path("itemId").asText();
+        assertEquals(3, Set.of(UUID.fromString(first), UUID.fromString(second), UUID.fromString(third)).size());
+        jdbc.update("UPDATE customer_order_submission SET reviewed=jsonb_set(reviewed,'{prices}',?::jsonb) WHERE id=?::uuid",
+                "[{\"unitPriceCents\":1000},{\"unitPriceCents\":2200,\"memberPriceCents\":0},{\"unitPriceCents\":3300}]", receipt.at("/data/submissionId").asText());
+
+        var legacy = new LinkedHashMap<>(input); legacy.put("items", List.of(b, b));
+        var conflict = staff.request("PATCH", path, Map.of("expectedVersion", 1, "review", review(legacy, staff.id, 12000)));
+        assertEquals(409, conflict.status);
+        assertEquals("SUBMISSION_ITEM_ID_CONFLICT", conflict.body.path("code").asText());
+        assertEquals(1000, staff.data("GET", path, null).at("/submission/reviewed/prices/0/unitPriceCents").asInt());
+
+        var editedSecond = new LinkedHashMap<String, Object>(b);
+        editedSecond.put("itemId", second); editedSecond.put("name", "核对茶饮"); editedSecond.put("quantity", 2);
+        var retainedThird = new LinkedHashMap<String, Object>(b); retainedThird.put("itemId", third);
+        var added = new LinkedHashMap<String, Object>(b); added.put("itemId", UUID.randomUUID());
+        var changed = new LinkedHashMap<>(input); changed.put("items", List.of(retainedThird, editedSecond, added));
+        var duplicateIds = new LinkedHashMap<>(input); duplicateIds.put("items", List.of(editedSecond, editedSecond));
+        assertEquals(409, staff.request("PATCH", path, Map.of("expectedVersion", 1, "review", review(duplicateIds, staff.id, 12000))).status);
+        var request = Map.of("expectedVersion", 1, "review", review(changed, staff.id, 12000));
+        var saved = staff.data("PATCH", path, request);
+        assertEquals(third, saved.at("/submission/reviewed/content/items/0/itemId").asText());
+        assertEquals(3300, saved.at("/submission/reviewed/prices/0/unitPriceCents").asInt());
+        assertEquals(2200, saved.at("/submission/reviewed/prices/1/unitPriceCents").asInt());
+        assertEquals(0, saved.at("/submission/reviewed/prices/1/memberPriceCents").asInt());
+        assertTrue(saved.at("/submission/reviewed/prices/2/unitPriceCents").isNull());
+        assertEquals(409, staff.request("PATCH", path, request).status);
+        var confirmed = staff.data("POST", path + "/confirm", Map.of("expectedVersion", 2));
+        String orderId = confirmed.at("/submission/orderId").asText();
+        assertEquals(2200L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND name='核对茶饮'", Long.class, orderId));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND unit_price_cents=3300", Integer.class, orderId));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND unit_price_cents IS NULL", Integer.class, orderId));
+    }
+
+    @Test void migrationAssignsIdsToReviewedPendingRowsWithoutReorderingPrices() throws Exception {
+        String schema = "reviewed_migration_" + UUID.randomUUID().toString().replace("-", "");
+        try (var connection = dataSource.getConnection()) {
+            var single = new SingleConnectionDataSource(connection, true);
+            var flyway = Flyway.configure().dataSource(single).schemas(schema).defaultSchema(schema).locations("classpath:db/migration");
+            flyway.target("28").load().migrate();
+            connection.setSchema(schema);
+            var old = new JdbcTemplate(single);
+            UUID owner = UUID.randomUUID(), entry = UUID.randomUUID(), id = UUID.randomUUID();
+            old.update("INSERT INTO customer_order_entry(id,owner_id,owner_name,token,enabled) VALUES(?,?,?,'reviewed-migration-token',true)", entry, owner, "合成客服");
+            var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+            var review = new LinkedHashMap<String, Object>(review(input, owner.toString(), 10000));
+            review.put("prices", List.of(Map.of("unitPriceCents", 1200), Map.of("unitPriceCents", 3900)));
+            old.update("INSERT INTO customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,reviewed,original_phone,requested_date,status,created_at,updated_at)"
+                            + " VALUES(?,?,?,'合成客服',?,'old-fingerprint',?::jsonb,?::jsonb,'13800000000',DATE '2026-11-02','PENDING',now(),now())",
+                    id, entry, owner, UUID.randomUUID(), json.writeValueAsString(input), json.writeValueAsString(review));
+            var migrated = flyway.target("29").load();
+            migrated.migrate();
+            connection.setSchema(schema);
+            var first = old.queryForObject("SELECT reviewed::text FROM customer_order_submission WHERE id=?", String.class, id);
+            var value = json.readTree(first);
+            assertNotEquals(UUID.fromString(value.at("/content/items/0/itemId").asText()), UUID.fromString(value.at("/content/items/1/itemId").asText()));
+            assertEquals(1200, value.at("/prices/0/unitPriceCents").asInt());
+            assertEquals(3900, value.at("/prices/1/unitPriceCents").asInt());
+            assertTrue(old.queryForObject("SELECT original #>> '{items,0,itemId}' IS NULL FROM customer_order_submission WHERE id=?", Boolean.class, id));
+            assertEquals(0, migrated.migrate().migrationsExecuted);
+            connection.setSchema(schema);
+            assertEquals(first, old.queryForObject("SELECT reviewed::text FROM customer_order_submission WHERE id=?", String.class, id));
+        } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
+    }
+
     @Test void anonymousMultiProductRequirementsRemainOutsideOrdersUntilExplicitConfirmation() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         var receipt = submit(token, input, UUID.randomUUID()); String id = receipt.at("/data/submissionId").asText();

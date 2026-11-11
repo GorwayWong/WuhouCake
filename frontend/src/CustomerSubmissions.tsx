@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, DownloadSimple, QrCode } from '@phosphor-icons/react';
-import { api, creationResultUnknown } from './api';
+import { api, ApiError, creationResultUnknown } from './api';
 import { Empty, ErrorNotice, Loading, money, statusNames } from './ui';
 import { EmployeeSelect } from './EmployeeSelect';
 import { Select } from './Select';
@@ -113,6 +113,7 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
   useEffect(() => { setAcknowledge(null); }, [latest.duplicateCheckToken]);
   const dirty = JSON.stringify(draft) !== savedDraft, submission = baseline.submission;
   const stale = latest.submission.version !== submission.version;
+  const itemIdConflict = error instanceof ApiError && error.code === 'SUBMISSION_ITEM_ID_CONFLICT';
   useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false); }, [dirty, onDirtyChange]);
   useEffect(() => {
     mounted.current = true;
@@ -156,7 +157,7 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
   const requiresAcknowledgement = duplicates.some(record => record.requiresAcknowledgement);
   const editable = submission.status === 'PENDING' && latest.submission.status === 'PENDING';
   return <div className="management-page"><div className="page-heading"><div><h1>{submission.status === 'CONFIRMED' ? '已确认填单' : submission.status === 'DELETED' ? '已删除填单' : '核对客户填单'}</h1><p className="muted">来源：用户填写 · 发码客服 {submission.ownerName} · {time(submission.createdAt, true)}</p></div></div>
-    {stale && <div className="notice" role="status">填单已更新，输入已保留。请核对最新内容。<button className="text-button" disabled={busy} onClick={() => { if (!dirty || window.confirm('放弃未保存输入，读取最新核对结果？')) accept(latest); }}>读取最新结果</button></div>}
+    {(stale || itemIdConflict) && <div className="notice" role="status">{itemIdConflict ? '无法安全关联历史报价。输入已保留，请读取最新结果后核对商品。' : '填单已更新，输入已保留。请核对最新内容。'}<button className="text-button" disabled={busy} onClick={() => { if (!dirty || window.confirm('放弃未保存输入，读取最新核对结果？')) { accept(latest); setError(null); } }}>读取最新结果</button></div>}
     <section className="panel"><h2>客户原始填写</h2><ContentSummary content={submission.original} /></section>
     {duplicates.length > 0 && editable && <section className="panel submission-warning" aria-label="疑似重复记录"><h2>疑似重复记录（{duplicates.length}）</h2><p>请核对以下同电话、同取货日的记录是否重复。</p><DuplicateRecords records={duplicates} />{requiresAcknowledgement && <label className="check-label"><input type="checkbox" checked={acknowledge === latest.duplicateCheckToken} disabled={busy || stale || dirty || creationResultUnknown(error)} onChange={e => setAcknowledge(e.target.checked ? latest.duplicateCheckToken : null)} />已核实，这是独立订单，继续接单。</label>}</section>}
     {submission.orderId && <a className="primary" href={`#/orders/${submission.orderId}`}>查看正式订单<ArrowRight /></a>}

@@ -9,7 +9,7 @@ import { exactYuan } from './money.ts';
 
 export interface SubmissionContent {
   phone: string; memberPhone: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string | null;
-  requestedReceiveAt: string; items: { name: string; productType: string; quantity: number; attributes: Record<string, string> }[];
+  requestedReceiveAt: string; items: { itemId?: string; name: string; productType: string; quantity: number; attributes: Record<string, string> }[];
 }
 export interface SubmissionReview {
   content: SubmissionContent; prices: { unitPriceCents: number | null; memberPriceCents: number | null }[];
@@ -60,7 +60,7 @@ export function draftFromSubmission(submission: Submission): SubmissionDraft {
     creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null), plannedFinishAt: localTime(review?.plannedFinishAt || null) || (!review ? defaultFinishTime(localTime(content.requestedReceiveAt)) : ''), finishTimeMode: review?.plannedFinishAt ? 'MANUAL' : 'AUTO',
     ...(review ? { originalTime: { requestedReceiveAt: content.requestedReceiveAt, plannedHandoffAt: review.plannedHandoffAt, plannedFinishAt: review.plannedFinishAt || null,
       pickupTime: localTime(review.plannedHandoffAt || content.requestedReceiveAt) } } : {}),
-    items: content.items.map(item => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: randomUUID(), quantity: String(item.quantity),
+    items: content.items.map(item => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: item.itemId || randomUUID(), quantity: String(item.quantity),
       attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: '', ...item.attributes },
       defaultSpecifications: [], unitPrice: '', memberPrice: '' })).map(item => item.productType === 'OTHER' ? asOtherDraft(item) : item) };
 }
@@ -96,12 +96,12 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
     Object.entries(result.errors).forEach(([key, value]) => { errors[`items.${index}.${key}`] = value; });
     if (item.productType === 'CAKE' && !item.attributes.size.trim()) errors[`items.${index}.size`] = '请填写蛋糕尺寸。';
     Object.entries(item.attributes).forEach(([key, value]) => { if (value.length > (key === 'specification' ? 16000 : 2000)) errors[`items.${index}.${key}`] = key === 'specification' ? '最多填写 16000 个字符。' : '最多填写 2000 个字符。'; });
-    return result.item;
+    return result.item ? { ...result.item, ...(staff ? { itemId: item.key } : {}) } : null;
   });
   const content: SubmissionContent = { phone: contactPhone, memberPhone, fulfillmentType: draft.fulfillmentType,
     address: draft.address.trim() || null, requestedReceiveAt,
     items: items.filter(item => item !== null).map(item => ({ name: item.name, productType: item.productType || 'CAKE', quantity: item.quantity,
-      attributes: item.attributes as Record<string, string> })) };
+      attributes: item.attributes as Record<string, string>, ...(item.itemId ? { itemId: item.itemId } : {}) })) };
   let totalAmountCents: number | null = null;
   if (staff) { try { totalAmountCents = moneyToCents(draft.totalAmount); } catch (error) { errors.totalAmount = (error as Error).message; } }
   const review: SubmissionReview = { content, totalAmountCents, creditedEmployeeId: draft.creditedEmployeeId || null,
