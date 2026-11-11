@@ -4,6 +4,7 @@ import { changeItemDraft, createOrderRequest, newDraft, newItem } from '../src/o
 import type { RecognitionDraft, RecognitionField } from '../src/types.ts';
 import { RecognitionLifecycle, applyRecognition, emptyRecognitionItem, mergeModelFields, recognitionValue,
   setCandidate, undoRecognition, validateCandidate, retainRecognitionFeedback, formFeedback, feedbackKey, orderEntryRecognition } from '../src/recognition.ts';
+import { decodeOrderDraft, freshOrderDraft } from '../src/orderDraftStorage.ts';
 import { cakeDefaults, normalizeSize } from '../src/productRules.ts';
 
 const field = (value: string | null, source: RecognitionField['source'] = value == null ? null : 'RULE', needsReview = false): RecognitionField =>
@@ -259,4 +260,35 @@ test('保留金额、字段白名单和规格校验，未知类型由正常表�
   const item = emptyRecognitionItem(); assert.equal(changeItemDraft(item, { productType: 'COOKIE' }).requiresTypeConfirmation, false);
   const cake = newItem(); assert.equal(cake.attributes.base, cakeDefaults.base);
   assert.equal(changeItemDraft(cake, { productType: 'CUPCAKE' }).attributes.base, '');
+});
+
+test('非蛋糕折入备注的空值冲突和有效提示可恢复，手改后清除', () => {
+  const initial = newDraft('2026-10-16'), result = candidate();
+  result.items = [
+    { id: 'other-1', fields: { productType: field('OTHER'), name: field('饮品'), specification: field('独立包装'),
+      requirements: { ...field(null, 'RULE', true), issues: ['内容冲突，请核对', '内容冲突，请核对'] },
+      flavor: { ...field('香草', 'MODEL'), issues: ['请核对口味'] } } },
+    { id: 'other-2', fields: { productType: field('OTHER'), name: field('餐盒'),
+      requirements: { ...field(null, 'RULE', true), issues: ['包装要求不明确'] } } },
+  ];
+  const filled = apply(initial, result);
+  const [drink, box] = filled.draft.items;
+  assert.equal(drink.attributes.specification, '独立包装\n奶油：香草');
+  assert.equal(box.attributes.specification, '');
+  const feedback = retainRecognitionFeedback(filled.draft, filled.feedback);
+  const fields = formFeedback(filled.draft, feedback);
+  assert.equal(fields['items.0.specification'].error, '其他要求：内容冲突，请核对');
+  assert.equal(fields['items.0.specification'].hint, '奶油：请核对口味');
+  assert.equal(fields['items.0.specification'].source, 'MODEL');
+  assert.equal(fields['items.1.specification'].error, '其他要求：包装要求不明确');
+  assert.equal(fields['items.0.requirements'], undefined);
+  const record = freshOrderDraft('alice', '2026-10-16');
+  const restored = decodeOrderDraft(JSON.stringify({ ...record, revision: 'saved', updatedAt: '2026-10-16T00:00:00Z',
+    value: filled.draft, editor: { ...record.editor, feedback } }), 'alice')!;
+  const restoredFields = formFeedback(restored.value, retainRecognitionFeedback(restored.value, restored.editor.feedback));
+  assert.deepEqual(restoredFields['items.0.specification'], fields['items.0.specification']);
+  assert.deepEqual(restoredFields['items.1.specification'], fields['items.1.specification']);
+  const edited = setCandidate(restored.value, 'specification', '已确认', drink.key);
+  assert.equal(formFeedback(edited, retainRecognitionFeedback(edited, feedback))['items.0.specification'], undefined);
+  assert.deepEqual(undoRecognition(filled.draft, initial, filled.draft), initial);
 });

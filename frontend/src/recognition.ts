@@ -154,6 +154,25 @@ export function retainRecognitionFeedback(draft: OrderDraft, feedback: Recogniti
     mark.field !== 'unitPriceCents' && mark.field !== 'memberPriceCents' &&
     (!mark.itemKey || draft.items.some(item => item.key === mark.itemKey)) && currentValue(draft, mark.field, mark.itemKey) === mark.value));
 }
+/** Move feedback alongside the fields collapsed by asOtherDraft. */
+export function foldOtherRecognitionFeedback(item: ItemDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
+  const keys = [...specificationKeys].map(field => feedbackKey(field, item.key));
+  const marks = keys.flatMap(key => feedback[key] ? [feedback[key]] : []);
+  if (!marks.length) return feedback;
+  const next = { ...feedback };
+  for (const key of keys) delete next[key];
+  const messages = (kind: 'error' | 'hint') => [...new Set(marks.flatMap(mark =>
+    mark[kind]?.split('；').filter(Boolean).map(message =>
+      mark.field === 'specification' ? message : `${recognitionLabels[mark.field]}：${message}`) || []))].join('；');
+  const source = (['MODEL', 'RULE', 'DEFAULT'] as const).find(value => marks.some(mark => mark.source === value)) ?? null;
+  const error = messages('error'), hint = messages('hint');
+  next[feedbackKey('specification', item.key)] = {
+    field: 'specification', itemKey: item.key, value: item.attributes.specification, source,
+    needsReview: marks.some(mark => mark.needsReview),
+    ...(error ? { error } : {}), ...(hint ? { hint } : {}),
+  };
+  return next;
+}
 export function formFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
   return Object.fromEntries(Object.values(feedback).flatMap(mark => {
     const field = moneyFields[mark.field] || mark.field;
@@ -185,7 +204,8 @@ export function orderEntryRecognition(result: RecognitionDraft, manualFields: Re
 export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result: RecognitionDraft,
   manualFields: ReadonlySet<string>, options: { supplement?: boolean; targets?: Record<string, string> } = {}) {
   let next = structuredClone(draft), cleared = 0;
-  const feedback: RecognitionFeedbackMap = {}, targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
+  let feedback: RecognitionFeedbackMap = {};
+  const targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
   const validContent = (fields: Record<string, RecognitionField>) => Object.entries(fields).some(([field, candidate]) => {
     if (field === 'unitPriceCents' || field === 'memberPriceCents') return false;
     if (field === 'productType' || candidate.source === 'DEFAULT' || !candidate.value?.trim()) return false;
@@ -252,7 +272,12 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   }
   const changed = Object.values(feedback).filter(mark => !mark.error && currentValue(draft, mark.field, mark.itemKey) !== mark.value);
   const applied = changed.length, overwritten = changed.filter(mark => currentValue(draft, mark.field, mark.itemKey)).length;
-  next.items = next.items.map(item => normalizeProductType(item.productType) === 'OTHER' ? asOtherDraft(item) : item);
+  next.items = next.items.map(item => {
+    if (normalizeProductType(item.productType) !== 'OTHER') return item;
+    const converted = asOtherDraft(item);
+    feedback = foldOtherRecognitionFeedback(converted, feedback);
+    return converted;
+  });
   return { draft: next, targets, applied, overwritten, cleared, feedback, replacedItems };
 }
 export class RecognitionLifecycle {

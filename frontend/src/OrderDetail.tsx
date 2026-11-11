@@ -106,13 +106,14 @@ function ProductionOrderFields({ order, item }: { order: Detail; item?: Detail['
   return <dl className="production-order-fields">
     <div><dt>名称</dt><dd>{item?.name || '暂无商品'}</dd></div>
     <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>
-    <div><dt>{cake ? '尺寸' : '规格'}</dt><dd>{fields[cake ? '尺寸' : '规格'] || '无'}</dd></div>
+    {cake && <div><dt>尺寸</dt><dd>{fields['尺寸'] || '无'}</dd></div>}
     <div><dt>数量</dt><dd>{item?.quantity ?? '无'}</dd></div>
     {cake && <>
       <div><dt>夹馅</dt><dd>{fields['夹心'] || '无'}</dd></div>
       <div><dt>奶油</dt><dd>{fields['奶油'] || '无'}</dd></div>
       <div className="wide"><dt>祝福语</dt><dd>{fields['祝福语'] || '无'}</dd></div>
     </>}
+    {fields['规格'] && <div className="wide"><dt>商品备注</dt><dd className="product-spec-text">{fields['规格']}</dd></div>}
     <div className="wide"><dt>特殊要求</dt><dd>{fields['特殊要求'] || '无'}</dd></div>
     {cake && fields['蛋糕胚口味'] && fields['蛋糕胚口味'] !== '无' && <div className="wide"><dt>蛋糕胚口味</dt><dd>{fields['蛋糕胚口味']}</dd></div>}
     {historical.map(([label, value], index) => <div key={`${label}-${index}`}><dt>{label}（历史）</dt><dd>{value}</dd></div>)}

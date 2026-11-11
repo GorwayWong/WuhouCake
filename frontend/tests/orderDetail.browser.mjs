@@ -73,8 +73,16 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     assert.equal(await page.getByRole('button', { name: '编辑', exact: true }).isVisible(), true);
     assert.equal(await page.locator('.payment-panel').isVisible(), true);
     assert.deepEqual(errors, []);
+    model.order.items[0].attributes.size = '8';
+    model.order.items[0].attributes.specification = '切成 12 份\n分开包装';
     model.permissions = ['ORDER_READ', 'ORDER_PHONE_READ', 'ORDER_PRODUCTION_UPDATE'];
     await page.reload(); await page.locator('.production-detail').waitFor();
+    const production = page.locator('.production-order-information');
+    assert.equal(await production.getByText('尺寸', { exact: true }).locator('..').locator('dd').innerText(), '8');
+    const remark = production.getByText('商品备注', { exact: true }).locator('..').locator('dd');
+    assert.equal(await remark.innerText(), '切成 12 份\n分开包装');
+    assert.equal(await remark.evaluate(node => getComputedStyle(node).whiteSpace), 'pre-wrap');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.equal(await page.locator('.front-order-information').count(), 0);
     assert.equal(await page.locator('.payment-panel').count(), 0);
   } finally { await context.close(); }

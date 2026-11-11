@@ -13,7 +13,7 @@ import { ArrowLeft, ArrowRight, Cake, Plus, Trash, Receipt, CurrencyCny } from '
 import { creationResultUnknown, errorText } from './api';
 import { changeItemDraft, createOrderRequest, newItem } from './orderForm';
 import { OrderRecognition } from './OrderRecognition';
-import { formFeedback, retainRecognitionFeedback } from './recognition';
+import { foldOtherRecognitionFeedback, formFeedback, retainRecognitionFeedback } from './recognition';
 import type { RecognitionFeedbackMap } from './recognition';
 import { OrderPackagePicker } from './OrderPackagePicker';
 import { DateInput } from './DateInput';
@@ -98,7 +98,13 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
       }
     }
     if (next.finishTimeMode === 'AUTO') manualFields.current.delete('plannedFinishAt');
-    const feedback = retainRecognitionFeedback(next, feedbackRef.current);
+    let marks = retainRecognitionFeedback(latest.current, feedbackRef.current);
+    for (const item of next.items) {
+      const previous = latest.current.items.find(candidate => candidate.key === item.key);
+      if (previous && previous.productType !== 'OTHER' && item.productType === 'OTHER')
+        marks = foldOtherRecognitionFeedback(item, marks);
+    }
+    const feedback = retainRecognitionFeedback(next, marks);
     const saved = onChange(next, { feedback, manualFields: [...manualFields.current], selectedItemKey: selection }, false, requireSaved);
     if (!saved && previousFields) { manualFields.current = previousFields; return false; }
     if (selection !== activeItem?.key) { selectItem(selection); setPendingTarget({}); }

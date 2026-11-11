@@ -1375,7 +1375,7 @@ class OrderIT {
         input.put("customer", Map.of("customerName", "客户", "phone", "13800000000", "memberPhone", "13800000001", "buyerName", "下单人"));
         input.put("orderingMethod", "微信");
         input.put("items", List.of(
-                Map.of("name", "蛋糕", "quantity", 1, "referenceUnitPriceCents", 12000, "attributes", Map.of("specification", "少糖")),
+                Map.of("name", "蛋糕", "quantity", 1, "referenceUnitPriceCents", 12000, "attributes", Map.of("size", "8", "requirements", "少糖", "specification", "切成 12 份\n分开包装")),
                 Map.of("name", "旧草稿纸杯", "productType", "OTHER", "quantity", 6,
                         "attributes", Map.of("specification", "独立包装\n原商品单价：12.30 元（仅供参考）\n原会员单价：0 元（仅供参考）"))));
         var order = createOn(staff, "2026-10-23", "09:00", "DELIVERY", input); String id = order.path("orderId").asText();
@@ -1404,6 +1404,11 @@ class OrderIT {
             assertTrue(item.path("unitPriceCents").isNull());
             assertTrue(item.path("memberPriceCents").isNull());
             assertFalse(item.at("/attributes/specification").asText().contains("仅供参考"));
+            if (item.path("name").asText().equals("蛋糕")) {
+                assertEquals("8", item.at("/attributes/size").asText());
+                assertEquals("少糖", item.at("/attributes/requirements").asText());
+                assertEquals("切成 12 份\n分开包装", item.at("/attributes/specification").asText());
+            }
         }
         assertEquals(order.at("/customer/phone").asText(), detail.at("/customer/phone").asText());
         for (var field : List.of("customerName", "memberPhone")) assertTrue(detail.path("customer").path(field).isNull(), field);
