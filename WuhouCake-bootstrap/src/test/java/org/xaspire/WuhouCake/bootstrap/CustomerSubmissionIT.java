@@ -363,6 +363,9 @@ class CustomerSubmissionIT {
         assertEquals(staff.id, order.at("/creditedEmployee/accountId").asText()); assertEquals(staff.id, order.path("createdBy").asText());
         assertEquals("CAKE_BASE", order.path("status").asText()); assertEquals("UNPAID", order.path("paymentStatus").asText());
         assertEquals(12300, order.path("totalAmountCents").asLong()); assertEquals(2, order.path("items").size());
+        assertEquals(List.of("生日蛋糕", "纸杯蛋糕"), order.path("items").valueStream().map(i -> i.path("name").asText()).toList());
+        assertEquals(List.of(1, 2), jdbc.queryForList(
+                "SELECT position FROM cake_order_item WHERE order_id=?::uuid ORDER BY position", Integer.class, orderId));
         order.path("items").forEach(product -> {
             if ("CAKE".equals(product.path("productType").asText())) assertEquals("原味奶油", product.at("/attributes/flavor").asText());
         });

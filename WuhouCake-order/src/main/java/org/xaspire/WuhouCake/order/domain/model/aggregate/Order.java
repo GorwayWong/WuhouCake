@@ -540,7 +540,6 @@ public final class Order {
     public Instant confirmedAt() { return confirmedAt; }
     public Instant updatedAt() { return updatedAt; }
     public List<OrderItem> activeItems() {
-        return items.values().stream().filter(item -> !item.removed())
-                .sorted(Comparator.comparing(OrderItem::createdAt).thenComparing(item -> item.itemId().toString())).toList();
+        return items.values().stream().filter(item -> !item.removed()).toList();
     }
 }

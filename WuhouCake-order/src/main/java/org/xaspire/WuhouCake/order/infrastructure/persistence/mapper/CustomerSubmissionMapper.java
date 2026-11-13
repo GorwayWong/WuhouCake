@@ -63,7 +63,7 @@ public interface CustomerSubmissionMapper {
             + " AND regexp_replace(" + CONTENT + "->>'phone','[ ()-]','','g')=#{phone}"
             + " AND (" + CONTENT_PICKUP_AT + " AT TIME ZONE 'Asia/Shanghai')::date=#{date}"
             + " UNION ALL SELECT 'ORDER',o.id::text,o.version,o.status,o.order_no,o.customer_phone," + ORDER_PICKUP_DATE + "," + ORDER_PICKUP_AT + ","
-            + " COALESCE((SELECT jsonb_agg(jsonb_build_object('name',name,'quantity',quantity) ORDER BY created_at,id)::text FROM cake_order_item WHERE order_id=o.id AND NOT is_removed),'[]'),"
+            + " COALESCE((SELECT jsonb_agg(jsonb_build_object('name',name,'quantity',quantity) ORDER BY position NULLS LAST,created_at,id)::text FROM cake_order_item WHERE order_id=o.id AND NOT is_removed),'[]'),"
             + " o.total_amount_cents,COALESCE((SELECT actor_name_snapshot FROM cake_order_activity WHERE order_id=o.id AND type='CREATED' ORDER BY id LIMIT 1),'未记录'),o.created_at"
             + " FROM cake_order o WHERE o.deleted_at IS NULL AND regexp_replace(o.customer_phone,'[ ()-]','','g')=#{phone} AND " + ORDER_PICKUP_DATE + "=#{date}"
             + " ORDER BY created_at DESC,kind,id")

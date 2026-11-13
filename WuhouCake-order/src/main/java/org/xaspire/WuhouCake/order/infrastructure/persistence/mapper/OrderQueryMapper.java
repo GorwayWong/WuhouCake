@@ -27,7 +27,7 @@ public interface OrderQueryMapper {
     long productionOrderCount(@Param("from") Instant from, @Param("to") Instant to, @Param("stages") Set<String> stages);
 
     @Select("<script>SELECT id::text AS order_id, order_no,"
-            + " (SELECT i.name FROM cake_order_item i WHERE i.order_id=cake_order.id AND NOT i.is_removed ORDER BY i.created_at,i.id LIMIT 1) AS item_name,"
+            + " (SELECT i.name FROM cake_order_item i WHERE i.order_id=cake_order.id AND NOT i.is_removed ORDER BY i.position NULLS LAST,i.created_at,i.id LIMIT 1) AS item_name,"
             + " status, planned_finish_at, " + PICKUP_AT + " AS pickup_at, " + PICKUP_DATE + " AS pickup_date"
             + PRODUCTION_WHERE + PRODUCTION_BUCKET
             + " ORDER BY <choose><when test='from == null'>pickup_date, pickup_at NULLS LAST</when>"
@@ -115,12 +115,12 @@ public interface OrderQueryMapper {
     List<PendingRow> pending(LocalDate date);
 
     @Select("<script>SELECT order_id::text, id::text AS item_id, name, quantity FROM cake_order_item"
-            + " WHERE NOT is_removed AND order_id IN " + ORDER_IDS + " ORDER BY order_id, created_at, id</script>")
+            + " WHERE NOT is_removed AND order_id IN " + ORDER_IDS + " ORDER BY order_id, position NULLS LAST, created_at, id</script>")
     List<CalendarItemRow> calendarItems(@Param("orderIds") List<String> orderIds);
 
     @Select("<script>SELECT order_id::text, id::text AS item_id, name, product_type, quantity, unit_price_cents, member_price_cents,"
             + " attributes::text FROM cake_order_item WHERE NOT is_removed AND order_id IN " + ORDER_IDS
-            + " ORDER BY order_id, created_at, id</script>")
+            + " ORDER BY order_id, position NULLS LAST, created_at, id</script>")
     List<ItemRow> items(@Param("orderIds") List<String> orderIds);
 
     @Select("<script>SELECT id, item_id::text, actor_id::text, actor_name_snapshot, created_at, content FROM ("

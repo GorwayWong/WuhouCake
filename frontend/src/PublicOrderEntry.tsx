@@ -16,7 +16,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   const initial = useRef(draft);
   const [errors, setErrors] = useState<Record<string, string>>({}); const [error, setError] = useState<unknown>(null);
   const [receipt, setReceipt] = useState<{ submissionNo: string } | null>(null); const [busy, setBusy] = useState(false);
-  const pending = useRef<{ key: string; content: SubmissionContent } | null>(null);
+  const [pending, setPending] = useState<{ key: string; content: SubmissionContent } | null>(null);
   const writing = useRef(false); const form = useRef<HTMLFormElement>(null);
   const dirty = submissionDirty(draft, initial.current);
   useEffect(() => {
@@ -28,23 +28,29 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
     const leave = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', leave); return () => window.removeEventListener('beforeunload', leave);
   }, [dirty, receipt]);
-  const uncertain = creationResultUnknown(error);
+  const uncertain = pending !== null;
   return <main className="customer-page"><header className="customer-header"><img className="customer-brand" src="/brand.jpg" alt="午逅 Story" />{entry.data && <span>客服：{entry.data.ownerName}</span>}</header>
-    {entry.isPending ? <Loading /> : !entry.data ? <section className="panel"><h1>暂时无法填写</h1><ErrorNotice error={entry.error} retry={() => void entry.refetch()} /></section> : receipt ? <section className="panel submission-success" role="status"><CheckCircle size={42} /><h1>已提交，待客服确认</h1><p>修改请联系接待客服。</p><p className="submission-number">填单编号：{receipt.submissionNo}</p><button type="button" className="secondary" onClick={() => { const next = newSubmissionDraft(); initial.current = next; setDraft(next); setReceipt(null); setError(null); pending.current = null; }}>再填一单</button></section> : <>
+    {entry.isPending ? <Loading /> : !entry.data ? <section className="panel"><h1>暂时无法填写</h1><ErrorNotice error={entry.error} retry={() => void entry.refetch()} /></section> : receipt ? <section className="panel submission-success" role="status"><CheckCircle size={42} /><h1>已提交，待客服确认</h1><p>修改请联系接待客服。</p><p className="submission-number">填单编号：{receipt.submissionNo}</p><button type="button" className="secondary" onClick={() => { const next = newSubmissionDraft(); initial.current = next; setDraft(next); setReceipt(null); setError(null); }}>再填一单</button></section> : <>
       <div className="customer-intro"><h1>填写预订信息</h1></div>
       <form ref={form} noValidate onSubmit={async event => {
         event.preventDefault(); if (writing.current) return;
-        if (!uncertain || !pending.current) {
+        let request = pending;
+        if (!request) {
           const result = submissionRequest(draft); setErrors(result.errors);
           if (Object.keys(result.errors).length) { focusFormField(form.current, firstProductFormError(result.errors, draft.items)!); return; }
-          pending.current = { key: randomUUID(), content: result.content };
+          request = { key: randomUUID(), content: result.content };
         }
         writing.current = true; setBusy(true); setError(null);
-        try { setReceipt(await publicApi(`/public/order-entries/${encodeURIComponent(token)}/submissions`, { method: 'POST', body: pending.current.content, headers: { 'Idempotency-Key': pending.current.key } })); pending.current = null; }
-        catch (failure) { setError(failure); } finally { writing.current = false; setBusy(false); }
+        try {
+          setReceipt(await publicApi(`/public/order-entries/${encodeURIComponent(token)}/submissions`, { method: 'POST', body: request.content, headers: { 'Idempotency-Key': request.key } }));
+          setPending(null);
+        } catch (failure) {
+          if (creationResultUnknown(failure)) setPending(request);
+          setError(failure);
+        } finally { writing.current = false; setBusy(false); }
       }}>
         <SubmissionFields draft={draft} onChange={value => { setDraft(value); setErrors({}); setError(null); }} errors={errors} busy={busy || uncertain} />
-        <ErrorNotice error={error} />{uncertain && <p className="notice" role="status">结果未确认，输入已保留。请先向客服核对，再重试。</p>}
+        <ErrorNotice error={error} />{uncertain && <p className="notice" role="status">原提交结果仍待确认，输入已保留。请先向客服核对，再重试。</p>}
         {!!Object.keys(errors).length && <p className="notice error" role="alert">请检查标出的内容。</p>}
         <section className="panel create-group customer-order-notice" aria-labelledby="order-notice-title">
           <h2 id="order-notice-title">订购需知</h2>

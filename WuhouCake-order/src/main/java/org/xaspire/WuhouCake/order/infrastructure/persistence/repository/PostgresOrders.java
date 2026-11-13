@@ -17,7 +17,8 @@ public final class PostgresOrders implements Orders {
     @Override public String nextNumber() { return String.format(Locale.ROOT, "%07d", mapper.nextNumber()); }
     @Override public void create(Order order) {
         mapper.insert(row(order));
-        for (var item : order.activeItems()) insertItem(order.id(), item);
+        int position = 1;
+        for (var item : order.activeItems()) insertItem(order.id(), item, position++);
     }
     @Override public Optional<Order> find(UUID id) {
         return restore(id, mapper.find(id.toString()));
@@ -54,7 +55,7 @@ public final class PostgresOrders implements Orders {
         for (var changedItemId : changedItemIds) {
             if (mapper.updateItemProduction(row(order.id(), order.requireActiveItem(changedItemId))) != 1) throw new OrderFailure("ORDER_NOT_FOUND");
         }
-        insertItem(order.id(), order.requireActiveItem(itemId));
+        insertItem(order.id(), order.requireActiveItem(itemId), mapper.nextItemPosition(order.id().toString()));
     }
     @Override public void removeItem(Order order, long expectedVersion, UUID itemId) {
         if (mapper.updateItems(row(order), expectedVersion) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
@@ -74,8 +75,8 @@ public final class PostgresOrders implements Orders {
         if (mapper.updateStatus(order.id().toString(), expectedVersion, order.status(), order.updatedAt()) != 1)
             throw new OrderFailure("CONCURRENT_MODIFICATION");
     }
-    private void insertItem(UUID orderId, OrderItem item) {
-        try { mapper.insertItem(row(orderId, item)); }
+    private void insertItem(UUID orderId, OrderItem item, int position) {
+        try { mapper.insertItem(row(orderId, item), position); }
         catch (org.springframework.dao.DuplicateKeyException conflict) { throw new OrderFailure("ITEM_ID_CONFLICT"); }
     }
     private static OrderMapper.Row row(Order order) {

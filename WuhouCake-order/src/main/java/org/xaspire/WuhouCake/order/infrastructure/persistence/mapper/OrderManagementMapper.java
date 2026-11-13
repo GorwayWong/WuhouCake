@@ -16,7 +16,7 @@ public interface OrderManagementMapper {
     String SOURCE = " FROM cake_order o LEFT JOIN LATERAL (SELECT COALESCE(sum(i.quantity),0) AS quantity,"
             + " COALESCE(sum(i.quantity) FILTER (WHERE upper(i.product_type)='CAKE'),0) AS cakes,"
             + " COALESCE(sum(i.quantity) FILTER (WHERE upper(i.product_type)='CAKE' AND cake_size_inches(i.attributes) IS NULL),0) AS unknown_size,"
-            + " string_agg(i.name || ' ×' || i.quantity || CASE WHEN i.attributes->>'size' IS NULL THEN '' ELSE '（' || (i.attributes->>'size') || '）' END, '、' ORDER BY i.created_at,i.id) AS products"
+            + " string_agg(i.name || ' ×' || i.quantity || CASE WHEN i.attributes->>'size' IS NULL THEN '' ELSE '（' || (i.attributes->>'size') || '）' END, '、' ORDER BY i.position NULLS LAST,i.created_at,i.id) AS products"
             + " FROM cake_order_item i WHERE i.order_id=o.id AND NOT i.is_removed"
             + ITEM_MATCH + ") p ON TRUE WHERE "
             + "<choose><when test='filter.deleted'>o.deleted_at IS NOT NULL AND o.deleted_at &gt; CURRENT_TIMESTAMP - INTERVAL '720 hours' AND o.deleted_at &gt;= (CAST(#{filter.from} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai') AND o.deleted_at &lt; (CAST(#{filter.to} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')</when>"
@@ -61,6 +61,6 @@ public interface OrderManagementMapper {
             + " CASE WHEN upper(i.product_type)='CAKE' THEN COALESCE(NULLIF(regexp_replace(i.attributes->>'filling','^[[:space:]]+|[[:space:]]+$','','g'),''),'芒果') ELSE i.attributes->>'filling' END AS filling,"
             + " i.attributes->>'message' AS message,i.attributes->>'requirements' AS requirements,i.attributes->>'specification' AS specification,i.unit_price_cents,i.member_price_cents"
             + " FROM (SELECT o.id,o.order_no," + ORDER_PICKUP_DATE + " AS requested_receive_date" + SOURCE + ") selected JOIN cake_order_item i ON i.order_id=selected.id"
-            + " WHERE NOT i.is_removed" + ITEM_MATCH + " ORDER BY selected.requested_receive_date,selected.order_no,i.created_at,i.id LIMIT #{limit}</script>")
+            + " WHERE NOT i.is_removed" + ITEM_MATCH + " ORDER BY selected.requested_receive_date,selected.order_no,i.position NULLS LAST,i.created_at,i.id LIMIT #{limit}</script>")
     List<ProductRow> products(@Param("filter") Filter filter, @Param("limit") int limit);
 }

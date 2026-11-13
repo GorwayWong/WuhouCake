@@ -27,7 +27,7 @@ public interface OrderMapper {
     Row lock(String id);
     @Select("SELECT id::text, order_id::text, name, product_type, quantity, unit_price_cents, member_price_cents, attributes::text,"
             + " production_status, current_stage_code, is_removed AS removed, created_at, updated_at FROM cake_order_item"
-            + " WHERE order_id=CAST(#{id} AS uuid) ORDER BY created_at, id")
+            + " WHERE order_id=CAST(#{id} AS uuid) ORDER BY position NULLS LAST, created_at, id")
     List<ItemRow> items(String id);
     @Insert("INSERT INTO cake_order (id, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
@@ -37,10 +37,12 @@ public interface OrderMapper {
             + " CAST(#{creditedEmployeeId} AS uuid), #{creditedEmployeeNumber}, #{creditedEmployeeName}, #{requestedReceiveAt}, #{paidAt}, #{orderingMethod}, #{originalAmountCents}, #{memberAmountCents}, #{paymentMethod}, #{pricingMode})")
     void insert(Row row);
     @Insert("INSERT INTO cake_order_item (id, order_id, name, product_type, quantity, unit_price_cents, member_price_cents, attributes,"
-            + " production_status, current_stage_code, is_removed, created_at, updated_at) VALUES (CAST(#{id} AS uuid), CAST(#{orderId} AS uuid),"
-            + " #{name}, #{productType}, #{quantity}, #{unitPriceCents}, #{memberPriceCents}, CAST(#{attributes} AS jsonb), #{productionStatus},"
-            + " #{currentStageCode}, #{removed}, #{createdAt}, #{updatedAt})")
-    void insertItem(ItemRow row);
+            + " production_status, current_stage_code, is_removed, created_at, updated_at, position) VALUES (CAST(#{row.id} AS uuid), CAST(#{row.orderId} AS uuid),"
+            + " #{row.name}, #{row.productType}, #{row.quantity}, #{row.unitPriceCents}, #{row.memberPriceCents}, CAST(#{row.attributes} AS jsonb), #{row.productionStatus},"
+            + " #{row.currentStageCode}, #{row.removed}, #{row.createdAt}, #{row.updatedAt}, #{position})")
+    void insertItem(@Param("row") ItemRow row, @Param("position") int position);
+    @Select("SELECT COALESCE(max(position),0)+1 FROM cake_order_item WHERE order_id=CAST(#{orderId} AS uuid)")
+    int nextItemPosition(String orderId);
     @Update("UPDATE cake_order SET version=version+1, updated_at=#{updatedAt} WHERE id=CAST(#{id} AS uuid) AND version=#{expected} AND deleted_at IS NULL")
     int advanceVersion(@Param("id") String id, @Param("expected") long expected, @Param("updatedAt") Instant updatedAt);
     @Update("UPDATE cake_order_item SET name=#{name}, product_type=#{productType}, quantity=#{quantity}, unit_price_cents=#{unitPriceCents},"

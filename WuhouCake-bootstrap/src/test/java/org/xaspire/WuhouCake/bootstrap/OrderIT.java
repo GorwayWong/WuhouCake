@@ -1701,6 +1701,69 @@ class OrderIT {
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='CREATED'", Integer.class, id));
     }
 
+    @Test void itemPositionsPreserveCreationOrderAndAppendAfterRemovedItems() throws Exception {
+        var staff = staff();
+        String first = "00000000-0000-0000-0000-000000000003";
+        String middle = "00000000-0000-0000-0000-000000000002";
+        String last = "00000000-0000-0000-0000-000000000001";
+        var input = new LinkedHashMap<String, Object>(create());
+        input.put("items", List.of(
+                Map.of("name", "第一件", "quantity", 1, "itemId", first),
+                Map.of("name", "第二件", "quantity", 1, "itemId", middle),
+                Map.of("name", "第三件", "quantity", 1, "itemId", last)));
+        var created = staff.request("POST", "/api/orders", input);
+        assertEquals(201, created.status, created.body.toString());
+        var order = created.body.path("data");
+        String path = "/api/orders/" + order.path("orderId").asText();
+        assertEquals(List.of(first, middle, last), query(staff, path).path("items").valueStream().map(i -> i.path("itemId").asText()).toList());
+        assertEquals("第一件", query(staff, "/api/orders/calendar?from=2026-10-16&to=2026-10-17").at("/0/items/0/name").asText());
+
+        assertEquals(200, staff.request("POST", path + "/items/" + middle + "/remove", Map.of("expectedVersion", 0)).status);
+        var added = staff.request("POST", path + "/items", Map.of("expectedVersion", 1, "item", Map.of("name", "追加", "quantity", 1)));
+        assertEquals(201, added.status, added.body.toString());
+        var latest = query(staff, path);
+        assertEquals(List.of("第一件", "第三件", "追加"), latest.path("items").valueStream().map(i -> i.path("name").asText()).toList());
+        assertEquals(List.of(1, 2, 3, 4), jdbc.queryForList(
+                "SELECT position FROM cake_order_item WHERE order_id=?::uuid ORDER BY position", Integer.class, order.path("orderId").asText()));
+
+        String appended = latest.at("/items/2/itemId").asText();
+        assertEquals(200, staff.request("POST", path + "/items/" + appended + "/remove", Map.of("expectedVersion", 2)).status);
+        var next = staff.request("POST", path + "/items", Map.of("expectedVersion", 3, "item", Map.of("name", "再次追加", "quantity", 1)));
+        assertEquals(201, next.status, next.body.toString());
+        assertEquals(5, jdbc.queryForObject("SELECT position FROM cake_order_item WHERE id=?::uuid", Integer.class, next.body.at("/data/items/2/itemId").asText()));
+    }
+
+    @Test void itemPositionMigrationPreservesLegacyOrderAndData() throws Exception {
+        String schema = "position_migration_" + UUID.randomUUID().toString().replace("-", "");
+        try (var connection = Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
+            var source = new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection, true);
+            var flyway = org.flywaydb.core.Flyway.configure().dataSource(source).schemas(schema).defaultSchema(schema)
+                    .locations("classpath:db/migration");
+            flyway.target("31").load().migrate(); connection.setSchema(schema);
+            var legacy = new JdbcTemplate(source);
+            var order = UUID.randomUUID();
+            legacy.update("""
+                    INSERT INTO cake_order(id,order_no,status,customer_phone,fulfillment_type,requested_receive_date,
+                        created_by,created_at,confirmed_at,updated_at,total_amount_cents)
+                    VALUES (?,'OLD-POSITION','CAKE_BASE','13800000000','PICKUP','2026-11-14',?,now(),now(),now(),777)
+                    """, order, UUID.randomUUID());
+            legacy.update("""
+                    INSERT INTO cake_order_item(id,order_id,name,product_type,quantity,is_removed,created_at,updated_at)
+                    VALUES ('00000000-0000-0000-0000-000000000003',?,'最早','OTHER',1,false,'2026-11-01T00:00:00Z',now()),
+                           ('00000000-0000-0000-0000-000000000002',?,'同刻后','OTHER',2,true,'2026-11-02T00:00:00Z',now()),
+                           ('00000000-0000-0000-0000-000000000001',?,'同刻前','OTHER',3,false,'2026-11-02T00:00:00Z',now())
+                    """, order, order, order);
+            var beforeOrder = legacy.queryForMap("SELECT * FROM cake_order");
+            var beforeItems = legacy.queryForList("SELECT to_jsonb(i)::text AS item FROM cake_order_item i ORDER BY created_at,id");
+            flyway.target("32").load().migrate(); connection.setSchema(schema);
+            assertEquals(beforeOrder, legacy.queryForMap("SELECT * FROM cake_order"));
+            assertEquals(beforeItems, legacy.queryForList("""
+                    SELECT (to_jsonb(i)-'position')::text AS item FROM cake_order_item i ORDER BY position NULLS LAST,created_at,id
+                    """));
+            assertEquals(List.of(1, 2, 3), legacy.queryForList("SELECT position FROM cake_order_item ORDER BY position", Integer.class));
+        } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
+    }
+
     @Test void itemPricingMigrationLeavesHistoricalAmountsAndItemsUntouched() throws Exception {
         String schema = "pricing_migration_" + UUID.randomUUID().toString().replace("-", "");
         try (var connection = Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
