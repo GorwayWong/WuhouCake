@@ -81,7 +81,8 @@ public class SecurityConfiguration {
             authorize.requestMatchers(GET, "/api/orders/workbench/payment-orders").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
             authorize.requestMatchers(GET, "/api/orders/workbench/receipt-summary").access(permissions(ORDER_READ, ORDER_AMOUNT_READ));
             authorize.requestMatchers(GET, "/api/orders/workbench/cake-bases",
-                    "/api/orders/workbench/production-summary", "/api/orders/workbench/production-orders").access(permissions(ORDER_READ));
+                    "/api/orders/workbench/production-summary", "/api/orders/workbench/production-orders",
+                    "/api/orders/workbench/production-reminders", "/api/orders/workbench/production-reminder-orders").access(permissions(ORDER_READ));
             authorize.requestMatchers(GET, "/api/orders/{id}/notes").access(permissions(ORDER_READ));
             authorize.requestMatchers(GET, "/api/orders/{id}/customer-origin").access(permissions(ORDER_READ, ORDER_CUSTOMER_READ));
             authorize.requestMatchers(GET, "/api/orders/calendar", "/api/orders/workbench", "/api/orders/stream", "/api/orders/{id}",
@@ -93,7 +94,7 @@ public class SecurityConfiguration {
             authorize.requestMatchers(POST, "/api/orders", "/api/orders/recognition/parse", "/api/orders/recognition/assist").access(permissions(ORDER_CREATE));
             authorize.requestMatchers(PATCH, "/api/orders/{id}", "/api/orders/{id}/information").access(permissions(ORDER_EDIT));
             authorize.requestMatchers(POST, "/api/orders/{id}/items", "/api/orders/{id}/items/{itemId}/remove").access(permissions(ORDER_EDIT));
-            authorize.requestMatchers(PATCH, "/api/orders/{id}/payment-status").access(permissions(ORDER_PAYMENT_UPDATE));
+            authorize.requestMatchers(PATCH, "/api/orders/{id}/payment-status").access(permissions(ORDER_AMOUNT_READ, ORDER_PAYMENT_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/production-actions").access(permissions(ORDER_PRODUCTION_UPDATE));
             authorize.requestMatchers(PATCH, "/api/orders/{id}/items/{itemId}/production-status").access(permissions(ORDER_PRODUCTION_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/fulfillment-actions").access(permissions(ORDER_FULFILLMENT_UPDATE));

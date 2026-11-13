@@ -67,6 +67,20 @@ class OrderPackageIT {
         }
     }
 
+    @Test void packageTotalsAreCalculatedFromItemsAndRecomputedOnUpdate() throws Exception {
+        var first = Map.of("itemId", UUID.randomUUID(), "name", "点心", "productType", "OTHER", "quantity", 2,
+                "unitPriceCents", 1001, "memberPriceCents", 900, "attributes", Map.of("specification", "少糖"));
+        var second = Map.of("itemId", UUID.randomUUID(), "name", "果汁", "productType", "OTHER", "quantity", 3, "unitPriceCents", 301);
+        var command = Map.of("name", "汇总套餐", "items", List.of(first, second), "originalAmountCents", 999, "memberAmountCents", 999);
+        var saved = manager.data("POST", "/api/order-packages", command);
+        String id = saved.path("id").asText();
+        assertEquals(2905, saved.path("originalAmountCents").asLong()); assertEquals(2703, saved.path("memberAmountCents").asLong());
+        assertEquals(saved, manager.data("GET", "/api/order-packages/" + id, null));
+        var updated = manager.data("PUT", "/api/order-packages/" + id, Map.of("name", "汇总套餐", "items", List.of(second), "expectedVersion", 0));
+        assertEquals(903, updated.path("originalAmountCents").asLong()); assertTrue(updated.path("memberAmountCents").isNull());
+        assertEquals(updated, manager.data("GET", "/api/order-packages/" + id, null));
+    }
+
     @Test void managerMaintainsTemplatesAndStaffCanOnlyReadThem() throws Exception {
         var body = bundle("  下午茶  ", 1);
         assertEquals(401, new Client().raw("GET", "/api/order-packages", null).statusCode());
@@ -171,7 +185,8 @@ class OrderPackageIT {
         var saved = json.readTree(created.body()).path("data");
         assertEquals(saved, json.readTree(manager.multipart(body, image, picture.toByteArray(), key).body()).path("data"));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
-        assertEquals(18000, saved.path("memberAmountCents").asInt());
+        assertTrue(saved.path("memberAmountCents").isNull());
+        assertTrue(saved.path("originalAmountCents").isNull());
         var baker = employee("BAKER", List.of("BAKER"), "STAFF");
         var hidden = baker.data("GET", "/api/order-packages/" + saved.path("id").asText(), null);
         assertTrue(hidden.path("originalAmountCents").isNull());

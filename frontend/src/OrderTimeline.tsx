@@ -1,4 +1,4 @@
-import { pickupInstant } from './orderTimes';
+import { pickupInstant, pickupTimeLabel } from './orderTimes';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CaretRight, CaretDown, CaretUp } from '@phosphor-icons/react';
 import { businessDate, businessTime } from './dates';
@@ -11,7 +11,10 @@ import { orderAccess } from './access';
 import { productionCardFields } from './productionFields';
 import { ProductionThumbnail } from './ProductionView';
 
-function OrderSummaryCard({ order, view, account, newlyCreated, onCreatedOrderVisible }: { order: PendingOrder; view: CalendarView; account: Account; newlyCreated: boolean; onCreatedOrderVisible?: (element: HTMLAnchorElement) => void }) {
+export function OrderSummaryCard({ order, view, account, newlyCreated = false, showFinishTime = false, onCreatedOrderVisible }: {
+  order: PendingOrder; view: CalendarView; account: Account; newlyCreated?: boolean; showFinishTime?: boolean;
+  onCreatedOrderVisible?: (element: HTMLAnchorElement) => void;
+}) {
   const access = orderAccess(account);
   const card = useRef<HTMLAnchorElement>(null);
   useLayoutEffect(() => { if (newlyCreated && card.current) onCreatedOrderVisible?.(card.current); }, [newlyCreated, onCreatedOrderVisible]);
@@ -22,9 +25,11 @@ function OrderSummaryCard({ order, view, account, newlyCreated, onCreatedOrderVi
     <div className="order-summary-title">{access.productionView && <ProductionThumbnail orderId={order.orderId} itemId={order.items[0]?.itemId} />}<div className="order-summary-caption"><h3>{order.items[0]?.name || `订单 #${order.orderNo}`}{!access.productionView && order.items.length > 1 && <span className="order-summary-more"> · 另有 {order.items.length - 1} 项</span>}</h3>{access.productionView && <span>{order.items.length} 项 · {order.items.reduce((sum, item) => sum + item.quantity, 0)} 件{order.items.length > 1 ? ` · 另有 ${order.items.length - 1} 项` : ''}</span>}</div><CaretRight aria-hidden="true" /></div>
     {access.productionView ? <>
       <dl className="production-card-specifications">{productionCardFields(order.items[0]).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-      <div className="order-summary-meta"><span className="order-summary-number">#{order.orderNo}</span></div>
+      <div className="order-summary-meta"><span className="order-summary-number">#{order.orderNo}</span>
+        {showFinishTime && <span>出品 {businessTime(order.plannedFinishAt)}</span>}
+      </div>
     </> : <dl className="front-card-times">
-      <div><dt>取货时间</dt><dd>{pickupInstant(order) ? businessTime(pickupInstant(order)!) : `${businessDate(order.calendarDate)} · 时刻待定`}</dd></div>
+      <div><dt>{pickupTimeLabel(order.fulfillmentType)}</dt><dd>{pickupInstant(order) ? businessTime(pickupInstant(order)!) : `${businessDate(order.calendarDate)} · 时刻待定`}</dd></div>
       <div><dt>出品时间</dt><dd>{order.plannedFinishAt ? businessTime(order.plannedFinishAt) : '待定'}</dd></div>
     </dl>}
     <div className="badges"><Status order={order} />{access.amounts && <Payment status={order.paymentStatus} />}</div>

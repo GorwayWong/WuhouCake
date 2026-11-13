@@ -5,11 +5,12 @@ import { time } from './dates';
 import { exactYuan } from './money';
 import { errorText } from './api';
 import { productTypeLabel } from './productTypes';
-import { displayedStatusCode, statusNames } from './orderStates';
+import { visibleSpecification } from './specificationText';
+import { displayedStatusCode, fulfillmentStatusName } from './orderStates';
 export { statusNames } from './orderStates';
 
 export function statusLabel(order: OrderStatus) {
-  return statusNames[displayedStatusCode(order)] || '状态待更新';
+  return fulfillmentStatusName(displayedStatusCode(order), order.fulfillment?.type ?? order.fulfillmentType);
 }
 export function Status({ order }: { order: OrderStatus }) {
   const status = displayedStatusCode(order);
@@ -37,20 +38,24 @@ export function valueText(value: unknown): string {
   return String(value);
 }
 export function money(cents: number | null) { return cents == null ? '未填写' : `¥${exactYuan(cents)}`; }
-export function itemSpecification(item: Pick<Item, 'attributes' | 'unitPriceCents' | 'memberPriceCents'>, prices = false) {
-  const lines = [valueText(item.attributes.specification ?? '')];
-  if (prices) {
-    if (item.unitPriceCents != null) lines.push(`原商品单价：${money(item.unitPriceCents)}（仅供参考）`);
-    if (item.memberPriceCents != null) lines.push(`原会员单价：${money(item.memberPriceCents)}（仅供参考）`);
-  }
-  return lines.filter(Boolean).join('\n');
+export function itemSpecification(item: Pick<Item, 'attributes'>) {
+  return valueText(visibleSpecification(item.attributes.specification) ?? '').trim();
 }
-export function Product({ item, prices = false, children, actions, completion }: { item: Item; prices?: boolean; children?: ReactNode; actions?: ReactNode; completion?: ReactNode }) {
+export function ItemPriceFields({ item, itemSum }: { item: Item; itemSum: boolean }) {
+  const suffix = itemSum ? '' : '（仅供参考）';
+  return <>
+    {item.unitPriceCents != null && <div><dt>{itemSum ? '原单价' : '原商品单价'}</dt><dd>{money(item.unitPriceCents)}{suffix}</dd></div>}
+    {item.memberPriceCents != null && <div><dt>{itemSum ? '会员单价' : '原会员单价'}</dt><dd>{money(item.memberPriceCents)}{suffix}</dd></div>}
+  </>;
+}
+export function Product({ item, prices = false, itemSum = false, children, actions, completion }: { item: Item; prices?: boolean; itemSum?: boolean; children?: ReactNode; actions?: ReactNode; completion?: ReactNode }) {
+  const specification = itemSpecification(item);
   return <section className="product" aria-label={`商品 ${item.name}`}>
     <div className="product-heading-row"><div className="product-heading"><span className="product-mark"><Cake size={24} /></span><div className="product-title"><h3>{item.name}</h3><span className="muted">{productTypeLabel(item.productType || 'CAKE')} · 数量 {item.quantity}</span></div></div>{completion}</div>
     {actions}
     {children || <dl className="attributes">{Object.entries(item.attributes || {}).filter(([key]) => key !== 'specification').map(([key, value]) => <div key={key}><dt>{attributeNames[key] || key}</dt><dd className="product-spec-text">{valueText(value)}</dd></div>)}
-      {itemSpecification(item, prices) && <div><dt>规格</dt><dd className="product-spec-text">{itemSpecification(item, prices)}</dd></div>}
+      {specification && <div><dt>商品说明</dt><dd className="product-spec-text">{specification}</dd></div>}
+      {prices && <ItemPriceFields item={item} itemSum={itemSum} />}
     </dl>}
     <RecentProductNotes item={item} />
   </section>;

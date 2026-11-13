@@ -122,16 +122,18 @@ test('识别默认奶油在品类切换时清除，手工确认后的奶油保�
   assert.equal(changeItemDraft(manual, { productType: 'BREAD' }).attributes.specification, '奶油：巧克力奶油');
 });
 
-test('新建页识别将自提写入地址，仅有取货时间时带入收货时间，并保留手工地址和日期', () => {
+test('新建页识别将自提写入交接方式，仅有取货时间时带入收货时间，并保留手工地址和日期', () => {
   const result = candidate();
   result.fields.fulfillmentType = field('PICKUP');
+  result.fields.address = field('自提');
   result.fields.requestedReceiveDate = field(null);
   result.fields.plannedHandoffAt = field('2027-01-02T10:30');
   const normalized = orderEntryRecognition(result, new Set());
-  assert.equal(normalized.fields.address.value, '自提');
+  assert.equal(normalized.fields.fulfillmentType.value, 'PICKUP');
+  assert.equal('address' in normalized.fields, false);
   assert.equal(normalized.fields.requestedReceiveAt.value, '2027-01-02T10:30');
   assert.equal('plannedHandoffAt' in normalized.fields, false);
-  assert.equal('fulfillmentType' in normalized.fields, false);
+  assert.equal('fulfillmentType' in orderEntryRecognition(result, new Set(['fulfillmentType'])).fields, false);
   const manual = orderEntryRecognition(result, new Set(['address', 'requestedReceiveDate']));
   assert.equal('address' in manual.fields, false);
   assert.equal('requestedReceiveAt' in manual.fields, false);
@@ -181,6 +183,38 @@ test('没有有效商品内容时保留已有商品，不因空标题或无效�
   assert.deepEqual(filled.draft.items, current.items);
   assert(filled.feedback[feedbackKey('quantity', current.items[0].key)].error);
   result.items = []; assert.deepEqual(apply(current, result).draft.items, current.items);
+});
+test('纯单位不会替换商品、清除取货日期或覆盖补充识别的商品说明', () => {
+  const current = newDraft('2026-10-16');
+  const item = current.items[0];
+  item.name = '原蛋糕';
+  item.attributes.specification = '六只装';
+  item.images = [{ id: 'reference', name: '参考图.png', type: 'image/png', size: 10 }];
+  current.items.push({ ...newItem(), name: '第二个商品' });
+  const before = structuredClone(current);
+  const result = candidate();
+  result.fields = {};
+  result.items = [{ id: 'unit', fields: { specification: field('个、块') } }];
+  const filled = apply(current, result);
+  assert.deepEqual(filled.draft, before);
+  assert.deepEqual(current, before);
+  assert.equal(filled.replacedItems, false);
+  assert.equal(filled.cleared, 0);
+
+  result.items[0].fields.specification = field('个/块', 'MODEL');
+  const supplemented = applyRecognition(current, current, result, new Set(), { supplement: true, targets: { unit: item.key } });
+  assert.deepEqual(supplemented.draft, before);
+  assert.deepEqual(current, before);
+  assert.equal(supplemented.applied, 0);
+
+  result.items.push({
+    id: 'valid', fields: { name: field('新点心'), quantity: field('3'), specification: field('块') },
+  });
+  const replaced = apply(current, result);
+  assert.deepEqual(current, before);
+  assert.equal(replaced.replacedItems, true);
+  assert.deepEqual(replaced.draft.items.map(({ name, quantity, attributes }) =>
+    [name, quantity, attributes.specification]), [['新点心', '3', '']]);
 });
 test('撤销替换恢复原商品，新带入商品经手改则整体保留，主动删除的商品不复活', () => {
   const before = newDraft('2026-10-16'); before.items[0].name = '原蛋糕';
@@ -277,18 +311,17 @@ test('非蛋糕折入备注的空值冲突和有效提示可恢复，手改后�
   assert.equal(box.attributes.specification, '');
   const feedback = retainRecognitionFeedback(filled.draft, filled.feedback);
   const fields = formFeedback(filled.draft, feedback);
-  assert.equal(fields['items.0.specification'].error, '其他要求：内容冲突，请核对');
+  assert.equal(fields['items.0.requirements'].error, '内容冲突，请核对');
   assert.equal(fields['items.0.specification'].hint, '奶油：请核对口味');
   assert.equal(fields['items.0.specification'].source, 'MODEL');
-  assert.equal(fields['items.1.specification'].error, '其他要求：包装要求不明确');
-  assert.equal(fields['items.0.requirements'], undefined);
+  assert.equal(fields['items.1.requirements'].error, '包装要求不明确');
   const record = freshOrderDraft('alice', '2026-10-16');
   const restored = decodeOrderDraft(JSON.stringify({ ...record, revision: 'saved', updatedAt: '2026-10-16T00:00:00Z',
     value: filled.draft, editor: { ...record.editor, feedback } }), 'alice')!;
   const restoredFields = formFeedback(restored.value, retainRecognitionFeedback(restored.value, restored.editor.feedback));
   assert.deepEqual(restoredFields['items.0.specification'], fields['items.0.specification']);
-  assert.deepEqual(restoredFields['items.1.specification'], fields['items.1.specification']);
-  const edited = setCandidate(restored.value, 'specification', '已确认', drink.key);
-  assert.equal(formFeedback(edited, retainRecognitionFeedback(edited, feedback))['items.0.specification'], undefined);
+  assert.deepEqual(restoredFields['items.1.requirements'], fields['items.1.requirements']);
+  const edited = setCandidate(restored.value, 'requirements', '已确认', drink.key);
+  assert.equal(formFeedback(edited, retainRecognitionFeedback(edited, feedback))['items.0.requirements'], undefined);
   assert.deepEqual(undoRecognition(filled.draft, initial, filled.draft), initial);
 });

@@ -31,13 +31,18 @@ class OrderPricingTest {
         assertThrows(OrderFailure.class, () -> create(null, 9007199254740992L, "CASH"));
         assertThrows(OrderFailure.class, () -> create(null, null, "INVALID"));
     }
-    @Test void priceCorrectionRecomputesEffectiveAmountWithoutChangingPaymentTimeAndCanClearQuotes() {
+    @Test void paidOrderLocksEffectiveAmountUntilPaymentIsRevoked() {
         var order = create(15800L, 12800L, "CASH");
         order.reviseInformation(Map.of("originalAmountCents", 16800), NOW.plusSeconds(1));
         assertEquals(12800L, order.totalAmountCents()); assertEquals(16800L, order.originalAmountCents());
         var clearMember = new HashMap<String, Object>(); clearMember.put("memberAmountCents", null);
+        assertEquals("ORDER_PAID_AMOUNT_LOCKED", assertThrows(OrderFailure.class,
+                () -> order.reviseInformation(clearMember, NOW.plusSeconds(2))).getMessage());
+        assertEquals(12800L, order.totalAmountCents());
+        assertEquals(NOW, order.paidAt());
+        order.changePaymentStatus("UNPAID", "UNPAID", NOW.plusSeconds(2));
         order.reviseInformation(clearMember, NOW.plusSeconds(2));
-        assertEquals(16800L, order.totalAmountCents()); assertNull(order.memberAmountCents()); assertEquals(NOW, order.paidAt());
+        assertEquals(16800L, order.totalAmountCents()); assertNull(order.memberAmountCents()); assertNull(order.paidAt());
         var clearOriginal = new HashMap<String, Object>(); clearOriginal.put("originalAmountCents", null);
         order.reviseInformation(clearOriginal, NOW.plusSeconds(3)); assertNull(order.totalAmountCents());
         order.reviseInformation(Map.of("memberAmountCents", 0), NOW.plusSeconds(4)); assertEquals(0L, order.totalAmountCents());

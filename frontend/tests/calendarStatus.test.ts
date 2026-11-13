@@ -5,7 +5,7 @@ import { allCalendarFilters, calendarStatusOptions, matchesCalendarFilters } fro
 test('工作台筛选展示六节点流程及取消状态', () => {
   assert.deepEqual(calendarStatusOptions(), [
     ['CAKE_BASE', '出胚'], ['LAYER', '夹层'], ['FROSTING', '抹面'], ['DECORATING', '装饰'],
-    ['WAITING_DELIVERY', '待配送'], ['COMPLETED', '已配送'], ['CANCELLED', '已取消'],
+    ['WAITING_DELIVERY', '待交接'], ['COMPLETED', '已交接'], ['CANCELLED', '已取消'],
   ]);
 });
 test('筛选语义与卡片显示相同，付款状态仍独立生效', () => {

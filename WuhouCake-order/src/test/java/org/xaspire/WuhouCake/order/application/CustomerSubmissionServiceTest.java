@@ -46,6 +46,8 @@ class CustomerSubmissionServiceTest {
                 List.of(new CustomerSubmissions.DuplicateItem("蛋糕", 1)), 100L, "客服", NOW, !"CANCELLED".equals(status));
     }
     @Test void searchNormalizesReceiptsAndPhonesAndUsesTheSameScopeForCount() {
+        when(store.count(null, "ALL", id.toString())).thenReturn(21L);
+        when(store.count(owner, "PENDING", "13800001234")).thenReturn(1L);
         service.search(false, "ALL", " F" + id.toString().toUpperCase(Locale.ROOT) + " ", 2, 20);
         verify(store).search(null, "ALL", id.toString(), 20, 20L);
         verify(store).count(null, "ALL", id.toString());
@@ -54,6 +56,15 @@ class CustomerSubmissionServiceTest {
         verify(store).count(owner, "PENDING", "13800001234");
         service.pendingCount(); verify(store).count(null, "PENDING", "");
         assertThrows(OrderFailure.class, () -> service.search(false, "DELETED", "", 1, 20));
+    }
+    @Test void searchClampsShrinkingPagesAndEmptyResults() {
+        when(store.count(owner, "PENDING", "138")).thenReturn(20L);
+        var page = service.search(true, "PENDING", "138", 2, 20);
+        assertEquals(1, page.page()); assertEquals(20, page.total());
+        verify(store).search(owner, "PENDING", "138", 20, 0L);
+        when(store.count(owner, "PENDING", "138")).thenReturn(0L);
+        var empty = service.search(true, "PENDING", "138", Integer.MAX_VALUE, 20);
+        assertEquals(1, empty.page()); assertEquals(0, empty.total()); assertTrue(empty.items().isEmpty());
     }
     @Test void allCandidateVersionsAndStatusesContributeToTheAcknowledgement() {
         String original = service.detail(id).duplicateCheckToken();

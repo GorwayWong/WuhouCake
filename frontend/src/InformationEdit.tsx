@@ -1,4 +1,4 @@
-import { changePickupTime, changeFinishTime, pickupInstant, pickupDate, hasLegacyTimeConflict } from './orderTimes';
+import { changePickupTime, changeFinishTime, pickupTimeLabel, pickupInstant, pickupDate, hasLegacyTimeConflict } from './orderTimes';
 import { FinishTimeHelp } from './FinishTimeHelp';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -19,7 +19,7 @@ export function InformationSummary({ order, includeAmount = false }: { order: De
     <div><dt>下单员工（业绩归属）</dt><dd>{order.creditedEmployee ? `${order.creditedEmployee.nickname} · ${order.creditedEmployee.employeeNumber}` : '未归属'}</dd></div>
     <div><dt>客户姓名</dt><dd>{order.customer?.customerName || '未填写'}</dd></div><div><dt>联系电话</dt><dd><a href={`tel:${order.customer?.phone}`}>{order.customer?.phone}</a></dd></div>
     <div><dt>会员手机</dt><dd>{order.customer?.memberPhone || '未填写'}</dd></div><div><dt>订购人姓名</dt><dd>{order.customer?.buyerName || '未填写'}</dd></div>
-    <div><dt>取货时间</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
+    <div><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
     <div><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div><div><dt>下单时间</dt><dd>{businessTime(order.createdAt)}</dd></div>
     <div className="wide"><dt>{order.fulfillment.type === 'PICKUP' ? '自提安排' : '配送地址'}</dt><dd>{order.fulfillment.type === 'PICKUP' ? `门店自提${order.fulfillment.address ? ` · ${order.fulfillment.address}` : ''}` : order.fulfillment.address}</dd></div>
     {includeAmount && <div><dt>订单约定总金额</dt><dd>{money(order.totalAmountCents)}</dd></div>}
@@ -28,9 +28,10 @@ export function InformationSummary({ order, includeAmount = false }: { order: De
 function Field({ name, label, error, children, wide = false }: { name: string; label: string; error?: string; children: ReactNode; wide?: boolean }) {
   return <label className={wide ? 'form-wide' : undefined} htmlFor={`edit-${name}`}>{label}{children}{error && <span className="field-error" id={`edit-${name}-error`}>{error}</span>}</label>;
 }
-export function InformationEdit({ initial, latest, busy, error, onSave, onCancel, onDirtyChange, onSaveUnchanged, amountOnly = false }: {
-  amountOnly?: boolean; initial: Detail; latest: Detail; busy: boolean; error: unknown; onSave: (request: InformationRequest) => Promise<unknown>; onSaveUnchanged?: () => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
+export function InformationEdit({ initial, latest, busy, error, onSave, onCancel, onDirtyChange, onSaveUnchanged, amountOnly = false, canEditAmount = true, hasStagedImages = false }: {
+  amountOnly?: boolean; canEditAmount?: boolean; hasStagedImages?: boolean; initial: Detail; latest: Detail; busy: boolean; error: unknown; onSave: (request: InformationRequest) => Promise<unknown>; onSaveUnchanged?: (keepEditing?: boolean) => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
 }) {
+  canEditAmount = canEditAmount && initial.pricingMode !== 'ITEM_SUM';
   busy = busy || Boolean(latest.deletion || latest.deleted);
   const [draft, setDraft] = useState(() => informationDraft(initial));
   const [baseline, setBaseline] = useState<Detail | null>(initial);
@@ -40,6 +41,15 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
   const form = useRef<HTMLFormElement>(null);
   const request = (baseline = initial) => amountOnly ? amountInformationRequest(initial, draft.totalAmount, baseline, draft.memberAmount ?? '') : informationRequest(initial, draft, baseline);
   const pending = request();
+  const amountLocked = latest.paymentStatus === 'PAID';
+  const initialDraft = informationDraft(initial);
+  const amountDraftChanged = draft.totalAmount !== initialDraft.totalAmount || (draft.memberAmount || '') !== (initialDraft.memberAmount || '');
+  const saveOtherFields = amountLocked && !amountOnly && amountDraftChanged;
+  const result = amountLocked && !amountOnly
+    ? informationRequest(initial, { ...draft, totalAmount: initialDraft.totalAmount, memberAmount: initialDraft.memberAmount }, baseline ?? initial)
+    : request(baseline ?? initial);
+  const onlyLockedAmount = amountLocked && (amountOnly || (amountDraftChanged && !result.request && !Object.keys(result.errors).length));
+  const saveImagesOnly = onlyLockedAmount && hasStagedImages && Boolean(onSaveUnchanged);
   const dirty = Boolean(pending.request) || Boolean(Object.keys(pending.errors).length && JSON.stringify(draft) !== JSON.stringify(informationDraft(initial)));
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -50,7 +60,12 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
   return <form ref={form} className="information-form" noValidate onSubmit={async event => {
     event.preventDefault();
     if (busy || !baseline || stale) return;
-    const result = request(baseline);
+    if (onlyLockedAmount) {
+      if (saveImagesOnly) {
+        try { await onSaveUnchanged?.(true); } catch { /* 图片保存提示由父级展示。 */ }
+      }
+      return;
+    }
     setErrors(result.errors);
     if (Object.keys(result.errors).length) {
       focusFormField(form.current, Object.keys(result.errors)[0]);
@@ -71,14 +86,15 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
       </div></div>
       <div className="information-group"><h3>配送／自提与交接时间</h3><div className="create-grid">
         <Field name="fulfillmentType" label="交接方式" error={errors.fulfillmentType}><Select label="交接方式" disabled={busy} {...props('fulfillmentType')} value={draft.fulfillmentType} onChange={value => change({ ...draft, fulfillmentType: value as typeof draft.fulfillmentType })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></Select></Field>
-        <Field name="requestedReceiveAt" label="取货时间 *" error={errors.requestedReceiveAt || errors.requestedReceiveDate} wide><DateInput label="取货时间" disabled={busy} {...props('requestedReceiveAt')} type="datetime-local" timeOptional required resetTimeOnDateChange value={draft.requestedReceiveAt} onChange={(value, parts) => change({ ...changePickupTime(draft, value), requestedReceiveDate: parts?.date || '' })} /><span className="form-help">客户或配送员从门店取走商品的时间，日期必填，时刻可待定。</span></Field>
+        <Field name="requestedReceiveAt" label={pickupTimeLabel(draft.fulfillmentType) + ' *'} error={errors.requestedReceiveAt || errors.requestedReceiveDate} wide><DateInput label={pickupTimeLabel(draft.fulfillmentType)} disabled={busy} {...props('requestedReceiveAt')} type="datetime-local" timeOptional required resetTimeOnDateChange value={draft.requestedReceiveAt} onChange={(value, parts) => change({ ...changePickupTime(draft, value), requestedReceiveDate: parts?.date || '' })} /><span className="form-help">客户或配送员从门店取走商品的时间，日期必填，时刻可待定。</span></Field>
         <Field name="address" label={draft.fulfillmentType === 'DELIVERY' ? '配送地址 *' : '地址（自提可留空）'} error={errors.address} wide><textarea {...props('address')} rows={2} required={draft.fulfillmentType === 'DELIVERY'} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} /></Field>
-        <Field name="plannedFinishAt" label="出品时间" error={errors.plannedFinishAt}><DateInput label="出品时间" disabled={busy} {...props('plannedFinishAt')} type="datetime-local" value={draft.plannedFinishAt} onChange={value => change(changeFinishTime(draft, value))} /><FinishTimeHelp draft={draft} disabled={busy} onChange={change} /></Field>
+        <Field name="plannedFinishAt" label="出品时间" error={errors.plannedFinishAt}><DateInput label="出品时间" disabled={busy} {...props('plannedFinishAt')} type="datetime-local" dateDisplay={draft.plannedFinishAt && draft.plannedFinishAt.slice(0, 10) !== draft.requestedReceiveAt.slice(0, 10) ? 'full' : 'business'} value={draft.plannedFinishAt} onChange={value => change(changeFinishTime(draft, value))} /><FinishTimeHelp draft={draft} error={errors.plannedFinishAt} disabled={busy} onChange={change} /></Field>
       </div>{hasLegacyTimeConflict(initial.fulfillment) && <p className="notice" role="status">历史时间不同，请核对：原到店取货时间 {businessTime(initial.fulfillment.plannedHandoffAt!)}；原客户收货时间 {businessTime(initial.fulfillment.requestedReceiveAt!)}。修改取货时间后，两项将同步。</p>}</div></>}
-      <div className="information-group"><h3>金额信息</h3><div className="create-grid order-pricing-fields"><Field name="totalAmount" label="原价（元）" error={errors.totalAmount}><input {...props('totalAmount')} autoFocus={amountOnly} inputMode="decimal" value={draft.totalAmount} placeholder="未填写" onChange={event => change({ ...draft, totalAmount: event.target.value })} /></Field><Field name="memberAmount" label="会员价（元）" error={errors.memberAmount}><input {...props('memberAmount')} inputMode="decimal" value={draft.memberAmount || ''} placeholder="未填写" onChange={event => change({ ...draft, memberAmount: event.target.value })} /></Field></div><p className="form-help">会员价优先作为成交金额，未填则使用原价。留空为未报价，0 为零元。付款状态不变。</p></div>
-      <ErrorNotice error={error} />{creationResultUnknown(error) && <p className="notice error" role="alert">资料保存结果未确认，图片仍暂存。请先核对最新资料，再决定保存或取消；取消不会撤销可能已保存的资料。</p>}
-      {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已更新，输入已保留。核对最新内容后再保存。' : '已核对，请确认修改后保存。'}{!baseline && !canReview && '请先刷新订单。'}</p><h3>最新资料（用于核对）</h3>{amountOnly ? <p>当前订单金额：{money(latest.totalAmountCents)}</p> : <InformationSummary order={latest} includeAmount />}{stale && <button type="button" className="secondary" disabled={!canReview} onClick={() => { setBaseline(latest); setConflict(true); }}>已核对最新版本，继续编辑</button>}</div>}
-      <div className="actions"><button className="primary" disabled={busy || stale}>{busy ? '正在保存…' : '保存修改'}</button><button className="secondary" type="button" onClick={onCancel}>取消</button></div>
+      {canEditAmount && (initial.paymentStatus !== 'PAID' || !amountLocked || amountDraftChanged) && <div className="information-group"><h3>金额信息</h3><div className="create-grid order-pricing-fields"><Field name="totalAmount" label="原价（元）" error={amountLocked ? undefined : errors.totalAmount}><input {...props('totalAmount')} disabled={amountLocked} autoFocus={amountOnly} inputMode="decimal" value={draft.totalAmount} placeholder="未填写" onChange={event => change({ ...draft, totalAmount: event.target.value })} /></Field><Field name="memberAmount" label="会员价（元）" error={amountLocked ? undefined : errors.memberAmount}><input {...props('memberAmount')} disabled={amountLocked} inputMode="decimal" value={draft.memberAmount || ''} placeholder="未填写" onChange={event => change({ ...draft, memberAmount: event.target.value })} /></Field></div><p className="form-help">会员价优先作为成交金额，未填则使用原价。留空为未报价，0 为零元。</p></div>}
+      {canEditAmount && amountLocked && <p className="notice" role="status">已登记付款，金额暂不能保存。请先撤销付款登记再改价。{saveOtherFields && !onlyLockedAmount && '本次仅保存其他资料，金额修改不提交。'}</p>}
+      <ErrorNotice error={error} />{creationResultUnknown(error) && <p className="notice error" role="alert">{amountOnly ? '金额保存结果待确认，请查看当前金额后再保存。' : '资料保存结果待确认，请查看当前订单后再保存。'}</p>}
+      {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已更新，输入已保留。核对最新内容后再保存。' : '已核对，请确认修改后保存。'}{!baseline && !canReview && '请先刷新订单。'}</p><h3>最新资料（用于核对）</h3>{amountOnly ? <p>当前订单金额：{money(latest.totalAmountCents)}</p> : <InformationSummary order={latest} includeAmount />}{stale && <button type="button" className="secondary" disabled={!canReview} onClick={() => { setBaseline(latest); setConflict(true); }}>核对后继续编辑</button>}</div>}
+      <div className="actions"><button className="primary" disabled={busy || stale || (onlyLockedAmount && !saveImagesOnly)}>{busy ? '正在保存…' : saveImagesOnly ? '仅保存图片' : saveOtherFields && !onlyLockedAmount ? '仅保存其他资料' : '保存修改'}</button><button className="secondary" type="button" onClick={onCancel}>取消</button></div>
     </fieldset>
   </form>;
 }

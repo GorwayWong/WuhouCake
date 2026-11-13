@@ -17,10 +17,10 @@ test('六个业务状态使用直接节点码，制作节点只允许相邻后�
     assert.deepEqual(step?.permissions, ['ORDER_PRODUCTION_UPDATE']);
   }
 });
-test('配送和自提共用待配送状态，已配送可退回待配送', () => {
+test('配送和自提共用交接状态，回退按钮按交接方式命名', () => {
   for (const type of ['DELIVERY', 'PICKUP']) {
     const step = previousOrderStep(order('COMPLETED', type));
-    assert.equal(step?.label, '退回待配送');
+    assert.equal(step?.label, type === 'PICKUP' ? '退回待自提' : '退回待配送');
     assert.equal(step?.action, 'ROLLBACK_FULFILLMENT');
     assert.equal(step?.path, 'fulfillment-actions');
     assert.equal(step?.resetItems, false);

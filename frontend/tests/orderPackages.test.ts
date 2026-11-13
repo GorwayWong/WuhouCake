@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { isEmptyPackageDraft, newPackageItem, packageRequest, packageReferenceTotals, previewPackage } from '../src/orderPackages.ts';
 import type { OrderPackage, PackageItem } from '../src/orderPackages.ts';
-import { newDraft, changeItemDraft, migrateItemDraft, newItem } from '../src/orderForm.ts';
+import { newDraft as newSumDraft, changeItemDraft, itemInput, migrateItemDraft, newItem } from '../src/orderForm.ts';
 
+const newDraft = (date: string) => ({ ...newSumDraft(date), pricingMode: 'MANUAL' as const });
 const product = (name = '纸杯蛋糕', specification = '香草\n六只装'): PackageItem => ({
   itemId: crypto.randomUUID(), imageId: crypto.randomUUID(), productType: 'OTHER', name, quantity: 6, attributes: { specification },
 });
@@ -16,7 +17,7 @@ test('空单带入模板金额、其他商品和图片来源，原草稿不变',
   const plan = previewPackage(draft, value);
   assert.equal(plan.next.items.length, 1);
   assert.equal(plan.next.items[0].productType, 'OTHER');
-  assert.equal(plan.next.items[0].attributes.specification, '香草\n六只装');
+  assert.deepEqual(itemInput(plan.next.items[0]).item?.attributes, { requirements: '香草\n六只装' });
   assert.equal(plan.next.items[0].attributes.base, '');
   assert.equal(plan.imageSources.get(plan.next.items[0].key)?.imageId, value.items[0].imageId);
   assert.equal(plan.next.totalAmount, '200.00');
@@ -59,10 +60,10 @@ test('套餐校验名称、数量和原价，套餐条目独立保存报价与�
   assert.ok(packageRequest(' ', [row]).errors.name);
   assert.ok(packageRequest('套餐', []).errors.items);
   assert.ok(packageRequest('套餐', [{ ...row, name: '' }]).errors['items.0.name']);
-  assert.ok(packageRequest('套餐', [row]).errors.original);
+  assert.equal(packageRequest('套餐', [row]).body?.originalAmountCents, null);
   for (const quantity of ['0', '-1', '1.2', '2147483648']) assert.ok(packageRequest('套餐', [{ ...row, quantity }], '10').errors['items.0.quantity']);
   assert.deepEqual(packageRequest(' 套餐 ', [row], '10.29', '0').body, {
-    name: '套餐', originalAmountCents: 1029, memberAmountCents: 0,
+    name: '套餐', originalAmountCents: null, memberAmountCents: null,
     items: [{ itemId: row.itemId, imageId: null, unitPriceCents: null, memberPriceCents: null, name: '纸杯蛋糕', productType: 'OTHER', quantity: 1, attributes: { specification: '香草\n六只装' } }],
   });
 });
@@ -73,13 +74,13 @@ test('旧草稿转换可重复执行，手动切换分类不会反向解析规�
   const migrated = migrateItemDraft(old);
   assert.deepEqual(migrateItemDraft(migrated), migrated);
   assert.equal(migrated.productType, 'OTHER');
-  assert.match(migrated.attributes.specification, /特殊要求：少糖/);
+  assert.equal(migrated.attributes.requirements, '少糖');
   assert.doesNotMatch(migrated.attributes.specification, /原会员单价/);
   assert.equal(migrated.memberPrice, '0.00');
   assert.match(migrated.attributes.specification, /粉色/);
   const cake = changeItemDraft(migrated, { productType: 'CAKE' });
   assert.equal(cake.attributes.specification, migrated.attributes.specification);
-  assert.equal(cake.attributes.requirements, '');
+  assert.equal(cake.attributes.requirements, '少糖');
 });
 
 test('参考合计按数量加总，会员价回退单价，空报价和零价有区别', () => {
@@ -89,8 +90,8 @@ test('参考合计按数量加总，会员价回退单价，空报价和零价�
     { ...newPackageItem(), unitPrice: '7', memberPrice: '0' },
     newPackageItem(),
   ];
-  assert.deepEqual(packageReferenceTotals(rows), { original: 4390, member: 4690, unpriced: 1, invalid: false });
-  assert.deepEqual(packageReferenceTotals([newPackageItem()]), { original: null, member: null, unpriced: 1, invalid: false });
+  assert.deepEqual(packageReferenceTotals(rows), { original: null, member: null, total: null, unpriced: 1, invalid: false });
+  assert.deepEqual(packageReferenceTotals([newPackageItem()]), { original: null, member: null, total: null, unpriced: 1, invalid: false });
   assert.equal(packageReferenceTotals([{ ...newPackageItem(), unitPrice: '90071992547409.91', quantity: '2' }]).invalid, true);
 });
 
@@ -106,7 +107,9 @@ test('套餐加购只在成交额改变时撤销付款，匹配商品的已有�
     assert.equal(add.resetPayment, method !== 'UNPAID');
     assert.equal(add.next.memberAmount, '360.00');
     assert.equal(add.next.items[0].unitPrice, '0.00');
-    assert.equal(add.next.items[0].memberPrice, '9.00');
+    assert.equal(add.next.items[0].memberPrice, '');
+    assert.equal(add.next.items.length, 2);
+    assert.equal(add.next.items[1].memberPrice, '9.00');
     assert.equal(draft.paymentMethod, method);
     const free = previewPackage(draft, { ...value, originalAmountCents: 0, memberAmountCents: null });
     assert.equal(free.next.paymentMethod, method);

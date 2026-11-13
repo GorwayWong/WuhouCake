@@ -143,10 +143,10 @@ test('资料保存后转队列事务失败，保留图片并仅重试图片', as
   await page.locator('#edit-customerName').fill('已保存资料');await select(['partial.png']);
   await page.getByText('待保存：保存修改后上传',{exact:true}).waitFor();
   await page.locator('.information-form').getByRole('button',{name:'保存修改',exact:true}).click();
-  await page.getByText('资料已保存，但图片尚未进入上传队列。请核对资料后继续上传暂存图片。',{exact:false}).waitFor();
+  await page.locator('.feedback').getByText('资料已保存，部分图片未上传。请在图片区重试。').waitFor();
   assert.equal(model.uploads.length,0);
   await page.evaluate(()=>{IDBDatabase.prototype.transaction=window.originalImageTransaction;});
-  await page.getByRole('button',{name:'已核对资料，继续上传暂存图片',exact:true}).click();
+  await page.getByRole('button',{name:'继续上传图片',exact:true}).click();
   await until(()=>model.images.length===1);assert.equal(calls,1);assert.equal(model.uploads.length,1);
  } finally {await context.close();}
 });
@@ -157,7 +157,7 @@ test('退出成功但图片清理失败，登录页提示且文件仍保留', as
   await context.route('**/api/auth/logout',r=>r.fulfill({json:{success:true,data:null}}));
   await page.evaluate(()=>{window.originalImageTransaction=IDBDatabase.prototype.transaction;IDBDatabase.prototype.transaction=function(stores,mode,...rest){if(mode==='readwrite')throw new DOMException('denied','SecurityError');return window.originalImageTransaction.call(this,stores,mode,...rest);};});
   page.on('dialog',d=>d.accept());await page.getByRole('button',{name:'退出登录',exact:true}).click();
-  await page.getByText('已退出登录，但本机图片未能清理，可能仍占用存储空间。',{exact:true}).waitFor();
+  await page.getByText('已退出登录，草稿图片未能清除。',{exact:true}).waitFor();
   assert.equal(await saved(),null);
   const sizes=await page.evaluate(async()=>{const db=await new Promise(resolve=>{const r=indexedDB.open('wuhou-order-images',1);r.onsuccess=()=>resolve(r.result);});return new Promise(resolve=>{const r=db.transaction('files').objectStore('files').getAll();r.onsuccess=()=>resolve(r.result.map(row=>row.file.size));});});
   assert.ok(sizes.some(size=>size>0));

@@ -15,7 +15,7 @@ import static org.mockito.Mockito.*;
 
 class OrderQueryServiceTest {
     private final OrderQueries queries = mock(OrderQueries.class);
-    private final OrderQueryService service = new OrderQueryService(queries);
+    private final OrderQueryService service = new OrderQueryService(queries, java.time.Clock.systemUTC());
     @Test void productionSummaryUsesShanghaiBoundariesAndFillsZeroDays() {
         var from = LocalDate.of(2026, 10, 31);
         var to = LocalDate.of(2026, 11, 2);

@@ -8,6 +8,7 @@ import { removeDraftImage, removeDraftImages } from './draftImages';
 type SaveStatus = 'idle' | 'saved' | 'error' | 'conflict';
 export interface DraftCandidate { record: OrderDraftRecord | null; invalid: boolean }
 export function useOrderDraft() {
+  const [restored, setRestored] = useState(false);
   const [draft, setDraft] = useState<OrderDraftRecord | null>(null);
   const draftRef = useRef(draft);
   const [candidate, setCandidate] = useState<DraftCandidate | null>(null);
@@ -38,7 +39,7 @@ export function useOrderDraft() {
       entered.current = false; setLocal(null); showCandidate(null); saveStatus('idle');
     }
     if (!canEnter || selectedDate === undefined || entered.current) return;
-    entered.current = true; date.current = selectedDate;
+    entered.current = true; date.current = selectedDate; setRestored(false);
     if (statusRef.current === 'conflict') return;
     try {
       // An unsaved in-memory snapshot remains useful after session expiry or a storage failure.
@@ -48,7 +49,7 @@ export function useOrderDraft() {
       if (stored.invalid) { showCandidate(stored); setLocal(null); return; }
       const record = hasDraftContent(memory) ? memory : stored.record;
       if (record && hasDraftContent(record)) {
-        showCandidate({ record, invalid: false }); setLocal(null);
+        showCandidate(null); setLocal(record); setRestored(true);
         if (statusRef.current !== 'error') saveStatus('saved');
         return;
       }
@@ -69,7 +70,7 @@ export function useOrderDraft() {
     if (statusRef.current === 'conflict') return false;
     try {
       const current = draftRef.current || candidateRef.current?.record;
-      slot.current?.remove(); setLocal(null); showCandidate(null); saveStatus('idle');
+      slot.current?.remove(); setRestored(false); setLocal(null); showCandidate(null); saveStatus('idle');
       const owner = slot.current;
       if (!retainImages && current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(() => {
         if (slot.current === owner) setCleanupWarning('旧草稿的本机图片未能清理，可能仍占用存储空间；不会影响新草稿保存。');
@@ -148,5 +149,5 @@ export function useOrderDraft() {
       window.removeEventListener('pagehide', flush); window.removeEventListener('scroll', scroll); window.removeEventListener('storage', storage);
     };
   }, [persist, failed]);
-  return { draft, draftRef, candidate, status, cleanupWarning, open, accept, discard, clear, close, leave, change, changeEditor, prepare, created, rejected, retry, retained, restore };
+  return { restored, draft, draftRef, candidate, status, cleanupWarning, open, accept, discard, clear, close, leave, change, changeEditor, prepare, created, rejected, retry, retained, restore };
 }

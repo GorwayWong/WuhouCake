@@ -38,7 +38,7 @@ public final class OrderViewAccess {
                 source.updatedAt(), source.items().stream().map(item -> new OrderViews.Item(item.itemId(), item.name(), item.productType(),
                         item.quantity(), amount ? item.unitPriceCents() : null, amount ? item.memberPriceCents() : null,
                         item.attributes(), item.productionStatus(), item.currentStageCode(), business ? item.createdAt() : null, item.updatedAt(), item.recentNotes())).toList(),
-                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business || ordering ? source.orderingMethod() : null, amount ? source.originalAmountCents() : null, amount ? source.memberAmountCents() : null, amount ? source.paymentMethod() : null);
+                business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business || ordering ? source.orderingMethod() : null, amount ? source.originalAmountCents() : null, amount ? source.memberAmountCents() : null, amount ? source.paymentMethod() : null, source.pricingMode());
     }
 
     public static List<OrderQueryViews.CalendarOrder> calendar(List<OrderQueryViews.CalendarOrder> source, EmployeeAccess access) {
@@ -50,13 +50,16 @@ public final class OrderViewAccess {
 
     public static OrderQueryViews.Workbench workbench(OrderQueryViews.Workbench source, EmployeeAccess access) {
         if (source == null) return null;
+        return new OrderQueryViews.Workbench(source.date(), source.metrics(), pending(source.pendingOrders(), access));
+    }
+
+    public static List<OrderQueryViews.PendingOrder> pending(List<OrderQueryViews.PendingOrder> source, EmployeeAccess access) {
         boolean customer = access.allows(ORDER_CUSTOMER_READ), amount = access.allows(ORDER_AMOUNT_READ);
-        var orders = source.pendingOrders().stream().map(order -> new OrderQueryViews.PendingOrder(order.orderId(), order.orderNo(),
+        return source.stream().map(order -> new OrderQueryViews.PendingOrder(order.orderId(), order.orderNo(),
                 order.calendarDate(), order.status(), order.currentStageCode(), amount ? order.paymentStatus() : null, order.fulfillmentType(),
                 order.plannedHandoffAt(), customer ? order.customer() : null, customer ? order.address() : null, order.plannedFinishAt(),
                 order.items().stream().map(item -> new OrderQueryViews.Item(item.itemId(), item.name(), item.productType(), item.quantity(),
                         amount ? item.unitPriceCents() : null, amount ? item.memberPriceCents() : null, item.attributes(), item.recentNotes())).toList(),
                 order.latestNote(), order.requestedReceiveAt())).toList();
-        return new OrderQueryViews.Workbench(source.date(), source.metrics(), orders);
     }
 }

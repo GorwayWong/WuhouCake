@@ -23,14 +23,14 @@ test('逐商品选图限制五张、刷新恢复、移除及多标签页冲突',
     await page.getByRole('button', { name: '添加商品', exact: true }).click();
     await select(['second.png']); await until(async () => (await saved()).value.items[1].images?.length === 1);
     const original = await saved();
-    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     await page.getByAltText('second.png', { exact: true }).waitFor();
     assert.deepEqual((await saved()).value.items.map(item => item.key), original.value.items.map(item => item.key));
     await page.getByRole('button', { name: '上一个商品', exact: true }).click();
     await page.getByAltText('a.png', { exact: true }).waitFor();
     await page.getByRole('button', { name: '移除已选图片：a.png', exact: true }).click();
     await until(async () => (await saved()).value.items[0].images.length === 4);
-    const peer = await context.newPage(); await peer.goto(`${base}/#/orders/new`); await peer.getByRole('button', { name: '继续填写', exact: true }).click();
+    const peer = await context.newPage(); await peer.goto(`${base}/#/orders/new`); await peer.getByText('已恢复上次填写', { exact: true }).waitFor();
     await select(['replacement.png']); await until(async () => (await saved()).value.items[0].images.length === 5);
     await peer.getByText(/其他标签页已更新/).waitFor(); assert.equal(await peer.getByRole('button', { name: '添加图片', exact: true }).isDisabled(), true);
     await peer.close();
@@ -48,7 +48,7 @@ test('创建及上传响应丢失不重复建单传图，失败队列刷新后�
     await select(['lost.png']); await until(async () => (await saved()).value.items[1].images?.length === 1);
     const before = await saved(); model.loseCreate = true; model.failNames.add('fail.png'); model.lostNames.add('lost.png');
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
-    await page.getByRole('button', { name: '重试确认原订单', exact: true }).click();
+    await page.getByRole('button', { name: '重试提交', exact: true }).click();
     await page.waitForURL(`**/#/orders/${orderId}`);
     await until(async () => (await queue()).length === 2 && (await queue()).every(row => row.error));
     assert.equal(model.orders.size, 1); assert.equal(model.createCalls.length, 2); assert.equal(model.createCalls[0].key, model.createCalls[1].key);
@@ -66,7 +66,7 @@ test('创建及上传响应丢失不重复建单传图，失败队列刷新后�
     await until(async () => (await queue()).length === 0); assert.equal(model.images.length, 3);
     assert.equal(new Set(model.images.map(image => image.imageId)).size, 3);
     assert.equal(model.images.filter(image => image.itemId === before.value.items[0].key).length, 2);
-    assert.equal(await page.locator('#order-reference-images .image-thumbnail').count(), 2);
+    await until(async () => await page.locator('#order-reference-images .image-thumbnail').count() === 2);
     if (process.env.IMAGE_SCREENSHOT_DIR) {
       await page.locator('#order-reference-images').scrollIntoViewIfNeeded(); await page.screenshot({ path: `${process.env.IMAGE_SCREENSHOT_DIR}/item-images-detail-mobile.png` });
       await page.setViewportSize({ width: 1440, height: 1000 }); await page.screenshot({ path: `${process.env.IMAGE_SCREENSHOT_DIR}/item-images-detail-desktop.png` });
@@ -81,7 +81,7 @@ test('本机图片缺失阻止提交，存储失败不标为已保存，放弃�
     await complete(); await select(['missing.png']); await until(async () => (await saved()).value.items[0].images?.length === 1);
     const record = await saved();
     await page.evaluate(async record => { const store = await import('/src/draftImages.ts'); await store.removeDraftImage(record, record.value.items[0].key, record.value.items[0].images[0].id); }, record);
-    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     await page.getByText('本机图片缺失，请移除后重新选择。', { exact: true }).waitFor();
     await page.getByRole('button', { name: '创建订单', exact: true }).click(); await page.getByText(/在本机缺失/).waitFor(); assert.equal(model.createCalls.length, 0);
     await page.getByRole('button', { name: '移除已选图片：missing.png', exact: true }).click();
@@ -90,7 +90,7 @@ test('本机图片缺失阻止提交，存储失败不标为已保存，放弃�
     assert.equal((await saved()).value.items[0].images.length, 0);
     await page.evaluate(() => { IDBDatabase.prototype.transaction = window.originalImageTransaction; });
     await select(['kept.png']); await until(async () => (await saved()).value.items[0].images.length === 1);
-    const kept = await saved(); await page.getByRole('button', { name: '放弃草稿', exact: true }).click(); await page.getByRole('button', { name: '确认放弃', exact: true }).click();
+    const kept = await saved(); await page.getByRole('button', { name: '另起新单', exact: true }).click(); await page.getByRole('button', { name: '确认放弃', exact: true }).click();
     await until(async () => !(await page.evaluate(async record => (await import('/src/draftImages.ts')).readDraftImage(record, record.value.items[0].key, record.value.items[0].images[0].id).then(Boolean), kept)));
   } finally { await context.close(); }
 });
@@ -104,11 +104,11 @@ test('创建成功后队列保存失败保留订单标识，重试不建第二�
       IDBObjectStore.prototype.put = function (...args) { if (this.name === 'transfers') throw new DOMException('转存失败', 'QuotaExceededError'); return window.originalImagePut.apply(this, args); };
     });
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
-    await page.getByText(/订单已创建，图片队列尚未保存完成/).waitFor();
+    await page.getByText(/订单已创建，部分图片未上传/).waitFor();
     assert.equal((await saved()).createdOrderId, orderId); assert.equal(model.createCalls.length, 1);
     await page.evaluate(() => { IDBObjectStore.prototype.put = window.originalImagePut; });
     model.failNames.add('deferred.png');
-    await page.getByRole('button', { name: '重试保存图片队列', exact: true }).click();
+    await page.getByRole('button', { name: '重试上传图片', exact: true }).click();
     await page.waitForURL(`**/#/orders/${orderId}`); await until(async () => (await queue()).some(row => row.error));
     assert.equal(model.createCalls.length, 1);
     const calls = model.uploads.length;

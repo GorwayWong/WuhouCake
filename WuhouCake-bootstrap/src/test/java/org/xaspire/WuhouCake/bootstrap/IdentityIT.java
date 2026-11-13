@@ -7,6 +7,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import javax.sql.DataSource;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,6 +19,9 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.*;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.IllegalTransactionStateException;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.bootstrap.integration.JwtTestKeys;
 import org.xaspire.WuhouCake.identity.application.service.IdentityService;
 import org.xaspire.WuhouCake.identity.domain.port.IdentityPorts.Sessions;
@@ -45,8 +50,11 @@ class IdentityIT {
     @LocalServerPort int port;
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DataSource dataSource;
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
+    @Autowired AuditFacade audit;
+    @Autowired TransactionTemplate transactions;
     @Autowired Attempts attempts;
     @MockitoSpyBean Accounts accounts;
     @MockitoSpyBean Sessions sessions;
@@ -121,6 +129,95 @@ class IdentityIT {
         var logs = admin.request("GET", "/api/admin/audit-logs?action=identity.password_set", null).body.toString();
         assertFalse(logs.contains("Staff008")); assertFalse(logs.contains("Staff009")); assertFalse(logs.contains("passwordHash"));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action='identity.password_set'", Integer.class));
+    }
+    @Test void auditFiltersByActorActionResultAndTimeWithStablePagination() throws Exception {
+        var admin = administrator();
+        var actor = UUID.fromString(admin.request("GET", "/api/me", null).body.at("/data/accountId").asText());
+        var other = UUID.randomUUID();
+        var from = Instant.parse("2026-01-01T00:00:00Z");
+        var to = from.plusSeconds(60);
+        String action = "test.employee_changed";
+        var details = Map.of("nicknameBefore", "小张", "nicknameAfter", "张\"师傅");
+
+        audit.append(new AuditFacade.Command(from, action, "SUCCESS", actor, "0001", "店长", "at-start", "request-start"));
+        for (var target : List.of("tie-a", "tie-b")) {
+            audit.append(new AuditFacade.Command(from.plusSeconds(1), action, "SUCCESS", actor, "0001", "店长", target, "request-" + target, details));
+        }
+        audit.append(new AuditFacade.Command(from.minusSeconds(1), action, "SUCCESS", actor, "0001", "店长", "too-early", null));
+        audit.append(new AuditFacade.Command(to, action, "SUCCESS", actor, "0001", "店长", "at-end", null));
+        audit.append(new AuditFacade.Command(from, action, "FAILURE", actor, "0001", "店长", "wrong-result", null));
+        audit.append(new AuditFacade.Command(from, "test.other_action", "SUCCESS", actor, "0001", "店长", "wrong-action", null));
+        audit.append(new AuditFacade.Command(from, action, "SUCCESS", other, "0002", "员工", "wrong-actor", null));
+
+        String path = "/api/admin/audit-logs?actorId=" + actor + "&action=" + action + "&result=SUCCESS&from=" + from + "&to=" + to;
+        var full = admin.request("GET", path, null);
+        assertEquals(200, full.status, full.body.toString());
+        assertEquals(3, full.body.at("/data/total").asInt());
+        var items = full.body.at("/data/items");
+        assertEquals(3, items.size());
+        assertEquals(Set.of("tie-a", "tie-b"), Set.of(items.get(0).path("targetId").asText(), items.get(1).path("targetId").asText()));
+        assertEquals("at-start", items.get(2).path("targetId").asText());
+        for (int page = 1; page <= 3; page++) {
+            var result = admin.request("GET", path + "&size=1&page=" + page, null);
+            assertEquals(200, result.status, result.body.toString());
+            assertEquals(3, result.body.at("/data/total").asInt());
+            assertEquals(page, result.body.at("/data/page").asInt());
+            assertEquals(1, result.body.at("/data/items").size());
+            assertEquals(items.get(page - 1), result.body.at("/data/items/0"));
+        }
+        assertEquals(json.valueToTree(details), items.get(0).path("details"));
+        assertEquals("request-" + items.get(0).path("targetId").asText(), items.get(0).path("requestId").asText());
+        assertEquals(400, admin.request("GET", path + "&size=101", null).status);
+        assertEquals(400, admin.request("GET", "/api/admin/audit-logs?from=" + to + "&to=" + from, null).status);
+        assertEquals(401, new Browser().request("GET", path, null).status);
+    }
+    @Test void auditChangesRollBackWithBusinessTransactionsWhileIndependentEventsRemain() throws Exception {
+        var admin = administrator();
+        var at = Instant.parse("2026-01-01T00:00:00Z");
+        var change = new AuditFacade.Command(at, "test.transaction", "SUCCESS", null, null, null, "change", null);
+        var event = new AuditFacade.Command(at, "test.transaction", "FAILURE", null, null, null, "independent", null);
+        assertThrows(IllegalTransactionStateException.class, () -> audit.appendChange(change));
+        transactions.executeWithoutResult(transaction -> {
+            audit.appendChange(change);
+            audit.append(event);
+            transaction.setRollbackOnly();
+        });
+
+        String path = "/api/admin/audit-logs?action=test.transaction";
+        var afterRollback = admin.request("GET", path, null);
+        assertEquals(200, afterRollback.status, afterRollback.body.toString());
+        assertEquals(1, afterRollback.body.at("/data/total").asInt());
+        assertEquals("independent", afterRollback.body.at("/data/items/0/targetId").asText());
+
+        transactions.executeWithoutResult(transaction -> audit.appendChange(change));
+        var afterCommit = admin.request("GET", path + "&result=SUCCESS", null);
+        assertEquals(200, afterCommit.status, afterCommit.body.toString());
+        assertEquals(1, afterCommit.body.at("/data/total").asInt());
+        assertEquals("change", afterCommit.body.at("/data/items/0/targetId").asText());
+    }
+    @Test void sixRoleMigrationPreservesExistingAssignmentsAndAcceptsNewRoles() {
+        String schema = "roles_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        UUID account = UUID.randomUUID();
+        try {
+            var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                    .locations("classpath:db/migration");
+            flyway.target("18").load().migrate();
+            jdbc.update("INSERT INTO " + schema + ".identity_account"
+                    + " (id, employee_number, nickname, system_role, status, password_hash, password_change_required, created_at, updated_at)"
+                    + " VALUES (?, '0002', '员工', 'STAFF', 'ACTIVE', 'unused-test-hash', false, now(), now())", account);
+            String insertRole = "INSERT INTO " + schema + ".identity_account_role (account_id, role) VALUES (?, ?)";
+            jdbc.update(insertRole, account, "FRONT_DESK");
+            jdbc.update(insertRole, account, "PASTRY_CHEF");
+
+            flyway.target("19").load().migrate();
+            String roles = "SELECT role FROM " + schema + ".identity_account_role WHERE account_id=? ORDER BY role";
+            assertEquals(List.of("FRONT_DESK", "PASTRY_CHEF"), jdbc.queryForList(roles, String.class, account));
+            jdbc.update(insertRole, account, "FRONT_DESK_SUPERVISOR");
+            assertEquals(List.of("FRONT_DESK", "FRONT_DESK_SUPERVISOR", "PASTRY_CHEF"), jdbc.queryForList(roles, String.class, account));
+            assertEquals("ACTIVE", jdbc.queryForObject("SELECT status FROM " + schema + ".identity_account WHERE id=?", String.class, account));
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
     }
     @Test void concurrentAdministratorPasswordChangesRejectTheStaleVersion() throws Exception {
         var admin = administrator(); var created = provision(admin, "0002", "STAFF");

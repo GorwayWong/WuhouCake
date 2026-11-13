@@ -2,14 +2,14 @@ import { readEditManifest, writeEditManifest } from './editImageSession';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Images, Plus, Trash, X } from '@phosphor-icons/react';
-import { api, errorText, uploadOrderImage } from './api';
+import { api, errorText, uploadOrderImage, readQuery } from './api';
 import { time } from './dates';
 import { loadImagePreview } from './imagePreview';
 import { editImageQueue, validateEditImages, commitEditImages, removeDraftImages, removeEditImage, imageQueue, imageQueueMetadata, localImageError, readDraftImage, removeQueuedImage, saveDraftImages, updateQueuedImage } from './draftImages';
 import type { ImageScope, QueuedImage } from './draftImages';
 import { synchronize } from './realtime';
 import type { Detail, OrderImage } from './types';
-import { ErrorNotice, Loading } from './ui';
+import { ErrorNotice } from './ui';
 
 function ImageTile({ image, scope, blocked, remove, productionView }: { image: OrderImage; scope: string; blocked: boolean; remove: () => void; productionView?: boolean }) {
   const [url, setUrl] = useState('');
@@ -49,7 +49,7 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
   blocked: boolean; onDraftChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void;
 }) {
   const client = useQueryClient(), id = order.orderId;
-  const query = useQuery({ queryKey: ['order', id, 'images'], queryFn: ({ signal }) => api<OrderImage[]>(`/orders/${id}/images`, { signal }) });
+  const query = useQuery({ queryKey: ['order', id, 'images'], queryFn: ({ signal }) => readQuery<OrderImage[]>(`/orders/${id}/images`, signal) });
   const localKey = ['local-order-images', accountId, id];
   const local = useQuery({ queryKey: localKey, queryFn: () => imageQueueMetadata(accountId, id), enabled: Boolean(accountId), staleTime: 0 });
   const stagedKey = ['edit-order-images', accountId, id];
@@ -59,7 +59,7 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
   const [manifestError, setManifestError] = useState('');
   useEffect(() => {
     try { setExpected(scope ? readEditManifest(scope) : []); setManifestError(''); }
-    catch { setManifestError('本标签页图片清单无法读取，请恢复浏览器存储权限后重试。'); }
+    catch { setManifestError('未能读取待上传的图片，请重新选择。'); }
   }, [accountId, id, ownerSession]);
   const remember = (rows: QueuedImage[]) => {
     setExpected(rows);
@@ -110,6 +110,7 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
   async function upload(rows: QueuedImage[], savingEdit = false) {
     if (active.current || !savingEdit && (blocked || editSession) || !canUpload || !rows.length) return;
     const controller = new AbortController(); active.current = controller; setSaving(true); onWritingChange(true); setError('');
+    let failed = false;
     const run = async () => {
       for (const row of rows) {
         if (controller.signal.aborted) return;
@@ -122,6 +123,7 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
           await removeQueuedImage(existing);
         } catch (failure) {
           if (controller.signal.aborted) return;
+          failed = true;
           await updateQueuedImage(existing, failure instanceof Error && failure.message.startsWith('对应商品') ? failure.message : errorText(failure));
         }
       }
@@ -129,7 +131,7 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
     try {
       if (navigator.locks) await navigator.locks.request(`wuhou:images:${accountId}:${id}`, { signal: controller.signal }, run);
       else await run();
-      if (alive.current && !controller.signal.aborted) setNotice('图片队列已处理，请核对上传结果。');
+      if (alive.current && !controller.signal.aborted) setNotice(failed ? '' : '图片已上传。');
     } catch (failure) { if (alive.current && !controller.signal.aborted) setError(localImageError(failure)); }
     finally {
       try { if (alive.current) await refresh(); }
@@ -170,7 +172,7 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
     <input className="sr-only" tabIndex={-1} aria-label="选择当前商品图片" ref={input} type="file" multiple accept="image/jpeg,image/png,.jpg,.jpeg,.png" disabled={busy || !canUpload} onChange={event => void select(Array.from(event.target.files || []))} />
     <ErrorNotice error={query.error} retry={() => void query.refetch()} />
     {local.error && <p className="notice error" role="alert">本机待上传图片无法读取。<button type="button" className="text-button" onClick={() => void local.refetch()}>重试读取</button></p>}
-    {editSession && <p className="notice">新选图片仅暂存，保存修改后上传；取消编辑会放弃本次新选图片。编辑期间不能删除已保存图片。</p>}
+    {editSession && currentStaged.length > 0 && <p className="form-help">保存修改后上传图片。</p>}
     {manifestError && <p className="notice error" role="alert">{manifestError}</p>}
     {staged.error && <p className="notice error" role="alert">编辑图片暂存无法读取，请重试。<button type="button" onClick={() => void staged.refetch()}>重试读取</button></p>}
     {selected.filter(row => order.items.some(item => item.itemId === row.itemId) && (!editSession || row.itemId === product?.itemId)).map(row => <div key={row.key} className="staged-edit-image">
@@ -181,16 +183,26 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
         try { const latest = await api<Detail>(`/orders/${id}`); await commitEditImages(row, latest, selected); remember([]); setError(''); await client.invalidateQueries({ queryKey: stagedKey }); await client.invalidateQueries({ queryKey: localKey }); }
         catch (failure) { setError(localImageError(failure)); }
         finally { setSaving(false); onWritingChange(false); }
-      }}>已核对资料，继续上传暂存图片</button>}
+      }}>继续上传图片</button>}
     </div>)}
-    {query.isPending ? <Loading /> : currentImages.length + currentQueue.length === 0 ? <p className="form-help">{currentStaged.length ? '以上图片尚未保存。' : '该商品暂无款式图片。'}</p> : <ul className="image-grid">{currentImages.map(image => <ImageTile key={image.imageId} image={image} scope={product?.name || '商品图片'} blocked={busy || Boolean(editSession) || !canDelete} productionView={productionView} remove={() => void remove(image)} />)}{currentQueue.map(image => <QueuedImageTile key={image.key} image={image} busy={busy || Boolean(editSession) || !canUpload} retry={() => void upload([image])} remove={() => void removeLocal(image)} />)}</ul>}
+    {query.isPending || currentImages.length + currentQueue.length === 0 ? (
+      <div className="image-preview-empty">
+        <p className="image-placeholder" role={query.isPending ? 'status' : undefined}>
+          {query.isPending ? '正在读取图片…' : currentStaged.length ? '以上图片尚未保存。' : '该商品暂无款式图片。'}
+        </p>
+      </div>
+    ) : <ul className="image-grid">{currentImages.map(image => <ImageTile key={image.imageId} image={image} scope={product?.name || '商品图片'} blocked={busy || Boolean(editSession) || !canDelete} productionView={productionView} remove={() => void remove(image)} />)}{currentQueue.map(image => {
+      const sameEdit = Boolean(editSession && image.requestId === scope?.requestId);
+      return <QueuedImageTile key={image.key} image={image} busy={busy || Boolean(editSession && !sameEdit) || !canUpload}
+        retry={() => void upload([image], sameEdit)} remove={() => void removeLocal(image)} />;
+    })}</ul>}
     {currentImages.length >= 5 && <p className="form-help">该商品已达上限，移除到 5 张以下可继续添加。历史图片保留。</p>}
     {history.length > 0 && <div className="historical-images"><h3>历史图片</h3><p className="form-help">未关联商品或原商品已移除的图片。</p><ul className="image-grid">{history.map(image => <ImageTile key={image.imageId} image={image} scope={image.itemId ? '已移除商品' : '整单历史图片'} blocked={busy || Boolean(editSession) || !canDelete} productionView={productionView} remove={() => void remove(image)} />)}</ul></div>}
     {orphanQueue.length > 0 && <div className="notice error"><p>以下待上传图片的商品已移除，请核对后移除本机图片。</p><ul className="image-grid">{orphanQueue.map(image => <QueuedImageTile key={image.key} image={image} busy={busy} retry={() => void upload([image])} remove={() => void removeLocal(image)} />)}</ul></div>}
     {selected.filter(row => !order.items.some(item => item.itemId === row.itemId)).map(row => <div key={row.key} className="notice error"><p>暂存图片对应的商品已移除，请移除这张本机图片。</p><QueuedImageTile image={row} busy={busy} remove={() => void removeLocal(row)} /></div>)}
     {saving && <p className="form-help" role="status">正在保存图片，请稍候…</p>}
     {error && <p className="notice error" role="alert">{error}</p>}
-    {currentQueue.some(row => row.error) && <p className="notice error" role="alert">资料已保存，仍有图片上传未完成，请重试失败图片。</p>}
+    {currentQueue.some(row => row.error) && <p className="notice error" role="alert">{!editSession && '资料已保存，'}仍有图片上传未完成，请重试失败图片。</p>}
     <div aria-live="polite">{notice && <p className="form-help">{notice}</p>}</div>
   </section>;
 }

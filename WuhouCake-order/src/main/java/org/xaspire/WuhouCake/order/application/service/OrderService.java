@@ -55,17 +55,19 @@ public class OrderService {
         var pickupAt = fulfillment.plannedHandoffAt() != null ? fulfillment.plannedHandoffAt() : fulfillment.requestedReceiveAt();
         var plan = new FulfillmentPlan(type, fulfillment.address(), pickupAt == null ? fulfillment.requestedReceiveDate() : receiveDate(pickupAt),
                 pickupAt, fulfillment.plannedFinishAt(), pickupAt);
+        requireFinishLeadTime(plan.pickupAt(), plan.plannedFinishAt());
         var itemIds = new HashSet<UUID>();
         var items = command.items().stream().map(item -> {
             if (item == null) throw invalid();
             var itemId = item.itemId() == null ? ids.nextId() : item.itemId();
             if (!itemIds.add(itemId)) throw invalid();
-            return createItem(item, itemId, now, submissionId != null);
+            return createItem(item, itemId, now, submissionId != null, "ITEM_SUM".equals(command.pricingMode()));
         }).toList();
         var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
-        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod());
+        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod(), command.pricingMode());
         orders.create(order);
         var creation = new LinkedHashMap<String, Object>();
+        creation.put("pricingMode", order.pricingMode());
         creation.put("status", order.status()); creation.put("paymentStatus", order.paymentStatus());
         creation.put("originalAmountCents", order.originalAmountCents()); creation.put("memberAmountCents", order.memberAmountCents());
         creation.put("totalAmountCents", order.totalAmountCents()); creation.put("paymentMethod", order.paymentMethod());
@@ -115,7 +117,7 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now(); var input = command.item();
         if (input == null) throw invalid();
-        var item = createItem(input, input.itemId() == null ? ids.nextId() : input.itemId(), now, false);
+        var item = createItem(input, input.itemId() == null ? ids.nextId() : input.itemId(), now, false, "ITEM_SUM".equals(order.pricingMode()));
         var previousItems = order.activeItems();
         var changed = order.addItem(item, now);
         orders.addItem(order, expected, item.itemId(), changedProductionItems(previousItems, order));
@@ -123,9 +125,12 @@ public class OrderService {
         changed(order, item.itemId(), OrderChanged.Type.ITEM_ADDED);
         return detail(order, activities.recentItemNotes(id));
     }
-    private OrderItem createItem(OrderCommands.Item input, UUID itemId, Instant now, boolean customerSubmission) {
+    private OrderItem createItem(OrderCommands.Item input, UUID itemId, Instant now, boolean customerSubmission, boolean itemSum) {
         var legacy = org.xaspire.WuhouCake.order.domain.model.valobj.LegacyDraftQuote.extract(input.attributes());
         var item = OrderItem.create(itemId, input.name(), input.productType(), input.quantity(), null, null, legacy.attributes(), now);
+        if (itemSum) return item.retainHistoricalPrices(
+                money(input.referenceUnitPriceCents() != null ? input.referenceUnitPriceCents() : input.unitPriceCents()),
+                money(input.referenceMemberPriceCents() != null ? input.referenceMemberPriceCents() : input.memberPriceCents()));
         if (customerSubmission) return item.retainHistoricalPrices(money(input.unitPriceCents()), money(input.memberPriceCents()));
         boolean quoted = input.referenceUnitPriceCents() != null || input.referenceMemberPriceCents() != null;
         if (!quoted && legacy.unitPriceCents() == null && legacy.memberPriceCents() == null) return item;
@@ -260,11 +265,24 @@ public class OrderService {
     }
     @Transactional
     public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator) {
+        return note(id, command, operator, null);
+    }
+    @Transactional
+    public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator, UUID requestId) {
         var actor = actor(operator);
         orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
         var order = requireOrder(id);
+        var activity = OrderActivity.append(id, command.itemId(), "NOTE", command.content(), Map.of(), actor, now());
+        if (requestId != null) {
+            var existing = activities.findNote(id, actor.accountId(), requestId);
+            if (existing != null) {
+                if (!Objects.equals(existing.itemId(), activity.itemId()) || !existing.content().equals(activity.content()))
+                    throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
+                return activity(existing);
+            }
+        }
         if (command.itemId() != null) order.requireActiveItem(command.itemId());
-        var note = activities.append(OrderActivity.append(id, command.itemId(), "NOTE", command.content(), Map.of(), actor, now()));
+        var note = requestId == null ? activities.append(activity) : activities.appendNote(activity, requestId);
         changed(order, command.itemId(), OrderChanged.Type.NOTE);
         return activity(note);
     }
@@ -314,6 +332,6 @@ public class OrderService {
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
                         order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()), order.paidAt(),
                 order.deletion() == null ? null : new OrderViews.Deletion(order.deletion().deletedAt(), order.deletion().deletedBy(),
-                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()), order.orderingMethod(), order.originalAmountCents(), order.memberAmountCents(), order.paymentMethod());
+                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()), order.orderingMethod(), order.originalAmountCents(), order.memberAmountCents(), order.paymentMethod(), order.pricingMode());
     }
 }

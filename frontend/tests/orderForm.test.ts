@@ -68,7 +68,7 @@ test('门店时间显式携带 +08:00，跨 UTC 日期和运行环境时区仍�
 });
 
 test('多商品规格分别提交，报价不决定总额，配送和自提遵循现有创建契约', () => {
-  const draft = newDraft('2026-10-14');
+  const draft = newDraft('2026-10-14'); draft.pricingMode = 'MANUAL';
   draft.phone = ' 13800000000 ';
   draft.address = '合成测试地址';
   draft.plannedHandoffAt = '2026-10-15T09:00';
@@ -94,8 +94,8 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   assert.equal('paymentStatus' in request, false);
   draft.address = '';
   assert.ok(createOrderRequest(draft).errors.address);
-  draft.address = '  自提  '; draft.totalAmount = '0';
-  assert.equal(createOrderRequest(draft).request?.fulfillment.address, '自提');
+  draft.fulfillmentType = 'PICKUP'; draft.address = ''; draft.totalAmount = '0';
+  assert.equal(createOrderRequest(draft).request?.fulfillment.address, null);
   assert.equal(createOrderRequest(draft).request?.fulfillment.type, 'PICKUP');
   assert.equal(createOrderRequest(draft).request?.totalAmountCents, 0);
   draft.totalAmount = '320.50';
@@ -105,15 +105,28 @@ test('多商品规格分别提交，报价不决定总额，配送和自提遵�
   assert.equal(createOrderRequest(draft).request?.fulfillment.plannedHandoffAt, null);
 });
 
-test('仅地址恰好为自提时使用自提方式，其他非空内容为配送，空白地址不可提交', () => {
+test('交接方式由所选选项决定，自提不要求地址', () => {
   const draft = newDraft('2026-12-31');
   draft.phone = '13800000000'; draft.items[0].name = '测试蛋糕';
-  for (const [address, type] of [['自提', 'PICKUP'], [' 自提 ', 'PICKUP'], ['合成路 1 号', 'DELIVERY'], ['不自提，送到公司', 'DELIVERY']]) {
-    draft.address = address;
-    assert.equal(createOrderRequest(draft).request?.fulfillment.type, type);
-  }
-  draft.address = '  ';
   assert.ok(createOrderRequest(draft).errors.address);
+  draft.address = '门店自提';
+  assert.equal(createOrderRequest(draft).request?.fulfillment.type, 'DELIVERY');
+  draft.fulfillmentType = 'PICKUP';
+  draft.address = '';
+  assert.equal(createOrderRequest(draft).request?.fulfillment.type, 'PICKUP');
+  assert.equal(createOrderRequest(draft).request?.fulfillment.address, null);
+});
+
+test('出品至少提前一小时，跨日和取货时刻待定可以录单', () => {
+  const draft = newDraft('2026-12-31');
+  draft.phone = '13800000000'; draft.fulfillmentType = 'PICKUP'; draft.items[0].name = '测试蛋糕';
+  draft.requestedReceiveAt = '2026-12-31T00:30';
+  draft.plannedFinishAt = '2026-12-30T23:30';
+  assert.ok(createOrderRequest(draft).request);
+  draft.plannedFinishAt = '2026-12-30T23:31';
+  assert.match(createOrderRequest(draft).errors.plannedFinishAt, /提前 1 小时/);
+  draft.requestedReceiveAt = '2026-12-31';
+  assert.ok(createOrderRequest(draft).request);
 });
 
 test('空白必填项、无商品、非法数量与可选出品时间在提交前被阻止', () => {

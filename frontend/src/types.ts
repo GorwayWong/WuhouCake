@@ -20,7 +20,7 @@ export interface Item {
   recentNotes: Note[];
   productionStatus?: string; currentStageCode?: string | null;
 }
-export interface OrderStatus { status: string; currentStageCode: string | null; paymentStatus: string | null; deletion?: unknown; deleted?: boolean }
+export interface OrderStatus { fulfillmentType?: string; fulfillment?: { type: string }; status: string; currentStageCode: string | null; paymentStatus: string | null; deletion?: unknown; deleted?: boolean }
 export interface CalendarOrder extends OrderStatus {
   orderId: string; orderNo: string; calendarDate: string; fulfillmentType: string;
   plannedHandoffAt: string | null; customerPhoneLast4: string | null; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
@@ -28,6 +28,7 @@ export interface CalendarOrder extends OrderStatus {
 export interface PendingOrder extends Omit<CalendarOrder, 'customerPhoneLast4'> { customer: Customer | null; address: string | null; plannedFinishAt: string | null; requestedReceiveAt?: string | null; items: Item[]; latestNote?: Note | null }
 export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number } | null; pendingOrders: PendingOrder[] }
 export interface Detail extends OrderStatus {
+  pricingMode?: 'MANUAL' | 'ITEM_SUM';
   deletion?: { deletedAt: string; deletedBy: string; employeeName: string; reason: string; expiresAt: string } | null;
   orderingMethod?: string | null;
   createdBy?: string | null; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
@@ -36,6 +37,7 @@ export interface Detail extends OrderStatus {
   totalAmountCents: number | null; paidAt?: string | null; createdAt: string | null; updatedAt: string; items: Item[];
 }
 export interface CreateOrderRequest {
+  pricingMode?: 'MANUAL' | 'ITEM_SUM';
   originalAmountCents?: number | null; memberAmountCents?: number | null; paymentMethod?: string;
   orderingMethod?: string | null;
   creditedEmployeeId?: string;

@@ -1,11 +1,13 @@
+import { draftTotals } from './orderForm';
+import { exactYuan } from './money';
 import { Select } from './Select';
 import { paymentMethods } from './orderPayment';
 import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
-import { firstProductFormError } from './productFormLayout';
+import { firstProductFormError, productFormRows } from './productFormLayout';
 import { DraftItemImages } from './DraftItemImages';
 import { localImageError, requireDraftImages } from './draftImages';
 import type { ImageScope } from './draftImages';
-import { changePickupTime, changeFinishTime } from './orderTimes';
+import { changePickupTime, changeFinishTime, pickupTimeLabel } from './orderTimes';
 import { FinishTimeHelp } from './FinishTimeHelp';
 import { createContext, useContext, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -15,6 +17,7 @@ import { changeItemDraft, createOrderRequest, newItem } from './orderForm';
 import { OrderRecognition } from './OrderRecognition';
 import { foldOtherRecognitionFeedback, formFeedback, retainRecognitionFeedback } from './recognition';
 import type { RecognitionFeedbackMap } from './recognition';
+import { ItemPageNumber } from './ItemPageNumber';
 import { OrderPackagePicker } from './OrderPackagePicker';
 import { DateInput } from './DateInput';
 import { OrderingMethodInput } from './OrderingMethodInput';
@@ -42,6 +45,8 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
   blocked: boolean; editor: DraftEditor; onEditorChange: (editor: Partial<DraftEditor>) => void;
   initialDraft: OrderDraft;
 }) {
+  const totals = draftTotals(draft.items);
+  const autoPrice = draft.pricingMode === 'ITEM_SUM';
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [imageBusy, setImageBusy] = useState(false);
   const imageWriting = (pending: boolean) => { setImageBusy(pending); onImageWritingChange(pending); };
@@ -75,10 +80,9 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
     if (key) setSelectedItemKey(key);
     setPendingTarget({ field, focus });
   };
-  const switchItem = (offset: number) => {
-    const item = draft.items[activeIndex + offset];
+  const selectProduct = (index: number) => {
+    const item = draft.items[index];
     if (!item) return;
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     setSelectedItemKey(item.key); setPendingTarget({});
   };
   const latest = useRef(draft); latest.current = draft;
@@ -132,8 +136,6 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
     feedbackByName[name]?.hint ? `${name}-recognition-hint` : '',
   ].filter(Boolean).join(' ') || undefined });
   const customerFields = [['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32]] as const;
-  const submittedDate = submitted?.fulfillment.requestedReceiveDate || draft.requestedReceiveDate;
-  const submittedPhone = submitted?.customer.phone || draft.phone;
   const unknownResult = creationResultUnknown(error);
   const editBlocked = busy || imageBusy || unknownResult || blocked || Boolean(createdOrderId);
   return <div className="create-page">
@@ -158,21 +160,35 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
     }}>
       <fieldset className="create-fields" disabled={editBlocked}>
         <section className="panel create-group create-order-info"><h2><Receipt />订单信息</h2>
+          <Field className="create-fulfillment-field" label="交接方式" name="fulfillmentType" error={errors.fulfillmentType}><Select label="交接方式"
+            {...inputProps('fulfillmentType')} value={draft.fulfillmentType} disabled={editBlocked}
+            onChange={value => change({ ...draft, fulfillmentType: value as OrderDraft['fulfillmentType'] })}>
+            <option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option>
+          </Select></Field>
           <div className="create-grid create-time-grid">
-            <Field label="取货时间 *" name="requestedReceiveAt" error={errors.requestedReceiveAt || errors.requestedReceiveDate}><DateInput label="取货时间" disabled={editBlocked} {...inputProps('requestedReceiveAt')} type="datetime-local" dateDisplay="business" compactTime showTimeHint={false} timeOptional resetTimeOnDateChange value={draft.requestedReceiveAt} onChange={(value, parts) => change({ ...changePickupTime(draft, value), requestedReceiveDate: parts?.date || '' })} required /></Field>
-            <Field label="出品时间" name="plannedFinishAt" error={errors.plannedFinishAt}><DateInput label="出品时间" disabled={editBlocked} {...inputProps('plannedFinishAt')} type="datetime-local" dateDisplay="business" compactTime value={draft.plannedFinishAt} onChange={value => change(changeFinishTime(draft, value))} /><FinishTimeHelp draft={draft} disabled={editBlocked} onChange={change} /></Field>
+            <Field label={pickupTimeLabel(draft.fulfillmentType) + ' *'} name="requestedReceiveAt" error={errors.requestedReceiveAt || errors.requestedReceiveDate}><DateInput label={pickupTimeLabel(draft.fulfillmentType)} disabled={editBlocked} {...inputProps('requestedReceiveAt')} type="datetime-local" dateDisplay={draft.plannedFinishAt && draft.plannedFinishAt.slice(0, 10) !== draft.requestedReceiveDate ? 'full' : 'business'} compactTime showTimeHint={false} timeOptional resetTimeOnDateChange value={draft.requestedReceiveAt} onChange={(value, parts) => change({ ...changePickupTime(draft, value), requestedReceiveDate: parts?.date || '' })} required /></Field>
+            <Field label="出品时间" name="plannedFinishAt" error={errors.plannedFinishAt}><DateInput label="出品时间" disabled={editBlocked} {...inputProps('plannedFinishAt')} type="datetime-local" dateDisplay={draft.plannedFinishAt && draft.plannedFinishAt.slice(0, 10) !== draft.requestedReceiveDate ? 'full' : 'business'} compactTime value={draft.plannedFinishAt} onChange={value => change(changeFinishTime(draft, value))} /><FinishTimeHelp draft={draft} error={errors.plannedFinishAt} disabled={editBlocked} onChange={change} /></Field>
           </div>
           <div className="create-grid create-customer-grid">
             <Field label="下单方式" name="orderingMethod" error={errors.orderingMethod} wide><OrderingMethodInput id="orderingMethod" disabled={editBlocked} value={draft.orderingMethod || ''} custom={draft.orderingMethodCustom} invalid={Boolean(errors.orderingMethod)} describedBy={inputProps('orderingMethod')['aria-describedby']} onChange={method => change({ ...draft, ...method })} /></Field>
             {customerFields.map(([name, label, maximum]) => <Field key={name} label={label} name={name} error={errors[name]} wide={name === 'memberPhone'}><input {...inputProps(name)} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} onChange={event => change({ ...draft, [name]: event.target.value })} required={name === 'phone'} maxLength={maximum} autoComplete="off" /></Field>)}
-            <Field label="地址 *" name="address" error={errors.address} wide><textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} placeholder="配送填写地址，自提填写‘自提’" required /></Field>
+            {draft.fulfillmentType === 'DELIVERY' && <Field label="配送地址 *" name="address" error={errors.address} wide>
+              <textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} required />
+            </Field>}
         </div></section>
-        <section className="panel create-group"><div className="section-heading"><h2><Cake />商品信息</h2><span className="muted">{draft.items.length} 项</span></div>
-          <OrderPackagePicker draft={draft} getDraft={getDraft} onChange={next => change(next, true)} imageScope={imageScope} canUploadImages={canUploadImages} onImageWritingChange={imageWriting} disabled={editBlocked} />
+        <section className="panel create-group">
+          <OrderPackagePicker draft={draft} getDraft={getDraft} onChange={next => change(next, true)}
+            imageScope={imageScope} canUploadImages={canUploadImages} onImageWritingChange={imageWriting} disabled={editBlocked}
+            heading={<h2><Cake />商品信息</h2>}
+            actions={<div className="actions"><span className="muted">{draft.items.length} 项</span>
+              <button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}>
+                <Plus />添加商品
+              </button></div>} />
+          <div className="create-product-page" data-item-tone={activeIndex % 10}>
           <div className="item-card-navigation" ref={cardStart} role="group" aria-label="商品切换">
-            <button type="button" className="secondary icon-button" aria-label="上一个商品" disabled={activeIndex === 0} onClick={() => switchItem(-1)}><ArrowLeft /></button>
-            <div className="item-card-caption"><span aria-live="polite">第 {activeIndex + 1} / {draft.items.length} 个商品</span><strong>{activeItem?.name.trim() || '未命名商品'}</strong></div>
-            <button type="button" className="secondary icon-button" aria-label="下一个商品" disabled={activeIndex >= draft.items.length - 1} onClick={() => switchItem(1)}><ArrowRight /></button>
+            <button type="button" className="secondary icon-button" aria-label="上一个商品" disabled={activeIndex === 0} onClick={() => selectProduct(activeIndex - 1)}><ArrowLeft /></button>
+            <div className="item-card-caption"><ItemPageNumber current={activeIndex + 1} total={draft.items.length} disabled={editBlocked} onJump={selectProduct} /><strong>{activeItem?.name.trim() || '未命名商品'}</strong></div>
+            <button type="button" className="secondary icon-button" aria-label="下一个商品" disabled={activeIndex >= draft.items.length - 1} onClick={() => selectProduct(activeIndex + 1)}><ArrowRight /></button>
           </div>
           {activeItem && <div className="create-item" key={`fields:${activeItem.key}`}>
             <div className="create-item-heading product-form-heading"><h3>商品 {activeIndex + 1}</h3>
@@ -181,32 +197,36 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
               </Field>
               <button type="button" className="text-button danger" aria-label={`移除商品 ${activeIndex + 1}`} disabled={draft.items.length === 1} onClick={() => change({ ...draft, items: draft.items.filter(other => other.key !== activeItem.key) })}><Trash />移除</button>
             </div>
-            <ProductFormFields type={activeItem.productType} prices renderField={field => {
+            <ProductFormFields type={activeItem.productType}
+              rows={productFormRows(activeItem.productType, true).filter(row => !row.includes('specification'))} renderField={field => {
               const name = `items.${activeIndex}.${field}`;
               const required = field === 'name' || field === 'quantity';
               if (field === 'name' || field === 'quantity' || field === 'unitPrice' || field === 'memberPrice') return <Field label={<ProductFieldLabel field={field} required={required} />} name={name} error={errors[name]}>
                 <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={activeItem[field]} onChange={event => updateItem(activeItem.key, { [field]: event.target.value })} required={required} maxLength={field === 'name' ? 128 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} />
               </Field>;
               return <Field label={<ProductFieldLabel field={field} />} name={name} error={errors[name]}>
-                {(field === 'requirements' || field === 'filling' || field === 'specification') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} inputMode={field === 'size' ? 'decimal' : undefined} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
-                {field === 'specification' && (activeItem.unitPrice || activeItem.memberPrice) && <span className="form-help product-spec-text">
+                {(field === 'requirements' || field === 'filling') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} inputMode={field === 'size' ? 'decimal' : undefined} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
+                {!autoPrice && field === 'requirements' && (activeItem.unitPrice || activeItem.memberPrice) && <span className="form-help product-spec-text">
                   {[activeItem.unitPrice && `参考单价：¥${activeItem.unitPrice}`, activeItem.memberPrice && `参考会员价：¥${activeItem.memberPrice}`].filter(Boolean).join('\n')}
                 </span>}
               </Field>;
             }} />
           </div>}
           {draft.items.length > 1 && <div className="item-card-footer" role="group" aria-label="商品底部切换">
-            <button type="button" className="secondary" disabled={activeIndex === 0} onClick={() => switchItem(-1)}><ArrowLeft />上一项</button>
+            <button type="button" className="secondary" disabled={activeIndex === 0} onClick={() => selectProduct(activeIndex - 1)}><ArrowLeft />上一项</button>
             <span>{activeIndex + 1} / {draft.items.length}</span>
-            <button type="button" className="secondary" disabled={activeIndex >= draft.items.length - 1} onClick={() => switchItem(1)}>下一项<ArrowRight /></button>
+            <button type="button" className="secondary" disabled={activeIndex >= draft.items.length - 1} onClick={() => selectProduct(activeIndex + 1)}>下一项<ArrowRight /></button>
           </div>}
-          <DraftItemImages key={`images:${activeItem.key}`} scope={imageScope} itemId={activeItem.key} images={activeItem.images || []} disabled={editBlocked} allowed={canUploadImages} onBusyChange={imageWriting} onChange={images => change({ ...latest.current, items: latest.current.items.map(item => item.key === activeItem.key ? { ...item, images } : item) })} before={<button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}><Plus />添加商品</button>} />
+          <DraftItemImages before={null} key={`images:${activeItem.key}`} scope={imageScope} itemId={activeItem.key} images={activeItem.images || []} disabled={editBlocked} allowed={canUploadImages} onBusyChange={imageWriting} onChange={images => change({ ...latest.current, items: latest.current.items.map(item => item.key === activeItem.key ? { ...item, images } : item) })} />
+          </div>
         </section>
-        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid order-pricing-fields"><Field label="原价（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field><Field label="会员价（元）" name="memberAmount" error={errors.memberAmount}><input {...inputProps('memberAmount')} inputMode="decimal" value={draft.memberAmount || ''} onChange={event => change({ ...draft, memberAmount: event.target.value })} placeholder="未填写" /></Field><Field label="支付方式" name="paymentMethod" error={errors.paymentMethod} wide><Select label="支付方式" id="paymentMethod" value={draft.paymentMethod || 'UNPAID'} disabled={editBlocked} onChange={paymentMethod => change({ ...draft, paymentMethod })}>{Object.entries(paymentMethods).map(([value, label]) => <option key={value} value={value} disabled={!canRecordPayment && value !== 'UNPAID'}>{label}</option>)}</Select></Field></div><p className="form-help">填写会员价时按会员价成交，否则按原价。调整商品或数量后，请核对整单金额。留空为未报价，0 为零元；支付方式仅登记。</p></section>
+        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid order-pricing-fields"><Field label="原价（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" readOnly={autoPrice} value={autoPrice ? totals.original === null ? '' : exactYuan(totals.original) : draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field><Field label="会员价（元）" name="memberAmount" error={errors.memberAmount}><input {...inputProps('memberAmount')} inputMode="decimal" readOnly={autoPrice} value={autoPrice ? totals.member === null ? '' : exactYuan(totals.member) : draft.memberAmount || ''} onChange={event => change({ ...draft, memberAmount: event.target.value })} placeholder="未填写" /></Field><Field label="支付方式" name="paymentMethod" error={errors.paymentMethod} wide><Select label="支付方式" id="paymentMethod" value={draft.paymentMethod || 'UNPAID'} disabled={editBlocked} onChange={paymentMethod => change({ ...draft, paymentMethod })}>{Object.entries(paymentMethods).map(([value, label]) => <option key={value} value={value} disabled={value !== 'UNPAID' && (!canRecordPayment || autoPrice && (totals.invalid || totals.total === null))}>{label}</option>)}</Select></Field></div><p className="form-help">{autoPrice ? '按商品单价 × 数量自动合计。会员单价未填时采用原单价；留空为未报价，0 为零元。' : '历史草稿保留手填整单金额。会员价优先，未填则采用原价。'}</p></section>
       </fieldset>
       {Object.keys(errors).length > 0 && <div className="notice error" role="alert">{errors.images || '请检查标出的内容后再创建订单。'}</div>}
-      {error ? createdOrderId ? <div className="notice error" role="alert">订单已创建，图片队列尚未保存完成。本机草稿已保留，请重试保存队列；也可先<a href={`#/orders/${createdOrderId}`}>查看订单详情</a>。</div> : unknownResult ? <div className="notice error create-result" role="alert"><p>创建结果未确认，输入已保留。请先核对取货日期 <strong>{submittedDate}</strong>、电话 <strong>{submittedPhone}</strong>；也可重试确认原订单，不会重复建单。</p><a className="text-button" href={`#/?date=${submittedDate}`} target="_blank" rel="noreferrer">打开 {submittedDate} 工作台核对（新标签页）</a></div> : <div className="notice error" role="alert">本次请求未新增订单。{errorText(error)}</div> : null}
-      <div className="create-submit"><button className="primary" disabled={busy || imageBusy || blocked}>{busy ? '正在创建订单…' : createdOrderId ? '重试保存图片队列' : unknownResult ? '重试确认原订单' : '创建订单'}<ArrowRight /></button></div>
+      {createdOrderId ? <div className="notice error" role="alert">订单已创建，部分图片未上传。<a href={`#/orders/${createdOrderId}`}>查看订单详情</a></div>
+        : unknownResult ? <div className="notice error" role="alert">提交结果待确认，可以重试。</div>
+        : error ? <div className="notice error" role="alert">{errorText(error)}</div> : null}
+      <div className="create-submit"><button className="primary" disabled={busy || imageBusy || blocked}>{busy ? '正在创建订单…' : createdOrderId ? '重试上传图片' : unknownResult ? '重试提交' : '创建订单'}<ArrowRight /></button></div>
     </form></RecognitionFields.Provider>
   </div>;
 }

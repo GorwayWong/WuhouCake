@@ -19,7 +19,7 @@ class EmployeeAccessPolicyTest {
             var access = policy.access(account(Set.of(role), SystemRole.STAFF));
             boolean production = Set.of(JobRole.PASTRY_CHEF, JobRole.PASTRY_SUPERVISOR, JobRole.DECORATOR, JobRole.BAKER).contains(role);
             assertTrue(access.allows(ORDER_EXPORT));
-            assertTrue(access.allows(ORDER_PAYMENT_UPDATE));
+            assertEquals(!production, access.allows(ORDER_PAYMENT_UPDATE));
             assertEquals(!production, access.allows(ORDER_AMOUNT_READ));
             assertEquals(!production, access.allows(ORDER_CUSTOMER_READ));
             assertEquals(!production, access.allows(ORDER_BUSINESS_DETAILS_READ));

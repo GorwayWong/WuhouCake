@@ -4,6 +4,7 @@ import { moneyToCents, storeTime, validDate, newItem, asOtherDraft } from './ord
 import { normalizeSize } from './productRules.ts';
 import { normalizeProductType, productTypes } from './productTypes.ts';
 import { randomUUID } from './uuid.ts';
+import { visibleSpecification } from './specificationText.ts';
 import type { RecognitionDraft, RecognitionField } from './types.ts';
 
 export const recognitionLimit = 12000;
@@ -11,7 +12,7 @@ export const recognitionLabels: Record<string, string> = {
   customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '订购人姓名',
   fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '取货日期', requestedReceiveAt: '取货时间',
   plannedHandoffAt: '取货时间', plannedFinishAt: '出品时间', totalAmountCents: '约定总金额（元）',
-  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '规格', size: '规格（寸）', flavor: '奶油', base: '蛋糕胚',
+  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '商品说明', size: '尺寸（寸）', flavor: '奶油', base: '蛋糕胚',
   filling: '夹馅', message: '祝福语', requirements: '其他要求', unitPriceCents: '商品单价（元）', memberPriceCents: '会员单价（元）',
 };
 const rootFields = new Set(['customerName', 'phone', 'memberPhone', 'buyerName', 'fulfillmentType', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmountCents']);
@@ -156,7 +157,7 @@ export function retainRecognitionFeedback(draft: OrderDraft, feedback: Recogniti
 }
 /** Move feedback alongside the fields collapsed by asOtherDraft. */
 export function foldOtherRecognitionFeedback(item: ItemDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
-  const keys = [...specificationKeys].map(field => feedbackKey(field, item.key));
+  const keys = [...specificationKeys].filter(field => field !== 'requirements').map(field => feedbackKey(field, item.key));
   const marks = keys.flatMap(key => feedback[key] ? [feedback[key]] : []);
   if (!marks.length) return feedback;
   const next = { ...feedback };
@@ -183,14 +184,12 @@ export function formFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap
 }
 export function orderEntryRecognition(result: RecognitionDraft, manualFields: ReadonlySet<string>): RecognitionDraft {
   const next = structuredClone(result), fields = next.fields;
-  const pickup = fields.fulfillmentType;
-  if (pickup?.value === 'PICKUP') fields.address = { ...pickup, value: '自提' };
+  if (fields.fulfillmentType?.value === 'PICKUP' && fields.address?.value?.trim() === '自提') delete fields.address;
   const handoff = fields.plannedHandoffAt;
   if (handoff?.value || handoff?.needsReview || handoff?.source === 'RULE') {
     fields.requestedReceiveAt = handoff;
     if (handoff.value) delete fields.requestedReceiveDate;
   }
-  delete fields.fulfillmentType;
   delete fields.plannedHandoffAt;
   const manualReceive = manualFields.has('requestedReceiveAt') || manualFields.has('requestedReceiveDate');
   for (const field of Object.keys(fields)) {
@@ -206,8 +205,11 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   let next = structuredClone(draft), cleared = 0;
   let feedback: RecognitionFeedbackMap = {};
   const targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
+  const ignoredField = (field: string, value: string | null) =>
+    field === 'unitPriceCents' || field === 'memberPriceCents' ||
+    (field === 'specification' && Boolean(value) && visibleSpecification(value) === '');
   const validContent = (fields: Record<string, RecognitionField>) => Object.entries(fields).some(([field, candidate]) => {
-    if (field === 'unitPriceCents' || field === 'memberPriceCents') return false;
+    if (ignoredField(field, candidate.value)) return false;
     if (field === 'productType' || candidate.source === 'DEFAULT' || !candidate.value?.trim()) return false;
     try { validateCandidate(field, recognitionValue(field, candidate.value)); return true; } catch { return false; }
   });
@@ -217,7 +219,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     next.items = products.map(item => { const empty = emptyRecognitionItem(); targets[item.id] = empty.key; return empty; });
   }
   const write = (field: string, candidate: RecognitionField, itemKey?: string, onlyErrors = false) => {
-    if (field === 'unitPriceCents' || field === 'memberPriceCents') return;
+    if (ignoredField(field, candidate.value)) return;
     const displayField = field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field;
     const key = feedbackKey(field, itemKey), previous = feedback[key];
     const mark = (error?: string, hints: string[] = []) => {
@@ -274,6 +276,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
   const applied = changed.length, overwritten = changed.filter(mark => currentValue(draft, mark.field, mark.itemKey)).length;
   next.items = next.items.map(item => {
     if (normalizeProductType(item.productType) !== 'OTHER') return item;
+    if (!replacedItems && !Object.values(feedback).some(mark => mark.itemKey === item.key)) return item;
     const converted = asOtherDraft(item);
     feedback = foldOtherRecognitionFeedback(converted, feedback);
     return converted;

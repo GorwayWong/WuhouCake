@@ -1,18 +1,20 @@
+import { businessDate } from './dates';
 import { paymentListHref } from './paymentListRoute';
 import { useQuery } from '@tanstack/react-query';
-import { api, ApiError } from './api';
+import { ApiError, readQuery } from './api';
 import type { PaymentSummary, PendingOrder } from './types';
 import { ErrorNotice } from './ui';
 import { dailyOperationalCounts, paymentSummaryKey, summaryAmount } from './shippingPayment';
 
 export function DayShippingSummary({ date, canReadAmounts, orders }: { date: string; canReadAmounts: boolean; orders?: PendingOrder[] }) {
   const query = useQuery({ queryKey: paymentSummaryKey(date), enabled: canReadAmounts,
-    queryFn: ({ signal }) => api<PaymentSummary>(`/orders/workbench/payment-summary?date=${date}`, { signal }) });
+    queryFn: ({ signal }) => readQuery<PaymentSummary>(`/orders/workbench/payment-summary?date=${date}`, signal) });
   const denied = query.error instanceof ApiError && query.error.status === 403;
   const summary = canReadAmounts && !denied ? query.data : undefined;
   const counts = canReadAmounts ? summary : orders ? dailyOperationalCounts(orders) : undefined;
   return <section className="panel shipping-summary" aria-label={`${date} 订单汇总`} aria-busy={canReadAmounts && query.isFetching}>
     <div className="section-heading"><h2>订单汇总</h2></div>
+    <p className="form-help">按 {businessDate(date)} 取货日汇总，金额为订单成交额。</p>
     <dl className="shipping-counts"><div><dt>当日订单</dt><dd>{counts?.totalOrderCount ?? '—'} <span>笔</span></dd></div><div><dt>待配送</dt><dd>{counts?.waitingDeliveryOrderCount ?? '—'} <span>笔</span></dd></div></dl>
     {canReadAmounts && <><ErrorNotice error={query.error} retry={denied ? undefined : () => void query.refetch()} />
       {query.error && summary && <p className="notice" role="status">刷新失败，当前显示上次数据。</p>}

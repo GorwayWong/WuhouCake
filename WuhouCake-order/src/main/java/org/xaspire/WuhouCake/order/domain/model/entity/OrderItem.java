@@ -12,7 +12,7 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 public record OrderItem(UUID itemId, String name, String productType, int quantity,
         Long unitPriceCents, Long memberPriceCents, Map<String, Object> attributes,
         String productionStatus, String currentStageCode, boolean removed, Instant createdAt, Instant updatedAt) {
-    private static final Set<String> FIELDS = Set.of("name", "productType", "quantity", "attributes");
+    private static final Set<String> FIELDS = Set.of("name", "productType", "quantity", "attributes", "referenceUnitPriceCents", "referenceMemberPriceCents");
 
     public OrderItem {
         Objects.requireNonNull(itemId);
@@ -46,7 +46,8 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
                 changes.containsKey("name") ? requiredText(changes.get("name"), 128) : name,
                 type,
                 changes.containsKey("quantity") ? OrderValues.quantity(changes.get("quantity")) : quantity,
-                unitPriceCents, memberPriceCents,
+                changes.containsKey("referenceUnitPriceCents") ? money(changes.get("referenceUnitPriceCents")) : unitPriceCents,
+                changes.containsKey("referenceMemberPriceCents") ? money(changes.get("referenceMemberPriceCents")) : memberPriceCents,
                 sizeChanged || !type.equalsIgnoreCase(productType) ? CakeSpecifications.forWrite(type, merged) : CakeSpecifications.effective(type, merged),
                 productionStatus, currentStageCode, removed, createdAt, now);
     }

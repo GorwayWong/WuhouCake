@@ -53,7 +53,7 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     assert.equal(await unspecified.locator('.front-card-times dd').nth(0).innerText(), displayDate(date) + ' · 时刻待定');
     assert.equal(await unspecified.locator('.front-card-times dd').nth(1).innerText(), '待定');
     assert.equal(await main.locator('xpath=ancestor::section[contains(@class,"timeline-group")]').getAttribute('aria-label'), date + ' 取货时段 23:30 至次日 00:00');
-    assert.equal(await page.locator('.order-partition').filter({ hasText: '已配送' }).locator('.timeline-partition-toggle').getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.locator('.order-partition').filter({ hasText: '已交接' }).locator('.timeline-partition-toggle').getAttribute('aria-expanded'), 'false');
     for (const width of [390, 1280]) {
       await page.setViewportSize({ width, height: 1000 });
       const positions = await main.locator('.front-card-times > div').evaluateAll(nodes => nodes.map(node => ({ x: node.getBoundingClientRect().x, y: node.getBoundingClientRect().y })));
@@ -72,7 +72,7 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     assert.match(await page.locator('[data-control-label="订单状态"] .choice-trigger').innerText(), /出胚/);
     assert.match(await page.locator('[data-control-label="付款状态"] .choice-trigger').innerText(), /未付款/);
     await page.getByRole('button', { name: '清除筛选', exact: true }).click();
-    await page.locator('.order-partition').filter({ hasText: '已配送' }).locator('.timeline-partition-toggle').click();
+    await page.locator('.order-partition').filter({ hasText: '已交接' }).locator('.timeline-partition-toggle').click();
     const completed = page.locator('[data-order-id="40000000-0000-4000-8000-000000000004"]'); await completed.waitFor();
     assert.equal(await completed.locator('.front-card-times dd').nth(0).innerText(), displayDate(date) + ' 09:10');
     model.permissions = model.permissions.filter(permission => permission !== 'ORDER_AMOUNT_READ');

@@ -33,7 +33,11 @@ public final class OrderCommands {
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String orderingMethod,
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Number originalAmountCents,
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Number memberAmountCents,
-            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String paymentMethod) {
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String paymentMethod,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String pricingMode) {
+        public Create(Customer customer, Fulfillment fulfillment, List<Item> items, Number totalAmountCents, UUID creditedEmployeeId, String orderingMethod, Number originalAmountCents, Number memberAmountCents, String paymentMethod) {
+            this(customer, fulfillment, items, totalAmountCents, creditedEmployeeId, orderingMethod, originalAmountCents, memberAmountCents, paymentMethod, null);
+        }
         public Create(Customer customer, Fulfillment fulfillment, List<Item> items, Number totalAmountCents, UUID creditedEmployeeId, String orderingMethod) {
             this(customer, fulfillment, items, totalAmountCents, creditedEmployeeId, orderingMethod, null, null, null);
         }

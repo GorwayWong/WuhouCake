@@ -5,7 +5,7 @@ import { receiveEvent } from '../src/realtime.ts';
 import { displayedStatusCode } from '../src/orderStates.ts';
 import { canEditItems } from '../src/orderForm.ts';
 
-test('删除通知在REST重新读取前锁住旧详情并移出日历及待办，不覆盖编辑基线', () => {
+test('删除通知在REST重新读取前锁住旧详情并移出日历及待办，不覆盖编辑基线', async () => {
   const client = new QueryClient();
   const id = '12345678-1234-4234-8234-123456789abc';
   const original = { orderId: id, orderNo: '0000001', status: 'LAYER', version: 3 };
@@ -14,6 +14,7 @@ test('删除通知在REST重新读取前锁住旧详情并移出日历及待办�
   client.setQueryData(['calendar', '2026-10-25'], [original]);
   client.setQueryData(['workbench', '2026-10-25'], { pendingOrders: [original] });
   receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: id, changeType: 'ORDER_DELETED', version: 4 }) });
+  await new Promise(resolve => setTimeout(resolve, 0));
   const latest = client.getQueryData<typeof original & { deleted: boolean }>(['order', id, 'detail'])!;
   assert.equal(latest.deleted, true); assert.equal(latest.version, 3);
   assert.equal(displayedStatusCode(latest), 'DELETED'); assert.equal(canEditItems(latest), false);

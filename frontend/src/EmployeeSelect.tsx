@@ -4,11 +4,16 @@ import type { EmployeeOption } from './types';
 import { ErrorNotice } from './ui';
 import { Select } from './Select';
 
+export function useEmployeeOptions(includeArchived = false, enabled = true) {
+  return useQuery({ queryKey: ['employee-options', includeArchived], enabled,
+    queryFn: ({ signal }) => api<EmployeeOption[]>(`/employees/options?includeArchived=${includeArchived}`, { signal }) });
+}
+
 export function EmployeeSelect({ value, onChange, includeArchived = false, emptyLabel = '请选择下单员工', label = '下单员工', saved, disabled = false, id, name }: {
   value: string; onChange: (value: string) => void; includeArchived?: boolean; emptyLabel?: string;
   saved?: { accountId: string; employeeNumber: string; nickname: string } | null; disabled?: boolean; id?: string; name?: string; label?: string;
 }) {
-  const query = useQuery({ queryKey: ['employee-options', includeArchived], queryFn: ({ signal }) => api<EmployeeOption[]>(`/employees/options?includeArchived=${includeArchived}`, { signal }) });
+  const query = useEmployeeOptions(includeArchived);
   const options = query.data || [];
   return <><Select label={label} id={id} name={name} value={value} disabled={disabled || query.isPending} onChange={onChange}>
     <option value="">{query.isPending ? '正在读取员工…' : emptyLabel}</option>

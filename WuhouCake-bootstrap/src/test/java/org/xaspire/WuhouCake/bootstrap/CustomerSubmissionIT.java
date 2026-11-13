@@ -1,6 +1,7 @@
 package org.xaspire.WuhouCake.bootstrap;
 
 import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.*;
 import java.net.http.*;
 import java.util.*;
@@ -103,6 +104,80 @@ class CustomerSubmissionIT {
         assertEquals(0, front.data("GET", all + "not-a-receipt", null).path("total").asInt());
         front.data("DELETE", "/api/customer-submissions/" + pending, Map.of("expectedVersion", 0));
         assertEquals(0, front.data("GET", all + pending, null).path("total").asInt());
+    }
+
+    @Test void pendingLastPageReturnsRemainingOrdersAfterAnotherClerkProcessesOne() throws Exception {
+        var staff = admin(); entry(staff); String last = null;
+        var source = store.entryForOwner(UUID.fromString(staff.id));
+        // 队列容量夹具直接入库，公开入口限流由独立测试覆盖。
+        for (int i = 0; i < 21; i++) {
+            var input = json.convertValue(content("1380000" + String.format("%04d", i), "2026-11-02T18:00:00+08:00"),
+                    org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission.Content.class);
+            last = new TransactionTemplate(transactions).execute(tx ->
+                    store.submit(source, UUID.randomUUID(), UUID.randomUUID().toString(), null, input, Instant.now()).id().toString());
+        }
+        String path = "/api/customer-submissions?mine=true&status=PENDING&keyword=1380000&page=2&size=20";
+        var before = staff.data("GET", path, null);
+        assertEquals(2, before.path("page").asInt()); assertEquals(21, before.path("total").asInt());
+        assertEquals(1, before.path("items").size());
+        staff.data("DELETE", "/api/customer-submissions/" + last, Map.of("expectedVersion", 0));
+        var after = staff.data("GET", path, null);
+        assertEquals(1, after.path("page").asInt()); assertEquals(20, after.path("total").asInt());
+        assertEquals(20, after.path("items").size());
+        var empty = staff.data("GET", path.replace("keyword=1380000", "keyword=999999"), null);
+        assertEquals(1, empty.path("page").asInt()); assertEquals(0, empty.path("total").asInt());
+    }
+
+    @Test void submissionListKeepsCountAndRowsInOneSnapshotDuringConfirmation() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        var counted = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var once = new java.util.concurrent.atomic.AtomicBoolean();
+        org.mockito.stubbing.Answer<Object> pause = invocation -> {
+            Object result = invocation.callRealMethod();
+            if (once.compareAndSet(false, true)) { counted.countDown(); await(release); }
+            return result;
+        };
+        doAnswer(pause).when(store).count(null, "PENDING", "");
+        doAnswer(pause).when(store).search(isNull(), eq("PENDING"), eq(""), anyInt(), anyLong());
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var read = pool.submit(() -> staff.data("GET", "/api/customer-submissions?mine=false&status=PENDING", null));
+            try {
+                assertTrue(counted.await(10, TimeUnit.SECONDS));
+                staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
+            } finally { release.countDown(); }
+            var result = read.get(10, TimeUnit.SECONDS);
+            assertEquals(1, result.path("total").asInt()); assertEquals(1, result.path("items").size());
+            assertEquals("PENDING", result.at("/items/0/submission/status").asText());
+            assertEquals(0, result.at("/items/0/duplicates").size());
+        } finally { release.countDown(); }
+        assertEquals(0, staff.data("GET", "/api/customer-submissions?status=PENDING", null).path("total").asInt());
+    }
+
+    @Test void submissionDetailKeepsStatusAndHistoryInOneSnapshotDuringConfirmation() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        var loaded = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var once = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation -> {
+            Object result = invocation.callRealMethod();
+            if (once.compareAndSet(false, true)) { loaded.countDown(); await(release); }
+            return result;
+        }).when(store).find(UUID.fromString(id), false);
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var read = pool.submit(() -> staff.data("GET", "/api/customer-submissions/" + id, null));
+            try {
+                assertTrue(loaded.await(10, TimeUnit.SECONDS));
+                staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
+            } finally { release.countDown(); }
+            var result = read.get(10, TimeUnit.SECONDS);
+            assertEquals("PENDING", result.at("/submission/status").asText());
+            assertEquals(0, result.path("duplicates").size());
+            for (var activity : result.path("activities")) assertNotEquals("CONFIRMED", activity.path("type").asText());
+        } finally { release.countDown(); }
+        assertEquals("CONFIRMED", staff.data("GET", "/api/customer-submissions/" + id, null).at("/submission/status").asText());
     }
 
     @Test void newReviewPricesAreIgnoredAndLegacyPricesAreRetainedOnConfirmation() throws Exception {
@@ -365,6 +440,24 @@ class CustomerSubmissionIT {
         assertEquals(400, client.request("POST", submitPath(token), input).status);
         assertEquals(0, count("cake_order")); assertEquals(1, count("customer_order_submission"));
         assertEquals(1, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
+    }
+    @Test void publicRequestsRejectNullAndFractionalQuantitiesWithoutConsumingTheRequestKey() throws Exception {
+        var staff = admin();
+        String token = entry(staff);
+        var client = new Client();
+        var key = UUID.randomUUID();
+        var valid = content("13800000000", "2026-11-02T18:00:00+08:00");
+        ObjectNode invalid = json.valueToTree(valid);
+        var item = (ObjectNode) invalid.at("/items/0");
+        item.putNull("quantity");
+        assertEquals(400, client.request("POST", submitPath(token), invalid, key.toString()).status);
+        item.put("quantity", 1.5);
+        assertEquals(400, client.request("POST", submitPath(token), invalid, key.toString()).status);
+        assertEquals(0, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
+
+        submit(token, valid, key);
+        assertEquals(1, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
+        assertEquals(0, count("cake_order"));
     }
     @Test void sameRequestIsIdempotentButNewRequestsNeedFullDuplicateAcknowledgement() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00"); var key = UUID.randomUUID();

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api } from './api';
+import { readQuery } from './api';
 import { DateInput } from './DateInput';
 import { businessDate, shiftDate, businessTime } from './dates';
 import { orderStatusNames, productionStatuses } from './orderStates';
@@ -46,15 +46,17 @@ export function ProductionQuery({ route }: { route: ProductionQueryRoute }) {
     detailParams.set('stage', stage);
   }
   const summary = useQuery({ queryKey: ['workbench', 'production-summary', from, through, stage],
-    queryFn: ({ signal }) => api<ProductionSummary>(`/orders/workbench/production-summary?${summaryParams}`, { signal }) });
-  const detail = useQuery({ queryKey: ['workbench', 'production-orders', bucket, stage, page], enabled: Boolean(bucket),
-    queryFn: ({ signal }) => api<ProductionPage>(`/orders/workbench/production-orders?${detailParams}`, { signal }) });
+    queryFn: ({ signal }) => readQuery<ProductionSummary>(`/orders/workbench/production-summary?${summaryParams}`, signal) });
+  const detail = useQuery({ queryKey: ['workbench', 'production-orders', bucket, stage, page], gcTime: 0, staleTime: 0, enabled: Boolean(bucket),
+    queryFn: ({ signal }) => readQuery<ProductionPage>(`/orders/workbench/production-orders?${detailParams}`, signal) });
   const detailPage = detail.data?.page;
+  const canCorrectPage = detail.isFetchedAfterMount && detail.isSuccess && !detail.isFetching;
+  const result = detailPage === page ? detail.data : undefined;
   useEffect(() => {
-    if (bucket && detailPage != null && detailPage !== page) {
+    if (canCorrectPage && bucket && detailPage != null && detailPage !== page) {
       window.location.replace(productionQueryHref({ from, through, stage, bucket, page: detailPage }));
     }
-  }, [bucket, detailPage, from, page, stage, through]);
+  }, [bucket, detailPage, canCorrectPage, from, page, stage, through]);
 
   function apply(next: typeof draft) {
     const valid = validProductionRange(next.from, next.through);
@@ -106,10 +108,10 @@ export function ProductionQuery({ route }: { route: ProductionQueryRoute }) {
     {bucket && <section className="panel" aria-labelledby="production-detail-heading" tabIndex={-1} ref={detailsSection}>
       <h2 id="production-detail-heading">{bucket === 'unscheduled' ? '出品待定' : businessDate(bucket)}订单明细</h2>
       <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
-      {detail.isPending ? <Loading /> : detail.data && (detail.data.total === 0 ? <Empty>暂无匹配订单。</Empty> : <>
-        <p>共 {detail.data.total} 笔订单</p>
-        <ul className="production-query-orders">{detail.data.orders.map(order => <li key={order.orderId}>
-          <a href={orderHref(order.orderId, productionQueryHref({ ...route, page: detail.data.page }))}>
+      {detail.isPending || (!result && !detail.isError) ? <Loading /> : result && (result.total === 0 ? <Empty>暂无匹配订单。</Empty> : <>
+        <p>共 {result.total} 笔订单</p>
+        <ul className="production-query-orders">{result.orders.map(order => <li key={order.orderId}>
+          <a href={orderHref(order.orderId, productionQueryHref({ ...route, page: result.page }))}>
             <strong>{order.itemName || '未填写商品名称'}</strong><span>#{order.orderNo} · {orderStatusNames[order.status]}</span>
           </a>
           <dl>
@@ -118,9 +120,9 @@ export function ProductionQuery({ route }: { route: ProductionQueryRoute }) {
           </dl>
         </li>)}</ul>
         <nav className="pagination" aria-label="待制作订单分页">
-          {detail.data.page > 1 && <a href={productionQueryHref({ ...route, page: detail.data.page - 1 })}>上一页</a>}
-          <span>第 {detail.data.page} / {Math.ceil(detail.data.total / 20)} 页</span>
-          {detail.data.page * 20 < detail.data.total && <a href={productionQueryHref({ ...route, page: detail.data.page + 1 })}>下一页</a>}
+          {result.page > 1 && <a href={productionQueryHref({ ...route, page: result.page - 1 })}>上一页</a>}
+          <span>第 {result.page} / {Math.ceil(result.total / 20)} 页</span>
+          {result.page * 20 < result.total && <a href={productionQueryHref({ ...route, page: result.page + 1 })}>下一页</a>}
         </nav>
       </>)}
     </section>}

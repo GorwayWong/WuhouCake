@@ -19,7 +19,7 @@ test('跨年日期控件保留完整值与日历年份，夹馅多行保存不�
     await filling.fill('第一层草莓、芒果和脆片\n第二层蓝莓加奶酪');
     await page.locator('[id="items.0.flavor"]').fill('巧克力奶油');
     await page.evaluate(() => { const key = 'wuhou:order-draft:v1:alice'; const r = JSON.parse(localStorage.getItem(key)); r.value.requestedReceiveDate = '2027-01-01'; r.value.requestedReceiveAt = '2027-01-01T10:00'; r.value.plannedFinishAt = '2027-01-01T09:00'; r.value.finishTimeMode = 'MANUAL'; localStorage.setItem(key, JSON.stringify(r)); });
-    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     const pickup = page.locator('.date-time-field[data-field-name="requestedReceiveAt"]');
     assert.equal(await pickup.locator('.date-month-day').innerText(), '2027/01/01');
     assert.match(await pickup.locator('.date-month-day').getAttribute('aria-label'), /2027-01-01/);
@@ -28,7 +28,7 @@ test('跨年日期控件保留完整值与日历年份，夹馅多行保存不�
       await page.setViewportSize({ width, height: 1000 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await pickup.locator('.date-month-day').click();
-      const popup = page.getByRole('dialog', { name: '选择取货时间日期', exact: true });
+      const popup = page.getByRole('dialog', { name: '选择配送员取货时间日期', exact: true });
       await popup.waitFor();
       assert.match(await popup.getByRole('heading').innerText(), /2027/);
       const bounds = await popup.boundingBox(); assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1);
@@ -70,7 +70,6 @@ test('前厅详情放大时间和联系信息，隐藏制作操作并保留交�
     model.order.status = 'CANCELLED'; await page.reload();
     assert.equal(await page.getByRole('button', { name: '恢复至出胚', exact: true }).count(), 0);
     model.order.status = 'CAKE_BASE'; model.permissions.push('ORDER_PRODUCTION_UPDATE'); await page.reload();
-    await page.locator('details.order-supplement > summary').click();
     await page.getByRole('checkbox', { name: '蛋糕制作完成' }).waitFor();
     assert.equal(await page.getByRole('checkbox', { name: '蛋糕制作完成' }).isEnabled(), true);
     assert.deepEqual(errors, []);

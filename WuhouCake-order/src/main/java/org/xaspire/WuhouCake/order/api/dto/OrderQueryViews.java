@@ -7,6 +7,8 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer;
 
 public final class OrderQueryViews {
     private OrderQueryViews() { }
+    public record ProductionReminders(LocalDate date, long today, long overdue) { }
+    public record ProductionReminderOrders(LocalDate date, int page, long total, List<PendingOrder> orders) { }
     public record ProductionDay(LocalDate date, long orderCount) { }
     public record ProductionSummary(long total, long unscheduled, List<ProductionDay> days) { }
     public record ProductionOrder(UUID orderId, String orderNo, String itemName, String status,

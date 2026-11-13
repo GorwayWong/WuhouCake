@@ -1,8 +1,10 @@
 package org.xaspire.WuhouCake.order.adapter.web;
 
 import jakarta.validation.Valid;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
@@ -13,9 +15,15 @@ import org.xaspire.WuhouCake.order.application.service.OrderCreationService;
 import org.xaspire.WuhouCake.order.application.service.OrderViewAccess;
 import org.xaspire.WuhouCake.shared.response.*;
 
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_AMOUNT_READ;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_PAYMENT_UPDATE;
+
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
+    private static final Set<String> ORDER_PRICES = Set.of("totalAmountCents", "originalAmountCents", "memberAmountCents");
+    private static final Set<String> ITEM_PRICES = Set.of("unitPriceCents", "memberPriceCents", "referenceUnitPriceCents", "referenceMemberPriceCents");
+
     private final OrderService orders;
     private final OrderCreationService creations;
     public OrderController(OrderService orders, OrderCreationService creations) { this.orders = orders; this.creations = creations; }
@@ -24,9 +32,13 @@ public class OrderController {
     public ApiResponse<OrderViews.Detail> create(@Valid @RequestBody OrderCommands.Create command, Authentication authentication,
             @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
-        if (command.paymentMethod() != null && !"UNPAID".equals(command.paymentMethod())
-                && !account.access().allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_PAYMENT_UPDATE))
-            throw new org.springframework.security.access.AccessDeniedException("ORDER_PAYMENT_UPDATE required");
+        boolean recordsPayment = command.paymentMethod() != null && !"UNPAID".equals(command.paymentMethod());
+        requireAmountAccess(authentication, recordsPayment || command.totalAmountCents() != null
+                || command.originalAmountCents() != null || command.memberAmountCents() != null
+                || command.items().stream().anyMatch(OrderController::hasItemPrice));
+        if (recordsPayment && !account.access().allows(ORDER_PAYMENT_UPDATE)) {
+            throw new AccessDeniedException("ORDER_PAYMENT_UPDATE required");
+        }
         return visible(orders.detail(creations.create(command, operator(authentication), requestId)), authentication);
     }
     @GetMapping("/{id}")
@@ -34,11 +46,13 @@ public class OrderController {
 
     @PatchMapping("/{id}")
     public ApiResponse<OrderViews.Detail> revise(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Revise command, Authentication authentication) {
+        requireAmountAccess(authentication, command.changes().keySet().stream().anyMatch(ITEM_PRICES::contains));
         return visible(orders.revise(id, command, operator(authentication)), authentication);
     }
     @PostMapping("/{id}/notes") @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<OrderViews.Activity> note(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Note command, Authentication authentication) {
-        return ApiResponse.success(orders.note(id, command, operator(authentication)));
+    public ApiResponse<OrderViews.Activity> note(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Note command, Authentication authentication,
+            @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId) {
+        return ApiResponse.success(orders.note(id, command, operator(authentication), requestId));
     }
     @PostMapping("/{id}/items/{itemId}/remove")
     public ApiResponse<OrderViews.Detail> removeItem(@PathVariable UUID id, @PathVariable UUID itemId,
@@ -48,11 +62,13 @@ public class OrderController {
     @PostMapping("/{id}/items") @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderViews.Detail> addItem(@PathVariable UUID id, @Valid @RequestBody OrderCommands.AddItem command,
             Authentication authentication) {
+        requireAmountAccess(authentication, hasItemPrice(command.item()));
         return visible(orders.addItem(id, command, operator(authentication)), authentication);
     }
     @PatchMapping("/{id}/information")
     public ApiResponse<OrderViews.Detail> reviseInformation(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Information command,
             Authentication authentication) {
+        requireAmountAccess(authentication, command.changes().keySet().stream().anyMatch(ORDER_PRICES::contains));
         return visible(orders.reviseInformation(id, command, operator(authentication)), authentication);
     }
     @PatchMapping("/{id}/payment-status")
@@ -97,6 +113,18 @@ public class OrderController {
     public ApiResponse<OrderViews.Detail> delete(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Delete command, Authentication authentication) {
         return visible(orders.delete(id, command, operator(authentication)), authentication);
     }
+    private static boolean hasItemPrice(OrderCommands.Item item) {
+        return item.unitPriceCents() != null || item.memberPriceCents() != null
+                || item.referenceUnitPriceCents() != null || item.referenceMemberPriceCents() != null;
+    }
+
+    private static void requireAmountAccess(Authentication authentication, boolean writesAmount) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        if (writesAmount && !account.access().allows(ORDER_AMOUNT_READ)) {
+            throw new AccessDeniedException("ORDER_AMOUNT_READ required");
+        }
+    }
+
     private static ApiResponse<OrderViews.Detail> visible(OrderViews.Detail detail, Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
         return ApiResponse.success(OrderViewAccess.detail(detail, account.access()));

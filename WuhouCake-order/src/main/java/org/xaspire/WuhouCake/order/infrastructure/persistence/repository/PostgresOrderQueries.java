@@ -38,9 +38,18 @@ public final class PostgresOrderQueries implements OrderQueries {
                 row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt(), row.customerPhoneLast4())).toList();
     }
     @Override public List<PendingOrder> pending(LocalDate date) {
-        return mapper.pending(date).stream().map(row -> new PendingOrder(UUID.fromString(row.orderId()), row.orderNo(),
+        return mapper.pending(date).stream().map(PostgresOrderQueries::pendingOrder).toList();
+    }
+    @Override public long countScheduledProduction(Instant from, Instant to, Set<String> stages) {
+        return mapper.countScheduledProduction(from, to, stages);
+    }
+    @Override public List<PendingOrder> scheduledProduction(Instant from, Instant to, Set<String> stages, int limit, long offset) {
+        return mapper.scheduledProduction(from, to, stages, limit, offset).stream().map(PostgresOrderQueries::pendingOrder).toList();
+    }
+    private static PendingOrder pendingOrder(OrderQueryMapper.PendingRow row) {
+        return new PendingOrder(UUID.fromString(row.orderId()), row.orderNo(),
                 row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt(),
-                row.customerName(), row.phone(), row.memberPhone(), row.buyerName(), row.address(), row.plannedFinishAt(), row.requestedReceiveAt())).toList();
+                row.customerName(), row.phone(), row.memberPhone(), row.buyerName(), row.address(), row.plannedFinishAt(), row.requestedReceiveAt());
     }
     @Override public List<CalendarItem> calendarItems(List<UUID> orderIds) {
         if (orderIds.isEmpty()) return List.of();

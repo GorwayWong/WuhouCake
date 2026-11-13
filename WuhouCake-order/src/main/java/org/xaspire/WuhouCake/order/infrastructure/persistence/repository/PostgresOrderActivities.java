@@ -13,9 +13,16 @@ public final class PostgresOrderActivities implements OrderActivities {
     public PostgresOrderActivities(OrderActivityMapper mapper, JsonCodec json) { this.mapper = mapper; this.json = json; }
 
     @Override public OrderActivity append(OrderActivity activity) {
+        return appendNote(activity, null);
+    }
+    @Override public OrderActivity appendNote(OrderActivity activity, UUID requestId) {
         var row = new OrderActivityMapper.Row(0, activity.orderId().toString(), string(activity.itemId()), activity.type(), activity.content(),
-                json.write(activity.details()), activity.actorId().toString(), activity.actorNameSnapshot(), activity.createdAt());
+                json.write(activity.details()), activity.actorId().toString(), activity.actorNameSnapshot(), activity.createdAt(), string(requestId));
         return activity.identified(mapper.append(row));
+    }
+    @Override public OrderActivity findNote(UUID orderId, UUID actorId, UUID requestId) {
+        var row = mapper.findNote(orderId.toString(), actorId.toString(), requestId.toString());
+        return row == null ? null : activity(row);
     }
     @Override public List<OrderActivity> recentItemNotes(UUID orderId) { return mapper.recentItemNotes(orderId.toString()).stream().map(this::activity).toList(); }
     @Override public List<OrderActivity> search(UUID orderId, UUID itemId, String type, int size, long offset) {

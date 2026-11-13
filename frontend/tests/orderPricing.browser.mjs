@@ -9,14 +9,19 @@ before(async () => { browser = await chromium.launch({ headless: true, channel: 
 after(async () => { await browser?.close(); });
 async function until(check) { for (let i = 0; i < 150; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 30)); } throw new Error('Timed out'); }
 
+async function restoreLegacy(page) {
+  await page.evaluate(() => { const key = 'wuhou:order-draft:v1:alice'; const record = JSON.parse(localStorage.getItem(key)); delete record.value.pricingMode; delete record.initial.pricingMode; localStorage.setItem(key, JSON.stringify(record)); });
+  await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+}
+
 test('整单双报价和支付方式跨草稿恢复，响应丢失仍使用相同载荷与幂等标识', async () => {
   const { context, page, model, complete, saved, errors } = await createOrderFixture(browser, base);
   try {
-    model.permissions.push('ORDER_PAYMENT_UPDATE'); await page.reload(); await complete();
+    model.permissions.push('ORDER_PAYMENT_UPDATE'); await page.reload(); await complete(); await restoreLegacy(page);
     await page.locator('#totalAmount').fill('158.01'); await page.locator('#memberAmount').fill('128.02');
     await page.locator('#paymentMethod').click(); await page.getByRole('option', { name: '现金', exact: true }).click();
     await until(async () => (await saved()).value.paymentMethod === 'CASH');
-    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     assert.equal(await page.locator('#totalAmount').inputValue(), '158.01');
     assert.equal(await page.locator('#memberAmount').inputValue(), '128.02');
     assert.match(await page.locator('#paymentMethod').innerText(), /现金/);
@@ -29,13 +34,13 @@ test('整单双报价和支付方式跨草稿恢复，响应丢失仍使用相�
     }
     model.loseCreate = true;
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
-    await page.getByRole('button', { name: '重试确认原订单', exact: true }).waitFor();
+    await page.getByRole('button', { name: '重试提交', exact: true }).waitFor();
     const pending = (await saved()).pending;
     assert.equal(pending.originalAmountCents, 15801); assert.equal(pending.memberAmountCents, 12802);
     assert.equal(pending.totalAmountCents, 12802); assert.equal(pending.paymentMethod, 'CASH');
-    await page.reload(); await page.getByRole('button', { name: '继续填写', exact: true }).click();
+    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     assert.equal(await page.locator('#memberAmount').isDisabled(), true);
-    await page.getByRole('button', { name: '重试确认原订单', exact: true }).click();
+    await page.getByRole('button', { name: '重试提交', exact: true }).click();
     await until(() => model.createCalls.length === 2);
     assert.equal(model.createCalls[0].key, model.createCalls[1].key);
     assert.deepEqual(model.createCalls[0].input, model.createCalls[1].input);
@@ -44,7 +49,7 @@ test('整单双报价和支付方式跨草稿恢复，响应丢失仍使用相�
   } finally { await context.close(); }
 });
 
-test('详情清空会员价回到原价，修改支付方式保留付款时间与版本校验', async () => {
+test('详情先撤销付款才能改价，重新登记使用新金额和时间', async () => {
   const { context, page, model, errors } = await createOrderFixture(browser, base);
   try {
     model.permissions.push('ORDER_BUSINESS_DETAILS_READ', 'ORDER_EDIT', 'ORDER_PAYMENT_UPDATE');
@@ -64,22 +69,41 @@ test('详情清空会员价回到原价，修改支付方式保留付款时间�
     await context.route(`**/api/orders/${orderId}/payment-status`, async route => {
       const request = route.request().postDataJSON(); patches.push(request);
       assert.equal(request.expectedVersion, model.order.version);
+      if (request.paymentStatus !== model.order.paymentStatus) {
+        model.order.paidAt = request.paymentStatus === 'PAID' ? '2026-11-09T04:00:00Z' : null;
+      }
       Object.assign(model.order, { paymentMethod: request.paymentMethod, paymentStatus: request.paymentStatus }); model.order.version++;
       return route.fulfill({ json: { success: true, data: model.order } });
     });
     await page.goto(base + '/#/orders/' + orderId); await page.reload();
-    await page.getByRole('button', { name: '修改金额', exact: true }).click();
-    await page.locator('#edit-memberAmount').fill('');
-    await page.locator('.amount-editor').getByRole('button', { name: '保存修改', exact: true }).click();
-    await until(() => model.order.version === 1);
-    assert.deepEqual(patches[0].changes, { memberAmountCents: null });
-    assert.equal(model.order.totalAmountCents, 15800);
+    assert.equal(await page.getByRole('button', { name: '修改金额', exact: true }).count(), 0);
     await page.locator('.order-payment-editor button[aria-haspopup=listbox]').click();
     await page.getByRole('option', { name: '对公转账', exact: true }).click();
     await page.getByRole('button', { name: '保存支付方式', exact: true }).click();
+    await until(() => model.order.version === 1);
+    assert.equal(patches[0].paymentMethod, 'BANK_TRANSFER');
+    assert.equal(model.order.paidAt, paidAt);
+    page.once('dialog', async dialog => {
+      assert.match(dialog.message(), /改为未付款.*付款时间会清除/);
+      await dialog.accept();
+    });
+    await page.getByRole('button', { name: '撤销付款登记', exact: true }).click();
     await until(() => model.order.version === 2);
-    assert.equal(patches[1].paymentMethod, 'BANK_TRANSFER'); assert.equal(patches[1].paymentStatus, 'PAID');
-    assert.equal(model.order.paidAt, paidAt); assert.deepEqual(errors, []);
+    assert.equal(model.order.paidAt, null);
+    await page.getByRole('button', { name: '修改金额', exact: true }).click();
+    await page.locator('#edit-memberAmount').fill('');
+    await page.locator('.amount-editor').getByRole('button', { name: '保存修改', exact: true }).click();
+    await until(() => model.order.version === 3);
+    assert.deepEqual(patches[2].changes, { memberAmountCents: null });
+    assert.equal(model.order.totalAmountCents, 15800);
+    await page.locator('.order-payment-editor button[aria-haspopup=listbox]').click();
+    await page.getByRole('option', { name: '现金', exact: true }).click();
+    await page.getByRole('button', { name: '确认已付款', exact: true }).click();
+    await until(() => model.order.version === 4);
+    assert.equal(patches[3].paymentStatus, 'PAID');
+    assert.equal(model.order.paidAt, '2026-11-09T04:00:00Z');
+    assert.equal(model.order.totalAmountCents, 15800);
+    assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
 

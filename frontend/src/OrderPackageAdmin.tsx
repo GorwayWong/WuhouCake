@@ -2,14 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
 import { api, ApiError, creationResultUnknown, errorText, fetchPackageImage } from './api';
-import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals } from './orderPackages';
+import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals, packagePricingProblem } from './orderPackages';
 import type { OrderPackage, PackageBody, PackageRow } from './orderPackages';
 import type { Page } from './types';
 import { Empty, ErrorNotice, Loading, money } from './ui';
 import { focusFormField } from './formFocus';
 import { time } from './dates';
 import { randomUUID } from './uuid';
-import { exactYuan } from './money';
 import { imageFileError } from './imagePreview';
 import { PackageDialog } from './PackageDialog';
 import { editablePackage, mergePackageDraft } from './packageConflict';
@@ -195,21 +194,14 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
             {fieldError('items')}<button type="button" className="secondary package-add-row" onClick={() => setItems([...items, newPackageItem()])}><Plus />添加商品</button>
           </section>
           <section className="panel create-group"><h2>套餐金额</h2>
-            {editing !== 'new' && editing.originalAmountCents == null && <p className="form-help">此套餐尚未设置原价，请补齐后保存。</p>}
+            {editing !== 'new' && packagePricingProblem(editing) && <p className="notice">{packagePricingProblem(editing)} 原售价：{money(editing.originalAmountCents)}；会员售价：{money(editing.memberAmountCents)}。保存后采用以下商品合计。</p>}
             <dl className="package-amount-preview">
-              <div><dt>普通参考合计</dt><dd>{reference.original === null ? '未报价' : money(reference.original)}</dd></div>
-              <div><dt>会员参考合计</dt><dd>{reference.member === null ? '未报价' : money(reference.member)}</dd></div>
+              <div><dt>原价合计</dt><dd>{money(reference.original)}</dd></div>
+              <div><dt>会员合计</dt><dd>{money(reference.member)}</dd></div>
             </dl>
-            {reference.invalid ? <p className="field-error">请核对商品数量和报价，合计不能超过金额上限。</p> : <p className="form-help">{reference.unpriced} 项商品未报价。</p>}
-            <button type="button" className="secondary compact" disabled={reference.invalid || reference.original === null && reference.member === null} onClick={() => {
-              if (reference.original !== null) setOriginal(exactYuan(reference.original));
-              if (reference.member !== null) setMember(exactYuan(reference.member));
-              setErrors({});
-            }}>采用合计</button>
-            <div className="create-grid order-pricing-fields">
-              <label>原价（元） *<input {...inputProps('original')} value={original} inputMode="decimal" required onChange={event => { setOriginal(event.target.value); setErrors({}); }} />{fieldError('original')}</label>
-              <label>会员价（元）<input {...inputProps('member')} value={member} inputMode="decimal" onChange={event => { setMember(event.target.value); setErrors({}); }} />{fieldError('member')}</label>
-            </div>
+            {reference.invalid ? <p className="field-error">请核对商品数量和报价，合计不能超过金额上限。</p> : <p className="form-help">按商品单价 × 数量自动计算。{reference.unpriced} 项商品未报价。</p>}
+            {fieldError('original')}
+
           </section>
         </fieldset>
         {conflict && <section className="panel package-conflict" aria-labelledby="package-conflict-heading">
@@ -227,7 +219,7 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
         {specEditor && <PackageDialog title={`商品 ${specEditor.index + 1} 的规格`} onCancel={() => setSpecEditor(null)}>
           <label>单价（元）<input inputMode="decimal" value={specEditor.values.unitPrice} onChange={event => setSpecEditor({ ...specEditor, values: { ...specEditor.values, unitPrice: event.target.value } })} /></label>
           <label>会员价（元）<input inputMode="decimal" value={specEditor.values.memberPrice} onChange={event => setSpecEditor({ ...specEditor, values: { ...specEditor.values, memberPrice: event.target.value } })} /></label>
-          <label>商品备注<textarea autoFocus rows={5} placeholder="可换行填写，例如口味、包装和其他要求" value={specEditor.values.specification} onChange={event => setSpecEditor({ ...specEditor, values: { ...specEditor.values, specification: event.target.value } })} /></label>
+          <label>特殊要求备注<textarea autoFocus rows={5} placeholder="可换行填写，例如口味、包装和其他要求" value={specEditor.values.specification} onChange={event => setSpecEditor({ ...specEditor, values: { ...specEditor.values, specification: event.target.value } })} /></label>
           <div className="package-actions"><button type="button" className="secondary" onClick={() => setSpecEditor(null)}>取消</button>
             <button type="button" className="primary" onClick={() => { const index = items.findIndex(item => item.itemId === specEditor.itemId); if (index >= 0) updateItem(index, specEditor.values); setSpecEditor(null); }}>确认规格</button></div>
         </PackageDialog>}

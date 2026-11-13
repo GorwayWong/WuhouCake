@@ -21,8 +21,8 @@ class ProductPricingTest {
                 Map.of("requirements", "少糖", "specification", "六只装"), "NOT_STARTED", null, false, NOW, NOW);
         var converted = legacy.revise(Map.of("quantity", 2, "productType", "OTHER"), NOW.plusSeconds(1));
         assertEquals(12000L, converted.unitPriceCents()); assertEquals(0L, converted.memberPriceCents());
-        assertEquals(Set.of("specification"), converted.attributes().keySet());
-        assertTrue(converted.attributes().get("specification").toString().contains("特殊要求：少糖"));
+        assertEquals(Set.of("specification", "requirements"), converted.attributes().keySet());
+        assertEquals("少糖", converted.attributes().get("requirements"));
         assertFalse(converted.attributes().get("specification").toString().contains("120.00"));
         assertEquals(converted.attributes(), converted.revise(Map.of("quantity", 3), NOW).attributes());
     }

@@ -39,6 +39,7 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
                 var merged = CakeSpecifications.other(new LinkedHashMap<>(values));
                 values.clear();
                 if (merged.get("specification") instanceof String spec) values.put("specification", spec);
+                if (merged.get("requirements") instanceof String requirements) values.put("requirements", requirements);
             }
             attributes = Collections.unmodifiableMap(values);
         }

@@ -1,6 +1,7 @@
 package org.xaspire.WuhouCake.order.domain.model.aggregate;
 
 import java.time.Instant;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ItemPricing;
 import java.time.LocalDate;
 import java.time.DateTimeException;
 import java.time.temporal.ChronoUnit;
@@ -26,6 +27,7 @@ public final class Order {
     private Long originalAmountCents;
     private Long memberAmountCents;
     private String paymentMethod;
+    private final String pricingMode;
     private final UUID createdBy;
     private Attribution creditedEmployee;
     private final Instant createdAt;
@@ -69,6 +71,15 @@ public final class Order {
             FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
             Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion, String orderingMethod,
             Long originalAmountCents, Long memberAmountCents, String paymentMethod) {
+        this(id, orderNo, version, status, paymentStatus, currentStageCode, customer, fulfillment, totalAmountCents,
+                createdBy, createdAt, confirmedAt, updatedAt, items, creditedEmployee, paidAt, deletion, orderingMethod,
+                originalAmountCents, memberAmountCents, paymentMethod, "MANUAL");
+    }
+    public Order(UUID id, String orderNo, long version, String status, String paymentStatus, String currentStageCode, CustomerContact customer,
+            FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
+            Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion, String orderingMethod,
+            Long originalAmountCents, Long memberAmountCents, String paymentMethod, String pricingMode) {
+        this.pricingMode = ItemPricing.mode(pricingMode);
         this.originalAmountCents = money(originalAmountCents); this.memberAmountCents = money(memberAmountCents);
         this.paymentMethod = normalizePaymentMethod(paymentMethod);
         if (this.paymentMethod != null && !paymentStatus.equals(this.paymentMethod.equals("UNPAID") ? "UNPAID" : "PAID")) throw invalid();
@@ -113,6 +124,41 @@ public final class Order {
         return new Order(id, orderNo, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, effective,
                 actorId, now, now, now, items, creditedEmployee, paid ? now : null, null, orderingMethod, original, member, method);
     }
+    public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
+            List<OrderItem> items, UUID actorId, Instant now, Attribution employee, String orderingMethod,
+            Long original, Long member, String method, String pricingMode) {
+        if (ItemPricing.mode(pricingMode).equals("MANUAL"))
+            return create(id, orderNo, customer, fulfillment, total, items, actorId, now, employee, orderingMethod, original, member, method);
+        var totals = totals(items);
+        var payment = normalizePaymentMethod(method);
+        boolean paid = payment != null && !payment.equals("UNPAID");
+        if (paid && totals.total() == null) throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
+        return new Order(id, orderNo, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, totals.total(),
+                actorId, now, now, now, items, employee, paid ? now : null, null, orderingMethod,
+                totals.original(), totals.member(), payment, "ITEM_SUM");
+    }
+    public String pricingMode() { return pricingMode; }
+    private static ItemPricing.Totals totals(List<OrderItem> items) {
+        return ItemPricing.calculate(items.stream().filter(item -> !item.removed())
+                .map(item -> new ItemPricing.Quote(item.quantity(), item.unitPriceCents(), item.memberPriceCents())).toList());
+    }
+    private ItemPricing.Totals previewPrices(UUID replaced, OrderItem replacement) {
+        if (!pricingMode.equals("ITEM_SUM")) return null;
+        var next = new ArrayList<>(activeItems().stream().filter(item -> !item.itemId().equals(replaced)).toList());
+        if (replacement != null && !replacement.removed()) next.add(replacement);
+        var prices = totals(next);
+        if ("PAID".equals(paymentStatus) && !Objects.equals(totalAmountCents, prices.total()))
+            throw new OrderFailure("ORDER_PAID_AMOUNT_LOCKED");
+        return prices;
+    }
+    private void applyPrices(ItemPricing.Totals prices, Map<String, Object> before, Map<String, Object> after) {
+        if (prices == null) return;
+        before.put("originalAmountCents", originalAmountCents); before.put("memberAmountCents", memberAmountCents);
+        before.put("totalAmountCents", totalAmountCents);
+        originalAmountCents = prices.original(); memberAmountCents = prices.member(); totalAmountCents = prices.total();
+        after.put("originalAmountCents", originalAmountCents); after.put("memberAmountCents", memberAmountCents);
+        after.put("totalAmountCents", totalAmountCents);
+    }
     public Long originalAmountCents() { return originalAmountCents; }
     public Long memberAmountCents() { return memberAmountCents; }
     public String paymentMethod() { return paymentMethod; }
@@ -142,36 +188,58 @@ public final class Order {
         if (item == null) throw new OrderFailure("ORDER_NOT_FOUND");
         return item;
     }
+    private void requireEditableItems() {
+        if (!PRODUCTION_STATUSES.contains(status) && !"WAITING_DELIVERY".equals(status))
+            throw new OrderFailure("ORDER_NOT_EDITABLE");
+    }
+
+    private void reopenAfterItemChange(Map<String, Object> before, Map<String, Object> after) {
+        if (!"WAITING_DELIVERY".equals(status)) return;
+        before.put("status", status);
+        after.put("status", "DECORATING");
+        status = "DECORATING";
+    }
+
     public Map<String, Object> removeItem(UUID itemId, Instant now) {
         requireWritable();
         var previous = requireItem(itemId);
         if (previous.removed()) return Map.of();
-        if (!PRODUCTION_STATUSES.contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        requireEditableItems();
         if (activeItems().size() == 1) throw invalid();
         requireNextVersion();
+        var prices = previewPrices(itemId, null);
         var removed = previous.remove(now);
-        var details = JsonSnapshot.object(Map.of("before", itemValues(previous), "after", itemValues(removed)));
+        var before = itemValues(previous);
+        var after = itemValues(removed);
+        reopenAfterItemChange(before, after);
+        applyPrices(prices, before, after);
+        var details = JsonSnapshot.object(Map.of("before", before, "after", after));
         items.put(itemId, removed); version++; updatedAt = now;
         return details;
     }
     public Map<String, Object> addItem(OrderItem item, Instant now) {
         requireWritable();
-        if (!PRODUCTION_STATUSES.contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        requireEditableItems();
         if (item == null || items.containsKey(item.itemId()) || item.removed() || !"NOT_STARTED".equals(item.productionStatus())
                 || item.currentStageCode() != null) throw invalid();
         requireNextVersion();
         var before = new LinkedHashMap<String, Object>();
         var after = new LinkedHashMap<String, Object>();
+        var prices = previewPrices(null, item);
         before.put("item", null);
         after.put("item", itemValues(item));
-        var itemChanges = status.equals("CAKE_BASE") ? List.<Map<String, Object>>of()
-                : updateItemStatuses("NOT_STARTED", false, now);
-        if (!status.equals("CAKE_BASE")) {
+        var itemChanges = List.<Map<String, Object>>of();
+        if ("WAITING_DELIVERY".equals(status)) {
+            reopenAfterItemChange(before, after);
+        } else if (!"CAKE_BASE".equals(status)) {
+            itemChanges = updateItemStatuses("NOT_STARTED", false, now);
             before.put("status", status);
             after.put("status", "CAKE_BASE");
+            status = "CAKE_BASE";
         }
+        applyPrices(prices, before, after);
         items.put(item.itemId(), item);
-        status = "CAKE_BASE"; version++; updatedAt = now;
+        version++; updatedAt = now;
         return JsonSnapshot.object(Map.of("before", before, "after", after, "itemChanges", itemChanges));
     }
     private static Map<String, Object> itemValues(OrderItem item) {
@@ -183,7 +251,16 @@ public final class Order {
     public Map<String, Object> reviseItem(UUID itemId, Map<String, Object> changes, Instant now) {
         requireWritable();
         var previous = requireActiveItem(itemId);
-        if (!PRODUCTION_STATUSES.contains(status)) throw new OrderFailure("ORDER_NOT_EDITABLE");
+        requireEditableItems();
+        if (pricingMode.equals("ITEM_SUM") && changes != null) {
+            changes = new LinkedHashMap<>(changes);
+            for (var field : List.of("unitPriceCents", "memberPriceCents")) {
+                if (!changes.containsKey(field)) continue;
+                String reference = field.equals("unitPriceCents") ? "referenceUnitPriceCents" : "referenceMemberPriceCents";
+                if (changes.containsKey(reference)) throw invalid();
+                changes.put(reference, changes.remove(field));
+            }
+        }
         var revised = previous.revise(changes, now);
         var before = new LinkedHashMap<String, Object>();
         var after = new LinkedHashMap<String, Object>();
@@ -193,12 +270,15 @@ public final class Order {
         });
         if (before.isEmpty()) return Map.of();
         if (version == Long.MAX_VALUE) throw new OrderFailure("CONCURRENT_MODIFICATION");
-        if ("COMPLETED".equals(previous.productionStatus())
-                && before.keySet().stream().anyMatch(Set.of("name", "productType", "quantity", "attributes")::contains)) {
+        var prices = previewPrices(itemId, revised);
+        boolean affectsProduction = before.keySet().stream().anyMatch(Set.of("name", "productType", "quantity", "attributes")::contains);
+        if (affectsProduction) reopenAfterItemChange(before, after);
+        if (affectsProduction && "COMPLETED".equals(previous.productionStatus())) {
             revised = revised.changeProductionStatus("IN_PROGRESS", now);
             before.put("productionStatus", previous.productionStatus());
             after.put("productionStatus", revised.productionStatus());
         }
+        applyPrices(prices, before, after);
         items.put(itemId, revised); version++; updatedAt = now;
         return JsonSnapshot.object(Map.of("before", before, "after", after));
     }
@@ -210,6 +290,7 @@ public final class Order {
         var fields = Set.of("customerName", "phone", "memberPhone", "buyerName", "fulfillmentType", "address", "requestedReceiveDate",
                 "requestedReceiveAt", "plannedHandoffAt", "plannedFinishAt", "totalAmountCents", "originalAmountCents", "memberAmountCents", "creditedEmployeeId", "orderingMethod");
         if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !fields.contains(key))) throw invalid();
+        if (pricingMode.equals("ITEM_SUM") && changes.keySet().stream().anyMatch(Set.of("totalAmountCents", "originalAmountCents", "memberAmountCents")::contains)) throw invalid();
         var previous = informationValues(customer, fulfillment, totalAmountCents);
         previous.put("originalAmountCents", originalAmountCents); previous.put("memberAmountCents", memberAmountCents);
         previous.put("orderingMethod", orderingMethod);
@@ -240,6 +321,10 @@ public final class Order {
         }
         var plan = new FulfillmentPlan(type, text(merged.get("address")), requestedDate, handoffAt,
                 changes.containsKey("plannedFinishAt") ? instant(changes.get("plannedFinishAt")) : fulfillment.plannedFinishAt(), requestedAt);
+        if (!Objects.equals(plan.pickupAt(), fulfillment.pickupAt())
+                || !Objects.equals(plan.plannedFinishAt(), fulfillment.plannedFinishAt())) {
+            requireFinishLeadTime(plan.pickupAt(), plan.plannedFinishAt());
+        }
         Long original = originalAmountCents, member = memberAmountCents;
         Long total = totalAmountCents;
         if (changes.containsKey("originalAmountCents") || changes.containsKey("memberAmountCents")) {
@@ -253,6 +338,9 @@ public final class Order {
             total = money(changes.get("totalAmountCents")); original = total;
         }
         var before = new LinkedHashMap<String, Object>(); var after = new LinkedHashMap<String, Object>();
+        if ("PAID".equals(paymentStatus) && !Objects.equals(totalAmountCents, total)) {
+            throw new OrderFailure("ORDER_PAID_AMOUNT_LOCKED");
+        }
         var nextMethod = normalizeOrderingMethod(merged.get("orderingMethod"));
         var nextValues = informationValues(contact, plan, total);
         nextValues.put("originalAmountCents", original); nextValues.put("memberAmountCents", member);
@@ -311,12 +399,13 @@ public final class Order {
         if (nextMethod == null) nextMethod = this.paymentStatus.equals(paymentStatus) ? paymentMethod
                 : paymentStatus.equals("UNPAID") ? (paymentMethod == null ? null : "UNPAID") : "UNPAID".equals(paymentMethod) ? null : paymentMethod;
         if (nextMethod != null && !paymentStatus.equals(nextMethod.equals("UNPAID") ? "UNPAID" : "PAID")) throw invalid();
+        if (pricingMode.equals("ITEM_SUM") && paymentStatus.equals("PAID") && totalAmountCents == null) throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
         if (this.paymentStatus.equals(paymentStatus) && Objects.equals(paymentMethod, nextMethod)) return Map.of();
         requireNextVersion();
-        var before = new LinkedHashMap<String, Object>(); before.put("paymentStatus", this.paymentStatus); before.put("paidAt", paidAt == null ? null : paidAt.toString()); if (!Objects.equals(paymentMethod, nextMethod)) before.put("paymentMethod", paymentMethod);
+        var before = new LinkedHashMap<String, Object>(); if (totalAmountCents != null) before.put("totalAmountCents", totalAmountCents); before.put("paymentStatus", this.paymentStatus); before.put("paidAt", paidAt == null ? null : paidAt.toString()); if (!Objects.equals(paymentMethod, nextMethod)) before.put("paymentMethod", paymentMethod);
         if (!this.paymentStatus.equals(paymentStatus)) paidAt = "PAID".equals(paymentStatus) ? now : null;
         this.paymentStatus = paymentStatus; this.paymentMethod = nextMethod; version++; updatedAt = now;
-        var after = new LinkedHashMap<String, Object>(); after.put("paymentStatus", paymentStatus); after.put("paidAt", paidAt == null ? null : paidAt.toString()); if (before.containsKey("paymentMethod")) after.put("paymentMethod", paymentMethod);
+        var after = new LinkedHashMap<String, Object>(); if (totalAmountCents != null) after.put("totalAmountCents", totalAmountCents); after.put("paymentStatus", paymentStatus); after.put("paidAt", paidAt == null ? null : paidAt.toString()); if (before.containsKey("paymentMethod")) after.put("paymentMethod", paymentMethod);
         return JsonSnapshot.object(Map.of("before", before, "after", after));
     }
     public Map<String, Object> applyProductionAction(String action, Instant now) {

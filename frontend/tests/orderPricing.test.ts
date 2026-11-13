@@ -6,7 +6,7 @@ import { decodeOrderDraft, freshOrderDraft } from '../src/orderDraftStorage.ts';
 import type { Detail } from '../src/types.ts';
 
 test('整单原价与会员价精确到分，零元会员价优先，支付方式独立于商品价格', () => {
-  const draft = { ...newDraft('2026-11-09'), phone: '13800000000', address: '自提', totalAmount: '158.01', memberAmount: '128.02', paymentMethod: 'MEMBER_CARD' };
+  const draft = { ...newDraft('2026-11-09'), pricingMode: 'MANUAL' as const, phone: '13800000000', address: '自提', totalAmount: '158.01', memberAmount: '128.02', paymentMethod: 'MEMBER_CARD' };
   draft.items[0].name = '蛋糕';
   const result = createOrderRequest(draft);
   assert.deepEqual(result.errors, {});

@@ -5,7 +5,7 @@ export async function createOrderFixture(browser, base) {
   context.setDefaultTimeout(10000);
   await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
   const model = { account: 'alice', order: null, orders: new Map(), images: [], createCalls: [], uploads: [], failNames: new Set(), lostNames: new Set(), loseCreate: false,
-    permissions: ['ORDER_READ', 'ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ', 'ORDER_BUSINESS_DETAILS_READ', 'ORDER_IMAGE_UPLOAD', 'ORDER_IMAGE_DELETE'] };
+    permissions: ['ORDER_READ', 'ORDER_CREATE', 'ORDER_EDIT', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ', 'ORDER_BUSINESS_DETAILS_READ', 'ORDER_IMAGE_UPLOAD', 'ORDER_IMAGE_DELETE'] };
   let png;
   await context.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
@@ -44,6 +44,7 @@ export async function createOrderFixture(browser, base) {
     }
     if (path.endsWith('/activities')) return ok({ items: [], total: 0, page: 1, size: 20 });
     if (path.endsWith('/calendar')) return ok([]);
+    if (path.endsWith('/production-reminders')) return ok({ date: '2026-11-12', today: 0, overdue: 0 });
     if (path.endsWith('/workbench')) return ok({ pendingOrders: [], metrics: null });
     if (path.endsWith('/receipt-summary')) return ok({ orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 });
     if (path.endsWith('/cake-bases')) return ok({ items: [] });
@@ -57,6 +58,6 @@ export async function createOrderFixture(browser, base) {
   const select = names => page.locator('input[type=file]').setInputFiles(names.map(name => ({ name, mimeType: 'image/png', buffer: png })));
   const saved = () => page.evaluate(account => JSON.parse(localStorage.getItem(`wuhou:order-draft:v1:${account}`)), model.account);
   const queue = () => page.evaluate(async ([account, id]) => (await import('/src/draftImages.ts')).imageQueue(account, id).then(rows => rows.map(({ file, ...row }) => row)), [model.account, orderId]);
-  const complete = async () => { await page.locator('#phone').fill('13800000000'); await page.locator('#address').fill('自提'); await page.locator('[id="items.0.name"]').fill('蛋糕A'); };
+  const complete = async () => { await page.locator('#phone').fill('13800000000'); await page.getByRole('button', { name: /交接方式/ }).click(); await page.getByRole('option', { name: '门店自提' }).click(); await page.locator('[id="items.0.name"]').fill('蛋糕A'); };
   return { context, page, model, errors, png, select, saved, queue, complete };
 }

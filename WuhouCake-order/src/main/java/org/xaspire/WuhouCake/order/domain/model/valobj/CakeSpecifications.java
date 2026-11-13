@@ -12,13 +12,17 @@ public final class CakeSpecifications {
         var labels = Map.of("size", "尺寸", "base", "内胚", "cakeBase", "内胚", "flavor", "奶油",
                 "filling", "夹馅", "message", "祝福语", "greeting", "祝福语", "requirements", "特殊要求", "otherRequirements", "特殊要求");
         var values = JsonSnapshot.object(attributes);
+        String requirements = values.get("requirements") instanceof String text ? text.strip() : null;
         Object specification = values.get("specification");
         if (specification != null && !specification.toString().isBlank()) lines.add(specification.toString().strip());
         new TreeMap<>(values).forEach((key, value) -> {
-            if (!key.equals("specification") && value != null && !value.toString().isBlank())
+            if (!key.equals("specification") && !(key.equals("requirements") && requirements != null) && value != null && !value.toString().isBlank())
                 lines.add(labels.getOrDefault(key, key) + "：" + value.toString().strip());
         });
-        return lines.isEmpty() ? Map.of() : Map.of("specification", String.join("\n", lines));
+        var result = new LinkedHashMap<String, Object>();
+        if (!lines.isEmpty()) result.put("specification", String.join("\n", lines));
+        if (requirements != null && !requirements.isBlank()) result.put("requirements", requirements);
+        return JsonSnapshot.object(result);
     }
     public static String historicalSpecification(String specification, Long unitPriceCents, Long memberPriceCents) {
         var lines = new ArrayList<String>();

@@ -1,4 +1,5 @@
 import { isCake } from './productTypes.ts';
+import { visibleSpecification } from './specificationText.ts';
 import type { Item } from './types.ts';
 
 function text(value: unknown): string {
@@ -14,7 +15,8 @@ export function historicalProductionFields(item: Pick<Item, 'attributes' | 'prod
 }
 export function productionFields(item: Pick<Item, 'attributes'> & Partial<Pick<Item, 'productType'>>): [string, string][] {
   const attributes = item.attributes || {};
-  if (item.productType && item.productType.toUpperCase() !== 'CAKE') return ([['规格', text(attributes.specification)]] as [string, string][]).filter(([, value]) => value !== '无');
+  const specification = text(visibleSpecification(attributes.specification));
+  if (item.productType && item.productType.toUpperCase() !== 'CAKE') return specification === '无' ? [] : [['规格', specification]];
   return [
     ['蛋糕胚口味', text(attributes.base ?? attributes.cakeBase)],
     ['尺寸', text(attributes.size)],
@@ -22,7 +24,7 @@ export function productionFields(item: Pick<Item, 'attributes'> & Partial<Pick<I
     ['夹心', text(attributes.filling)],
     ['祝福语', text(attributes.message ?? attributes.greeting)],
     ['特殊要求', text(attributes.requirements ?? attributes.otherRequirements)],
-    ...(attributes.specification ? [['规格', text(attributes.specification)] as [string, string]] : []),
+    ...(specification !== '无' ? [['规格', specification] as [string, string]] : []),
   ];
 }
 

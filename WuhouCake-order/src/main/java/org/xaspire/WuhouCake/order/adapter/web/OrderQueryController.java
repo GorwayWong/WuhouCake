@@ -32,6 +32,20 @@ public class OrderQueryController {
         return ApiResponse.success(queries.productionOrders(date, unscheduled, stage, page));
     }
 
+    @GetMapping("/workbench/production-reminders")
+    public ApiResponse<OrderQueryViews.ProductionReminders> productionReminders() {
+        return ApiResponse.success(queries.productionReminders());
+    }
+
+    @GetMapping("/workbench/production-reminder-orders")
+    public ApiResponse<OrderQueryViews.ProductionReminderOrders> productionReminderOrders(
+            @RequestParam String group, @RequestParam(defaultValue = "1") int page, Authentication authentication) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        var result = queries.productionReminderOrders(group, page);
+        return ApiResponse.success(new OrderQueryViews.ProductionReminderOrders(result.date(), result.page(), result.total(),
+                OrderViewAccess.pending(result.orders(), account.access())));
+    }
+
     @GetMapping("/workbench/payment-orders")
     public ApiResponse<OrderQueryViews.PaymentOrders> paymentOrders(
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,

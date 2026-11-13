@@ -68,9 +68,9 @@ test('手机双人换图和改价备注自动合并，再次更新时可重新�
   const { first, second, current } = session;
   try {
     const oldImage = current().items[0].imageId;
-    await second.page.locator('#package-original').fill('88');
     await second.page.getByRole('button', { name: '编辑商品 1 的规格' }).click();
-    await second.page.getByLabel('商品备注').fill('乙的备注');
+    await second.page.getByLabel('单价（元）', { exact: true }).fill('88');
+    await second.page.getByLabel('特殊要求备注').fill('乙的备注');
     await second.page.getByRole('button', { name: '确认规格' }).click();
     await upload(first, '甲第一次换图.png');
     await saveRemote(first.page);

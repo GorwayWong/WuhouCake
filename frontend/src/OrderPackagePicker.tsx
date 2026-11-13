@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { isCancelledError, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, errorText, fetchPackageImage } from './api';
@@ -8,11 +9,13 @@ import type { OrderDraft } from './orderForm';
 import { saveDraftImageBatch, removeDraftImage, localImageError } from './draftImages';
 import type { ImageScope } from './draftImages';
 import { money } from './ui';
+import { effectiveOrderAmount } from './orderPayment';
 import { PackageDialog } from './PackageDialog';
 import type { Page } from './types';
 
-export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageScope, canUploadImages, onImageWritingChange }: {
+export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageScope, canUploadImages, onImageWritingChange, heading, actions }: {
   draft: OrderDraft; getDraft: () => OrderDraft; onChange: (draft: OrderDraft) => boolean; disabled: boolean;
+  heading: ReactNode; actions: ReactNode;
   imageScope: ImageScope; canUploadImages: boolean; onImageWritingChange: (busy: boolean) => void;
 }) {
   const client = useQueryClient();
@@ -28,7 +31,7 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
   const [review, setReview] = useState<OrderPackage | null>(null);
   const [missingOrder, setMissingOrder] = useState(''), [missingPackage, setMissingPackage] = useState('');
   const [reviewError, setReviewError] = useState('');
-  const needOrderPrice = !isEmptyPackageDraft(draft) && !draft.totalAmount.trim();
+  const needOrderPrice = draft.pricingMode !== 'ITEM_SUM' && !isEmptyPackageDraft(draft) && !draft.totalAmount.trim();
   let preview: ReturnType<typeof previewPackage> | undefined, previewError = '';
   if (review) try { preview = previewPackage(draft, review, missingOrder, missingPackage); }
   catch (failure) { previewError = (failure as Error).message; }
@@ -62,7 +65,7 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       if (!applied) await Promise.all(entries.map((entry, index) => removeDraftImage(imageScope, entry.itemId, images[index].id)));
     }
     setReview(null); setAdded(current => [...current, value.id]);
-    setMessage(`已带入「${value.name}」，请核对商品和整单金额。`);
+    setMessage(`已带入「${value.name}」。`);
   }
   async function append() {
     if (!chosen || active.current || disabled) return;
@@ -73,9 +76,13 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       const value = await client.fetchQuery({ queryKey: key, queryFn: ({ signal }) => api<OrderPackage>(`/order-packages/${chosen.id}`, { signal }), staleTime: 0, gcTime: 0 });
       if (controller.signal.aborted || latest.current.disabled) return;
       const before = latest.current.getDraft();
-      if (isEmptyPackageDraft(before) && value.originalAmountCents !== null && (!before.paymentMethod || before.paymentMethod === 'UNPAID')) {
+      const empty = isEmptyPackageDraft(before);
+      const hasPrices = before.pricingMode === 'ITEM_SUM' || value.originalAmountCents !== null && (empty || Boolean(before.totalAmount.trim()));
+      const plan = hasPrices ? previewPackage(before, value) : null;
+      if (plan && !plan.resetPayment && plan.changes.every(change => !change.previousQuantity)
+        && (empty || effectiveOrderAmount(plan.original, plan.member) === effectiveOrderAmount(plan.beforeOriginal, plan.beforeMember))) {
         writing = true; onImageWritingChange(true);
-        await apply(value, previewPackage(before, value), before, controller);
+        await apply(value, plan, before, controller);
       } else {
         setMissingOrder(''); setMissingPackage(''); setReviewError(''); setReview(value);
       }
@@ -99,7 +106,11 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
     finally { active.current = null; setBusy(false); onImageWritingChange(false); }
   }
   return <div className="package-picker-section">
-    <button type="button" className="text-button package-toggle" aria-expanded={expanded} aria-controls={contentId} disabled={disabled || busy} onClick={() => setExpanded(value => !value)}>{expanded ? '收起套餐' : '使用套餐'}</button>
+    <div className="section-heading order-create-products-heading">
+      {heading}
+      <button type="button" className="secondary package-toggle" aria-expanded={expanded} aria-controls={contentId} disabled={disabled || busy} onClick={() => setExpanded(value => !value)}>{expanded ? '收起套餐' : '导入套餐'}</button>
+      {actions}
+    </div>
     <div id={contentId} className="package-picker" hidden={!expanded}>
     <div className="package-actions"><label>搜索套餐<input value={keyword} placeholder="输入套餐名称" maxLength={80} disabled={disabled || busy} onChange={event => setKeyword(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); setSearch(keyword.trim()); setPage(1); setSelected(''); } }} /></label>
       <button type="button" className="secondary" disabled={disabled || busy} onClick={() => { setSearch(keyword.trim()); setPage(1); setSelected(''); void query.refetch(); }}>搜索</button>
@@ -109,15 +120,15 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
     {chosen && <p className="package-summary">{chosen.items.length} 项商品：{packageSummary(chosen)}</p>}
     {query.data && query.data.total > 20 && <div className="package-actions"><button type="button" className="text-button" disabled={disabled || busy || page === 1} onClick={() => { setPage(page - 1); setSelected(''); }}>上一页</button><span>第 {page} 页，共 {query.data.total} 个套餐</span><button type="button" className="text-button" disabled={disabled || busy || page * 20 >= query.data.total} onClick={() => { setPage(page + 1); setSelected(''); }}>下一页</button></div>}
     {query.data?.total === 0 && <p className="muted">{search ? '没有匹配的套餐。' : '暂无套餐，请联系店长维护。'}</p>}
-    <p className="form-help">带入时累加整单金额。同名且同规格的其他商品会合并数量。</p>
+    <p className="form-help">带入商品数量、报价和特殊要求。名称、类型、商品说明、特殊要求及报价一致时合并数量。</p>
     {message && <p role="status">{message}</p>}{(error || query.error) && <p className="field-error" role="alert">{errorText(error || query.error)}</p>}
     </div>
     {review && <PackageDialog title="确认带入套餐" busy={busy} onCancel={() => setReview(null)}>
       <p>「{review.name}」将带入 {review.items.length} 项商品。请核对合并结果和整单金额。</p>
       {needOrderPrice && <label className="package-price-input">当前订单原价（元）<input inputMode="decimal" value={missingOrder} disabled={busy} onChange={e => setMissingOrder(e.target.value)} /></label>}
-      {review.originalAmountCents === null && <label className="package-price-input">此套餐原价（元）<input inputMode="decimal" value={missingPackage} disabled={busy} onChange={e => setMissingPackage(e.target.value)} /></label>}
+      {draft.pricingMode !== 'ITEM_SUM' && review.originalAmountCents === null && <label className="package-price-input">此套餐原价（元）<input inputMode="decimal" value={missingPackage} disabled={busy} onChange={e => setMissingPackage(e.target.value)} /></label>}
       {preview && <><ul className="package-merge-list">{preview.changes.map((change, index) => <li key={index}>
-        <strong>{change.name}</strong>{change.specification && <span className="product-spec-text">{change.specification}</span>}
+        <strong>{change.name}</strong>{change.requirements && <span className="product-spec-text">特殊要求：{change.requirements}</span>}
         <span>{change.previousQuantity ? `合并到商品 ${change.index + 1}：${change.previousQuantity} → ${change.count}` : `新增 × ${change.count}`} · {change.image}</span>
       </li>)}</ul>
       <dl className="package-amount-preview"><div><dt>订单原价</dt><dd>{money(preview.beforeOriginal)} → <strong>{money(preview.original)}</strong></dd></div>

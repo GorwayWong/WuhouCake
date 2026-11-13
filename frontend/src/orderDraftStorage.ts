@@ -29,10 +29,12 @@ const object = (value: unknown): value is Record<string, unknown> => Boolean(val
 const strings = (value: Record<string, unknown>, keys: string[]) => keys.every(key => typeof value[key] === 'string');
 function form(value: unknown): value is OrderDraft {
   if (!object(value) || !strings(value, ['customerName', 'phone', 'memberPhone', 'buyerName', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmount'])
+    || value.pricingMode !== undefined && !['MANUAL', 'ITEM_SUM'].includes(String(value.pricingMode))
     || value.memberAmount !== undefined && typeof value.memberAmount !== 'string'
     || value.paymentMethod !== undefined && (typeof value.paymentMethod !== 'string' || !Object.hasOwn(paymentMethods, value.paymentMethod))
     || value.orderingMethod !== undefined && typeof value.orderingMethod !== 'string'
     || value.orderingMethodCustom !== undefined && typeof value.orderingMethodCustom !== 'boolean'
+    || value.explicitFulfillment !== undefined && value.explicitFulfillment !== true
     || value.finishTimeMode !== undefined && !['AUTO', 'MANUAL'].includes(String(value.finishTimeMode))
     || !['DELIVERY', 'PICKUP'].includes(String(value.fulfillmentType)) || value.creditedEmployeeId !== undefined && typeof value.creditedEmployeeId !== 'string'
     || !Array.isArray(value.items) || !value.items.length) return false;
@@ -58,6 +60,7 @@ function request(value: unknown): value is CreateOrderRequest {
     && typeof value.fulfillment.requestedReceiveDate === 'string'
     && ['address', 'plannedHandoffAt', 'plannedFinishAt'].every(key => nullableString((value.fulfillment as Record<string, unknown>)[key]))
     && (value.fulfillment.requestedReceiveAt === undefined || nullableString(value.fulfillment.requestedReceiveAt))
+    && (value.pricingMode === undefined || ['MANUAL', 'ITEM_SUM'].includes(String(value.pricingMode)))
     && money(value.totalAmountCents)
     && (value.originalAmountCents === undefined || money(value.originalAmountCents))
     && (value.memberAmountCents === undefined || money(value.memberAmountCents))
@@ -81,7 +84,14 @@ export function decodeOrderDraft(raw: string, accountId: string): OrderDraftReco
       || value.createdOrderId !== undefined && (typeof value.createdOrderId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.createdOrderId))
       || value.imageStorageUsed !== undefined && typeof value.imageStorageUsed !== 'boolean') return null;
     const record = value as unknown as OrderDraftRecord;
-    return { ...record, initial: migrateOrderDraft(record.initial), value: migrateOrderDraft(record.value) };
+    const restore = (draft: OrderDraft): OrderDraft => {
+      const migrated = migrateOrderDraft(draft);
+      if (migrated.explicitFulfillment) return migrated;
+      const pickup = migrated.address.trim() === '自提';
+      return { ...migrated, explicitFulfillment: true, fulfillmentType: pickup ? 'PICKUP' : 'DELIVERY',
+        address: pickup ? '' : migrated.address };
+    };
+    return { ...record, initial: restore(record.initial), value: restore(record.value) };
   } catch { return null; }
 }
 

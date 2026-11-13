@@ -73,6 +73,6 @@ RECEIPT 使用北京时间当天的左闭右开付款时间范围，当前仍为
 
 `totalAmountCents` 是成交金额：会员价 `memberAmountCents` 非空时优先采用（0 是有效金额），否则采用原价 `originalAmountCents`。旧订单两项新报价均未记录时保留原总金额。所有金额仍按整数分保存；业务汇总、付款及欠款列表继续读取成交金额，不按商品价格求和。
 
-`paymentMethod` 为 `UNIONPAY`（银联）、`MEMBER_CARD`（扣卡）、`BANK_TRANSFER`（对公转账）、`SERVICE_WECHAT`（客服微信）、`CASH`（现金）或 `UNPAID`（未付），仅人工登记。新单选择前五项需 `ORDER_PAYMENT_UPDATE`，同时原子保存已付款与服务器付款时间；未提供字段的新单仍默认未付款。已付款仅更正渠道不改变 `paid_at`，也不重复计入收款；改为未付清空 `paid_at`，再次付款重新记录。历史渠道为空不补造渠道或时间。
+`paymentMethod` 为 `UNIONPAY`（银联）、`MEMBER_CARD`（扣卡）、`BANK_TRANSFER`（对公转账）、`SERVICE_WECHAT`（客服微信）、`CASH`（现金）或 `UNPAID`（未付），仅人工登记。新单选择前五项需 `ORDER_PAYMENT_UPDATE`，同时原子保存已付款与服务器付款时间；未提供字段的新单仍默认未付款。已付款仅更正渠道不改变 `paid_at`，也不重复计入收款。更改成交额前须撤销付款登记，撤销时清空 `paid_at`，重新登记按新的付款日期计入。历史渠道为空不补造渠道或时间。
 
 新增 V26 可空列，不回填历史数据。旧单金额请求保持兼容；旧客户端不能用不同的单一总金额覆盖已记录会员报价的订单。新付款请求同时传付款状态和方式，不一致时拒绝保存。

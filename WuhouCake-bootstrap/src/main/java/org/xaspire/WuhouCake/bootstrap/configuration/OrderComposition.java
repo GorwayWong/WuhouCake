@@ -53,7 +53,7 @@ public class OrderComposition {
         return new OrderExportService(snapshots, files);
     }
     @Bean OrderQueries orderQueries(OrderQueryMapper mapper, JsonCodec json) { return new PostgresOrderQueries(mapper, json); }
-    @Bean OrderQueryService orderQueryService(OrderQueries queries) { return new OrderQueryService(queries); }
+    @Bean OrderQueryService orderQueryService(OrderQueries queries, Clock clock) { return new OrderQueryService(queries, clock); }
     @Bean Orders orders(OrderMapper mapper, JsonCodec json) { return new PostgresOrders(mapper, json); }
     @Bean OrderActivities orderActivities(OrderActivityMapper mapper, JsonCodec json) {
         return new PostgresOrderActivities(mapper, json);

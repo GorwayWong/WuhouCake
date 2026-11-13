@@ -1,7 +1,8 @@
+import { itemTotals } from './itemPricing.ts';
 import { exactYuan } from './money.ts';
 import { paymentMethods, effectiveOrderAmount } from './orderPayment.ts';
 import { productionStatuses } from './orderStates.ts';
-import { pickupInstant, pickupDate, defaultFinishTime } from './orderTimes.ts';
+import { pickupInstant, pickupDate, defaultFinishTime, finishTooLate, finishLeadTimeMessage } from './orderTimes.ts';
 import type { FinishTimeMode } from './orderTimes.ts';
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
 import { cakeDefaults, numericSize } from './productRules.ts';
@@ -16,7 +17,7 @@ export const specificationFields = [
   ['base', '内胚'], ['message', '祝福语'], ['requirements', '特殊要求'], ['specification', '规格'],
 ] as const;
 export function fieldsForProduct(type: string) {
-  return isCake(type) ? specificationFields : specificationFields.filter(([key]) => key === 'specification');
+  return isCake(type) ? specificationFields : specificationFields.filter(([key]) => key === 'specification' || key === 'requirements');
 }
 type Specification = typeof specificationFields[number][0];
 export interface ItemDraft {
@@ -28,11 +29,12 @@ export interface ItemDraft {
   images?: DraftImage[];
 }
 export interface OrderDraft {
+  pricingMode?: 'MANUAL' | 'ITEM_SUM';
   orderingMethod?: string;
   orderingMethodCustom?: boolean;
   creditedEmployeeId?: string;
   customerName: string; phone: string; memberPhone: string; buyerName: string;
-  fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveDate: string; requestedReceiveAt: string;
+  fulfillmentType: 'DELIVERY' | 'PICKUP'; explicitFulfillment?: true; address: string; requestedReceiveDate: string; requestedReceiveAt: string;
   plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode; totalAmount: string; memberAmount?: string; paymentMethod?: string; items: ItemDraft[];
 }
 export function newItem(): ItemDraft {
@@ -58,9 +60,11 @@ export function asOtherDraft(draft: ItemDraft): ItemDraft {
     if (!textSpecification(value) && !values[key]) values[key] = value;
   for (const key of draft.defaultSpecifications || [])
     if (values[key] === cakeDefaults[key]) delete values[key];
+  const requirements = typeof values.requirements === 'string' ? values.requirements : '';
+  if (typeof values.requirements === 'string') delete values.requirements;
   const specification = otherAttributes(values);
   return { ...draft, productType: 'OTHER', defaultSpecifications: [], preservedAttributes: undefined,
-    attributes: { size: '', flavor: '', filling: '', base: '', message: '', requirements: '', specification } };
+    attributes: { size: '', flavor: '', filling: '', base: '', message: '', requirements, specification } };
 }
 export function migrateItemDraft(draft: ItemDraft): ItemDraft {
   const type = normalizeProductType(draft.productType);
@@ -95,8 +99,14 @@ export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, e
   return next;
 }
 export function newDraft(date: string): OrderDraft {
-  return { orderingMethod: '', customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', address: '',
+  return { pricingMode: 'ITEM_SUM', orderingMethod: '', customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', explicitFulfillment: true, address: '',
     requestedReceiveDate: date, requestedReceiveAt: date, plannedHandoffAt: '', plannedFinishAt: '', finishTimeMode: 'AUTO', totalAmount: '', memberAmount: '', paymentMethod: 'UNPAID', items: [newItem()] };
+}
+export function draftTotals(items: ItemDraft[]) {
+  try {
+    return { ...itemTotals(items.map(item => ({ quantity: /^\d+$/.test(item.quantity) ? Number(item.quantity) : 0,
+      unitPriceCents: moneyToCents(item.unitPrice), memberPriceCents: moneyToCents(item.memberPrice) }))), invalid: false };
+  } catch { return { original: null, member: null, total: null, unpriced: 0, invalid: true }; }
 }
 export function moneyToCents(input: string): number | null {
   const value = input.trim();
@@ -124,6 +134,10 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
     unitPriceCents: null, memberPriceCents: null,
     attributes: { ...Object.fromEntries(Object.entries(effective.preservedAttributes || {}).filter(([key]) => !fieldsForProduct(type).some(([visible]) => visible === key) || !textSpecification(effective.preservedAttributes?.[key]))),
       ...Object.fromEntries(fieldsForProduct(type || 'CAKE').flatMap(([key]) => (effective.attributes[key] || '').trim() ? [[key, effective.attributes[key].trim()]] : [])) } };
+  for (const [field, key] of [['unitPrice', 'referenceUnitPriceCents'], ['memberPrice', 'referenceMemberPriceCents']] as const) {
+    try { const value = moneyToCents(draft[field]); if (value !== null) item[key] = value; }
+    catch (error) { errors[field] = (error as Error).message; }
+  }
   if (item.productType?.toUpperCase() === 'CAKE') {
     for (const [key, value] of Object.entries(cakeDefaults)) item.attributes[key] ||= value;
     if (validateSize && draft.attributes.size.trim()) { try { item.attributes.size = numericSize(draft.attributes.size); } catch (error) { errors.size = (error as Error).message; } }
@@ -133,11 +147,15 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
 export function textSpecification(value: unknown): boolean { return value == null || typeof value === 'string'; }
 export function itemDraft(item: Item): ItemDraft {
   return { key: item.itemId, name: item.name, productType: normalizeProductType(item.productType || ''), quantity: String(item.quantity),
-    unitPrice: '', memberPrice: '', preservedAttributes: item.attributes,
+    unitPrice: item.unitPriceCents == null ? '' : exactYuan(item.unitPriceCents),
+    memberPrice: item.memberPriceCents == null ? '' : exactYuan(item.memberPriceCents), preservedAttributes: item.attributes,
     attributes: Object.fromEntries(specificationFields.map(([key]) => [key, typeof item.attributes[key] === 'string' ? item.attributes[key] : ''])) as ItemDraft['attributes'] };
 }
-export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && productionStatuses.includes(order.status); }
-export function migrateOrderDraft(draft: OrderDraft): OrderDraft { return { ...draft, items: draft.items.map(migrateItemDraft) }; }
+export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && (productionStatuses.includes(order.status) || order.status === 'WAITING_DELIVERY'); }
+export function migrateOrderDraft(draft: OrderDraft): OrderDraft {
+  if (draft.pricingMode === 'ITEM_SUM') return draft;
+  return { ...draft, items: draft.items.map(migrateItemDraft) };
+}
 export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
 export function conversionNeedsReview(source: Item, current: Item, draft: ItemDraft, originalType = source.productType): boolean {
   if (!isCake(originalType) || normalizeProductType(draft.productType) !== 'OTHER') return false;
@@ -151,14 +169,26 @@ export function itemChangeRequest(original: Detail, itemId: string, draft: ItemD
   const initial = itemDraft(before);
   const result = itemInput(draft, draft.attributes.size !== initial.attributes.size || draft.productType !== initial.productType);
   if (!result.item) return { request: null, errors: result.errors };
-  const changes: Partial<ItemInput> = {};
+  const changes: ItemChangeRequest['changes'] = {};
   for (const field of ['name', 'productType', 'quantity'] as const) {
     if (draft[field] !== initial[field] && result.item[field] !== before[field] && result.item[field] !== current[field]) Object.assign(changes, { [field]: result.item[field] });
   }
+  for (const [field, price, reference] of [
+    ['unitPrice', 'unitPriceCents', 'referenceUnitPriceCents'],
+    ['memberPrice', 'memberPriceCents', 'referenceMemberPriceCents'],
+  ] as const) {
+    if (draft[field] === initial[field]) continue;
+    try {
+      const cents = moneyToCents(draft[field]);
+      if (cents !== (current[price] ?? null)) changes[reference] = cents;
+    } catch (error) { result.errors[field] = (error as Error).message; }
+  }
+  if (Object.keys(result.errors).length) return { request: null, errors: result.errors };
   const attributes: Record<string, unknown> = {};
   if (result.item.productType === 'OTHER' && !isCake(draft.productType) && isCake(current.productType)) {
-    for (const key of Object.keys(current.attributes)) if (key !== 'specification') attributes[key] = null;
+    for (const key of Object.keys(current.attributes)) if (key !== 'specification' && key !== 'requirements') attributes[key] = null;
     attributes.specification = result.item.attributes.specification ?? null;
+    attributes.requirements = result.item.attributes.requirements ?? null;
   } else for (const [key] of specificationFields) {
     if (!fieldsForProduct(draft.productType).some(([visible]) => visible === key) ||
       !textSpecification(before.attributes[key]) || !textSpecification(current.attributes[key]) || draft.attributes[key] === initial.attributes[key]) continue;
@@ -209,11 +239,14 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
   catch (error) { errors.requestedReceiveAt = (error as Error).message; }
   if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的取货日期。';
   if (!draft.items.length) errors.items = '订单至少需要一件商品。';
-  const original = amount(draft.totalAmount, 'totalAmount');
-  const member = amount(draft.memberAmount || '', 'memberAmount');
+  const sum = draft.pricingMode === 'ITEM_SUM', totals = draftTotals(draft.items);
+  const original = sum ? totals.original : amount(draft.totalAmount, 'totalAmount');
+  const member = sum ? totals.member : amount(draft.memberAmount || '', 'memberAmount');
   const method = draft.paymentMethod || 'UNPAID';
   if (!Object.hasOwn(paymentMethods, method)) errors.paymentMethod = '请选择有效的支付方式。';
+  if (sum && method !== 'UNPAID' && totals.total === null) errors.paymentMethod = '商品报价未完整，请补齐单价后再登记付款。';
   const request: CreateOrderRequest = {
+    ...(draft.pricingMode ? { pricingMode: draft.pricingMode } : {}),
     orderingMethod: text((draft.orderingMethod || '').trim(), 'orderingMethod', '下单方式', 80),
     customer: {
       customerName: text(draft.customerName, 'customerName', '客户姓名', 80),
@@ -222,8 +255,8 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
       buyerName: text(draft.buyerName, 'buyerName', '订购人姓名', 80),
     },
     fulfillment: {
-      type: draft.address.trim() === '自提' ? 'PICKUP' : 'DELIVERY',
-      address: text(draft.address, 'address', '地址', Number.MAX_SAFE_INTEGER, true),
+      type: draft.fulfillmentType,
+      address: draft.fulfillmentType === 'DELIVERY' ? text(draft.address, 'address', '配送地址', Number.MAX_SAFE_INTEGER, true) : null,
       requestedReceiveDate: draft.requestedReceiveDate,
       requestedReceiveAt: receiveAt,
       plannedHandoffAt: receiveAt,
@@ -241,6 +274,8 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
     originalAmountCents: original, memberAmountCents: member, paymentMethod: method,
     totalAmountCents: effectiveOrderAmount(original, member),
   };
+  if (sum && totals.invalid) errors.totalAmount = '请核对商品单价和数量，合计不能超过金额上限。';
+  if (finishTooLate(receiveAt, request.fulfillment.plannedFinishAt)) errors.plannedFinishAt = finishLeadTimeMessage;
   return { request: Object.keys(errors).length ? null : request, errors };
 }
 
@@ -292,13 +327,20 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   }
   for (const field of ['plannedFinishAt'] as const) {
     // 未改动的分钟输入不回写，保留服务端秒与微秒精度。
-    if (draft[field] === initial[field] || draft[field] === current[field]) continue;
+    const resetToAutomatic = draft.finishTimeMode === 'AUTO' && initial.finishTimeMode !== 'AUTO';
+    if (!resetToAutomatic && (draft[field] === initial[field] || draft[field] === current[field])) continue;
     if (!draft[field]) changes[field] = null;
     else {
       try { changes[field] = storeTime(draft[field]); }
       catch (error) { errors[field] = (error as Error).message; }
     }
   }
+  const pickupChanged = 'plannedHandoffAt' in changes;
+  const finishChanged = 'plannedFinishAt' in changes;
+  if ((pickupChanged || finishChanged) && finishTooLate(
+    pickupChanged ? changes.plannedHandoffAt : pickupInstant(baseline.fulfillment),
+    finishChanged ? changes.plannedFinishAt : baseline.fulfillment.plannedFinishAt,
+  )) errors.plannedFinishAt = finishLeadTimeMessage;
   if (draft.memberAmount !== undefined || original.memberAmountCents !== undefined) {
     for (const [field, key] of [['totalAmount', 'originalAmountCents'], ['memberAmount', 'memberAmountCents']] as const) {
       if ((draft[field] || '') === (initial[field] || '')) continue;

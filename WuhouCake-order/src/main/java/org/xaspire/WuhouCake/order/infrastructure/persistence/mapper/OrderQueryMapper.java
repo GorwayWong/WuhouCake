@@ -97,8 +97,20 @@ public interface OrderQueryMapper {
             + " (SELECT count(*) FROM loaded_items) + (SELECT count(*) FROM selected_notes) AS rows</script>")
     ContentSizeRow exportContentSize(@Param("orderIds") List<String> orderIds);
 
-    @Select("SELECT " + ORDER_COLUMNS + ", customer_name, customer_phone AS phone, member_phone, buyer_name,"
-            + " delivery_address AS address, planned_finish_at, requested_receive_at FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date}"
+    String PENDING_COLUMNS = ORDER_COLUMNS + ", customer_name, customer_phone AS phone, member_phone, buyer_name,"
+            + " delivery_address AS address, planned_finish_at, requested_receive_at";
+    String SCHEDULED_PRODUCTION = PRODUCTION_WHERE + " AND planned_finish_at &lt; #{to}"
+            + "<if test='from != null'> AND planned_finish_at &gt;= #{from}</if>";
+
+    @Select("<script>SELECT count(*)" + SCHEDULED_PRODUCTION + "</script>")
+    long countScheduledProduction(@Param("from") Instant from, @Param("to") Instant to, @Param("stages") Set<String> stages);
+
+    @Select("<script>SELECT " + PENDING_COLUMNS + SCHEDULED_PRODUCTION
+            + " ORDER BY planned_finish_at, order_no, id LIMIT #{limit} OFFSET #{offset}</script>")
+    List<PendingRow> scheduledProduction(@Param("from") Instant from, @Param("to") Instant to,
+            @Param("stages") Set<String> stages, @Param("limit") int limit, @Param("offset") long offset);
+
+    @Select("SELECT " + PENDING_COLUMNS + " FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date}"
             + ORDER_SORT)
     List<PendingRow> pending(LocalDate date);
 

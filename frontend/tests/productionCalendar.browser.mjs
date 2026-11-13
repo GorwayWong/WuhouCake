@@ -45,6 +45,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     await page.goto(`${base}/#/?date=${date}`);
     const card = page.locator(`[data-order-id="${orderId}"]`);
     await card.locator('.production-card-specifications').waitFor();
+    await card.scrollIntoViewIfNeeded();
     await card.locator('.production-thumbnail img').waitFor();
     assert.deepEqual(imageRequests, [firstImage]);
     assert.deepEqual(await card.locator('.production-card-specifications dd').allTextContents(), ['6 寸', '原味']);
@@ -95,9 +96,9 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
       await page.screenshot({ path: `${process.env.PRODUCTION_SCREENSHOT_DIR}/production-calendar-normal-390.png`, fullPage: true });
     }
     images = images.filter(image => image.itemId !== firstId); imageRequests.length = 0;
-    await page.reload(); await card.locator('.production-thumbnail img').waitFor(); assert.deepEqual(imageRequests, [orderImage]);
+    await page.reload(); await card.scrollIntoViewIfNeeded(); await card.locator('.production-thumbnail img').waitFor(); assert.deepEqual(imageRequests, [orderImage]);
     images = images.filter(image => image.itemId !== null); imageRequests.length = 0;
-    await page.reload(); await card.getByText('暂无款式图片', { exact: true }).waitFor(); assert.deepEqual(imageRequests, []);
+    await page.reload(); await card.scrollIntoViewIfNeeded(); await card.getByText('暂无款式图片', { exact: true }).waitFor(); assert.deepEqual(imageRequests, []);
     model.permissions.push('ORDER_AMOUNT_READ'); requests.length = 0;
     await page.reload(); await card.waitFor(); await statistics.locator('summary').click();
     assert.equal(await page.locator('[data-control-label="付款状态"]').count(), 1);
@@ -162,7 +163,7 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await page.goto(base + '/#/orders/' + orderId);
       await page.getByRole('list', { name: '整单状态进度' }).waitFor();
     };
-    const labels = ['出胚', '夹层', '抹面', '装饰', '待配送', '已配送'];
+    const labels = ['出胚', '夹层', '抹面', '装饰', '待自提', '已自提'];
     const checkProgress = async () => {
       assert.deepEqual(await page.locator('.progress-label').allTextContents(), labels);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -193,7 +194,7 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await page.setViewportSize({ width, height: 900 });
       await open();
       await checkProgress();
-      assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '待配送');
+      assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '待自提');
       await page.getByRole('button', { name: '确认自提' }).waitFor();
       await page.getByRole('heading', { name: '金额与付款' }).waitFor();
     }

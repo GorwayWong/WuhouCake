@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { ArrowRight } from '@phosphor-icons/react';
 import { useQuery } from '@tanstack/react-query';
-import { api, ApiError, authenticatedFetch } from './api';
+import { ApiError, authenticatedFetch, readQuery } from './api';
 import { businessDate, today, shiftDate } from './dates';
 import { OrderingMethodInput } from './OrderingMethodInput';
 import { exportOptions, saveExportFile, exportFilename } from './exportFiles';
@@ -51,7 +51,7 @@ export function AdminOrders({ initialView, onViewChange, onOpenOrder, onWritingC
   useEffect(() => () => { active.current?.abort(); onWritingChange(false); }, [onWritingChange]);
   const params = managementQuery(applied);
   const query = useQuery({ queryKey: ['management-orders', params, page, orderPageSize], queryFn: async ({ signal }) => {
-    const result = await api<Report>(`/admin/orders?${params}&page=${page}&size=${orderPageSize}`, { signal });
+    const result = await readQuery<Report>(`/admin/orders?${params}&page=${page}&size=${orderPageSize}`, signal);
     return { ...result, items: result.items.map(row => ({ ...row, deletion: row.deleted ? {} : null })) };
   } });
   const pagination = orderPagination(query.data?.totals.orderCount || 0, page);

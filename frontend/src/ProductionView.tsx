@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { OrderImage } from './types';
-import { api } from './api';
+import { readQuery } from './api';
 import { loadImagePreview } from './imagePreview';
 
 export function ProductionThumbnail({ orderId, itemId }: { orderId: string; itemId?: string }) {
@@ -16,7 +16,7 @@ export function ProductionThumbnail({ orderId, itemId }: { orderId: string; item
     return () => observer.disconnect();
   }, []);
   const images = useQuery({ queryKey: ['order', orderId, 'images'], enabled: visible,
-    queryFn: ({ signal }) => api<OrderImage[]>(`/orders/${orderId}/images`, { signal }) });
+    queryFn: ({ signal }) => readQuery<OrderImage[]>(`/orders/${orderId}/images`, signal) });
   const first = images.data?.find(image => itemId && image.itemId === itemId) || images.data?.find(image => image.itemId == null);
   const [url, setUrl] = useState('');
   const [failed, setFailed] = useState(false);

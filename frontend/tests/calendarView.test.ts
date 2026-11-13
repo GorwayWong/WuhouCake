@@ -96,11 +96,11 @@ test('日期概览的首单排序不依赖查询返回顺序', () => {
   assert.equal([...orders].sort(compareCalendarOrders)[0].orderNo, '001');
 });
 
-test('时间轴分开统计待处理、已配送和已取消，删除订单不参与', async () => {
+test('时间轴分开统计待处理、已交接和已取消，删除订单不参与', async () => {
   const { timelinePartitions } = await import('../src/calendarView.ts');
   const orders = ['CAKE_BASE', 'LAYER', 'COMPLETED', 'COMPLETED', 'CANCELLED'].map((status, i) => ({ ...order(String(i), null), status }));
   const groups = timelinePartitions([...orders, { ...order('deleted', null), status: 'COMPLETED', deleted: true }], '');
-  assert.deepEqual(groups.map(group => [group.label, group.orders.length, group.expanded]), [['待处理', 2, true], ['已配送', 2, false], ['已取消', 1, false]]);
+  assert.deepEqual(groups.map(group => [group.label, group.orders.length, group.expanded]), [['待处理', 2, true], ['已交接', 2, false], ['已取消', 1, false]]);
   assert.deepEqual(timelinePartitions([], ''), []);
 });
 test('具体状态筛选直接展开对应分组，回到今天保留月模式并展开当天', async () => {

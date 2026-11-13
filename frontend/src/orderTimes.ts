@@ -3,6 +3,16 @@ export interface TimeDraft {
   requestedReceiveAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode;
 }
 
+export const finishLeadTimeMessage = '出品时间须比取货时间至少提前 1 小时。';
+
+export function finishTooLate(pickup: string | null | undefined, finish: string | null | undefined): boolean {
+  return Boolean(pickup && finish && Date.parse(pickup) - Date.parse(finish) < 3600000);
+}
+
+export function pickupTimeLabel(type: string) {
+  return type === 'PICKUP' ? '到店自提时间' : '配送员取货时间';
+}
+
 /** Local store times are interpreted in Beijing, independent of the browser timezone. */
 export function defaultFinishTime(pickup: string): string {
   if (pickup.startsWith('0000') || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(pickup)) return '';

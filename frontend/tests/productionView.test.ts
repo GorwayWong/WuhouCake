@@ -18,6 +18,9 @@ test('非蛋糕制作简表保留历史规格入口，排除价格和客户资�
   const item = { productType: 'TEA_BREAK', attributes: { specification: '六只装', flavor: '动物奶油', filling: '香草', requirements: '分装', price: 100, phone: '13900000000' } };
   assert.deepEqual(productionFields(item), [['规格', '六只装']]);
   assert.deepEqual(historicalProductionFields(item), [['奶油', '动物奶油'], ['夹馅', '香草']]);
+  assert.deepEqual(productionFields({ productType: 'OTHER', attributes: { specification: '个、块' } }), []);
+  assert.deepEqual(productionFields({ productType: 'OTHER', attributes: { specification: ['个', '块'] } }), []);
+  assert.deepEqual(productionFields({ productType: 'OTHER', attributes: { specification: ['500ml', '独立包装'] } }), [['规格', '500ml、独立包装']]);
 });
 
 test('制作参数逐行稳定排列，奶油不误用为蛋糕胚口味，缺失备注显示无', () => {

@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.time.Clock;
 import java.util.*;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
@@ -68,7 +69,7 @@ public class CustomerSubmissionService {
         var submission = submissions.submit(entry, requestId, current, legacy, content, clock.instant());
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
-    @Transactional(readOnly = true) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {
         var me = staff();
         if (page < 1 || size < 1 || size > 50 || !Set.of("PENDING", "CONFIRMED", "ALL").contains(status)) throw invalid();
         String term = keyword == null ? "" : keyword.strip().toLowerCase(Locale.ROOT);
@@ -77,18 +78,28 @@ public class CustomerSubmissionService {
             if (term.startsWith("f") && term.length() == 37) term = term.substring(1);
         } else term = term.replaceAll("[\\s()（）+－–—-]", "");
         UUID owner = mine ? me.accountId() : null;
-        return new Page<>(submissions.search(owner, status, term, size, ((long) page - 1) * size).stream().map(s -> view(s, false)).toList(),
-                submissions.count(owner, status, term), page, size);
+        long total = submissions.count(owner, status, term);
+        int current = (int) Math.min(page, total == 0 ? 1 : 1 + (total - 1) / size);
+        var items = total == 0 ? List.<SubmissionViews.Detail>of()
+                : submissions.search(owner, status, term, size, (current - 1L) * size).stream().map(s -> view(s, false)).toList();
+        return new Page<>(items, total, current, size);
     }
     @Transactional(readOnly = true) public long pendingCount() {
         staff(CUSTOMER_SUBMISSION_PROCESS);
         return submissions.count(null, "PENDING", "");
     }
-    @Transactional(readOnly = true) public SubmissionViews.Detail detail(UUID id) { staff(); return view(require(id, false), true); }
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ) public SubmissionViews.Detail detail(UUID id) { staff(); return view(require(id, false), true); }
     @Transactional public SubmissionViews.Detail save(UUID id, SubmissionCommands.Save command) {
         var me = staff(); var submission = require(id, true); submission.requirePending(nonNegativeInteger(command.expectedVersion()));
         if (command.review() == null) throw invalid();
-        var review = reviewForWrite(command.review(), submission.reviewed());
+        var previous = submission.reviewed();
+        var review = reviewForWrite(command.review(), previous);
+        var pickup = review.plannedHandoffAt() == null ? review.content().requestedReceiveAt() : review.plannedHandoffAt();
+        if (previous == null || !Objects.equals(review.plannedHandoffAt(), previous.plannedHandoffAt())
+                || !Objects.equals(review.content().requestedReceiveAt(), previous.content().requestedReceiveAt())
+                || !Objects.equals(review.plannedFinishAt(), previous.plannedFinishAt())) {
+            requireFinishLeadTime(pickup, review.plannedFinishAt());
+        }
         if (review.creditedEmployeeId() != null) identity.selectEmployee(review.creditedEmployeeId());
         if (Objects.equals(submission.reviewed(), review)) return view(submission, true);
         var before = submission.reviewed() == null ? submission.original() : submission.reviewed().content();

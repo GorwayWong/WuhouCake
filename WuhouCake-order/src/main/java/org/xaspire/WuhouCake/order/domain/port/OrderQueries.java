@@ -19,6 +19,8 @@ public interface OrderQueries {
             Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
     List<CalendarOrder> calendar(LocalDate from, LocalDate to);
     List<PendingOrder> pending(LocalDate date);
+    long countScheduledProduction(Instant from, Instant to, Set<String> stages);
+    List<PendingOrder> scheduledProduction(Instant from, Instant to, Set<String> stages, int limit, long offset);
     List<CalendarItem> calendarItems(List<UUID> orderIds);
     List<Item> items(List<UUID> orderIds);
     /** 按商品独立取三条 NOTE，以 createdAt、id 倒序返回，不含订单级备注。 */

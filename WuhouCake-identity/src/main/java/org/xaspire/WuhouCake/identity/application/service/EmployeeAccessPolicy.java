@@ -26,7 +26,7 @@ public final class EmployeeAccessPolicy {
             boolean manager = role == JobRole.MANAGER || role == JobRole.STORE_MANAGER;
             if (production) {
                 permissions.add(ORDER_ORDERING_DETAILS_READ);
-                permissions.removeAll(Set.of(ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
+                permissions.removeAll(Set.of(ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ, ORDER_PAYMENT_UPDATE));
             }
             if (Set.of(JobRole.FRONT_DESK, JobRole.FRONT_DESK_SUPERVISOR, JobRole.FRONT_DESK_CLERK).contains(role))
                 permissions.remove(ORDER_PRODUCTION_UPDATE);

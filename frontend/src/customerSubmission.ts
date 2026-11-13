@@ -1,5 +1,5 @@
 import { asOtherDraft } from './orderForm.ts';
-import { defaultFinishTime } from './orderTimes.ts';
+import { defaultFinishTime, finishTooLate, finishLeadTimeMessage } from './orderTimes.ts';
 import type { FinishTimeMode } from './orderTimes.ts';
 import { itemInput, newItem, moneyToCents } from './orderForm.ts';
 import type { ItemDraft } from './orderForm.ts';
@@ -107,8 +107,12 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
   const review: SubmissionReview = { content, totalAmountCents, creditedEmployeeId: draft.creditedEmployeeId || null,
     prices: items.filter(item => item !== null).map(item => ({ unitPriceCents: item.unitPriceCents, memberPriceCents: item.memberPriceCents })),
     plannedHandoffAt: staff ? unchangedTime ? draft.originalTime!.plannedHandoffAt : pickupAt || null : null,
-    plannedFinishAt: staff ? draft.originalTime && unchangedTime && draft.plannedFinishAt === localTime(draft.originalTime.plannedFinishAt)
+    plannedFinishAt: staff ? draft.originalTime && unchangedTime && (draft.finishTimeMode !== 'AUTO' || !draft.originalTime.plannedFinishAt)
+      && draft.plannedFinishAt === localTime(draft.originalTime.plannedFinishAt)
       ? draft.originalTime.plannedFinishAt : instant(draft.plannedFinishAt || (draft.finishTimeMode === 'AUTO' ? defaultFinishTime(draft.requestedReceiveAt) : ''), 'plannedFinishAt', false) : null };
+  if (staff && finishTooLate(review.plannedHandoffAt || content.requestedReceiveAt, review.plannedFinishAt)) {
+    errors.plannedFinishAt = finishLeadTimeMessage;
+  }
   return { content, review, errors };
 }
 

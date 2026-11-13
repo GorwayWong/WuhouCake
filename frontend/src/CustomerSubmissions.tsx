@@ -1,7 +1,8 @@
+import { useEmployeeOptions } from './EmployeeSelect';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, DownloadSimple, QrCode } from '@phosphor-icons/react';
-import { api, ApiError, creationResultUnknown } from './api';
+import { api, ApiError, creationResultUnknown, readQuery } from './api';
 import { Empty, ErrorNotice, Loading, money, statusNames } from './ui';
 import { EmployeeSelect } from './EmployeeSelect';
 import { Select } from './Select';
@@ -64,7 +65,7 @@ function EntryManager({ account, onWritingChange }: { account: Account; onWritin
   const image = !busy && qrImage?.owner === owner && qrImage.url === entry.data?.url ? qrImage.data : '';
   const change = async (action: string) => {
     if (busy) return;
-    if (action === 'RESET' && !window.confirm('重置二维码？旧码将失效，启停状态不变。')) return;
+    if (action === 'RESET' && !window.confirm('重置二维码？已发出的二维码将失效。')) return;
     setBusy(true); onWritingChange(true); setError(null);
     if (action === 'RESET') setQrImage(null);
     try { const result = await api<EntryLink>(`/customer-submissions/entry?ownerId=${owner}`, { method: 'POST', body: { action } }); client.setQueryData(['customer-entry', owner], result); }
@@ -88,30 +89,46 @@ export function CustomerSubmissions({ account, onWritingChange }: { account: Acc
   const { mine, status, keyword, page } = view;
   const changeView = (next: SubmissionListView) => { setView(next); submissionListViews.set(account.accountId, next); };
   const params = submissionListQuery(view);
-  const query = useQuery({ queryKey: ['customer-submissions', params], queryFn: ({ signal }) => api<Page<SubmissionDetail>>(`/customer-submissions?${params}`, { signal }), refetchInterval: 15000, enabled: canHandleSubmissions(account) });
+  const query = useQuery({ queryKey: ['customer-submissions', params], gcTime: 0, staleTime: 0, queryFn: ({ signal }) => readQuery<Page<SubmissionDetail>>(`/customer-submissions?${params}`, signal), refetchInterval: 15000, enabled: canHandleSubmissions(account) });
+  const actualPage = query.data?.page;
+  const canCorrectPage = query.isFetchedAfterMount && query.isSuccess && !query.isFetching;
+  const result = actualPage === page ? query.data : undefined;
+  useEffect(() => {
+    if (canCorrectPage && actualPage != null && actualPage !== page) {
+      const next = { mine, status, keyword, page: actualPage };
+      setView(next); submissionListViews.set(account.accountId, next);
+    }
+  }, [actualPage, canCorrectPage, page, mine, status, keyword, account.accountId]);
   if (!canHandleSubmissions(account)) return <Empty>前台和管理人员可以处理客户填单。</Empty>;
   return <div className="management-page"><div className="page-heading"><div><h1>客户填单</h1></div></div>
     <section className="panel"><form className="submission-search" onSubmit={event => { event.preventDefault(); const next = searchSubmissionView(view, searchText); changeView(next); if (submissionListQuery(next) === params) void query.refetch(); }}>
       <label htmlFor="submission-search">手机号／填单编号<input id="submission-search" type="search" enterKeyHint="search" value={searchText} maxLength={100} placeholder="输入手机号或填单编号" onChange={event => setSearchText(event.target.value)} /></label>
       <button type="submit" className="primary">搜索</button><button type="button" className="secondary" disabled={!searchText && !keyword} onClick={() => { setSearchText(''); changeView(searchSubmissionView(view, '')); }}>清除</button>
     </form><div className="submission-filters"><label>查看范围<Select label="查看范围" value={mine ? 'mine' : 'all'} onChange={value => { changeView({ ...view, mine: value === 'mine', page: 1 }); }}><option value="mine">我的二维码收到的</option><option value="all">全部客服的</option></Select></label><label>处理状态<Select label="处理状态" value={status} onChange={value => { changeView({ ...view, status: value as SubmissionListView['status'], page: 1 }); }}><option value="ALL">全部</option><option value="PENDING">待确认</option><option value="CONFIRMED">已确认</option></Select></label><button className="secondary" disabled={query.isFetching} onClick={() => void client.invalidateQueries({ queryKey: ['customer-submissions'] })}>刷新列表</button></div>
-      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending ? <Loading /> : !query.data?.items.length ? <Empty>{keyword ? '未找到匹配的填单。' : `暂无${mine ? '我的' : ''}${status === 'ALL' ? '' : status === 'PENDING' ? '待确认' : '已确认'}填单。`}</Empty> : <ul className="submission-list">{query.data.items.map(({ submission: s, duplicates }) => { const overdueDate = overdueSubmissionDate(s, today()); return <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><span className="submission-state">{s.status === 'CONFIRMED' ? '已确认' : '待确认'}</span><time>{time(s.createdAt, true)}</time></div><p className="submission-reference">填单编号：F{s.id}</p>{s.reviewed?.content.phone && s.reviewed.content.phone !== s.original.phone && <p className="muted">核对手机号：{s.reviewed.content.phone}</p>}<p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始客户填写取货 {businessTime(s.original.requestedReceiveAt)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{overdueDate && <p className="submission-warning">取货日期已过（{businessDate(overdueDate)}），待核对</p>}{duplicates.some(record => record.requiresAcknowledgement) && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>; })}</ul>}
-      {query.data && query.data.total > 20 && <div className="pagination"><button className="secondary" disabled={page === 1} onClick={() => changeView({ ...view, page: page - 1 })}>上一页</button><span>第 {page} 页 · {query.data.total} 份</span><button className="secondary" disabled={page * 20 >= query.data.total} onClick={() => changeView({ ...view, page: page + 1 })}>下一页</button></div>}
+      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending || (actualPage !== page && !query.isError) ? <Loading /> : result?.total === 0 ? <Empty>{keyword ? '未找到匹配的填单。' : `暂无${mine ? '我的' : ''}${status === 'ALL' ? '' : status === 'PENDING' ? '待确认' : '已确认'}填单。`}</Empty> : !result ? null : !result.items.length ? <Empty><span>当前页暂无记录，请刷新</span><button className="text-button" onClick={() => { if (page === 1) void query.refetch(); else changeView({ ...view, page: 1 }); }}>返回第一页</button></Empty> : <ul className="submission-list">{result.items.map(({ submission: s, duplicates }) => { const overdueDate = overdueSubmissionDate(s, today()); return <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><span className="submission-state">{s.status === 'CONFIRMED' ? '已确认' : '待确认'}</span><time>{time(s.createdAt, true)}</time></div><p className="submission-reference">填单编号：F{s.id}</p>{s.reviewed?.content.phone && s.reviewed.content.phone !== s.original.phone && <p className="muted">核对手机号：{s.reviewed.content.phone}</p>}<p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始客户填写取货 {businessTime(s.original.requestedReceiveAt)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{overdueDate && <p className="submission-warning">取货日期已过（{businessDate(overdueDate)}），待核对</p>}{duplicates.some(record => record.requiresAcknowledgement) && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>; })}</ul>}
+      {result && (result.total > 20 || page > 1) && <div className="pagination"><button className="secondary" disabled={page === 1} onClick={() => changeView({ ...view, page: page - 1 })}>上一页</button><span>第 {page} 页 · {result.total} 份</span><button className="secondary" disabled={page * 20 >= result.total} onClick={() => changeView({ ...view, page: page + 1 })}>下一页</button></div>}
     </section><details className="panel entry-settings"><summary>填单二维码管理</summary><EntryManager account={account} onWritingChange={onWritingChange} /></details>
   </div>;
 }
 export function CustomerSubmissionDetail({ id, onDirtyChange, onWritingChange }: { id: string; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
-  const query = useQuery({ queryKey: ['customer-submission', id], queryFn: ({ signal }) => api<SubmissionDetail>(`/customer-submissions/${id}`, { signal }), refetchInterval: 15000 });
+  const query = useQuery({ queryKey: ['customer-submission', id], queryFn: ({ signal }) => readQuery<SubmissionDetail>(`/customer-submissions/${id}`, signal), refetchInterval: 15000 });
   return <><a className="back-link" href="#/customer-submissions"><ArrowLeft />返回客户填单</a><ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.data ? <SubmissionEditor key={id} initial={query.data} latest={query.data} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} /> : query.isPending && <Loading />}</>;
 }
 function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: { initial: SubmissionDetail; latest: SubmissionDetail; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
   const client = useQueryClient(); const [baseline, setBaseline] = useState(initial); const [draft, setDraft] = useState(() => draftFromSubmission(initial.submission));
   const [savedDraft, setSavedDraft] = useState(() => JSON.stringify(draft)); const [errors, setErrors] = useState<Record<string, string>>({});
-  const [error, setError] = useState<unknown>(null); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null); const [message, setMessage] = useState('');
+  const [activeAction, setActiveAction] = useState<'save' | 'confirm' | 'delete' | null>(null);
+  const busy = activeAction !== null;
   const writing = useRef(false); const form = useRef<HTMLFormElement>(null); const mounted = useRef(true);
   const [acknowledge, setAcknowledge] = useState<string | null>(null);
   useEffect(() => { setAcknowledge(null); }, [latest.duplicateCheckToken]);
   const dirty = JSON.stringify(draft) !== savedDraft, submission = baseline.submission;
+  const employees = useEmployeeOptions(false, submission.status === 'PENDING');
+  const [employeeChosen, setEmployeeChosen] = useState(false);
+  const ownerEligible = employees.data?.some(employee => employee.accountId === submission.ownerId && employee.status !== 'ARCHIVED');
+  const defaultEmployee = !employeeChosen && ownerEligible ? submission.ownerId : '';
+  const effectiveDraft = { ...draft, creditedEmployeeId: draft.creditedEmployeeId || defaultEmployee };
   const stale = latest.submission.version !== submission.version;
   const itemIdConflict = error instanceof ApiError && error.code === 'SUBMISSION_ITEM_ID_CONFLICT';
   useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false); }, [dirty, onDirtyChange]);
@@ -120,21 +137,47 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
     return () => { mounted.current = false; onWritingChange(false); };
   }, [onWritingChange]);
   const accept = (data: SubmissionDetail) => {
-    const next = draftFromSubmission(data.submission); setBaseline(data); setDraft(next); setSavedDraft(JSON.stringify(next)); setErrors({});
+    const next = draftFromSubmission(data.submission); setBaseline(data); setDraft(next); setSavedDraft(JSON.stringify(next)); setEmployeeChosen(false); setErrors({});
     client.setQueryData(['customer-submission', submission.id], data); setAcknowledge(null);
   };
   const act = async (action: 'save' | 'confirm' | 'delete') => {
     if (writing.current) return;
     if (action === 'delete' && !window.confirm('将此填单移出待确认列表？原始内容和删除记录仍会保留。')) return;
     let body: unknown = { expectedVersion: submission.version };
-    if (action === 'save') {
-      const result = submissionRequest(draft, true); setErrors(result.errors);
+    const needsSave = action === 'save' || action === 'confirm' && (dirty || !submission.reviewed || Boolean(defaultEmployee && !submission.reviewed.creditedEmployeeId));
+    if (needsSave || action === 'confirm') {
+      const result = submissionRequest(effectiveDraft, true);
+      if (action === 'confirm') {
+        if (result.review.totalAmountCents == null) result.errors.totalAmount ||= '请填写整单约定金额。';
+        if (!result.review.creditedEmployeeId) result.errors.creditedEmployeeId = '请选择业绩归属员工。';
+      }
+      setErrors(result.errors);
       if (Object.keys(result.errors).length) { setError(null); focusFormField(form.current, firstProductFormError(result.errors, draft.items)!); return; }
       body = { expectedVersion: submission.version, review: result.review };
-    } else if (action === 'confirm') body = { expectedVersion: submission.version, duplicateCheckToken: acknowledge };
-    writing.current = true; setBusy(true); onWritingChange(true); setError(null); setMessage('');
+    }
+    writing.current = true; setActiveAction(action); onWritingChange(true); setError(null); setMessage('');
     try {
-      const data = await api<SubmissionDetail>(`/customer-submissions/${submission.id}${action === 'confirm' ? '/confirm' : ''}`, { method: action === 'save' ? 'PATCH' : action === 'delete' ? 'DELETE' : 'POST', body });
+      const path = `/customer-submissions/${submission.id}`;
+      let data: SubmissionDetail;
+      if (action === 'confirm') {
+        const saved = needsSave ? await api<SubmissionDetail>(path, { method: 'PATCH', body }) : null;
+        if (saved) {
+          if (!mounted.current) return;
+          accept(saved);
+          await client.invalidateQueries({ queryKey: ['customer-submissions'] });
+          if (!mounted.current) return;
+          if (saved.duplicates.some(record => record.requiresAcknowledgement)) {
+            setMessage('已暂存。请核实疑似重复单后继续接单。');
+            return;
+          }
+        }
+        data = await api<SubmissionDetail>(path + '/confirm', { method: 'POST', body: {
+          expectedVersion: saved?.submission.version ?? submission.version,
+          duplicateCheckToken: saved ? null : acknowledge,
+        } });
+      } else {
+        data = await api<SubmissionDetail>(path, { method: action === 'save' ? 'PATCH' : 'DELETE', body });
+      }
       await client.invalidateQueries({ queryKey: ['customer-submissions'] });
       if (!mounted.current) return;
       if (action === 'delete') { onDirtyChange(false); window.location.hash = '#/customer-submissions'; }
@@ -148,11 +191,9 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
         }
       }
     }
-    finally { writing.current = false; if (mounted.current) { setBusy(false); onWritingChange(false); } }
+    finally { writing.current = false; if (mounted.current) { setActiveAction(null); onWritingChange(false); } }
   };
   const reviewed = submission.reviewed;
-  const ready = reviewed && reviewed.totalAmountCents != null && reviewed.creditedEmployeeId;
-  const confirmationMissing = [dirty && '核对内容已修改，请先保存', !reviewed && '尚未保存核对结果', reviewed && reviewed.totalAmountCents == null && '未填写整单约定金额', reviewed && !reviewed.creditedEmployeeId && '未选择业绩归属员工'].filter(Boolean);
   const duplicates = latest.duplicates;
   const requiresAcknowledgement = duplicates.some(record => record.requiresAcknowledgement);
   const editable = submission.status === 'PENDING' && latest.submission.status === 'PENDING';
@@ -161,9 +202,17 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
     <section className="panel"><h2>客户原始填写</h2><ContentSummary content={submission.original} /></section>
     {duplicates.length > 0 && editable && <section className="panel submission-warning" aria-label="疑似重复记录"><h2>疑似重复记录（{duplicates.length}）</h2><p>请核对以下同电话、同取货日的记录是否重复。</p><DuplicateRecords records={duplicates} />{requiresAcknowledgement && <label className="check-label"><input type="checkbox" checked={acknowledge === latest.duplicateCheckToken} disabled={busy || stale || dirty || creationResultUnknown(error)} onChange={e => setAcknowledge(e.target.checked ? latest.duplicateCheckToken : null)} />已核实，这是独立订单，继续接单。</label>}</section>}
     {submission.orderId && <a className="primary" href={`#/orders/${submission.orderId}`}>查看正式订单<ArrowRight /></a>}
-    {editable && <form ref={form} noValidate onSubmit={event => { event.preventDefault(); void act('save'); }}><h2>客服核对结果</h2>{reviewed?.plannedHandoffAt && Date.parse(reviewed.plannedHandoffAt) !== Date.parse(reviewed.content.requestedReceiveAt) && <p className="notice">历史时间不同，请核对：原到店取货时间 {businessTime(reviewed.plannedHandoffAt)}；原客户收货时间 {businessTime(reviewed.content.requestedReceiveAt)}。修改取货时间后两项将同步。</p>}<SubmissionFields staff draft={draft} onChange={value => { setDraft(value); setErrors({}); setError(null); setMessage(''); }} errors={errors} busy={busy || stale || creationResultUnknown(error)} />
-      {Object.keys(errors).length > 0 && <div className="notice error" role="alert"><strong>请修正以下字段：</strong><ul>{Object.entries(errors).map(([field, message]) => <li key={field}>{field.startsWith('items.') ? `商品 ${Number(field.split('.')[1]) + 1}：` : ''}{message}</li>)}</ul></div>}<ErrorNotice error={error} />{message && <p className="notice success" role="status">{message}</p>}{creationResultUnknown(error) && <p className="notice">结果未确认，输入已保留。请先核对最新结果，再决定是否重试。<button className="text-button" type="button" disabled={busy} onClick={() => { accept(latest); setError(null); }}>读取最新结果</button></p>}
-      <div className="create-submit"><button className="text-button danger" type="button" disabled={busy || stale} onClick={() => void act('delete')}>删除未确认填单</button><div className="actions"><button className="secondary" disabled={busy || stale || creationResultUnknown(error)}>{busy ? '处理中…' : '保存核对结果'}</button><button type="button" className="primary" disabled={busy || stale || dirty || !ready || Boolean(requiresAcknowledgement && acknowledge !== latest.duplicateCheckToken)} onClick={() => void act('confirm')}>确认接单<ArrowRight /></button></div></div>{confirmationMissing.length > 0 && <ul className="confirmation-missing" role="status">{confirmationMissing.map(reason => <li key={String(reason)}>{reason}</li>)}</ul>}
+    {editable && <form ref={form} noValidate onSubmit={event => { event.preventDefault(); void act('save'); }}><h2>客服核对结果</h2>{reviewed?.plannedHandoffAt && Date.parse(reviewed.plannedHandoffAt) !== Date.parse(reviewed.content.requestedReceiveAt) && <p className="notice">历史时间不同，请核对：原到店取货时间 {businessTime(reviewed.plannedHandoffAt)}；原客户收货时间 {businessTime(reviewed.content.requestedReceiveAt)}。修改取货时间后两项将同步。</p>}<SubmissionFields staff draft={effectiveDraft} onChange={value => {
+      const changedEmployee = value.creditedEmployeeId !== effectiveDraft.creditedEmployeeId;
+      if (changedEmployee) setEmployeeChosen(true);
+      setDraft({ ...value, creditedEmployeeId: changedEmployee ? value.creditedEmployeeId : draft.creditedEmployeeId }); setErrors({}); setError(null); setMessage(''); }} errors={errors} busy={busy || stale || creationResultUnknown(error)} />
+      <ErrorNotice error={error} />{message && <p className="notice success" role="status">{message}</p>}{creationResultUnknown(error) && <p className="notice">结果未确认，输入已保留。请先核对最新结果，再决定是否重试。<button className="text-button" type="button" disabled={busy} onClick={() => void client.invalidateQueries({ queryKey: ['customer-submission', submission.id] }, { throwOnError: true }).then(() => {
+        const refreshed = client.getQueryData<SubmissionDetail>(['customer-submission', submission.id]);
+        if (!mounted.current || !refreshed) return;
+        if (refreshed.submission.status !== 'PENDING') accept(refreshed);
+        setError(null);
+      }).catch(() => {})}>核对最新结果</button></p>}
+      <div className="create-submit"><button className="text-button danger" type="button" disabled={busy || stale} onClick={() => void act('delete')}>删除未确认填单</button><div className="actions"><button className="secondary" disabled={busy || stale || creationResultUnknown(error)}>{activeAction === 'save' ? '正在暂存…' : '暂存核对结果'}</button><button type="button" className="primary" disabled={busy || stale || creationResultUnknown(error) || Boolean(!dirty && reviewed && requiresAcknowledgement && acknowledge !== latest.duplicateCheckToken)} onClick={() => void act('confirm')}>{activeAction === 'confirm' ? '正在确认…' : '确认接单'}<ArrowRight /></button></div></div>
     </form>}
     {!editable && Boolean(error) && <ErrorNotice error={error} />}
     <SubmissionHistory data={latest} />

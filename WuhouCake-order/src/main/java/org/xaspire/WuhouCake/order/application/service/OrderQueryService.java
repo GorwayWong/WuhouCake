@@ -16,7 +16,12 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invali
 public class OrderQueryService {
     private static final ZoneId STORE_ZONE = ZoneId.of("Asia/Shanghai");
     private final OrderQueries queries;
-    public OrderQueryService(OrderQueries queries) { this.queries = queries; }
+    private final Clock clock;
+
+    public OrderQueryService(OrderQueries queries, Clock clock) {
+        this.queries = queries;
+        this.clock = clock;
+    }
 
     private static final int PRODUCTION_PAGE_SIZE = 20;
 
@@ -45,6 +50,30 @@ public class OrderQueryService {
                         .map(row -> new OrderQueryViews.ProductionOrder(row.orderId(), row.orderNo(), row.itemName(),
                                 row.status(), row.plannedFinishAt(), row.pickupAt(), row.pickupDate())).toList();
         return new OrderQueryViews.ProductionOrders(current, total, orders);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.ProductionReminders productionReminders() {
+        var now = clock.instant();
+        var date = now.atZone(STORE_ZONE).toLocalDate();
+        return new OrderQueryViews.ProductionReminders(date,
+                queries.countScheduledProduction(now, storeDayStart(date.plusDays(1)), PRODUCTION_STATUSES),
+                queries.countScheduledProduction(null, now, PRODUCTION_STATUSES));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.ProductionReminderOrders productionReminderOrders(String group, int page) {
+        if (page < 1 || !Set.of("today", "overdue").contains(group)) throw invalid();
+        var now = clock.instant();
+        var date = now.atZone(STORE_ZONE).toLocalDate();
+        boolean overdue = "overdue".equals(group);
+        var from = overdue ? null : now;
+        var to = overdue ? now : storeDayStart(date.plusDays(1));
+        long total = queries.countScheduledProduction(from, to, PRODUCTION_STATUSES);
+        int current = (int) Math.min(page, total == 0 ? 1 : 1 + (total - 1) / PRODUCTION_PAGE_SIZE);
+        var rows = total == 0 ? List.<OrderQueries.PendingOrder>of()
+                : queries.scheduledProduction(from, to, PRODUCTION_STATUSES, PRODUCTION_PAGE_SIZE, (current - 1L) * PRODUCTION_PAGE_SIZE);
+        return new OrderQueryViews.ProductionReminderOrders(date, current, total, pendingViews(rows));
     }
 
     private static Set<String> productionStages(String stage) {
@@ -126,7 +155,12 @@ public class OrderQueryService {
             to = date.plusDays(1).atStartOfDay(STORE_ZONE).toInstant();
         } catch (DateTimeException failure) { throw invalid(); }
         var metrics = includeMetrics ? queries.metrics(date, from, to) : null;
-        var orders = queries.pending(date);
+        return new OrderQueryViews.Workbench(date, metrics == null ? null
+                : new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()),
+                pendingViews(queries.pending(date)));
+    }
+
+    private List<OrderQueryViews.PendingOrder> pendingViews(List<OrderQueries.PendingOrder> orders) {
         var orderIds = orders.stream().map(OrderQueries.PendingOrder::orderId).toList();
         var latestNotes = orderIds.isEmpty() ? Map.<UUID, OrderQueryViews.Note>of()
                 : queries.latestNotes(orderIds).stream().collect(Collectors.toMap(OrderQueries.OrderNote::orderId, entry -> {
@@ -142,11 +176,9 @@ public class OrderQueryService {
         var itemsByOrder = items.stream().collect(Collectors.groupingBy(OrderQueries.Item::orderId,
                 Collectors.mapping(item -> new OrderQueryViews.Item(item.itemId(), item.name(), item.productType(), item.quantity(),
                         item.unitPriceCents(), item.memberPriceCents(), item.attributes(), notesByItem.getOrDefault(item.itemId(), List.of())), Collectors.toList())));
-        var pending = orders.stream().map(order -> new OrderQueryViews.PendingOrder(order.orderId(), order.orderNo(), order.calendarDate(),
+        return orders.stream().map(order -> new OrderQueryViews.PendingOrder(order.orderId(), order.orderNo(), order.calendarDate(),
                 order.status(), order.currentStageCode(), order.paymentStatus(), order.fulfillmentType(), order.plannedHandoffAt(),
                 new Customer(order.customerName(), order.phone(), order.memberPhone(), order.buyerName()), order.address(), order.plannedFinishAt(),
                 itemsByOrder.getOrDefault(order.orderId(), List.of()), latestNotes.get(order.orderId()), order.requestedReceiveAt())).toList();
-        return new OrderQueryViews.Workbench(date, metrics == null ? null
-                : new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()), pending);
     }
 }

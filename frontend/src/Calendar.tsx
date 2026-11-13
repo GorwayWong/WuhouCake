@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, CaretDown, CaretUp, Plus } from '@phosphor-icons/react';
-import { api } from './api';
+import { readQuery } from './api';
 import { businessDate, calendarRange, today, weekStart, workbenchDate } from './dates';
 import type { Account, CalendarOrder, Workbench } from './types';
 import { ErrorNotice, Loading } from './ui';
@@ -17,6 +17,7 @@ import { orderAccess } from './access';
 import { useReturnScroll } from './returnScroll';
 import { DayShippingSummary } from './DayShippingSummary';
 import { DayPreparationSummary } from './DayPreparationSummary';
+import { ProductionReminders } from './ProductionReminders';
 import { visibleCalendarFilters } from './shippingPayment';
 
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
@@ -44,8 +45,8 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
   const access = orderAccess(account);
   const effectiveFilters = visibleCalendarFilters(filters, access.amounts);
   const range = calendarRange(mode === 'month' ? `${view.month}-01` : selected, mode);
-  const calendar = useQuery({ queryKey: ['calendar', range.from, range.to], queryFn: ({ signal }) => api<CalendarOrder[]>(`/orders/calendar?from=${range.from}&to=${range.to}`, { signal }) });
-  const workbench = useQuery({ queryKey: ['workbench', selected], queryFn: ({ signal }) => api<Workbench>(`/orders/workbench?date=${selected}&includeMetrics=false`, { signal }), enabled: mode === 'week' || view.expanded });
+  const calendar = useQuery({ queryKey: ['calendar', range.from, range.to], queryFn: ({ signal }) => readQuery<CalendarOrder[]>(`/orders/calendar?from=${range.from}&to=${range.to}`, signal) });
+  const workbench = useQuery({ queryKey: ['workbench', selected], queryFn: ({ signal }) => readQuery<Workbench>(`/orders/workbench?date=${selected}&includeMetrics=false`, signal), enabled: mode === 'week' || view.expanded });
   useReturnScroll(calendarHref(view), Boolean(calendar.data) && (!(mode === 'week' || view.expanded) || Boolean(workbench.data)), false, Boolean(createdOrder));
   const scrolledOrder = useRef<string | null>(null);
   const showCreatedOrder = useCallback((element: HTMLAnchorElement) => {
@@ -123,6 +124,7 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
   return <div className="calendar-workbench" ref={workbenchElement} style={{ minHeight: reservedHeight }}>
     {createdOrder && <div className="notice created-order-notice" role="status">订单 #{createdOrder.orderNo} 已创建，{createdOrder.located ? '已定位到' : '正在定位到'}{businessDate(createdOrder.date)}</div>}
     <div className="page-heading workbench-heading"><div className="workbench-heading-actions"><button type="button" className="secondary compact" onClick={() => jumpDate(today())}>回到今天</button>{access.entry && <a className="primary" href="#/orders/new"><Plus />新建订单</a>}</div></div>
+    {access.productionView && <ProductionReminders account={account} view={view} />}
     <section className={`panel calendar-panel ${mode}`} aria-label={mode === 'week' ? '周历' : '月历'}>
       <div className="calendar-toolbar"><label className="date-jump"><span className="sr-only">跳转日期</span><DateInput label="跳转日期" value={selected} onChange={value => { if (value && workbenchDate(`#/?date=${value}`)) jumpDate(value); }} /></label><div className="period-actions"><button type="button" className="icon-button" aria-label={mode === 'week' ? '上一周' : '上个月'} onClick={() => onViewChange(shiftCalendarPeriod(view, -1))}><ArrowLeft /></button><button type="button" className="icon-button" aria-label={mode === 'week' ? '下一周' : '下个月'} onClick={() => onViewChange(shiftCalendarPeriod(view, 1))}><ArrowRight /></button></div></div>
       <ErrorNotice error={calendar.error} retry={() => void calendar.refetch()} />

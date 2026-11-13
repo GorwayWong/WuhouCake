@@ -1,6 +1,7 @@
 package org.xaspire.WuhouCake.order.domain.model.valobj;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Set;
@@ -38,6 +39,12 @@ public final class OrderValues {
             address = type == FulfillmentType.DELIVERY ? requiredText(address, Integer.MAX_VALUE) : optionalText(address, Integer.MAX_VALUE);
         }
     }
+    public static void requireFinishLeadTime(Instant pickupAt, Instant finishAt) {
+        if (pickupAt != null && finishAt != null && Duration.between(finishAt, pickupAt).compareTo(Duration.ofHours(1)) < 0) {
+            throw new OrderFailure("ORDER_FINISH_TOO_LATE");
+        }
+    }
+
     public static LocalDate receiveDate(Instant value) { return value.atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate(); }
     public record Actor(UUID accountId, String nickname) {
         public Actor {

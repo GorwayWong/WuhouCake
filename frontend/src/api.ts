@@ -12,6 +12,7 @@ export function creationResultUnknown(error: unknown): boolean {
 export function errorText(error: unknown): string {
   if (!(error instanceof ApiError)) return '网络连接失败，请检查连接后重试。';
   return ({
+    READ_TIMEOUT: '读取超时，当前资料可能不是最新的，请重试',
     AUTHENTICATION_FAILED: '工号或密码有误，或登录已过期。',
     CURRENT_PASSWORD_INCORRECT: '当前密码不正确，新密码尚未保存。请填写初始化或重置时使用的旧密码后重试。',
     CONCURRENT_MODIFICATION: '资料已更新，输入已保留。核对后再保存。',
@@ -65,6 +66,9 @@ export function errorText(error: unknown): string {
     SUBMISSION_EMPLOYEE_REQUIRED: '尚未选择业绩归属员工，请选择后保存。',
     SUBMISSION_ITEM_ID_CONFLICT: '无法安全关联历史报价，输入已保留。请读取最新填单后重新核对商品。',
     SUBMISSION_PRICES_INVALID: '商品数量与报价行不一致，请重新读取并保存核对结果。',
+    ORDER_FINISH_TOO_LATE: '出品时间须比取货时间至少提前 1 小时。',
+    ORDER_QUOTE_INCOMPLETE: '商品报价未完整，请补齐单价后再登记付款。',
+    ORDER_PAID_AMOUNT_LOCKED: '已登记付款，请先撤销付款登记再改价。',
     SUBMISSION_REVIEW_REQUIRED: '请先保存核对结果，再确认接单。',
     SUBMISSION_FORBIDDEN: '仅前台和管理人员可以处理客户填单。',
     SUBMISSION_TOO_LARGE: '填写内容过长，请精简商品需求后再提交。',
@@ -168,6 +172,33 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     headers: { ...(options.body === undefined || multipart ? {} : { 'Content-Type': 'application/json' }), ...options.headers },
     body: multipart ? options.body as FormData : options.body === undefined ? undefined : JSON.stringify(options.body),
   }));
+}
+/**
+ * GET 读取 JSON，30 秒期限包含认证等待和响应体解析。
+ * @param path API 相对路径。
+ * @param signal 查询生命周期的取消信号。
+ * @returns 当前会话的已解码数据。
+ * @throws ApiError 超时或接口失败；调用方取消时保留其取消原因。
+ */
+export async function readQuery<T>(path: string, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  const started = generation, controller = new AbortController();
+  let rejectAbort: (reason: unknown) => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const abort = (reason: unknown) => { controller.abort(reason); rejectAbort(controller.signal.reason); };
+  const cancel = () => abort(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  signal.addEventListener('abort', cancel, { once: true });
+  const deadline = setTimeout(() => abort(new ApiError(408, 'READ_TIMEOUT')), 30_000);
+  try {
+    const result = await Promise.race([api<T>(path, { signal: controller.signal }), aborted]);
+    if (started !== generation) throw new ApiError(401, 'AUTHENTICATION_FAILED');
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted) throw controller.signal.reason;
+    throw error;
+  } finally {
+    clearTimeout(deadline); signal.removeEventListener('abort', cancel);
+  }
 }
 export async function fetchPackageImage(path: string, signal: AbortSignal) {
   const response = await authenticatedFetch(path, { signal });

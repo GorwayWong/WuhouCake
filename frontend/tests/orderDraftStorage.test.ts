@@ -19,13 +19,22 @@ test('下单方式其他选项的未完成输入可恢复，非法选择状态�
 test('旧蛋糕草稿恢复独立报价并保留结果待确认载荷', () => {
   const db = storage(), slot = new OrderDraftSlot('alice', () => db), record = freshOrderDraft('alice', '2026-11-04');
   record.value = structuredClone(record.value); record.value.items[0].name = '旧蛋糕'; record.value.phone = '13800000000'; record.value.address = '自提';
-  record.value.items[0].unitPrice = '120'; record.value.items[0].memberPrice = '未完成';
+  delete record.value.pricingMode; delete record.initial.pricingMode;
+  record.value.items[0].unitPrice = '120';
+  record.value.fulfillmentType = 'PICKUP';
   record.pending = createOrderRequest(record.value).request!;
+  record.value.items[0].memberPrice = '未完成';
+  record.pending.fulfillment.address = '自提';
+  record.value.fulfillmentType = 'DELIVERY';
+  delete record.value.explicitFulfillment;
   delete record.pending.items[0].referenceUnitPriceCents;
   record.pending.items[0].unitPriceCents = 12000;
   record.value.items[0].attributes.specification = '轻拿轻放\n原会员单价：0 元（仅供参考）';
   const saved = slot.write(record), before = db.getItem(draftStorageKey('alice'));
   const restored = slot.read().record!;
+  assert.equal(restored.value.fulfillmentType, 'PICKUP');
+  assert.equal(restored.value.address, '');
+  assert.equal(restored.pending?.fulfillment.address, '自提');
   assert.equal(restored.value.items[0].unitPrice, '120.00'); assert.equal(restored.value.items[0].memberPrice, '0.00');
   assert.equal(restored.value.items[0].attributes.specification, '轻拿轻放');
   const item = createOrderRequest(restored.value).request!.items[0];

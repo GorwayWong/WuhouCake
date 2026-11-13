@@ -45,7 +45,7 @@ test('数量限制与合法状态，禁止移除最后一件有效商品', () =>
   assert.equal(canRemoveItem(order, 'first'), true);
   assert.equal(canRemoveItem({ ...order, items: [order.items[0]] }, 'first'), false);
   assert.equal(canRemoveItem(order, 'missing'), false);
-  for (const status of ['WAITING_DELIVERY', 'COMPLETED', 'CANCELLED']) {
+  for (const status of ['COMPLETED', 'CANCELLED']) {
     assert.equal(canEditItems({ status }), false); assert.equal(canRemoveItem({ ...order, status }, 'first'), false);
   }
   for (const status of ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING']) assert.equal(canEditItems({ status }), true);
@@ -87,7 +87,7 @@ test('蛋糕改其他必须使用最新属性，重转保留同事新增要求�
   const fresh = changeItemDraft(itemDraft(latest.items[0]), { productType: 'OTHER' });
   const retry = itemChangeRequest(order, 'first', fresh, latest, latest.items[0]).request!;
   assert.equal(retry.expectedVersion, latest.version);
-  assert.match(String(retry.changes.attributes?.specification), /不要坚果/);
+  assert.equal(retry.changes.attributes?.requirements, '不要坚果');
   assert.match(String(retry.changes.attributes?.specification), /红色/);
   assert.doesNotMatch(String(retry.changes.attributes?.specification), /少糖/);
   const newer = structuredClone(latest); newer.version++;
