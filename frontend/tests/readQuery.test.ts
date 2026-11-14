@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import test, { beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import * as http from '../src/api.ts';
@@ -10,7 +11,7 @@ beforeEach(async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { cookie: 'XSRF-TOKEN=test' } });
   globalThis.fetch = async input => String(input).endsWith('/csrf') ? ok({ headerName: 'X-XSRF-TOKEN' })
-    : ok({ accessToken: 'old', expiresIn: 3600, passwordChangeRequired: false });
+    : ok({ accessToken: testJwt('old'), expiresIn: 3600, passwordChangeRequired: false });
   await http.session.login('test', 'test');
 });
 afterEach(() => { http.forgetSession(); globalThis.fetch = originalFetch; });
@@ -51,7 +52,7 @@ test('一个查询超时不会取消共享认证刷新，也不会在刷新完�
     if (path.endsWith('/csrf')) return ok({ headerName: 'X-XSRF-TOKEN' });
     if (path.endsWith('/refresh')) { refreshes++; return new Promise(resolve => { resolveRefresh = resolve; }); }
     if (path.endsWith('/a')) a++; else b++;
-    return new Headers(init?.headers).get('Authorization') === 'Bearer old'
+    return new Headers(init?.headers).get('Authorization') === `Bearer ${testJwt('old')}`
       ? Response.json({ success: false }, { status: 401 }) : ok({ version: 2 });
   };
   let failure: unknown;
@@ -60,7 +61,7 @@ test('一个查询超时不会取消共享认证刷新，也不会在刷新完�
   const second = read('/orders/b', new AbortController().signal);
   await flush(); t.mock.timers.tick(15_000); await flush();
   assert.ok(failure instanceof http.ApiError && failure.code === 'READ_TIMEOUT');
-  resolveRefresh(ok({ accessToken: 'new', expiresIn: 3600, passwordChangeRequired: false }));
+  resolveRefresh(ok({ accessToken: testJwt('new'), expiresIn: 3600, passwordChangeRequired: false }));
   assert.deepEqual(await second, { version: 2 }); await first;
   assert.equal(refreshes, 1); assert.equal(a, 1); assert.equal(b, 2);
 });
@@ -91,4 +92,45 @@ test('普通写请求不套只读期限或重发', async t => {
   const pending = http.api('/orders/a', { method: 'PATCH', body: { expectedVersion: 1 } });
   t.mock.timers.tick(90_000); assert.equal(calls, 1);
   release(ok({ version: 2 })); assert.deepEqual(await pending, { version: 2 });
+});
+
+test('公开填单响应体挂起时超时，取消不会发起重试', async t => {
+  let calls = 0, requestSignal: AbortSignal | undefined;
+  globalThis.fetch = async (_input, init) => {
+    calls++;
+    requestSignal = init?.signal as AbortSignal;
+    assert.equal(init?.credentials, 'omit');
+    assert.equal(init?.method, 'POST');
+    return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"success":true,"data":'));
+      requestSignal?.addEventListener('abort', () => controller.error(requestSignal?.reason), { once: true });
+    } }), { status: 201 });
+  };
+  const pending = http.submitPublicOrder('example', 'idempotency-key', {
+    phone: '13800000000', memberPhone: null, fulfillmentType: 'PICKUP', address: null, requestedReceiveAt: '2026-11-30T10:00:00Z',
+    items: [{ name: '蛋糕', productType: 'CAKE', quantity: 1, attributes: { size: '6' } }],
+  }, new AbortController().signal);
+  const rejects = assert.rejects(pending, { status: 408, code: 'SUBMISSION_TIMEOUT' });
+  await flush();
+  t.mock.timers.tick(30_000);
+  await rejects;
+  assert.equal(requestSignal?.aborted, true);
+  assert.equal(calls, 1);
+});
+
+test('公开填单拒绝不可解析的正文及无效 UUID 回执', async () => {
+  const content = {
+    phone: '13800000000', memberPhone: null, fulfillmentType: 'PICKUP' as const, address: null,
+    requestedReceiveAt: '2026-11-30T10:00:00Z',
+    items: [{ name: '蛋糕', productType: 'CAKE', quantity: 1, attributes: { size: '6' } }],
+  };
+  const invalid = [
+    new Response('{', { status: 201 }),
+    Response.json({ success: true, data: { submissionId: 'invalid', submissionNo: 'Finvalid' } }, { status: 201 }),
+  ];
+  for (const response of invalid) {
+    globalThis.fetch = async () => response;
+    await assert.rejects(http.submitPublicOrder('example', 'idempotency-key', content, new AbortController().signal),
+      error => http.creationResultUnknown(error));
+  }
 });

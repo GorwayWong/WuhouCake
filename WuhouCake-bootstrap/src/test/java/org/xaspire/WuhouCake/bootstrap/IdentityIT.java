@@ -105,6 +105,45 @@ class IdentityIT {
         var logs = admin.request("GET", "/api/admin/audit-logs?size=100", null).body.toString();
         assertFalse(logs.contains(temporary)); assertFalse(logs.contains(staff.token)); assertFalse(logs.contains("passwordHash"));
     }
+    @Test void removingStoreManagerWithOnlyLegacyJobsRevokesCredentialsAndAdministration() throws Exception {
+        var admin = administrator();
+        var created = provision(admin, "LEGACY02", "STAFF");
+        String id = created.at("/data/account/accountId").asText();
+        String temporary = created.at("/data/temporaryPassword").asText();
+        var employee = new Browser();
+        employee.login("LEGACY02", temporary);
+        employee.changePassword(temporary, PASSWORD);
+        employee.login("LEGACY02", PASSWORD);
+        long initialVersion = employee.request("GET", "/api/me", null).body.at("/data/version").asLong();
+        String path = "/api/admin/employees/" + id;
+        var promotion = admin.request("PATCH", path, Map.of("expectedVersion", initialVersion, "nickname", "兼任店长",
+                "jobRoles", List.of("STORE_MANAGER", "FRONT_DESK")));
+        assertEquals(200, promotion.status, promotion.body.toString());
+        employee.login("LEGACY02", PASSWORD);
+        assertEquals(200, employee.request("GET", "/api/admin/employees", null).status);
+        var profile = employee.request("GET", "/api/me", null).body.path("data");
+        var demotion = admin.request("PATCH", path, Map.of("expectedVersion", profile.path("version").asLong(), "nickname", "前台",
+                "jobRoles", List.of("FRONT_DESK")));
+        assertEquals(200, demotion.status, demotion.body.toString());
+        assertEquals("STAFF", demotion.body.at("/data/systemRole").asText());
+        long credentials = profile.path("credentialVersion").asLong();
+        assertEquals(credentials + 1, demotion.body.at("/data/credentialVersion").asLong());
+        assertEquals(401, employee.request("GET", "/api/me", null).status);
+        assertEquals(401, employee.request("POST", "/api/auth/refresh", null).status);
+        employee.login("LEGACY02", PASSWORD);
+        assertEquals(200, employee.request("GET", "/api/me", null).status);
+        assertEquals(403, employee.request("GET", "/api/admin/employees", null).status);
+        assertEquals(403, employee.request("GET", "/api/admin/audit-logs", null).status);
+        var auditDetails = jdbc.queryForObject(
+                "SELECT details::text FROM audit_operation WHERE action='identity.profile_changed' AND target_id=? AND details->>'after.systemRole'='STAFF'",
+                String.class, id);
+        var change = json.readTree(auditDetails);
+        assertEquals("SUPER_ADMIN", change.path("before.systemRole").asText());
+        assertEquals("STAFF", change.path("after.systemRole").asText());
+        assertEquals(credentials, change.path("before.credentialVersion").asLong());
+        assertEquals(credentials + 1, change.path("after.credentialVersion").asLong());
+    }
+
     @Test void administratorCanSetEightCharacterEmployeePasswordWithRevocationAndSafeAudit() throws Exception {
         var admin = administrator(); var created = provision(admin, "0002", "STAFF");
         String id = created.at("/data/account/accountId").asText();

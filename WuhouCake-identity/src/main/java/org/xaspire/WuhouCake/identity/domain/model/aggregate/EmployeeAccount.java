@@ -47,7 +47,8 @@ public record EmployeeAccount(UUID id, String employeeNumber, String nickname, S
         if (status != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
         name = AccountValues.nickname(name);
         if (roles == null || roles.isEmpty() || roles.stream().anyMatch(java.util.Objects::isNull)) throw new IdentityFailure("VALIDATION_FAILED");
-        SystemRole assigned = systemRoleForJobs(roles, systemRole);
+        SystemRole legacyRole = jobRoles.contains(JobRole.STORE_MANAGER) ? SystemRole.STAFF : systemRole;
+        SystemRole assigned = systemRoleForJobs(roles, legacyRole);
         if (systemRole == SystemRole.SUPER_ADMIN && assigned != systemRole && activeAdministrators <= 1) throw new IdentityFailure("LAST_ADMINISTRATOR");
         if (nickname.equals(name) && jobRoles.equals(roles) && assigned == systemRole) return this;
         return new EmployeeAccount(id, employeeNumber, name, roles, assigned, status, passwordHash, passwordChangeRequired,

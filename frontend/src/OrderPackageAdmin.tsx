@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
 import { api, ApiError, creationResultUnknown, errorText, fetchPackageImage } from './api';
-import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals, packagePricingProblem } from './orderPackages';
+import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals, packagePricingProblem, samePackageContent } from './orderPackages';
 import type { OrderPackage, PackageBody, PackageRow } from './orderPackages';
 import type { Page } from './types';
 import { Empty, ErrorNotice, Loading, money } from './ui';
@@ -233,11 +233,6 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
       }}>删除</button></div></article>)}</section><div className="package-pagination"><span>共 {query.data.total} 个套餐 · 第 {page} 页</span><div className="package-actions"><button className="secondary" disabled={disabled || page === 1} onClick={() => setPage(page - 1)}>上一页</button><button className="secondary" disabled={disabled || page * 20 >= query.data.total} onClick={() => setPage(page + 1)}>下一页</button></div></div></> : !query.error && <section className="panel"><Empty>{search ? '没有匹配的套餐，请调整搜索内容。' : '还没有套餐'}</Empty>{!search && <div className="package-empty-action"><button className="primary" disabled={disabled} onClick={() => void start('new')}><Plus />新建套餐</button></div>}</section>}
     </>}
   </div>;
-}
-
-function samePackageContent(current: OrderPackage, body: Body) {
-  const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stable(item)])) : value;
-  return JSON.stringify(stable({ name: current.name, items: current.items, originalAmountCents: current.originalAmountCents, memberAmountCents: current.memberAmountCents })) === JSON.stringify(stable({ name: body.name, items: body.items, originalAmountCents: body.originalAmountCents, memberAmountCents: body.memberAmountCents }));
 }
 
 function PackageConflictChoice({ entry, packageId, choice, disabled, onChoose }: {

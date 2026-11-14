@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiError, forgetSession, session, uploadOrderImage } from '../src/api.ts';
@@ -11,9 +12,9 @@ test('图片 FormData 保留真实文件、商品 ID和稳定幂等键；失败�
   let failure = 0;
   globalThis.fetch = async (path, init) => {
     if (String(path).endsWith('/csrf')) return Response.json({ success: true, data: { headerName: 'X-XSRF-TOKEN' } });
-    if (String(path).endsWith('/login')) return Response.json({ success: true, data: { accessToken: 'jwt', expiresIn: 900 } });
+    if (String(path).endsWith('/login')) return Response.json({ success: true, data: { accessToken: testJwt('jwt'), expiresIn: 900 } });
     assert.equal(path, '/api/orders/order-a/images');
-    assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer jwt');
+    assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${testJwt('jwt')}`);
     assert.equal(new Headers(init?.headers).has('Content-Type'), false);
     requests.push(init!);
     if (failure === 1) return Response.json({ success: false, code: 'ORDER_IMAGE_LIMIT_EXCEEDED' }, { status: 409 });
@@ -48,11 +49,11 @@ test('Blob 读取沿用 Bearer 和 401 刷新；释放 URL，切换订单后丢�
   URL.revokeObjectURL = url => { revoked.push(url); };
   globalThis.fetch = async (path, init) => {
     if (String(path).endsWith('/csrf')) return Response.json({ success: true, data: { headerName: 'X-XSRF-TOKEN' } });
-    if (String(path).endsWith('/login')) return Response.json({ success: true, data: { accessToken: 'old', expiresIn: 900 } });
-    if (String(path).endsWith('/refresh')) { refreshes++; return Response.json({ success: true, data: { accessToken: 'new', expiresIn: 900 } }); }
+    if (String(path).endsWith('/login')) return Response.json({ success: true, data: { accessToken: testJwt('old'), expiresIn: 900 } });
+    if (String(path).endsWith('/refresh')) { refreshes++; return Response.json({ success: true, data: { accessToken: testJwt('new'), expiresIn: 900 } }); }
     const header = new Headers(init?.headers).get('Authorization')!; headers.push(header);
     if (String(path).includes('order-old')) return new Promise(resolve => { resolveOld = resolve; });
-    return header === 'Bearer old' ? new Response(null, { status: 401 }) : new Response(new Blob(['png'], { type: 'image/png' }));
+    return header === `Bearer ${testJwt('old')}` ? new Response(null, { status: 401 }) : new Response(new Blob(['png'], { type: 'image/png' }));
   };
   const failed = (error: unknown) => assert.fail(String(error));
   let stopNew = () => {};
@@ -62,7 +63,7 @@ test('Blob 读取沿用 Bearer 和 401 刷新；释放 URL，切换订单后丢�
     stopOld();
     stopNew = loadImagePreview('order-new', 'new-image', url => shown.push(url), failed);
     await tick(); await tick();
-    assert.equal(refreshes, 1); assert.deepEqual(headers, ['Bearer old', 'Bearer old', 'Bearer new']);
+    assert.equal(refreshes, 1); assert.deepEqual(headers, [`Bearer ${testJwt('old')}`, `Bearer ${testJwt('old')}`, `Bearer ${testJwt('new')}`]);
     resolveOld(new Response(new Blob(['late']))); await tick();
     assert.deepEqual(shown, ['blob:0']); assert.deepEqual(created, ['blob:0']);
     stopNew(); assert.deepEqual(revoked, ['blob:0']);

@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiError, forgetSession, session } from '../src/api.ts';
@@ -22,11 +23,11 @@ test('导出携带 Bearer 并复用 401 刷新，区分单单 XLSX 和筛选 ZIP
   globalThis.fetch = async (input, init) => {
     const path = String(input);
     if (path.endsWith('/csrf')) return Response.json({ success: true, data: { headerName: 'X-XSRF-TOKEN' } });
-    if (path.endsWith('/login')) return Response.json({ success: true, data: { accessToken: 'old', expiresIn: 900 } });
-    if (path.endsWith('/refresh')) { refreshes++; return Response.json({ success: true, data: { accessToken: 'new', expiresIn: 900 } }); }
+    if (path.endsWith('/login')) return Response.json({ success: true, data: { accessToken: testJwt('old'), expiresIn: 900 } });
+    if (path.endsWith('/refresh')) { refreshes++; return Response.json({ success: true, data: { accessToken: testJwt('new'), expiresIn: 900 } }); }
     writes.push({ path, init: init! }); assert.equal(init?.method, 'POST'); assert.ok(init?.signal);
-    if (new Headers(init?.headers).get('Authorization') === 'Bearer old') return new Response(null, { status: 401 });
-    assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer new');
+    if (new Headers(init?.headers).get('Authorization') === `Bearer ${testJwt('old')}`) return new Response(null, { status: 401 });
+    assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${testJwt('new')}`);
     if (failure === 'network') throw new TypeError('response lost');
     if (failure === 'json') return Response.json({ success: true, data: null });
     if (failure) return Response.json({ success: false, code: failure }, { status: 400 });

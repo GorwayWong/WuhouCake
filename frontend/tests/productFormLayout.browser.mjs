@@ -97,7 +97,7 @@ test('客户扫码填单的尺寸仍必填，手机两列不影响收货表单�
   const { context, page, errors } = await createOrderFixture(browser, base);
   try {
     let posted;
-    await context.route('**/api/public/order-entries/layout/submissions', async route => { posted = route.request().postDataJSON(); await route.fulfill({ json: { success: true, data: { submissionNo: 'F-TEST' } } }); });
+    await context.route('**/api/public/order-entries/layout/submissions', async route => { posted = route.request().postDataJSON(); await route.fulfill({ json: { success: true, data: { submissionId: '20000000-0000-4000-8000-000000000011', submissionNo: 'F20000000-0000-4000-8000-000000000011' } } }); });
     await context.route('**/api/public/order-entries/layout', route => route.fulfill({ json: { success: true, data: { ownerName: '测试客服' } } }));
     await page.goto(`${base}/#/fill/layout`); await page.locator('[id="items.0.size"]').waitFor();
     for (const width of [320, 360, 390, 1440]) {
@@ -244,7 +244,7 @@ test('未确认分类的识别商品在标题区提示并聚焦，选择类型�
     await until(async () => await page.evaluate(() => document.activeElement.id) === 'items.0.productType');
     assert.notEqual(await page.locator('.product-type-field .choice-field').getAttribute('data-invalid'), null);
     await page.locator('[id="items.0.productType"]').click(); await page.getByRole('option', { name: '蛋糕', exact: true }).click();
-    await checkLayout(page, 390);
+    await checkLayout(page, 390, undefined, rows.filter(row => row !== 'specification'));
     assert.equal((await saved()).value.items[0].requiresTypeConfirmation, false); assert.equal(await page.locator('[id="items.0.size"]').inputValue(), '6');
     assert.equal(model.createCalls.length, 0); assert.deepEqual(errors, []);
   } finally { await context.close(); }
@@ -335,6 +335,7 @@ test('套餐按需加载、收起保留搜索与选择，带入时不能收起�
     await page.getByRole('button', { name: '再添加一份', exact: true }).click();
     await until(() => Boolean(pending)); pending(); pending = undefined;
     await page.getByRole('button', { name: '确认带入', exact: true }).click();
+    await until(() => Boolean(pending)); pending(); pending = undefined;
     await until(async () => (await saved()).value.items[0].quantity === '4');
     assert.equal((await saved()).value.totalAmount, '200.00');
     assert.equal((await saved()).value.memberAmount, '180.00');
@@ -343,7 +344,7 @@ test('套餐按需加载、收起保留搜索与选择，带入时不能收起�
     await page.getByRole('button', { name: '导入套餐', exact: true }).click();
     await page.locator('.package-picker').getByRole('button', { name: '下一页', exact: true }).click();
     await page.locator('.package-picker').getByText('第 2 页', { exact: false }).waitFor();
-    assert.equal(detailCalls, 4);
+    assert.equal(detailCalls, 5);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

@@ -18,6 +18,10 @@ export interface PackageRow {
   itemId: string; imageId: string | null; file?: File; name: string; specification: string; quantity: string; unitPrice: string; memberPrice: string;
 }
 export type PackageBody = Pick<OrderPackage, 'name' | 'items' | 'originalAmountCents' | 'memberAmountCents'> & { expectedVersion?: number };
+export function samePackageContent(current: OrderPackage, body: PackageBody) {
+  const stable = (value: unknown): unknown => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stable(item)])) : value;
+  return JSON.stringify(stable({ name: current.name, items: current.items, originalAmountCents: current.originalAmountCents, memberAmountCents: current.memberAmountCents })) === JSON.stringify(stable({ name: body.name, items: body.items, originalAmountCents: body.originalAmountCents, memberAmountCents: body.memberAmountCents }));
+}
 export const packageImagePath = (id: string, item: Pick<PackageItem, 'itemId' | 'imageId'>) =>
   `/order-packages/${id}/items/${item.itemId}/images/${item.imageId}`;
 

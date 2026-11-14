@@ -78,6 +78,98 @@ test('套餐报价不一致阻止带入，修正后复制报价与备注并按�
   } finally { await context.close(); }
 });
 
+for (const change of ['updated', 'deleted', 'timeout', 'cancelled', 'offline', 'redacted']) test(`确认套餐先重读详情：${change}`, async () => {
+  const { context, page, complete, saved, png, errors } = await createOrderFixture(browser, base);
+  const pending = Promise.withResolvers();
+  const sendEvent = Promise.withResolvers();
+  try {
+    await complete();
+    await page.locator('[id="items.0.unitPrice"]').fill('100');
+    const before = (await saved()).value;
+    const id = crypto.randomUUID(), itemId = crypto.randomUUID();
+    let value = { id, name: '茶歇套餐', version: 1, originalAmountCents: 1000, memberAmountCents: null,
+      items: [{ itemId, imageId: crypto.randomUUID(), name: '原款点心', productType: 'OTHER', quantity: 1,
+        unitPriceCents: 1000, memberPriceCents: null, attributes: {} }] };
+    let detailReads = 0;
+    const images = [];
+    await context.route('**/api/order-packages?*', route => route.fulfill({ json: { success: true,
+      data: { items: value ? [value] : [], total: value ? 1 : 0, page: 1, size: 20 } } }));
+    await context.route(`**/api/order-packages/${id}`, async route => {
+      detailReads++;
+      if (detailReads === 2 && ['timeout', 'cancelled', 'offline'].includes(change)) await pending.promise;
+      await (value ? route.fulfill({ json: { success: true, data: value } })
+        : route.fulfill({ status: 404, json: { success: false, code: 'PACKAGE_NOT_FOUND' } })).catch(() => {});
+    });
+    await context.route(`**/api/order-packages/${id}/items/*/images/*`, route => {
+      images.push(route.request().url());
+      return route.fulfill({ contentType: 'image/png', body: png });
+    });
+    if (change === 'cancelled') {
+      await context.route('**/api/orders/stream', async route => {
+        await sendEvent.promise;
+        await route.fulfill({ contentType: 'text/event-stream',
+          body: `event: package.changed\ndata: ${JSON.stringify({ packageId: id })}\n\n` }).catch(() => {});
+      });
+      await page.reload();
+    }
+    await page.getByRole('button', { name: '导入套餐', exact: true }).click();
+    await page.locator('.package-picker select').selectOption(id);
+    await page.getByRole('button', { name: '带入商品', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '确认带入套餐' });
+    await dialog.getByText('原款点心', { exact: true }).waitFor();
+    const confirm = dialog.getByRole('button', { name: '确认带入', exact: true });
+    if (change === 'deleted') {
+      value = null;
+      await confirm.click();
+      await dialog.waitFor({ state: 'detached' });
+      await page.getByText(/所选套餐已删除或不可用/).waitFor();
+    } else if (change === 'updated') {
+      value = { ...value, version: 2, originalAmountCents: 2500,
+        items: [{ ...value.items[0], name: '新版点心', imageId: crypto.randomUUID(), unitPriceCents: 2500 }] };
+      await confirm.click();
+      await dialog.getByText('新版点心', { exact: true }).waitFor();
+      await dialog.getByRole('alert').filter({ hasText: '套餐已更新' }).waitFor();
+    } else if (change === 'redacted') {
+      value = { ...value, originalAmountCents: null, items: [{ ...value.items[0], unitPriceCents: null }] };
+      await confirm.click();
+      await dialog.getByRole('alert').filter({ hasText: '套餐已更新' }).waitFor();
+      await dialog.getByRole('alert').filter({ hasText: '核对报价' }).waitFor();
+      assert.equal(await confirm.isDisabled(), true);
+    } else {
+      if (change === 'timeout' || change === 'offline') await page.clock.install();
+      if (change === 'offline') await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+      await confirm.click();
+      await until(() => detailReads === 2);
+      if (change === 'timeout' || change === 'offline') {
+        await page.clock.fastForward(30_001);
+        await dialog.getByRole('alert').filter({ hasText: '读取超时' }).waitFor();
+      } else {
+        sendEvent.resolve();
+        await dialog.getByRole('alert').filter({ hasText: '套餐读取已取消' }).waitFor();
+      }
+      pending.resolve();
+      if (change === 'offline') {
+        assert.equal(await dialog.getByRole('button', { name: '取消', exact: true }).isEnabled(), true);
+        await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        await page.clock.runFor(100);
+        assert.equal(detailReads, 2);
+      }
+    }
+    assert.deepEqual((await saved()).value, before);
+    assert.deepEqual(images, []);
+    if (change !== 'deleted' && change !== 'redacted') {
+      await confirm.click();
+      await dialog.waitFor({ state: 'detached' });
+      assert.equal(detailReads, 3);
+      assert.equal((await saved()).value.items.at(-1).name, value.items[0].name);
+      assert.equal(await page.locator('#totalAmount').inputValue(), change === 'updated' ? '125.00' : '110.00');
+      assert.equal(images.length, 1);
+      assert.ok(images[0].endsWith(value.items[0].imageId));
+    }
+    assert.deepEqual(errors, []);
+  } finally { pending.resolve(); sendEvent.resolve(); await context.close(); }
+});
+
 test('汇总订单详情隐藏手填金额入口，编辑商品单价后采用服务器金额', async () => {
   const { context, page, model, complete, errors } = await createOrderFixture(browser, base);
   try {

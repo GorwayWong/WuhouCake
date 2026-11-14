@@ -46,6 +46,27 @@ class EmployeeAccountTest {
         assertEquals(0, employee.rename("新昵称", now).credentialVersion());
         assertEquals(1, employee.replacePassword("newhash", true, now).credentialVersion());
     }
+    @Test void removingStoreManagerRevokesAdministrationEvenWithOnlyLegacyJobsLeft() {
+        var legacyJobs = Set.of(JobRole.FRONT_DESK);
+        var employee = EmployeeAccount.create(UUID.randomUUID(), "0002", "前台", legacyJobs, SystemRole.STAFF, "hash", now);
+        var manager = employee.reviseProfile("前台", Set.of(JobRole.FRONT_DESK, JobRole.STORE_MANAGER), 1, now);
+        assertEquals(SystemRole.SUPER_ADMIN, manager.systemRole());
+        assertEquals("LAST_ADMINISTRATOR", assertThrows(IdentityFailure.class,
+                () -> manager.reviseProfile("前台", legacyJobs, 1, now)).code());
+        for (var remaining : Set.of(legacyJobs, Set.of(JobRole.MANAGER))) {
+            var demoted = manager.reviseProfile("前台", remaining, 2, now);
+            assertEquals(remaining, demoted.jobRoles());
+            assertEquals(SystemRole.STAFF, demoted.systemRole());
+            assertEquals(manager.credentialVersion() + 1, demoted.credentialVersion());
+        }
+    }
+    @Test void legacyAdministratorKeepsExistingIdentityWhenEditingOnlyLegacyJobs() {
+        var administrator = account(SystemRole.SUPER_ADMIN);
+        var renamed = administrator.reviseProfile("新昵称", administrator.jobRoles(), 1, now);
+        assertEquals("新昵称", renamed.nickname());
+        assertEquals(SystemRole.SUPER_ADMIN, renamed.systemRole());
+        assertEquals(administrator.credentialVersion(), renamed.credentialVersion());
+    }
     @Test void unicodeLengthsAndInputConstraintsAreEnforced() {
         assertEquals("🍰".repeat(40), AccountValues.nickname("🍰".repeat(40)));
         assertThrows(IdentityFailure.class, () -> AccountValues.nickname("🍰".repeat(41)));

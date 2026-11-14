@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isCancelledError, QueryClient, QueryObserver } from '@tanstack/react-query';
@@ -242,10 +243,10 @@ test('并发 401 只刷新一次；SSE 分块 UTF-8、断线重连与清理不�
   globalThis.fetch = async (input, init) => {
     const path = String(input);
     if (path === '/api/auth/csrf') return envelope({ headerName: 'X-XSRF-TOKEN' });
-    if (path === '/api/auth/login') return envelope({ accessToken: 'old', expiresIn: 900, passwordChangeRequired: false });
+    if (path === '/api/auth/login') return envelope({ accessToken: testJwt('old'), expiresIn: 900, passwordChangeRequired: false });
     if (path === '/api/auth/logout') return envelope(null);
-    if (path === '/api/auth/refresh') { refreshes++; await new Promise(resolve => setTimeout(resolve, 20)); return envelope({ accessToken: 'new', expiresIn: 900, passwordChangeRequired: false }); }
-    if (path === '/api/me') return new Headers(init?.headers).get('Authorization') === 'Bearer old' ? Response.json({ success: false, code: 'AUTHENTICATION_FAILED' }, { status: 401 }) : envelope({ nickname: '员工' });
+    if (path === '/api/auth/refresh') { refreshes++; await new Promise(resolve => setTimeout(resolve, 20)); return envelope({ accessToken: testJwt('new'), expiresIn: 900, passwordChangeRequired: false }); }
+    if (path === '/api/me') return new Headers(init?.headers).get('Authorization') === `Bearer ${testJwt('old')}` ? Response.json({ success: false, code: 'AUTHENTICATION_FAILED' }, { status: 401 }) : envelope({ nickname: '员工' });
     if (path === '/api/orders/conflict') { writes++; return Response.json({ success: false, code: 'CONCURRENT_MODIFICATION' }, { status: 409 }); }
     if (path === '/api/orders/stream') {
       connections++; live++; maxLive = Math.max(maxLive, live);

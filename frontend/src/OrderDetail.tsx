@@ -268,12 +268,13 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       if (['information', '', 'items', 'images-only'].includes(variables.path)) {
         try { if (updated) await imageActions.current?.commit(updated); }
         catch {
-          setMessage(variables.keepEditing ? '图片未保存，编辑内容已保留。请在图片区核对。' : '资料已保存，部分图片未上传。请在图片区重试。');
+          setMessage(variables.keepEditing && variables.path === 'images-only' ? '图片未保存，编辑内容已保留。请在图片区核对。' : '资料已保存，部分图片未上传。请在图片区重试。');
           if (!variables.keepEditing) setEditing(null);
           return;
         }
-        if (variables.keepEditing) setMessage('');
-        else setEditing(null);
+        if (!variables.keepEditing) setEditing(null);
+        else if (variables.path === 'images-only') setMessage('');
+        else setMessage('其他资料已保存，金额输入已保留。');
       }
       if (variables.noteRequest) removeNoteFromView(variables.noteRequest.requestId);
       if (variables.path === 'cancel') { setReason(''); setShowCancel(false); }
@@ -413,16 +414,22 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const images = <OrderImages key={id} order={order} itemId={currentProduct?.itemId} accountId={account?.accountId || ''} canUpload={hasPermissions(account, 'ORDER_IMAGE_UPLOAD')} canDelete={hasPermissions(account, 'ORDER_IMAGE_DELETE')} productionView={access.productionView} compact ownerSession={imageSessionReady ? imageSession.current : undefined} editSession={editing ? imageSession.current : undefined} editActions={imageActions} recover={!readOnly && hasPermissions(account, 'ORDER_EDIT') ? session => { imageSession.current = session; setEditing({ kind: 'information', order }); mutation.reset(); } : undefined} blocked={mutation.isPending || discardingImages || Boolean(editing?.kind === 'item' && !editing.itemId) || exportWriting || readOnly} onDraftChange={imageDraftChange} onWritingChange={imageWritingChange} />;
   const paid = order.paymentStatus === 'PAID';
   const canRecordPayment = hasPermissions(account, 'ORDER_AMOUNT_READ', 'ORDER_PAYMENT_UPDATE');
+  const editingManualAmount = order.pricingMode !== 'ITEM_SUM' && hasPermissions(account, 'ORDER_EDIT')
+    && (editing?.kind === 'information' || editing?.kind === 'amount');
+  const reversalBlocked = editingManualAmount
+    ? readOnly || discardingImages || mutation.isPending || imageWriting || exportWriting
+    : blocked;
   const updatePayment = (paymentMethod: string) => mutation.mutate({
     path: 'payment-status', method: 'PATCH',
     body: { expectedVersion: order.version, paymentStatus: paymentMethod === 'UNPAID' ? 'UNPAID' : 'PAID', paymentMethod },
   });
-  const paymentPanel = access.amounts && <section className="panel payment-panel"><div className="section-heading payment-heading"><h2>金额与付款</h2>{hasPermissions(account, 'ORDER_EDIT') && order.pricingMode !== 'ITEM_SUM' && !paid && !editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'amount', order }); }}><NotePencil />修改金额</button>}</div>{editing?.kind === 'amount' && <div className="amount-editor"><InformationEdit amountOnly hasStagedImages={imageDraft} initial={editing.order} latest={order} busy={mutation.isPending || imageWriting || discardingImages || readOnly} error={mutation.variables?.path === 'information' ? mutation.error : null} onDirtyChange={editorDirtyChange} onSave={request => mutation.mutateAsync({ path: 'information', method: 'PATCH', body: request })} onSaveUnchanged={saveUnchanged} onCancel={() => void cancelEdit()} /></div>}<div><dl className="order-quoted-prices"><div><dt>原价</dt><dd>{money(order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null))}</dd></div><div><dt>会员价</dt><dd>{money(order.memberAmountCents ?? null)}</dd></div></dl><p className="muted">成交金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong>{order.paymentStatus === 'PAID' && <p className="form-help">付款时间：{order.paidAt ? businessTime(order.paidAt) : '历史付款时间未记录'}</p>}</div>{access.amounts && <Payment status={order.paymentStatus} />}<p>支付方式：{paymentMethodLabel(order.paymentMethod, order.paymentStatus)}</p>{paid && <div className="notice payment-lock">
+  const paymentPanel = access.amounts && <section className="panel payment-panel"><div className="section-heading payment-heading"><h2>金额与付款</h2>{hasPermissions(account, 'ORDER_EDIT') && order.pricingMode !== 'ITEM_SUM' && !paid && !editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'amount', order }); }}><NotePencil />修改金额</button>}</div>{editing?.kind === 'amount' && <div className="amount-editor"><InformationEdit amountOnly hasStagedImages={imageDraft} initial={editing.order} latest={order} busy={mutation.isPending || imageWriting || discardingImages || readOnly} error={mutation.variables?.path === 'information' ? mutation.error : null} onDirtyChange={editorDirtyChange} onSave={(request, keepEditing) => mutation.mutateAsync({ path: 'information', method: 'PATCH', body: request, keepEditing })} onSaveUnchanged={saveUnchanged} onCancel={() => void cancelEdit()} /></div>}<div><dl className="order-quoted-prices"><div><dt>原价</dt><dd>{money(order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null))}</dd></div><div><dt>会员价</dt><dd>{money(order.memberAmountCents ?? null)}</dd></div></dl><p className="muted">成交金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong>{order.paymentStatus === 'PAID' && <p className="form-help">付款时间：{order.paidAt ? businessTime(order.paidAt) : '历史付款时间未记录'}</p>}</div>{access.amounts && <Payment status={order.paymentStatus} />}<p>支付方式：{paymentMethodLabel(order.paymentMethod, order.paymentStatus)}</p>{paid && <div className="notice payment-lock">
       <p>{order.status === 'CANCELLED' ? '此订单取消前已登记付款，请在线下核对款项。' : '已登记付款，请先撤销付款登记再改价。'}</p>
-      {canRecordPayment && <button type="button" className="secondary" disabled={blocked} onClick={() => {
+      {canRecordPayment && <button type="button" className="secondary" disabled={reversalBlocked} onClick={() => {
         if (window.confirm('撤销后订单将改为未付款，当前付款时间会清除。确定撤销付款登记？')) updatePayment('UNPAID');
       }}>撤销付款登记</button>}
     </div>}
+    {editingManualAmount && mutation.variables?.path === 'payment-status' && <ErrorNotice error={mutation.error} />}
     {canRecordPayment && <OrderPaymentEditor key={order.version} order={order} disabled={blocked} save={updatePayment} />}
   </section>;
   return <div className={`detail-page ${access.productionView ? 'production-detail' : ''}`}>
@@ -477,7 +484,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     )}
     {frontDeskView && <section className="panel front-order-information" aria-labelledby="front-order-information-title">
       <div className="section-heading"><h2 id="front-order-information-title">订单信息</h2>{!editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'information', order }); }}><NotePencil />编辑资料</button>}</div>
-      {editing?.kind === 'information' ? <InformationEdit canEditAmount={access.amounts} hasStagedImages={imageDraft} initial={editing.order} latest={order} busy={mutation.isPending || imageWriting || discardingImages || readOnly} error={mutation.variables?.path === 'information' ? mutation.error : null} onDirtyChange={editorDirtyChange} onSave={request => mutation.mutateAsync({ path: 'information', method: 'PATCH', body: request })} onSaveUnchanged={saveUnchanged} onCancel={() => void cancelEdit()} /> : (
+      {editing?.kind === 'information' ? <InformationEdit canEditAmount={access.amounts} hasStagedImages={imageDraft} initial={editing.order} latest={order} busy={mutation.isPending || imageWriting || discardingImages || readOnly} error={mutation.variables?.path === 'information' ? mutation.error : null} onDirtyChange={editorDirtyChange} onSave={(request, keepEditing) => mutation.mutateAsync({ path: 'information', method: 'PATCH', body: request, keepEditing })} onSaveUnchanged={saveUnchanged} onCancel={() => void cancelEdit()} /> : (
         <dl className="front-order-grid">
           <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
           <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>

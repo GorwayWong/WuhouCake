@@ -296,7 +296,8 @@ export function informationDraft(order: Detail): InformationDraft {
     memberAmount: order.memberAmountCents === undefined ? undefined : order.memberAmountCents === null ? '' : exactYuan(order.memberAmountCents),
     totalAmount: cents == null ? '' : `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`, creditedEmployeeId: order.creditedEmployee?.accountId || '' };
 }
-export function informationRequest(original: Detail, draft: InformationDraft, baseline = original): { request: InformationRequest | null; errors: Record<string, string> } {
+export function informationRequest(original: Detail, draft: InformationDraft, baseline = original,
+    initialFinishMode?: FinishTimeMode): { request: InformationRequest | null; errors: Record<string, string> } {
   const initial = informationDraft(original), current = informationDraft(baseline);
   const changes: InformationChanges = {}, errors: Record<string, string> = {};
   const methodError = orderingMethodError(draft);
@@ -327,7 +328,7 @@ export function informationRequest(original: Detail, draft: InformationDraft, ba
   }
   for (const field of ['plannedFinishAt'] as const) {
     // 未改动的分钟输入不回写，保留服务端秒与微秒精度。
-    const resetToAutomatic = draft.finishTimeMode === 'AUTO' && initial.finishTimeMode !== 'AUTO';
+    const resetToAutomatic = draft.finishTimeMode === 'AUTO' && (initialFinishMode ?? initial.finishTimeMode) !== 'AUTO';
     if (!resetToAutomatic && (draft[field] === initial[field] || draft[field] === current[field])) continue;
     if (!draft[field]) changes[field] = null;
     else {

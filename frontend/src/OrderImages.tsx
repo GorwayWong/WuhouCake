@@ -80,7 +80,8 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
       remember([]);
       await client.invalidateQueries({ queryKey: stagedKey });
       await client.invalidateQueries({ queryKey: localKey });
-      await upload((await imageQueue(accountId, id)).filter(row => row.requestId === scope.requestId), true);
+      const uploaded = await upload((await imageQueue(accountId, id)).filter(row => row.requestId === scope.requestId), true);
+      if (!uploaded) throw new Error('部分图片未上传');
     },
     discard: async () => {
       if (!selected.length && !manifestError) return;
@@ -108,7 +109,8 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
     await Promise.all([client.invalidateQueries({ queryKey: localKey }), synchronize(client, id)]);
   }
   async function upload(rows: QueuedImage[], savingEdit = false) {
-    if (active.current || !savingEdit && (blocked || editSession) || !canUpload || !rows.length) return;
+    if (!rows.length) return true;
+    if (active.current || !savingEdit && (blocked || editSession) || !canUpload) return false;
     const controller = new AbortController(); active.current = controller; setSaving(true); onWritingChange(true); setError('');
     let failed = false;
     const run = async () => {
@@ -132,11 +134,12 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
       if (navigator.locks) await navigator.locks.request(`wuhou:images:${accountId}:${id}`, { signal: controller.signal }, run);
       else await run();
       if (alive.current && !controller.signal.aborted) setNotice(failed ? '' : '图片已上传。');
-    } catch (failure) { if (alive.current && !controller.signal.aborted) setError(localImageError(failure)); }
+    } catch (failure) { failed = true; if (alive.current && !controller.signal.aborted) setError(localImageError(failure)); }
     finally {
       try { if (alive.current) await refresh(); }
       finally { if (active.current === controller) { active.current = null; if (alive.current) { setSaving(false); onWritingChange(false); } } }
     }
+    return !failed && !controller.signal.aborted;
   }
   useEffect(() => {
     const pending = (local.data || []).filter(image => !image.error && !attempted.current.has(image.key));

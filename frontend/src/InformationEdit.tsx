@@ -1,4 +1,4 @@
-import { changePickupTime, changeFinishTime, pickupTimeLabel, pickupInstant, pickupDate, hasLegacyTimeConflict } from './orderTimes';
+import { changePickupTime, changeFinishTime, finishMode, pickupTimeLabel, pickupInstant, pickupDate, hasLegacyTimeConflict } from './orderTimes';
 import { FinishTimeHelp } from './FinishTimeHelp';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -28,9 +28,11 @@ export function InformationSummary({ order, includeAmount = false }: { order: De
 function Field({ name, label, error, children, wide = false }: { name: string; label: string; error?: string; children: ReactNode; wide?: boolean }) {
   return <label className={wide ? 'form-wide' : undefined} htmlFor={`edit-${name}`}>{label}{children}{error && <span className="field-error" id={`edit-${name}-error`}>{error}</span>}</label>;
 }
-export function InformationEdit({ initial, latest, busy, error, onSave, onCancel, onDirtyChange, onSaveUnchanged, amountOnly = false, canEditAmount = true, hasStagedImages = false }: {
-  amountOnly?: boolean; canEditAmount?: boolean; hasStagedImages?: boolean; initial: Detail; latest: Detail; busy: boolean; error: unknown; onSave: (request: InformationRequest) => Promise<unknown>; onSaveUnchanged?: (keepEditing?: boolean) => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
+export function InformationEdit({ initial: opened, latest, busy, error, onSave, onCancel, onDirtyChange, onSaveUnchanged, amountOnly = false, canEditAmount = true, hasStagedImages = false }: {
+  amountOnly?: boolean; canEditAmount?: boolean; hasStagedImages?: boolean; initial: Detail; latest: Detail; busy: boolean; error: unknown; onSave: (request: InformationRequest, keepEditing: boolean) => Promise<Detail | null>; onSaveUnchanged?: (keepEditing?: boolean) => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
 }) {
+  const [startingPoint, setStartingPoint] = useState(() => ({ order: opened, finishMode: finishMode(informationDraft(opened)) }));
+  const initial = startingPoint.order;
   canEditAmount = canEditAmount && initial.pricingMode !== 'ITEM_SUM';
   busy = busy || Boolean(latest.deletion || latest.deleted);
   const [draft, setDraft] = useState(() => informationDraft(initial));
@@ -39,18 +41,21 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
   const [errors, setErrors] = useState<Record<string, string>>({});
   const attemptedVersion = useRef(initial.version);
   const form = useRef<HTMLFormElement>(null);
-  const request = (baseline = initial) => amountOnly ? amountInformationRequest(initial, draft.totalAmount, baseline, draft.memberAmount ?? '') : informationRequest(initial, draft, baseline);
+  const request = (baseline = initial) => amountOnly ? amountInformationRequest(initial, draft.totalAmount, baseline, draft.memberAmount ?? '') : informationRequest(initial, draft, baseline, startingPoint.finishMode);
   const pending = request();
   const amountLocked = latest.paymentStatus === 'PAID';
-  const initialDraft = informationDraft(initial);
-  const amountDraftChanged = draft.totalAmount !== initialDraft.totalAmount || (draft.memberAmount || '') !== (initialDraft.memberAmount || '');
+  const initialDraft = { ...informationDraft(initial), finishTimeMode: startingPoint.finishMode };
+  const originalChanged = draft.totalAmount !== initialDraft.totalAmount;
+  const memberChanged = (draft.memberAmount || '') !== (initialDraft.memberAmount || '');
+  const amountDraftChanged = originalChanged || memberChanged;
   const saveOtherFields = amountLocked && !amountOnly && amountDraftChanged;
   const result = amountLocked && !amountOnly
-    ? informationRequest(initial, { ...draft, totalAmount: initialDraft.totalAmount, memberAmount: initialDraft.memberAmount }, baseline ?? initial)
+    ? informationRequest(initial, { ...draft, totalAmount: initialDraft.totalAmount, memberAmount: initialDraft.memberAmount }, baseline ?? initial, startingPoint.finishMode)
     : request(baseline ?? initial);
   const onlyLockedAmount = amountLocked && (amountOnly || (amountDraftChanged && !result.request && !Object.keys(result.errors).length));
   const saveImagesOnly = onlyLockedAmount && hasStagedImages && Boolean(onSaveUnchanged);
-  const dirty = Boolean(pending.request) || Boolean(Object.keys(pending.errors).length && JSON.stringify(draft) !== JSON.stringify(informationDraft(initial)));
+  const dirty = (canEditAmount && amountDraftChanged) || Boolean(pending.request)
+    || Boolean(Object.keys(pending.errors).length && JSON.stringify(draft) !== JSON.stringify(initialDraft));
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   const stale = !baseline || latest.version > baseline.version;
@@ -73,7 +78,16 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
     }
     if (!result.request) { try { if (onSaveUnchanged) await onSaveUnchanged(); else onCancel(); } catch { /* 保存错误由父级操作提示展示。 */ } return; }
     attemptedVersion.current = result.request.expectedVersion;
-    try { await onSave(result.request); }
+    try {
+      const saved = await onSave(result.request, saveOtherFields);
+      if (saved && saveOtherFields) {
+        const next = informationDraft(saved);
+        const mode = finishMode(draft);
+        setStartingPoint({ order: saved, finishMode: mode }); setBaseline(saved); setConflict(false); setErrors({});
+        setDraft({ ...next, finishTimeMode: mode, totalAmount: originalChanged ? draft.totalAmount : next.totalAmount,
+          memberAmount: memberChanged ? draft.memberAmount : next.memberAmount });
+      }
+    }
     catch (error) {
       if (error instanceof ApiError && error.code === 'CONCURRENT_MODIFICATION') { setConflict(true); setBaseline(null); }
     }
@@ -93,7 +107,7 @@ export function InformationEdit({ initial, latest, busy, error, onSave, onCancel
       {canEditAmount && (initial.paymentStatus !== 'PAID' || !amountLocked || amountDraftChanged) && <div className="information-group"><h3>金额信息</h3><div className="create-grid order-pricing-fields"><Field name="totalAmount" label="原价（元）" error={amountLocked ? undefined : errors.totalAmount}><input {...props('totalAmount')} disabled={amountLocked} autoFocus={amountOnly} inputMode="decimal" value={draft.totalAmount} placeholder="未填写" onChange={event => change({ ...draft, totalAmount: event.target.value })} /></Field><Field name="memberAmount" label="会员价（元）" error={amountLocked ? undefined : errors.memberAmount}><input {...props('memberAmount')} disabled={amountLocked} inputMode="decimal" value={draft.memberAmount || ''} placeholder="未填写" onChange={event => change({ ...draft, memberAmount: event.target.value })} /></Field></div><p className="form-help">会员价优先作为成交金额，未填则使用原价。留空为未报价，0 为零元。</p></div>}
       {canEditAmount && amountLocked && <p className="notice" role="status">已登记付款，金额暂不能保存。请先撤销付款登记再改价。{saveOtherFields && !onlyLockedAmount && '本次仅保存其他资料，金额修改不提交。'}</p>}
       <ErrorNotice error={error} />{creationResultUnknown(error) && <p className="notice error" role="alert">{amountOnly ? '金额保存结果待确认，请查看当前金额后再保存。' : '资料保存结果待确认，请查看当前订单后再保存。'}</p>}
-      {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已更新，输入已保留。核对最新内容后再保存。' : '已核对，请确认修改后保存。'}{!baseline && !canReview && '请先刷新订单。'}</p><h3>最新资料（用于核对）</h3>{amountOnly ? <p>当前订单金额：{money(latest.totalAmountCents)}</p> : <InformationSummary order={latest} includeAmount />}{stale && <button type="button" className="secondary" disabled={!canReview} onClick={() => { setBaseline(latest); setConflict(true); }}>核对后继续编辑</button>}</div>}
+    {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已更新，输入已保留。核对最新内容后再保存。' : '已核对，请确认修改后保存。'}{!baseline && !canReview && '请先刷新订单。'}</p><h3>最新资料（用于核对）</h3>{amountOnly ? <p>当前订单金额：{money(latest.totalAmountCents)}</p> : <InformationSummary order={latest} includeAmount />}{stale && <button type="button" className="secondary" disabled={!canReview} onClick={() => { setBaseline(latest); setConflict(true); }}>核对后继续编辑</button>}</div>}
       <div className="actions"><button className="primary" disabled={busy || stale || (onlyLockedAmount && !saveImagesOnly)}>{busy ? '正在保存…' : saveImagesOnly ? '仅保存图片' : saveOtherFields && !onlyLockedAmount ? '仅保存其他资料' : '保存修改'}</button><button className="secondary" type="button" onClick={onCancel}>取消</button></div>
     </fieldset>
   </form>;

@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { isCancelledError, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError, errorText, fetchPackageImage } from './api';
+import { api, ApiError, errorText, fetchPackageImage, readQuery } from './api';
 import { Select } from './Select';
-import { isEmptyPackageDraft, packageImagePath, packageSummary, previewPackage } from './orderPackages';
+import { isEmptyPackageDraft, packageImagePath, packageSummary, previewPackage, samePackageContent } from './orderPackages';
 import type { OrderPackage } from './orderPackages';
 import type { OrderDraft } from './orderForm';
 import { saveDraftImageBatch, removeDraftImage, localImageError } from './draftImages';
@@ -100,10 +100,32 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
     const before = latest.current.getDraft();
     if (before !== draft) { setReviewError('草稿已变化，请核对更新后的预览。'); return; }
     const controller = new AbortController(); active.current = controller;
+    const key = ['order-packages', 'detail', review.id]; readKey.current = key;
     setBusy(true); onImageWritingChange(true); setReviewError('');
-    try { await apply(review, preview, before, controller); }
-    catch (failure) { if (!controller.signal.aborted) setReviewError(failure instanceof ApiError || !(failure instanceof Error) ? errorText(failure) : failure.message); }
-    finally { active.current = null; setBusy(false); onImageWritingChange(false); }
+    try {
+      const current = await client.fetchQuery({ queryKey: key,
+        queryFn: ({ signal }) => readQuery<OrderPackage>(`/order-packages/${review.id}`, signal),
+        staleTime: 0, gcTime: 0, networkMode: 'always', retry: false });
+      if (controller.signal.aborted) return;
+      if (latest.current.getDraft() !== before) throw new Error('草稿已有变化，请核对更新后的预览。');
+      if (current.version !== review.version || !samePackageContent(current, review)) {
+        setReview(current); setMissingPackage(''); setReviewError('套餐已更新，请核对新版内容后再次确认。');
+        return;
+      }
+      await apply(current, previewPackage(before, current, missingOrder, missingPackage), before, controller);
+    } catch (failure) {
+      if (controller.signal.aborted) return;
+      if (failure instanceof ApiError && failure.status === 404 && failure.code === 'PACKAGE_NOT_FOUND') {
+        setReview(null); setSelected(''); setMessage('所选套餐已删除或不可用，已填写商品保持不变。');
+        void query.refetch();
+      } else if (isCancelledError(failure)) {
+        setReviewError('套餐读取已取消，请重新核对后确认。');
+      } else {
+        setReviewError(failure instanceof ApiError || !(failure instanceof Error) ? errorText(failure) : failure.message);
+      }
+    } finally {
+      if (active.current === controller) { active.current = null; readKey.current = null; setBusy(false); onImageWritingChange(false); }
+    }
   }
   return <div className="package-picker-section">
     <div className="section-heading order-create-products-heading">
@@ -134,7 +156,7 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       <dl className="package-amount-preview"><div><dt>订单原价</dt><dd>{money(preview.beforeOriginal)} → <strong>{money(preview.original)}</strong></dd></div>
         <div><dt>订单会员价</dt><dd>{money(preview.beforeMember)} → <strong>{money(preview.member)}</strong></dd></div></dl></>}
       {preview?.resetPayment && <p className="notice">成交金额变化后将改为未付，请核对收款。</p>}
-      {(reviewError || previewError) && <p className="field-error" role="alert">{reviewError || previewError}</p>}
+      {(reviewError || previewError) && <p className="field-error" role="alert">{[reviewError, previewError].filter(Boolean).join(' ')}</p>}
       <div className="package-actions"><button type="button" className="secondary" disabled={busy} onClick={() => setReview(null)}>取消</button>
         <button type="button" className="primary" disabled={busy || disabled || !preview} onClick={() => void confirm()}>{busy ? '正在带入…' : '确认带入'}</button></div>
     </PackageDialog>}

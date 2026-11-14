@@ -55,11 +55,15 @@ export function submissionDirty(draft: SubmissionDraft, initial: SubmissionDraft
 export function draftFromSubmission(submission: Submission): SubmissionDraft {
   const review = submission.reviewed, content = review?.content || submission.original;
   const amount = (value: number | null | undefined) => value == null ? '' : exactYuan(value);
-  return { ...newSubmissionDraft(), ...content, memberPhone: content.memberPhone || '', address: content.address || '',
+  return { ...draftFromSubmissionContent(content),
     requestedReceiveAt: localTime(review?.plannedHandoffAt || content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
     creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null), plannedFinishAt: localTime(review?.plannedFinishAt || null) || (!review ? defaultFinishTime(localTime(content.requestedReceiveAt)) : ''), finishTimeMode: review?.plannedFinishAt ? 'MANUAL' : 'AUTO',
     ...(review ? { originalTime: { requestedReceiveAt: content.requestedReceiveAt, plannedHandoffAt: review.plannedHandoffAt, plannedFinishAt: review.plannedFinishAt || null,
-      pickupTime: localTime(review.plannedHandoffAt || content.requestedReceiveAt) } } : {}),
+      pickupTime: localTime(review.plannedHandoffAt || content.requestedReceiveAt) } } : {}) };
+}
+export function draftFromSubmissionContent(content: SubmissionContent): SubmissionDraft {
+  return { ...newSubmissionDraft(), ...content, memberPhone: content.memberPhone || '', address: content.address || '',
+    requestedReceiveAt: localTime(content.requestedReceiveAt),
     items: content.items.map(item => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: item.itemId || randomUUID(), quantity: String(item.quantity),
       attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: '', ...item.attributes },
       defaultSpecifications: [], unitPrice: '', memberPrice: '' })).map(item => item.productType === 'OTHER' ? asOtherDraft(item) : item) };

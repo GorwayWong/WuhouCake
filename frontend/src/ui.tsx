@@ -26,7 +26,7 @@ export function Payment({ status }: { status: string | null }) {
 export function Brand() { return <a className="brand" href="#" aria-label="午逅 Story 工作台"><img src="/brand.jpg" alt="午逅 Story" /></a>; }
 export function ErrorNotice({ error, retry }: { error: unknown; retry?: () => void }) {
   if (!error) return null;
-  return <div className="notice error" role="alert">{errorText(error)}{retry && <button className="text-button" onClick={retry}>重试</button>}</div>;
+  return <div className="notice error" role="alert">{errorText(error)}{retry && <button type="button" className="text-button" onClick={retry}>重试</button>}</div>;
 }
 export function Empty({ children }: { children: ReactNode }) { return <div className="empty"><CalendarBlank size={32} /><p>{children}</p></div>; }
 export function Loading() { return <div className="loading" role="status">正在读取最新数据…</div>; }

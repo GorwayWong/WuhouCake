@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { createRequire } from 'node:module';
@@ -20,7 +21,7 @@ async function fixture() {
     const req = route.request(), path = new URL(req.url()).pathname;
     const ok = data => route.fulfill({ json: { success: true, data } });
     if (path === '/api/auth/csrf') return route.fulfill({ headers: { 'set-cookie': 'XSRF-TOKEN=test; Path=/' }, json: { success: true, data: { headerName: 'X-XSRF-TOKEN' } } });
-    if (path === '/api/auth/refresh' || path === '/api/auth/login') return ok({ accessToken: 'test-token', expiresIn: 3600, passwordChangeRequired: false });
+    if (path === '/api/auth/refresh' || path === '/api/auth/login') return ok({ accessToken: testJwt('test-token'), expiresIn: 3600, passwordChangeRequired: false });
     if (path === '/api/auth/logout') return ok(null);
     if (path === '/api/me') return ok({ accountId: model.account, nickname: model.account, employeeNumber: model.account, jobRoles: ['FRONT_DESK'], access: { permissions: model.permitted ? ['ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ', ...model.extraPermissions] : [], uiCapabilities: [] } });
     if (path === '/api/orders/stream') return route.fulfill({ status: 503 });
@@ -621,7 +622,7 @@ test('客户扫码响应丢失后用原请求重试，员工确认时暂存并�
       if (request.method() === 'POST') {
         attempts.push({ key: request.headers()['idempotency-key'], content: request.postDataJSON() });
         if (attempts.length === 1) return route.abort('failed');
-        return route.fulfill({ status: 201, json: { success: true, data: { submissionNo: 'FTEST' } } });
+        return route.fulfill({ status: 201, json: { success: true, data: { submissionId: '20000000-0000-4000-8000-000000000011', submissionNo: 'F20000000-0000-4000-8000-000000000011' } } });
       }
       return route.fulfill({ json: { success: true, data: { ownerName: '测试客服' } } });
     });
@@ -632,7 +633,7 @@ test('客户扫码响应丢失后用原请求重试，员工确认时暂存并�
     await page.locator('[id="items.0.size"]').fill('8');
     assert.equal(await page.locator('input[name="plannedHandoffAt"], input[name="plannedFinishAt"]').count(), 0);
     await page.getByRole('button', { name: '提交预订', exact: true }).click();
-    await page.getByRole('status').filter({ hasText: '结果未确认，输入已保留' }).waitFor();
+    await page.getByRole('status').filter({ hasText: '原提交结果仍待确认，输入已保留' }).waitFor();
     assert.equal(attempts.length, 1);
     assert.equal(await page.getByLabel('联系电话').inputValue(), '13800000000');
     assert.equal(await page.getByLabel('联系电话').isDisabled(), true);

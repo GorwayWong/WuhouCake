@@ -110,9 +110,34 @@ export function CustomerSubmissions({ account, onWritingChange }: { account: Acc
     </section><details className="panel entry-settings"><summary>填单二维码管理</summary><EntryManager account={account} onWritingChange={onWritingChange} /></details>
   </div>;
 }
-export function CustomerSubmissionDetail({ id, onDirtyChange, onWritingChange }: { id: string; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
-  const query = useQuery({ queryKey: ['customer-submission', id], queryFn: ({ signal }) => readQuery<SubmissionDetail>(`/customer-submissions/${id}`, signal), refetchInterval: 15000 });
-  return <><a className="back-link" href="#/customer-submissions"><ArrowLeft />返回客户填单</a><ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.data ? <SubmissionEditor key={id} initial={query.data} latest={query.data} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} /> : query.isPending && <Loading />}</>;
+type SubmissionRead = { detail: SubmissionDetail; denied?: never } | { denied: ApiError; detail?: never };
+
+export function CustomerSubmissionDetail({ id, account, onDirtyChange, onWritingChange }: { id: string; account?: Account; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
+  return <><a className="back-link" href="#/customer-submissions"><ArrowLeft />返回客户填单</a>{!account ? <Loading />
+    : canHandleSubmissions(account) ? <SubmissionDetailQuery key={id} id={id} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />
+    : <Empty>当前账号不能查看客户填单。</Empty>}</>;
+}
+
+function SubmissionDetailQuery({ id, onDirtyChange, onWritingChange }: { id: string; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
+  const client = useQueryClient();
+  const query = useQuery({ queryKey: ['customer-submission', id], gcTime: 0, refetchInterval: 15000,
+    queryFn: async ({ signal }): Promise<SubmissionRead> => {
+      try { return { detail: await readQuery<SubmissionDetail>(`/customer-submissions/${id}`, signal) }; }
+      catch (error) {
+        // A rejected read must replace cached sensitive data. Transient failures keep the last usable result.
+        if (error instanceof ApiError && (error.status === 403 || error.status === 404)) return { denied: error };
+        throw error;
+      }
+    },
+  });
+  const deniedStatus = query.data?.denied?.status;
+  useEffect(() => {
+    if (deniedStatus === 403) void client.invalidateQueries({ queryKey: ['me'], exact: true });
+  }, [client, deniedStatus]);
+  const detail = query.data?.detail;
+  return <><ErrorNotice error={query.data?.denied ?? query.error} retry={() => void query.refetch()} />{detail
+    ? <SubmissionEditor initial={detail} latest={detail} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />
+    : query.isPending && <Loading />}</>;
 }
 function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: { initial: SubmissionDetail; latest: SubmissionDetail; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
   const client = useQueryClient(); const [baseline, setBaseline] = useState(initial); const [draft, setDraft] = useState(() => draftFromSubmission(initial.submission));
@@ -130,6 +155,8 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
   const defaultEmployee = !employeeChosen && ownerEligible ? submission.ownerId : '';
   const effectiveDraft = { ...draft, creditedEmployeeId: draft.creditedEmployeeId || defaultEmployee };
   const stale = latest.submission.version !== submission.version;
+  const detailKey = ['customer-submission', submission.id];
+  const currentDetail = () => client.getQueryData<SubmissionRead>(detailKey)?.detail;
   const itemIdConflict = error instanceof ApiError && error.code === 'SUBMISSION_ITEM_ID_CONFLICT';
   useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false); }, [dirty, onDirtyChange]);
   useEffect(() => {
@@ -137,11 +164,13 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
     return () => { mounted.current = false; onWritingChange(false); };
   }, [onWritingChange]);
   const accept = (data: SubmissionDetail) => {
+    if (!mounted.current || !currentDetail()) return false;
     const next = draftFromSubmission(data.submission); setBaseline(data); setDraft(next); setSavedDraft(JSON.stringify(next)); setEmployeeChosen(false); setErrors({});
-    client.setQueryData(['customer-submission', submission.id], data); setAcknowledge(null);
+    client.setQueryData<SubmissionRead>(detailKey, { detail: data }); setAcknowledge(null);
+    return true;
   };
   const act = async (action: 'save' | 'confirm' | 'delete') => {
-    if (writing.current) return;
+    if (writing.current || !currentDetail()) return;
     if (action === 'delete' && !window.confirm('将此填单移出待确认列表？原始内容和删除记录仍会保留。')) return;
     let body: unknown = { expectedVersion: submission.version };
     const needsSave = action === 'save' || action === 'confirm' && (dirty || !submission.reviewed || Boolean(defaultEmployee && !submission.reviewed.creditedEmployeeId));
@@ -162,10 +191,9 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
       if (action === 'confirm') {
         const saved = needsSave ? await api<SubmissionDetail>(path, { method: 'PATCH', body }) : null;
         if (saved) {
-          if (!mounted.current) return;
-          accept(saved);
+          if (!accept(saved)) return;
           await client.invalidateQueries({ queryKey: ['customer-submissions'] });
-          if (!mounted.current) return;
+          if (!mounted.current || !currentDetail()) return;
           if (saved.duplicates.some(record => record.requiresAcknowledgement)) {
             setMessage('已暂存。请核实疑似重复单后继续接单。');
             return;
@@ -179,13 +207,13 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
         data = await api<SubmissionDetail>(path, { method: action === 'save' ? 'PATCH' : 'DELETE', body });
       }
       await client.invalidateQueries({ queryKey: ['customer-submissions'] });
-      if (!mounted.current) return;
+      if (!mounted.current || !currentDetail()) return;
       if (action === 'delete') { onDirtyChange(false); window.location.hash = '#/customer-submissions'; }
-      else { accept(data); setMessage(action === 'confirm' ? '已确认并生成正式订单。' : '核对结果已保存。'); if (action === 'confirm') await synchronize(client, data.submission.orderId!); }
+      else if (accept(data)) { setMessage(action === 'confirm' ? '已确认并生成正式订单。' : '核对结果已保存。'); if (action === 'confirm') await synchronize(client, data.submission.orderId!); }
     } catch (failure) {
       if (mounted.current) {
-        setAcknowledge(null); setError(failure); await client.invalidateQueries({ queryKey: ['customer-submission', submission.id] });
-        const refreshed = client.getQueryData<SubmissionDetail>(['customer-submission', submission.id]);
+        setAcknowledge(null); setError(failure); await client.invalidateQueries({ queryKey: detailKey, exact: true });
+        const refreshed = currentDetail();
         if (mounted.current && refreshed && (action === 'confirm' && refreshed.submission.status === 'CONFIRMED' || action === 'delete' && refreshed.submission.status === 'DELETED')) {
           accept(refreshed); setError(null);
         }
@@ -206,8 +234,8 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
       const changedEmployee = value.creditedEmployeeId !== effectiveDraft.creditedEmployeeId;
       if (changedEmployee) setEmployeeChosen(true);
       setDraft({ ...value, creditedEmployeeId: changedEmployee ? value.creditedEmployeeId : draft.creditedEmployeeId }); setErrors({}); setError(null); setMessage(''); }} errors={errors} busy={busy || stale || creationResultUnknown(error)} />
-      <ErrorNotice error={error} />{message && <p className="notice success" role="status">{message}</p>}{creationResultUnknown(error) && <p className="notice">结果未确认，输入已保留。请先核对最新结果，再决定是否重试。<button className="text-button" type="button" disabled={busy} onClick={() => void client.invalidateQueries({ queryKey: ['customer-submission', submission.id] }, { throwOnError: true }).then(() => {
-        const refreshed = client.getQueryData<SubmissionDetail>(['customer-submission', submission.id]);
+      <ErrorNotice error={error} />{message && <p className="notice success" role="status">{message}</p>}{creationResultUnknown(error) && <p className="notice">结果未确认，输入已保留。请先核对最新结果，再决定是否重试。<button className="text-button" type="button" disabled={busy} onClick={() => void client.invalidateQueries({ queryKey: detailKey, exact: true }, { throwOnError: true }).then(() => {
+        const refreshed = currentDetail();
         if (!mounted.current || !refreshed) return;
         if (refreshed.submission.status !== 'PENDING') accept(refreshed);
         setError(null);

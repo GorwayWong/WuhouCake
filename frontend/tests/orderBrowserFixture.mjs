@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
 export const orderId = '10000000-0000-4000-8000-000000000001';
 export async function createOrderFixture(browser, base) {
@@ -11,7 +12,7 @@ export async function createOrderFixture(browser, base) {
     const request = route.request(), path = new URL(request.url()).pathname;
     const ok = (data, status = 200) => route.fulfill({ status, json: { success: true, data } });
     if (path === '/api/auth/csrf') return route.fulfill({ headers: { 'set-cookie': 'XSRF-TOKEN=test; Path=/' }, json: { success: true, data: { headerName: 'X-XSRF-TOKEN' } } });
-    if (path === '/api/auth/refresh' || path === '/api/auth/login') return ok({ accessToken: 'test', expiresIn: 3600, passwordChangeRequired: false });
+    if (path === '/api/auth/refresh' || path === '/api/auth/login') return ok({ accessToken: testJwt('test', { sub: model.account }), expiresIn: 3600, passwordChangeRequired: false });
     if (path === '/api/me') return ok({ accountId: model.account, nickname: model.account, employeeNumber: 'TEST', jobRoles: ['FRONT_DESK'], access: { permissions: model.permissions, uiCapabilities: [] } });
     if (path === '/api/orders/stream') return route.fulfill({ status: 503 });
     if (path === '/api/order-packages') return ok({ items: [], total: 0, page: 1, size: 20 });

@@ -74,7 +74,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 2. POST /api/auth/login 提交 employeeNumber、password。data 返回 accessToken、tokenType、expiresIn、passwordChangeRequired；刷新凭证只通过 Cookie 传输，不在 JSON 中返回。
 3. Cookie 名为 wuhoucake_refresh，HttpOnly、SameSite=Lax、路径 /api/auth，dev 关闭 Secure、prod 启用。业务请求通过 Authorization: Bearer 携带 RS256 JWT；HTTP session 无状态。
 4. login/logout 会清除 CSRF Cookie，后续认证 POST 前重新取得 CSRF。refresh 依赖刷新 Cookie 和 CSRF，不依赖已到期 Bearer。
-5. 前端 access token 仅驻留内存；多个 401 共用一次刷新。切换员工后，旧请求不能使用新员工凭证重试或清除其登录状态。
+5. 前端 access token 仅驻留内存，多个 401 共用一次刷新。已打开的员工页面按 JWT 的账号、会话 ID 和凭证版本核对刷新的令牌。共享 Cookie 切到其他会话时，旧页面清除本页会话和查询，关闭订单通知，并要求重新登录。原请求不会用另一会话重发。共享 Cookie 和原账号已保存的录单草稿仍可使用。已打开的页面需要刷新以加载这一行为。
 
 同一工号的失败次数与正在校验的登录尝试合计最多 5 次，准入通过 Redis 原子占用；超过时返回 LOGIN_THROTTLED。失败转为计数，累计第 5 次失败后锁定 10 分钟；成功清除失败次数但保留其他在途占用，基础设施异常仅释放本次占用。未完成的占用最长保留 10 分钟，避免进程中断后永久占用配额。
 

@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { newPasswordError } from '../src/passwordForm.ts';
@@ -23,7 +24,7 @@ test('当前密码错误保留首次登录会话，不刷新令牌或重复提�
   globalThis.fetch = async input => {
     const path = String(input);
     if (path === '/api/auth/csrf') return envelope({ headerName: 'X-XSRF-TOKEN' });
-    if (path === '/api/auth/login') return envelope({ accessToken: 'first-login-token', expiresIn: 900, passwordChangeRequired: true });
+    if (path === '/api/auth/login') return envelope({ accessToken: testJwt('first-login-token'), expiresIn: 900, passwordChangeRequired: true });
     if (path === '/api/auth/refresh') { refreshes++; throw new Error('A password validation error must not refresh authentication'); }
     if (path === '/api/me/password') { changes++; return Response.json({ success: false, code: 'CURRENT_PASSWORD_INCORRECT' }, { status: 400 }); }
     throw new Error('Unexpected request ' + path);
@@ -34,7 +35,7 @@ test('当前密码错误保留首次登录会话，不刷新令牌或重复提�
       assert.ok(error instanceof ApiError); assert.equal(error.code, 'CURRENT_PASSWORD_INCORRECT'); assert.match(errorText(error), /新密码尚未保存/); return true;
     });
     assert.equal(refreshes, 0); assert.equal(changes, 1);
-    assert.equal(session.snapshot().token?.accessToken, 'first-login-token');
+    assert.equal(session.snapshot().token?.accessToken, testJwt('first-login-token'));
     assert.equal(session.snapshot().token?.passwordChangeRequired, true);
   } finally {
     forgetSession(); globalThis.fetch = originalFetch;

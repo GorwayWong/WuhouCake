@@ -1,3 +1,4 @@
+import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
@@ -30,7 +31,7 @@ test('首次登录拦截录单页面，改密失败可修正，成功后必须�
       const { employeeNumber, password } = request.postDataJSON();
       logins.push({ employeeNumber, password });
       if (employeeNumber !== '0002' || password !== (changed ? newPassword : initialPassword)) return fail(401, 'AUTHENTICATION_FAILED');
-      return ok({ accessToken: changed ? 'normal-token' : 'restricted-token', expiresIn: 3600, passwordChangeRequired: !changed });
+      return ok({ accessToken: changed ? testJwt('normal-token') : testJwt('restricted-token'), expiresIn: 3600, passwordChangeRequired: !changed });
     }
     if (path === '/api/me/password') {
       const { currentPassword, newPassword: submitted } = request.postDataJSON();
@@ -43,7 +44,7 @@ test('首次登录拦截录单页面，改密失败可修正，成功后必须�
       accountId: 'staff-sample', employeeNumber: '0002', nickname: '测试前台', systemRole: 'STAFF', jobRoles: ['FRONT_DESK'],
       access: { permissions: ['ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ'], uiCapabilities: [] },
     });
-    if (request.headers().authorization !== 'Bearer normal-token') prematureOrderRequests.push(path);
+    if (request.headers().authorization !== `Bearer ${testJwt('normal-token')}`) prematureOrderRequests.push(path);
     if (path === '/api/orders/stream') return route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' });
     if (path === '/api/order-packages') return ok({ items: [], total: 0, page: 1, size: 20 });
     if (path === '/api/employees/options') return ok([]);
