@@ -26,7 +26,8 @@ public class ApiErrors {
         int status = switch (failure.code()) {
             case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE", "PACKAGE_NOT_FOUND" -> 404;
             case "FORBIDDEN", "SUBMISSION_FORBIDDEN", "PACKAGE_FORBIDDEN", "ORDER_DELETED_FORBIDDEN" -> 403;
-            case "IMAGE_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
+            case "IMAGE_TOO_LARGE", "IMAGE_BATCH_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
+            case "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE" -> 503;
             case "UNSUPPORTED_IMAGE_FORMAT" -> 415;
             case "ORDER_QUOTE_INCOMPLETE", "ORDER_PAID_AMOUNT_LOCKED", "SUBMISSION_ITEM_ID_CONFLICT", "ITEM_ID_CONFLICT", "IMAGE_UPLOAD_REMOVED", "ORDER_DELETED", "PACKAGE_NAME_CONFLICT", "PACKAGE_CREATION_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
                     "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED", "DUPLICATE_REVIEW_REQUIRED", "SUBMISSION_NOT_PENDING", "OTHER_ITEMS_INCOMPLETE" -> 409;
@@ -50,6 +51,10 @@ public class ApiErrors {
             case "UNSUPPORTED_IMAGE_FORMAT" -> "仅支持 JPEG 和 PNG 图片";
             case "INVALID_IMAGE" -> "图片为空或内容损坏";
             case "IMAGE_TOO_LARGE" -> "单张图片不得超过 5 MiB";
+            case "IMAGE_BATCH_TOO_LARGE" -> "本次图片数量或总大小超过上限，请减少图片后重试";
+            case "IMAGE_PROCESSING_BUSY" -> "图片正在处理中，请稍后重试";
+            case "IMAGE_PROCESSING_TIMEOUT" -> "图片处理超时，请换用较小图片后重试";
+            case "IMAGE_PROCESSING_UNAVAILABLE" -> "图片处理暂不可用，请稍后重试";
             default -> failure.code();
         };
         return response(status, failure.code(), message);

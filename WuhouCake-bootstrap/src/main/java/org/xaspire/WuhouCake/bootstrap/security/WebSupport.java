@@ -19,6 +19,10 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WebSupport {
     @Bean SecurityErrors securityErrors(ObjectMapper mapper) { return new SecurityErrors(mapper); }
+    @Bean FilterRegistrationBean<ImageUploadAdmissionFilter> imageUploadAdmission(ObjectMapper mapper) {
+        var registration = new FilterRegistrationBean<>(new ImageUploadAdmissionFilter(mapper));
+        registration.setOrder(0); return registration;
+    }
     @Bean FilterRegistrationBean<OncePerRequestFilter> requestIds() {
         OncePerRequestFilter filter = new OncePerRequestFilter() {
             @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws ServletException, IOException {

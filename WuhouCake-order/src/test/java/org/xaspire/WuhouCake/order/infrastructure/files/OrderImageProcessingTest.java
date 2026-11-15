@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Random;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.*;
 
 class OrderImageProcessingTest {
@@ -44,6 +46,23 @@ class OrderImageProcessingTest {
         assertFalse(new String(result.content(), StandardCharsets.ISO_8859_1).contains("Exif"));
         var decoded = ImageIO.read(new ByteArrayInputStream(result.content()));
         int pixel = decoded.getRGB(5, 40); assertTrue((pixel & 255) > 150); assertTrue(((pixel >> 16) & 255) < 100); decoded.flush();
+    }
+    @ParameterizedTest @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8})
+    void allExifRotationsAndMirrorsPreserveCornerPlacement(int orientation) throws Exception {
+        var image = new BufferedImage(128, 80, BufferedImage.TYPE_INT_RGB);
+        int[] colors = {0xff0000, 0x00ff00, 0x0000ff, 0xffff00};
+        for (int y = 0; y < 80; y++) for (int x = 0; x < 128; x++) image.setRGB(x, y, colors[(y >= 40 ? 2 : 0) + (x >= 64 ? 1 : 0)]);
+        byte[] jpeg = encoded(image, "jpg");
+        byte[] exif = new byte[] {'E','x','i','f',0,0,'I','I',42,0,8,0,0,0,1,0,18,1,3,0,1,0,0,0,(byte) orientation,0,0,0,0,0,0,0};
+        var source = new ByteArrayOutputStream(); source.write(jpeg, 0, 2); source.write(new byte[] {(byte)255,(byte)225,0,34}); source.write(exif); source.write(jpeg, 2, jpeg.length - 2);
+        var result = processor.validate(source.toByteArray(), "phone.jpg");
+        assertEquals(orientation >= 5 ? 80 : 128, result.width());
+        assertEquals(orientation >= 5 ? 128 : 80, result.height());
+        var decoded = ImageIO.read(new ByteArrayInputStream(result.content()));
+        int expected = colors[new int[]{0,1,3,2,0,2,3,1}[orientation - 1]], actual = decoded.getRGB(8, 8);
+        for (int shift : new int[]{0,8,16}) assertTrue(Math.abs(((expected >> shift) & 255) - ((actual >> shift) & 255)) < 30);
+        assertFalse(new String(result.content(), StandardCharsets.ISO_8859_1).contains("Exif"));
+        decoded.flush(); image.flush();
     }
     private static byte[] encoded(BufferedImage image, String format) throws IOException {
         var output = new ByteArrayOutputStream(); assertTrue(ImageIO.write(image, format, output)); return output.toByteArray();

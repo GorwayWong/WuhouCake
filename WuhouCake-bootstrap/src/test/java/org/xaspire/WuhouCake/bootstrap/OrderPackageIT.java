@@ -38,9 +38,11 @@ class OrderPackageIT {
     @Autowired IdentityService identity;
     @Autowired javax.sql.DataSource dataSource;
     @MockitoSpyBean Operations operations;
+    @MockitoSpyBean org.xaspire.WuhouCake.order.domain.port.OrderImageValidator imageValidator;
+    @MockitoSpyBean org.xaspire.WuhouCake.order.domain.port.OrderPackages packageStore;
     Client manager, staff;
     @BeforeEach void setup() throws Exception {
-        reset(operations);
+        reset(operations, imageValidator, packageStore);
         jdbc.execute("TRUNCATE cake_order_package,audit_operation,identity_account_role,identity_account CASCADE"); clearRedis();
         identity.initializeAdministrator("MANAGER", "套餐店长", INITIAL);
         manager = new Client(); manager.login("MANAGER", INITIAL); manager.changePassword(INITIAL); manager.login("MANAGER", PASSWORD);
@@ -209,6 +211,47 @@ class OrderPackageIT {
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
     }
 
+    @Test void sevenPicturesPrepareOutsideTransactionsAndFailedBatchDoesNotPartiallyCommit() throws Exception {
+        var images = new LinkedHashMap<UUID, byte[]>();
+        var items = new ArrayList<Map<String, Object>>();
+        var bytes = new ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(20, 10, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", bytes);
+        for (int i = 0; i < 7; i++) {
+            var id = UUID.randomUUID(); images.put(id, bytes.toByteArray());
+            items.add(Map.of("itemId", UUID.randomUUID(), "imageId", id, "name", "商品" + i, "productType", "OTHER", "quantity", 1));
+        }
+        var body = Map.of("name", "七图套餐", "items", items);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        doAnswer(invocation -> {
+            assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            if (calls.incrementAndGet() == 7) throw new org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure("IMAGE_PROCESSING_TIMEOUT");
+            return invocation.callRealMethod();
+        }).when(imageValidator).validate(any(), any());
+        String key = UUID.randomUUID().toString();
+        var failure = manager.multipart(body, images, key);
+        assertEquals(503, failure.statusCode(), failure.body()); assertEquals(7, calls.get());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_change", Integer.class));
+        reset(imageValidator); calls.set(0);
+        doAnswer(invocation -> {
+            assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            calls.incrementAndGet(); return invocation.callRealMethod();
+        }).when(imageValidator).validate(any(), any());
+        var created = manager.multipart(body, images, key); assertEquals(201, created.statusCode(), created.body());
+        assertEquals(7, calls.get());
+        var replay = manager.multipart(body, images, key); assertEquals(201, replay.statusCode(), replay.body());
+        assertEquals(created.body(), replay.body()); assertEquals(7, calls.get(), "committed retry must not decode again");
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_package", Integer.class));
+        assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package WHERE updated_at < created_at", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_change", Integer.class));
+        images.put(images.keySet().iterator().next(), new byte[]{1, 2, 3});
+        assertCode("PACKAGE_CREATION_CONFLICT", manager.multipart(body, images, key));
+        assertEquals(7, calls.get());
+        verify(packageStore, never()).image(any(), any(), any());
+    }
+
     @Test void largePackageChangesKeepFullAuditSnapshots() throws Exception {
         String requirements = "通用商品要求".repeat(300);
         var content = Map.of("name", "大型套餐", "originalAmountCents", 10000, "items", java.util.stream.IntStream.range(0, 25).mapToObj(i ->
@@ -300,13 +343,19 @@ class OrderPackageIT {
             return json.readTree(response.body()).path("data");
         }
         HttpResponse<String> multipart(Object body, UUID imageId, byte[] image, String key) throws Exception {
+            return multipart(body, Map.of(imageId, image), key);
+        }
+        HttpResponse<String> multipart(Object body, Map<UUID, byte[]> images, String key) throws Exception {
             String boundary = "wuhou-" + UUID.randomUUID();
             var utf8 = java.nio.charset.StandardCharsets.UTF_8;
-            var content = HttpRequest.BodyPublishers.concat(
-                    HttpRequest.BodyPublishers.ofString("--" + boundary + "\r\nContent-Disposition: form-data; name=\"package\"; filename=\"manifest.json\"\r\nContent-Type: application/json\r\n\r\n" + json.writeValueAsString(body), utf8),
-                    HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + imageId + "\"; filename=\"item.png\"\r\nContent-Type: image/png\r\n\r\n", utf8),
-                    HttpRequest.BodyPublishers.ofByteArray(image),
-                    HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "--\r\n", utf8));
+            var parts = new ArrayList<HttpRequest.BodyPublisher>();
+            parts.add(HttpRequest.BodyPublishers.ofString("--" + boundary + "\r\nContent-Disposition: form-data; name=\"package\"; filename=\"manifest.json\"\r\nContent-Type: application/json\r\n\r\n" + json.writeValueAsString(body), utf8));
+            for (var image : images.entrySet()) {
+                parts.add(HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + image.getKey() + "\"; filename=\"item.png\"\r\nContent-Type: image/png\r\n\r\n", utf8));
+                parts.add(HttpRequest.BodyPublishers.ofByteArray(image.getValue()));
+            }
+            parts.add(HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "--\r\n", utf8));
+            var content = HttpRequest.BodyPublishers.concat(parts.toArray(HttpRequest.BodyPublisher[]::new));
             return client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/order-packages"))
                     .header("Authorization", "Bearer " + token).header("Idempotency-Key", key)
                     .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(content).build(), HttpResponse.BodyHandlers.ofString());

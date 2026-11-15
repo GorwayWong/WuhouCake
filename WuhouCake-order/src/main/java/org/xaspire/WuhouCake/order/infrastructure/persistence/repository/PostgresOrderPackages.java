@@ -18,6 +18,9 @@ public final class PostgresOrderPackages implements OrderPackages {
     @Override public Optional<Image> image(UUID packageId, UUID itemId, UUID imageId) {
         return Optional.ofNullable(mapper.image(packageId.toString(), itemId.toString(), imageId.toString()));
     }
+    @Override public Optional<ImageMetadata> imageMetadata(UUID packageId, UUID itemId, UUID imageId) {
+        return Optional.ofNullable(mapper.imageMetadata(packageId.toString(), itemId.toString(), imageId.toString()));
+    }
     @Override public void insertImage(UUID packageId, UUID itemId, UUID imageId, Image image) {
         mapper.insertImage(packageId.toString(), itemId.toString(), imageId.toString(), image);
     }

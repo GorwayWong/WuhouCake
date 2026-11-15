@@ -43,6 +43,9 @@ export function packageRequest(name: string, rows: PackageRow[], _original = '',
   if (!name.trim()) errors.name = '请填写套餐名称。';
   else if (name.trim().length > 80) errors.name = '套餐名称最多填写 80 个字符。';
   if (!rows.length) errors.items = '套餐至少需要一项商品。';
+  const files = rows.flatMap(row => row.file ? [row.file] : []);
+  if (files.length > 16 || files.reduce((total, file) => total + file.size, 0) > 64 * 1024 * 1024)
+    errors.items = '每次最多上传 16 张图片，总文件大小不得超过 64 MiB。';
   const items = rows.map((row, index): PackageItem => {
     if (!row.name.trim()) errors[`items.${index}.name`] = '请填写商品名称。';
     else if (row.name.trim().length > 128) errors[`items.${index}.name`] = '商品名称最多填写 128 个字符。';

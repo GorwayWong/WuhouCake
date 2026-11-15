@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
-import { api, ApiError, creationResultUnknown, errorText, fetchPackageImage } from './api';
+import { ApiError, creationResultUnknown, errorText, fetchPackageImage, readQuery, writeRequest, imagePreparationRejected } from './api';
+import { packageDraftTab, readPackageDraft, savePackageDraft, removePackageDraft, packageDraftStorageMessage } from './packageDraftStorage';
+import type { PendingPackage, PackageDraftRecord } from './packageDraftStorage';
 import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals, packagePricingProblem, samePackageContent } from './orderPackages';
 import type { OrderPackage, PackageBody, PackageRow } from './orderPackages';
 import type { Page } from './types';
@@ -15,15 +17,16 @@ import { editablePackage, mergePackageDraft } from './packageConflict';
 import type { ConflictChoice, PackageConflict } from './packageConflict';
 
 type Body = PackageBody;
-type Pending = { method: 'POST' | 'PUT' | 'DELETE'; path: string; body?: Body; key: string; target?: OrderPackage; files?: { id: string; file: File }[] };
+type Pending = PendingPackage;
 
-export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
+export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }: {
+  accountId: string;
   onDirtyChange: (dirty: boolean) => void; onWritingChange: (writing: boolean) => void;
 }) {
   const client = useQueryClient();
   const [keyword, setKeyword] = useState(''), [search, setSearch] = useState(''), [page, setPage] = useState(1);
   const params = new URLSearchParams({ keyword: search, page: String(page), size: '20' });
-  const query = useQuery({ queryKey: ['order-packages', params.toString()], queryFn: ({ signal }) => api<Page<OrderPackage>>(`/order-packages?${params}`, { signal }) });
+  const query = useQuery({ queryKey: ['order-packages', params.toString()], queryFn: ({ signal }) => readQuery<Page<OrderPackage>>(`/order-packages?${params}`, signal) });
   const [editing, setEditing] = useState<OrderPackage | 'new' | null>(null);
   const [name, setName] = useState(''), [items, setItems] = useState<PackageRow[]>([]);
   const [original, setOriginal] = useState(''), [member, setMember] = useState('');
@@ -34,8 +37,45 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
   const [conflict, setConflict] = useState(false), [latest, setLatest] = useState<OrderPackage | null>(null);
   const [choices, setChoices] = useState<Record<string, ConflictChoice>>({});
   const baseline = useRef(''), creationKey = useRef(randomUUID());
+  const tabId = useRef(''), storageQueue = useRef(Promise.resolve()), storageRevision = useRef<string | null>(null);
+  const [restored, setRestored] = useState(false), [storageError, setStorageError] = useState('');
   const active = useRef<AbortController | null>(null), form = useRef<HTMLFormElement>(null);
   const dirty = Boolean(pending || editing && JSON.stringify([name, items, original, member]) !== baseline.current);
+  function snapshot(operation = pending): PackageDraftRecord {
+    return { accountId, tabId: tabId.current, editing, name, items, original, member, baseline: baseline.current, creationKey: creationKey.current, pending: operation };
+  }
+  function persist(record: PackageDraftRecord | null) {
+    const next = storageQueue.current.catch(() => {}).then(async () => {
+      if (record) storageRevision.current = await savePackageDraft(record, storageRevision.current);
+      else { await removePackageDraft(accountId, tabId.current, storageRevision.current); storageRevision.current = null; }
+    });
+    storageQueue.current = next;
+    return next;
+  }
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        tabId.current = packageDraftTab();
+        const saved = await readPackageDraft(accountId, tabId.current);
+        if (!alive) return;
+        if (saved) {
+          storageRevision.current = saved.revision ?? null;
+          setEditing(saved.editing); setName(saved.name); setItems(saved.items); setOriginal(saved.original); setMember(saved.member);
+          baseline.current = saved.baseline; creationKey.current = saved.creationKey; setPending(saved.pending);
+          setMessage(saved.pending ? '已恢复待核对操作，请先确认原请求结果。' : '已恢复本机暂存的套餐，请核对后保存。');
+        }
+        setRestored(true);
+      } catch { if (alive) setStorageError('本机套餐暂存无法读取，请检查浏览器存储权限后刷新重试。'); }
+    })();
+    return () => { alive = false; };
+  }, [accountId]);
+  useEffect(() => {
+    if (!restored || busy) return;
+    const record = editing || pending ? snapshot() : null;
+    const timer = setTimeout(() => { void persist(record).then(() => setStorageError('')).catch(error => setStorageError(packageDraftStorageMessage(error, '本机套餐暂存失败，请保留当前页面，检查存储空间后重试保存。'))); }, 400);
+    return () => clearTimeout(timer);
+  }, [restored, busy, editing, pending, name, items, original, member]);
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => {
     if (query.data) { const last = Math.max(1, Math.ceil(query.data.total / query.data.size)); if (page > last) setPage(last); }
@@ -48,7 +88,7 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
     if (dirty && !window.confirm('套餐尚未保存，确定放弃修改吗？')) return;
     const controller = new AbortController(); active.current = controller; setBusy(true); setError(null); setMessage('');
     try {
-      const current = value === 'new' ? 'new' : await api<OrderPackage>(`/order-packages/${value.id}`, { signal: controller.signal });
+      const current = value === 'new' ? 'new' : await readQuery<OrderPackage>(`/order-packages/${value.id}`, controller.signal);
       if (controller.signal.aborted) return;
       const next = current === 'new' ? { name: '', items: [newPackageItem()], original: '', member: '' } : editablePackage(current);
       baseline.current = JSON.stringify([next.name, next.items, next.original, next.member]);
@@ -62,7 +102,13 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
     if (busy || pending || dirty && !window.confirm('套餐尚未保存，确定放弃修改吗？')) return;
     setEditing(null); setItems([]); setSpecEditor(null); setError(null); setErrors({}); setConflict(false); setLatest(null);
   }
-  function success(operation: Pending) {
+  async function success(operation: Pending) {
+    try { await persist(null); }
+    catch (failure) {
+      setStorageError(packageDraftStorageMessage(failure, '服务端结果已确认，但本机恢复记录未能清理，请重试确认。'));
+      setPending(operation); setError(null); return;
+    }
+    setStorageError('');
     setPending(null); setError(null); setEditing(null); setItems([]); setSpecEditor(null); setConflict(false); setLatest(null);
     setMessage(operation.method === 'DELETE' ? '套餐已删除，已带入订单的商品不受影响。' : '套餐已保存，员工下单时即可选用。');
     if (operation.method === 'POST') { setSearch(''); setKeyword(''); setPage(1); }
@@ -72,7 +118,11 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
   async function write(operation: Pending) {
     if (active.current) return;
     const controller = new AbortController(); active.current = controller; setBusy(true); onWritingChange(true); setError(null); setMessage('');
+    let sent = false;
     try {
+      await persist(snapshot(operation));
+      if (controller.signal.aborted) return;
+      setStorageError('');
       let body: Body | FormData | undefined = operation.body;
       if (operation.files?.length) {
         const multipart = new FormData();
@@ -80,13 +130,17 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
         for (const { id, file } of operation.files) multipart.append(id, file);
         body = multipart;
       }
-      await api(operation.path, { method: operation.method, body, headers: operation.method === 'POST' ? { 'Idempotency-Key': operation.key } : undefined, signal: controller.signal });
-      if (!controller.signal.aborted) success(operation);
+      sent = true;
+      await writeRequest(operation.path, { method: operation.method, body, headers: operation.method === 'POST' ? { 'Idempotency-Key': operation.key } : undefined, signal: controller.signal });
+      if (!controller.signal.aborted) await success(operation);
     } catch (failure) {
       if (controller.signal.aborted) return;
-      setError(failure);
-      if (creationResultUnknown(failure)) setPending(operation);
+      if (!sent) { setStorageError(packageDraftStorageMessage(failure, '本机暂存失败，尚未发送保存请求。请保留当前页面，检查存储空间后重试。')); return; }
+      if (creationResultUnknown(failure) || pending?.key === operation.key && imagePreparationRejected(failure)) { setError(failure); setPending(operation); }
       else {
+        try { await persist(snapshot(null)); }
+        catch (storageFailure) { setStorageError(packageDraftStorageMessage(storageFailure, '请求未保存，但本机恢复记录未能更新。请保留当前页面并重试。')); }
+        setError(failure);
         setPending(null);
         if (failure instanceof ApiError && failure.code === 'PACKAGE_NAME_CONFLICT') setErrors({ name: '套餐名称已存在，请使用可区分的名称。' });
         if (failure instanceof ApiError && failure.code === 'CONCURRENT_MODIFICATION') {
@@ -103,9 +157,9 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
     const controller = new AbortController(); active.current = controller; setBusy(true); onWritingChange(true); setError(null);
     let retry = false;
     try {
-      const current = await api<OrderPackage>(`/order-packages/${operation.target!.id}`, { signal: controller.signal });
+      const current = await readQuery<OrderPackage>(`/order-packages/${operation.target!.id}`, controller.signal);
       if (controller.signal.aborted) return;
-      if (operation.method === 'PUT' && samePackageContent(current, operation.body!)) success(operation);
+      if (operation.method === 'PUT' && samePackageContent(current, operation.body!)) await success(operation);
       else if (current.version === operation.target!.version) retry = true;
       else {
         setPending(null); setConflict(operation.method === 'PUT'); setLatest(operation.method === 'PUT' ? current : null); setChoices({});
@@ -115,7 +169,7 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
     } catch (failure) {
       if (controller.signal.aborted) return;
       if (failure instanceof ApiError && failure.code === 'PACKAGE_NOT_FOUND') {
-        if (operation.method === 'DELETE') success(operation);
+        if (operation.method === 'DELETE') await success(operation);
         else { setPending(null); setError(failure); }
       } else setError(failure);
     } finally { if (active.current === controller) { active.current = null; setBusy(false); onWritingChange(false); } }
@@ -125,7 +179,7 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
     if (!editing || editing === 'new' || active.current) return;
     const controller = new AbortController(); active.current = controller; setBusy(true); setError(null);
     try {
-      const value = await api<OrderPackage>(`/order-packages/${editing.id}`, { signal: controller.signal });
+      const value = await readQuery<OrderPackage>(`/order-packages/${editing.id}`, controller.signal);
       if (!controller.signal.aborted) { setLatest(value); setChoices({}); }
     } catch (failure) { if (!controller.signal.aborted) setError(failure); }
     finally { if (active.current === controller) { active.current = null; setBusy(false); } }
@@ -148,13 +202,14 @@ export function OrderPackageAdmin({ onDirtyChange, onWritingChange }: {
     setMessage('已合并最新内容，请核对并保存。');
   }
   const reference = packageReferenceTotals(items);
-  const disabled = busy || Boolean(pending);
+  const disabled = busy || Boolean(pending) || !restored;
   const inputProps = (field: string) => ({ name: field, id: `package-${field}`, 'aria-invalid': Boolean(errors[field]), 'aria-describedby': errors[field] ? `package-${field}-error` : undefined });
   const fieldError = (field: string) => errors[field] && <span className="field-error" id={`package-${field}-error`}>{errors[field]}</span>;
   const updateItem = (index: number, change: Partial<PackageRow>) => { setItems(current => current.map((item, i) => i === index ? { ...item, ...change } : item)); setErrors({}); };
   return <div className="management-page package-management">
     <div className="page-heading"><div><h1>{editing ? editing === 'new' ? '新建套餐' : '编辑套餐' : '套餐管理'}</h1>{!editing && <p className="muted">维护常用商品组合，供员工下单时快速填写。</p>}</div>{!editing && <button className="primary" disabled={disabled} onClick={() => void start('new')}><Plus />新建套餐</button>}</div>
     {message && <div className="notice" role="status">{message}</div>}
+    {storageError && <p className="notice error" role="alert">{storageError}</p>}
     <ErrorNotice error={error} />
     {pending && <div className="notice error" role="alert"><p>操作结果尚未确认，输入已保留。请先确认原请求结果，再继续编辑。</p><button className="secondary" disabled={busy} onClick={() => void verify()}>{busy ? '正在确认…' : '确认原操作结果'}</button></div>}
     {editing ? <>

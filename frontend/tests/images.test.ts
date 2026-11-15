@@ -26,7 +26,8 @@ test('图片 FormData 保留真实文件、商品 ID和稳定幂等键；失败�
     const file = new File(['png'], 'cake.png', { type: 'image/png' });
     const controller = new AbortController();
     assert.equal((await uploadOrderImage('order-a', file, 'item-a', controller.signal)).imageId, 'server-image-id');
-    assert.equal(requests[0].signal, controller.signal);
+    assert.ok(requests[0].signal instanceof AbortSignal);
+    assert.equal(requests[0].signal.aborted, false);
     const body = requests[0].body as FormData;
     assert.equal(body.get('file'), file); assert.equal(body.get('itemId'), 'item-a');
     await uploadOrderImage('order-a', file, 'item-a', undefined, 'stable-upload-id');

@@ -25,7 +25,7 @@ import org.xaspire.WuhouCake.shared.json.JsonCodec;
 @MapperScan(basePackageClasses = OrderMapper.class)
 public class OrderComposition {
     @Bean OrderPackages orderPackages(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderPackageMapper mapper, JsonCodec json) { return new PostgresOrderPackages(mapper, json); }
-    @Bean OrderPackageService orderPackageService(OrderPackages packages, IdGenerator ids, Clock clock, IdentityFacade identity, AuditFacade audit, JsonCodec json, ApplicationEventPublisher events, OrderImageValidator validator) { return new OrderPackageService(packages, ids, clock, identity, audit, json, events, validator); }
+    @Bean OrderPackageService orderPackageService(OrderPackages packages, IdGenerator ids, Clock clock, IdentityFacade identity, AuditFacade audit, JsonCodec json, ApplicationEventPublisher events, OrderImageValidator validator, PlatformTransactionManager transactions) { return new OrderPackageService(packages, ids, clock, identity, audit, json, events, validator, new TransactionTemplate(transactions)); }
     @Bean OrderCreations orderCreations(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderCreationMapper mapper) { return new PostgresOrderCreations(mapper); }
     @Bean OrderCreationService orderCreationService(OrderService orders, OrderCreations creations, JsonCodec json) { return new OrderCreationService(orders, creations, json); }
     @Bean OrderManagementQueries orderManagementQueries(org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderManagementMapper mapper) {
@@ -34,7 +34,17 @@ public class OrderComposition {
     @Bean OrderReportFiles orderReportFiles() { return new PoiOrderReportFiles(); }
     @Bean OrderManagementService orderManagementService(OrderManagementQueries queries, OrderReportFiles files, JsonCodec json, IdentityFacade identity) { return new OrderManagementService(queries, files, json, identity); }
     @Bean OrderImages orderImages(OrderImageMapper mapper) { return new PostgresOrderImages(mapper); }
-    @Bean OrderImageValidator orderImageValidator() { return new JavaOrderImageValidator(); }
+    @Bean OrderImageValidator orderImageValidator(org.springframework.core.env.Environment environment) {
+        String endpoint = environment.getProperty("wuhoucake.images.worker-url", "");
+        if (!endpoint.isBlank()) return new RemoteOrderImageValidator(java.net.URI.create(endpoint));
+        if (environment.acceptsProfiles(org.springframework.core.env.Profiles.of("prod"))) {
+            if ("none".equals(environment.getProperty("spring.main.web-application-type"))
+                    && !environment.getProperty("wuhoucake.identity.command", "").isBlank())
+                return (content, filename) -> { throw new org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure("IMAGE_PROCESSING_UNAVAILABLE"); };
+            throw new IllegalStateException("IMAGE_WORKER_URL is required in prod");
+        }
+        return new JavaOrderImageValidator();
+    }
     @Bean OrderImageService orderImageService(Orders orders, OrderImages images, OrderImageValidator validator,
             PlatformTransactionManager transactions, IdGenerator ids, Clock clock, OrderActivities activities, ApplicationEventPublisher events, IdentityFacade identity) {
         var writes = new TransactionTemplate(transactions);

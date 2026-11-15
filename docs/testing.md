@@ -1,5 +1,20 @@
 # 测试指南
 
+## 图片故障隔离回归
+
+`ImageWorkerTest` 验证真实子进程的解码、不可中断任务超时终止、崩溃后恢复和响应体期限；`OrderPackageIT` 验证七图准备不持有事务、处理失败全回滚和同键重放不重复解码。图片单元测试保留透明 PNG、小图和 EXIF 1–8 方向回归。
+
+资源验收使用专用数据库与回环测试入口，不得指向生产。先运行 `WuhouCake-order/src/test/java/org/xaspire/WuhouCake/order/infrastructure/files/ImageResourceFixtures.java` 的独立 main，生成七张 6000×4000 合成 JPEG（包括渐进 JPEG），避免样本生成占用被测服务堆。测试 app 使用 256 MiB 堆/640 MiB 容器，图片端使用 Compose 的 320 MiB/1 核边界。测试实例预建 `SOAK` 管理员；脚本默认初始/改后口令仅为合成测试值，也可通过 `WUHOU_IMAGE_TEST_INITIAL_PASSWORD`、`WUHOU_IMAGE_TEST_PASSWORD` 设置。
+
+```bash
+java -Xmx384m WuhouCake-order/src/test/java/org/xaspire/WuhouCake/order/infrastructure/files/ImageResourceFixtures.java /tmp/wuhou-image-fixtures
+python3 docs/verification/image-isolation-probe.py --base http://127.0.0.1:18080 --images /tmp/wuhou-image-fixtures --seconds 1800 --output /tmp/wuhou-image-result.json
+```
+
+脚本并发提交三批七图套餐，同时探测 CSRF、会话和套餐读取；成功后同键重放并删除合成套餐。目标为读取 p95 < 1 秒、最大 < 3 秒、无读取错误。`--pause-worker wuhou-image-soak-image-worker-1` 可对专用验收容器注入暂停，验证上传受控超时且读取不受影响；该参数只接受此验收命名前缀。持续观察 Docker 内存、PIDs、健康及临时文件，并在结束后删除专用测试环境。合成样本不能替代事故原图的确定性复现。
+
+前端新增 `frontend/tests/requestDeadlines.test.ts` 和 `packageDraftStorage.test.ts`；浏览器回归使用 `PLAYWRIGHT_MODULE=/path/to/playwright node --test frontend/tests/packageRecovery.browser.mjs frontend/tests/packageConflict.browser.mjs`，需先在 5197 端口启动前端，覆盖七张图片响应丢失后刷新、同键确认、确认时再次繁忙、草稿版本冲突及原有多人编辑。
+
 ## 常用命令
 
 | 验证目标 | 命令 | 依赖 |

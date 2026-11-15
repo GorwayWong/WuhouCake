@@ -4,6 +4,10 @@ import java.time.Clock;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ItemPricing;
 import java.util.*;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
+import java.util.function.Supplier;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImageName;
+import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.*;
 import org.springframework.context.ApplicationEventPublisher;
 import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
@@ -23,6 +27,11 @@ import org.xaspire.WuhouCake.shared.response.Page;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 public class OrderPackageService {
+    public static final int MAX_IMAGE_BYTES = IMAGE_BYTES;
+    public static void requireUploadSize(long imageBytes, int count, long totalBytes) {
+        if (imageBytes > IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
+        if (count > PACKAGE_IMAGES || totalBytes > PACKAGE_IMAGE_BYTES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
+    }
     private final OrderPackages packages;
     private final IdGenerator ids;
     private final Clock clock;
@@ -31,9 +40,14 @@ public class OrderPackageService {
     private final JsonCodec json;
     private final ApplicationEventPublisher events;
     private final OrderImageValidator validator;
-    public record Upload(String filename, byte[] content) { }
-    public OrderPackageService(OrderPackages packages, IdGenerator ids, Clock clock, IdentityFacade identity, AuditFacade audit, JsonCodec json, ApplicationEventPublisher events, OrderImageValidator validator) {
+    private final TransactionOperations writes;
+    public record Upload(String filename, Supplier<byte[]> source) {
+        public Upload(String filename, byte[] content) { this(filename, () -> content); }
+    }
+    private record Prepared(OrderImageValidator.Checked checked, String fingerprint) { }
+    public OrderPackageService(OrderPackages packages, IdGenerator ids, Clock clock, IdentityFacade identity, AuditFacade audit, JsonCodec json, ApplicationEventPublisher events, OrderImageValidator validator, TransactionOperations writes) {
         this.packages = packages; this.ids = ids; this.clock = clock; this.identity = identity; this.audit = audit; this.json = json; this.events = events; this.validator = validator;
+        this.writes = writes;
     }
     public Page<OrderPackageViews.Package> list(String keyword, int page, int size) {
         boolean amounts = readAccess();
@@ -47,60 +61,99 @@ public class OrderPackageService {
         var image = packages.image(id, itemId, imageId).orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"));
         return new OrderPackageViews.Image(image.filename(), image.contentType(), image.content());
     }
-    @Transactional
     public OrderPackageViews.Package create(OrderPackageViews.Save command, Map<UUID, Upload> uploads, UUID key, String requestId) {
-        var me = manager();
+        manager();
         if (key == null) throw invalid();
         var items = normalize(command.items());
         var totals = prices(items);
-        var value = new OrderPackages.Package(ids.nextId(), name(command.name()), items, totals.original(), totals.member(), 0, clock.instant(), null);
-        if (!packages.create(value, key)) {
-            var previous = packages.findCreation(key).orElseThrow(() -> new OrderFailure("PACKAGE_NOT_FOUND"));
-            if (previous.deletedAt() != null) throw new OrderFailure("PACKAGE_NOT_FOUND");
-            if (!previous.name().equals(value.name()) || !previous.items().equals(value.items()) ||
-                    !Objects.equals(previous.originalAmountCents(), value.originalAmountCents()) ||
-                    !Objects.equals(previous.memberAmountCents(), value.memberAmountCents())) throw new OrderFailure("PACKAGE_CREATION_CONFLICT");
-            writeImages(previous, uploads, true);
-            return view(previous, true);
-        }
-        writeImages(value, uploads, false);
-        record("created", me, null, value, requestId);
-        return view(value, true);
+        UUID id = ids.nextId();
+        String name = name(command.name());
+        var prepared = prepareImages(packages.findCreation(key).orElse(null), items, uploads);
+        return writes.execute(transaction -> {
+            var me = manager();
+            var value = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), 0, clock.instant(), null);
+            if (!packages.create(value, key)) {
+                var previous = packages.findCreation(key).orElseThrow(() -> new OrderFailure("PACKAGE_NOT_FOUND"));
+                if (previous.deletedAt() != null) throw new OrderFailure("PACKAGE_NOT_FOUND");
+                if (!previous.name().equals(value.name()) || !previous.items().equals(value.items()) ||
+                        !Objects.equals(previous.originalAmountCents(), value.originalAmountCents()) ||
+                        !Objects.equals(previous.memberAmountCents(), value.memberAmountCents())) throw new OrderFailure("PACKAGE_CREATION_CONFLICT");
+                writeImages(previous, prepared, true);
+                return view(previous, true);
+            }
+            writeImages(value, prepared, false);
+            record("created", me, null, value, requestId);
+            return view(value, true);
+        });
     }
-    @Transactional
     public OrderPackageViews.Package update(UUID id, OrderPackageViews.Update command, Map<UUID, Upload> uploads, String requestId) {
-        var me = manager(); var before = active(id);
+        manager(); var initial = active(id);
         if (command.expectedVersion() < 0) throw invalid();
-        if (before.version() != command.expectedVersion()) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (initial.version() != command.expectedVersion()) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var items = normalize(command.items());
         var totals = prices(items);
-        var after = new OrderPackages.Package(id, name(command.name()), items, totals.original(), totals.member(), before.version() + 1, clock.instant(), null);
-        if (!packages.update(after, command.expectedVersion())) throw new OrderFailure("CONCURRENT_MODIFICATION");
-        writeImages(after, uploads, false);
-        packages.cleanImages(id);
-        record("updated", me, before, after, requestId);
-        return view(after, true);
+        String name = name(command.name());
+        var prepared = prepareImages(initial, items, uploads);
+        return writes.execute(transaction -> {
+            var me = manager(); var before = active(id);
+            if (before.version() != command.expectedVersion()) throw new OrderFailure("CONCURRENT_MODIFICATION");
+            var after = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), before.version() + 1, clock.instant(), null);
+            if (!packages.update(after, command.expectedVersion())) throw new OrderFailure("CONCURRENT_MODIFICATION");
+            writeImages(after, prepared, false);
+            packages.cleanImages(id);
+            record("updated", me, before, after, requestId);
+            return view(after, true);
+        });
     }
     private String name(String value) { return requiredText(value == null ? null : value.strip(), 80); }
     private ItemPricing.Totals prices(List<OrderPackages.Item> items) {
         return ItemPricing.calculate(items.stream().map(item -> new ItemPricing.Quote(item.quantity(), item.unitPriceCents(), item.memberPriceCents())).toList());
     }
-    private void writeImages(OrderPackages.Package value, Map<UUID, Upload> uploads, boolean replay) {
-        var remaining = new HashMap<>(uploads);
+    private Map<UUID, Prepared> prepareImages(OrderPackages.Package before, List<OrderPackages.Item> items, Map<UUID, Upload> uploads) {
+        if (uploads.size() > PACKAGE_IMAGES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
+        var itemByImage = new HashMap<UUID, OrderPackages.Item>();
+        for (var item : items) if (item.imageId() != null) itemByImage.put(item.imageId(), item);
+        if (!itemByImage.keySet().containsAll(uploads.keySet())) throw invalid();
+        long received = 0, storedBytes = 0, expires = System.nanoTime() + java.time.Duration.ofSeconds(30).toNanos();
+        var prepared = new HashMap<UUID, Prepared>();
+        for (var entry : uploads.entrySet()) {
+            if (System.nanoTime() >= expires) throw new OrderFailure("IMAGE_PROCESSING_TIMEOUT");
+            byte[] raw = entry.getValue().source().get();
+            if (raw == null || raw.length == 0) throw new OrderFailure("INVALID_IMAGE");
+            if (raw.length > IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
+            received += raw.length;
+            if (received > PACKAGE_IMAGE_BYTES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
+            var item = itemByImage.get(entry.getKey());
+            var existing = before == null ? Optional.<OrderPackages.ImageMetadata>empty() : packages.imageMetadata(before.id(), item.itemId(), item.imageId());
+            if (existing.isPresent()) {
+                var stored = existing.get();
+                prepared.put(entry.getKey(), new Prepared(null, fingerprint(OrderImageName.normalized(entry.getValue().filename(), stored.contentType()), raw)));
+            } else {
+                var checked = validator.validate(raw, entry.getValue().filename());
+                if (System.nanoTime() >= expires) throw new OrderFailure("IMAGE_PROCESSING_TIMEOUT");
+                byte[] content = checked.content() == null ? raw : checked.content();
+                storedBytes += content.length;
+                if (storedBytes > PACKAGE_STORED_IMAGE_BYTES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
+                prepared.put(entry.getKey(), new Prepared(new OrderImageValidator.Checked(checked.contentType(), checked.filename(), checked.width(), checked.height(), content), fingerprint(checked.filename(), raw)));
+            }
+        }
+        return prepared;
+    }
+    private void writeImages(OrderPackages.Package value, Map<UUID, Prepared> prepared, boolean replay) {
+        var remaining = new HashMap<>(prepared);
         for (var item : value.items()) {
             if (item.imageId() == null) continue;
             var upload = remaining.remove(item.imageId());
-            var stored = packages.image(value.id(), item.itemId(), item.imageId());
+            var stored = packages.imageMetadata(value.id(), item.itemId(), item.imageId());
             if (upload == null && stored.isPresent()) continue;
             if (upload == null) throw invalid();
-            var checked = validator.validate(upload.content(), upload.filename());
-            String fingerprint = fingerprint(checked.filename(), upload.content());
             if (stored.isPresent()) {
-                if (!stored.get().fingerprint().equals(fingerprint)) throw new OrderFailure(replay ? "PACKAGE_CREATION_CONFLICT" : "VALIDATION_FAILED");
+                if (!stored.get().fingerprint().equals(upload.fingerprint())) throw new OrderFailure(replay ? "PACKAGE_CREATION_CONFLICT" : "VALIDATION_FAILED");
             } else {
-                if (replay) throw new OrderFailure("PACKAGE_CREATION_CONFLICT");
+                if (replay || upload.checked() == null) throw new OrderFailure("PACKAGE_CREATION_CONFLICT");
+                var checked = upload.checked();
                 packages.insertImage(value.id(), item.itemId(), item.imageId(), new OrderPackages.Image(
-                        checked.filename(), checked.contentType(), checked.content() == null ? upload.content() : checked.content(), fingerprint));
+                        checked.filename(), checked.contentType(), checked.content(), upload.fingerprint()));
             }
         }
         if (!remaining.isEmpty()) throw invalid();

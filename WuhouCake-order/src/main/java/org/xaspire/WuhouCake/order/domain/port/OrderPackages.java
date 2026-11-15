@@ -12,7 +12,9 @@ public interface OrderPackages {
         public Package { items = List.copyOf(items); }
     }
     record Image(String filename, String contentType, byte[] content, String fingerprint) { }
+    record ImageMetadata(String filename, String contentType, String fingerprint) { }
     Optional<Image> image(UUID packageId, UUID itemId, UUID imageId);
+    Optional<ImageMetadata> imageMetadata(UUID packageId, UUID itemId, UUID imageId);
     void insertImage(UUID packageId, UUID itemId, UUID imageId, Image image);
     void cleanImages(UUID packageId);
     List<Package> list(String keyword, int limit, long offset);

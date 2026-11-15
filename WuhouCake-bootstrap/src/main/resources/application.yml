@@ -1,6 +1,7 @@
 spring:
   servlet:
     multipart:
+      file-size-threshold: 0
       max-file-size: 5MB
       max-request-size: 64MB
   jackson:
@@ -55,6 +56,8 @@ springdoc:
     enabled: false
 
 wuhoucake:
+  images:
+    worker-url: ${IMAGE_WORKER_URL:}
   customer-entry:
     public-origin: ${CUSTOMER_ENTRY_PUBLIC_ORIGIN:http://localhost:5173}
     per-minute: ${CUSTOMER_ENTRY_PER_MINUTE:10}

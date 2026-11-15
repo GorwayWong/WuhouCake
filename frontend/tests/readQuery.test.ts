@@ -47,19 +47,22 @@ test('查询取消不误报超时，已取消查询不发送请求', async t => 
 });
 test('一个查询超时不会取消共享认证刷新，也不会在刷新完成后补发已超时请求', async t => {
   let resolveRefresh: (response: Response) => void = () => {}, refreshes = 0, a = 0, b = 0;
+  let resolveFirst: (response: Response) => void = () => {};
   globalThis.fetch = async (input, init) => {
     const path = String(input);
     if (path.endsWith('/csrf')) return ok({ headerName: 'X-XSRF-TOKEN' });
     if (path.endsWith('/refresh')) { refreshes++; return new Promise(resolve => { resolveRefresh = resolve; }); }
     if (path.endsWith('/a')) a++; else b++;
+    if (path.endsWith('/a') && a === 1) return new Promise(resolve => { resolveFirst = resolve; });
     return new Headers(init?.headers).get('Authorization') === `Bearer ${testJwt('old')}`
       ? Response.json({ success: false }, { status: 401 }) : ok({ version: 2 });
   };
   let failure: unknown;
   const first = read('/orders/a', new AbortController().signal).catch(error => { failure = error; });
-  await flush(); await flush(); t.mock.timers.tick(15_000);
+  await flush(); t.mock.timers.tick(25_000);
+  resolveFirst(Response.json({ success: false }, { status: 401 })); await flush(); await flush();
   const second = read('/orders/b', new AbortController().signal);
-  await flush(); t.mock.timers.tick(15_000); await flush();
+  await flush(); t.mock.timers.tick(5_000); await flush();
   assert.ok(failure instanceof http.ApiError && failure.code === 'READ_TIMEOUT');
   resolveRefresh(ok({ accessToken: testJwt('new'), expiresIn: 3600, passwordChangeRequired: false }));
   assert.deepEqual(await second, { version: 2 }); await first;

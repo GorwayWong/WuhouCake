@@ -1,0 +1,110 @@
+package org.xaspire.WuhouCake.order.infrastructure.files;
+
+import com.sun.net.httpserver.HttpServer;
+import java.awt.image.BufferedImage;
+import java.io.*;
+import java.net.*;
+import java.nio.file.*;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import javax.imageio.ImageIO;
+import org.junit.jupiter.api.Test;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import static org.junit.jupiter.api.Assertions.*;
+
+class ImageWorkerTest {
+    private static byte[] picture() throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        ImageIO.write(new BufferedImage(24, 12, BufferedImage.TYPE_INT_RGB), "png", bytes);
+        return bytes.toByteArray();
+    }
+    private static URI endpoint(ImageWorkerServer server) { return URI.create("http://127.0.0.1:" + server.port() + "/process"); }
+    @Test void isolatedDecoderPreservesImagesAndRejectsDamagedContent() throws Exception {
+        try (var server = new ImageWorkerServer(new InetSocketAddress("127.0.0.1", 0), ImageWorkerServer.decoderCommand(), Duration.ofSeconds(5))) {
+            server.start();
+            try (var validator = new RemoteOrderImageValidator(endpoint(server))) {
+                var result = validator.validate(picture(), "cake.png");
+                assertEquals(24, result.width()); assertEquals(12, result.height());
+                assertNotNull(ImageIO.read(new ByteArrayInputStream(result.content())));
+                assertEquals("UNSUPPORTED_IMAGE_FORMAT", assertThrows(OrderFailure.class, () -> validator.validate(new byte[]{1,2,3}, "bad.jpg")).code());
+            }
+        }
+    }
+    @Test void maximumPixelTransparentPngFitsTheDecoderHeapAndKeepsAlpha() throws Exception {
+        var source = new BufferedImage(6000, 4000, BufferedImage.TYPE_INT_ARGB);
+        var graphics = source.createGraphics();
+        graphics.setColor(new java.awt.Color(20, 60, 120, 127)); graphics.fillRect(0, 0, 6000, 4000); graphics.dispose();
+        var encoded = new ByteArrayOutputStream(); ImageIO.write(source, "png", encoded); source.flush();
+        assertTrue(encoded.size() < 5 * 1024 * 1024);
+        try (var server = new ImageWorkerServer(new InetSocketAddress("127.0.0.1", 0), ImageWorkerServer.decoderCommand(), Duration.ofSeconds(10))) {
+            server.start();
+            try (var validator = new RemoteOrderImageValidator(endpoint(server))) {
+                var result = validator.validate(encoded.toByteArray(), "large-transparent.png");
+                assertEquals("image/png", result.contentType()); assertEquals(1920, result.width()); assertEquals(1280, result.height());
+                var decoded = ImageIO.read(new ByteArrayInputStream(result.content()));
+                assertEquals(127, decoded.getRGB(100, 100) >>> 24); decoded.flush();
+            }
+        }
+    }
+    @Test void hungDecoderIsKilledAndCapacityIsAvailableForNextImage() throws Exception {
+        var command = new ArrayList<>(ImageWorkerServer.decoderCommand());
+        command.set(command.size() - 1, DecoderFixture.class.getName());
+        var pidFile = Files.createTempFile("image-worker-test-", ".pid");
+        command.add(pidFile.toString());
+        try (var server = new ImageWorkerServer(new InetSocketAddress("127.0.0.1", 0), command, Duration.ofSeconds(2))) {
+            server.start();
+            try (var validator = new RemoteOrderImageValidator(endpoint(server), Duration.ofSeconds(4))) {
+                byte[] image = picture();
+                try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                    var hung = executor.submit(() -> validator.validate(image, "hang.png"));
+                    long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    while (Files.size(pidFile) == 0 && System.nanoTime() < end) Thread.sleep(10);
+                    assertTrue(Files.size(pidFile) > 0, "decoder must start before checking admission");
+                    long pid = Long.parseLong(Files.readString(pidFile));
+                    assertEquals("IMAGE_PROCESSING_BUSY", assertThrows(OrderFailure.class, () -> validator.validate(image, "busy.png")).code());
+                    var failure = assertThrows(ExecutionException.class, () -> hung.get(4, TimeUnit.SECONDS));
+                    assertEquals("IMAGE_PROCESSING_TIMEOUT", ((OrderFailure) failure.getCause()).code());
+                    assertFalse(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false));
+                    assertEquals(24, validator.validate(image, "next.png").width());
+                    assertEquals("IMAGE_PROCESSING_UNAVAILABLE", assertThrows(OrderFailure.class, () -> validator.validate(image, "crash.png")).code());
+                    assertEquals(24, validator.validate(image, "after-crash.png").width());
+                    assertEquals("IMAGE_PROCESSING_UNAVAILABLE", assertThrows(OrderFailure.class, () -> validator.validate(image, "oom.png")).code());
+                    assertEquals(24, validator.validate(image, "after-oom.png").width());
+                }
+            }
+        } finally { Files.deleteIfExists(pidFile); }
+    }
+    @Test void clientDeadlineIncludesResponseBodyAndDoesNotDecodeOnFailure() throws Exception {
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var release = new CountDownLatch(1);
+        server.createContext("/process", exchange -> {
+            try (exchange) {
+                exchange.getRequestBody().readAllBytes(); exchange.sendResponseHeaders(200, 100);
+                exchange.getResponseBody().write(1); exchange.getResponseBody().flush();
+                try { release.await(3, TimeUnit.SECONDS); } catch (InterruptedException failure) { Thread.currentThread().interrupt(); }
+            }
+        });
+        server.start();
+        try (var validator = new RemoteOrderImageValidator(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/process"), Duration.ofMillis(200))) {
+            assertTimeoutPreemptively(Duration.ofSeconds(2), () -> assertEquals("IMAGE_PROCESSING_TIMEOUT",
+                    assertThrows(OrderFailure.class, () -> validator.validate(picture(), "cake.png")).code()));
+        } finally { release.countDown(); server.stop(0); }
+    }
+    public static class DecoderFixture {
+        public static void main(String[] args) throws Exception {
+            byte[] input = System.in.readNBytes(ImageWorkerProtocol.MAX_MESSAGE);
+            var data = new DataInputStream(new ByteArrayInputStream(input)); data.readInt(); String filename = data.readUTF();
+            if (filename.equals("hang.png")) {
+                Files.writeString(Path.of(args[0]), Long.toString(ProcessHandle.current().pid()));
+                while (true) { try { Thread.sleep(1000); } catch (InterruptedException ignored) { } }
+            }
+            if (filename.equals("crash.png")) System.exit(23);
+            if (filename.equals("oom.png")) {
+                var retained = new ArrayList<byte[]>();
+                while (true) retained.add(new byte[8 * 1024 * 1024]);
+            }
+            ImageWorkerProtocol.success(System.out, ImageWorkerProtocol.process(new ByteArrayInputStream(input)));
+        }
+    }
+}

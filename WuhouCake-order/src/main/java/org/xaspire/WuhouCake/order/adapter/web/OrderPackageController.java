@@ -48,6 +48,7 @@ public class OrderPackageController {
     }
     private java.util.Map<UUID, OrderPackageService.Upload> uploads(org.springframework.web.multipart.MultipartHttpServletRequest request) throws java.io.IOException {
         var uploads = new java.util.HashMap<UUID, OrderPackageService.Upload>();
+        long total = 0;
         for (var part : request.getMultiFileMap().entrySet()) {
             if (part.getKey().equals("package")) continue;
             if (part.getValue().size() != 1) throw new IllegalArgumentException("Invalid package image part");
@@ -55,7 +56,13 @@ public class OrderPackageController {
             try { id = UUID.fromString(part.getKey()); }
             catch (IllegalArgumentException invalid) { throw new IllegalArgumentException("Invalid package image part"); }
             var file = part.getValue().getFirst();
-            if (uploads.putIfAbsent(id, new OrderPackageService.Upload(file.getOriginalFilename(), file.getBytes())) != null)
+            total += file.getSize();
+            OrderPackageService.requireUploadSize(file.getSize(), uploads.size() + 1, total);
+            if (uploads.putIfAbsent(id, new OrderPackageService.Upload(file.getOriginalFilename(), () -> {
+                try (var input = file.getInputStream()) {
+                    return input.readNBytes(OrderPackageService.MAX_IMAGE_BYTES + 1);
+                } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
+            })) != null)
                 throw new IllegalArgumentException("Invalid package image part");
         }
         return uploads;

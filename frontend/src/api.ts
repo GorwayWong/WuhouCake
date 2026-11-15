@@ -7,13 +7,23 @@ export class ApiError extends Error {
   code: string;
   constructor(status: number, code: string) { super(code); this.status = status; this.code = code; }
 }
+export function imagePreparationRejected(error: unknown): boolean {
+  return error instanceof ApiError && ['IMAGE_PROCESSING_BUSY', 'IMAGE_PROCESSING_TIMEOUT', 'IMAGE_PROCESSING_UNAVAILABLE'].includes(error.code);
+}
 export function creationResultUnknown(error: unknown): boolean {
+  if (imagePreparationRejected(error)) return false;
   return Boolean(error) && !(error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408);
 }
 export function errorText(error: unknown): string {
   if (!(error instanceof ApiError)) return '网络连接失败，请检查连接后重试。';
   return ({
     READ_TIMEOUT: '读取超时，当前资料可能不是最新的，请重试',
+    AUTH_TIMEOUT: '连接登录服务超时，请稍后重试。当前填写内容请先保留。',
+    WRITE_TIMEOUT: '保存结果尚未确认，当前输入已保留，请核对结果后重试。',
+    IMAGE_PROCESSING_BUSY: '图片正在处理中，请稍后重试。',
+    IMAGE_PROCESSING_TIMEOUT: '图片处理超时，请换用较小图片后重试。',
+    IMAGE_PROCESSING_UNAVAILABLE: '图片处理暂不可用，请稍后重试。',
+    IMAGE_BATCH_TOO_LARGE: '每次最多上传 16 张图片，总文件不得超过 64 MiB；处理后的图片过大时请减少图片。',
     AUTHENTICATION_FAILED: '工号或密码有误，或登录已过期。',
     SESSION_CHANGED: '当前标签页的登录会话已变更，请重新登录。',
     CURRENT_PASSWORD_INCORRECT: '当前密码不正确，新密码尚未保存。请填写初始化或重置时使用的旧密码后重试。',
@@ -87,14 +97,18 @@ async function decode<T>(response: Response, started?: number): Promise<T> {
   return body.data;
 }
 async function authPost<T>(path: string, body?: unknown): Promise<T> {
-  const csrf = await decode<{ headerName: string }>(await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store' }));
-  const cookie = document.cookie.split('; ').find(value => value.startsWith('XSRF-TOKEN='));
-  if (!cookie) throw new ApiError(403, 'CSRF_UNAVAILABLE');
-  return decode<T>(await fetch(`/api/auth/${path}`, {
-    method: 'POST', credentials: 'same-origin', cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', [csrf.headerName]: decodeURIComponent(cookie.slice('XSRF-TOKEN='.length)) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  }));
+  const started = generation;
+  return withRequestDeadline(new AbortController().signal, 'AUTH_TIMEOUT', async signal => {
+    const csrf = await decode<{ headerName: string }>(await fetch('/api/auth/csrf', { credentials: 'same-origin', cache: 'no-store', signal }), started);
+    if (signal.aborted) throw signal.reason;
+    const cookie = document.cookie.split('; ').find(value => value.startsWith('XSRF-TOKEN='));
+    if (!cookie) throw new ApiError(403, 'CSRF_UNAVAILABLE');
+    return decode<T>(await fetch(`/api/auth/${path}`, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+      headers: { 'Content-Type': 'application/json', [csrf.headerName]: decodeURIComponent(cookie.slice('XSRF-TOKEN='.length)) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), started);
+  }, 15_000);
 }
 
 type Session = { token: Token | null; loading: boolean; error: unknown };
@@ -213,7 +227,10 @@ export async function readQuery<T>(path: string, signal: AbortSignal): Promise<T
   if (started !== generation) throw new ApiError(401, 'AUTHENTICATION_FAILED');
   return result;
 }
-async function withRequestDeadline<T>(signal: AbortSignal, code: string, request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function writeRequest<T>(path: string, options: { method: string; body?: unknown; signal: AbortSignal; headers?: Record<string, string> }): Promise<T> {
+  return withRequestDeadline(options.signal, 'WRITE_TIMEOUT', signal => api<T>(path, { ...options, signal }), 60_000);
+}
+async function withRequestDeadline<T>(signal: AbortSignal, code: string, request: (signal: AbortSignal) => Promise<T>, timeout = 30_000): Promise<T> {
   if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
   const controller = new AbortController();
   let rejectAbort: (reason: unknown) => void = () => {};
@@ -221,7 +238,7 @@ async function withRequestDeadline<T>(signal: AbortSignal, code: string, request
   const abort = (reason: unknown) => { controller.abort(reason); rejectAbort(controller.signal.reason); };
   const cancel = () => abort(signal.reason ?? new DOMException('Aborted', 'AbortError'));
   signal.addEventListener('abort', cancel, { once: true });
-  const deadline = setTimeout(() => abort(new ApiError(408, code)), 30_000);
+  const deadline = setTimeout(() => abort(new ApiError(408, code)), timeout);
   try {
     return await Promise.race([request(controller.signal), aborted]);
   } catch (error) {
@@ -232,9 +249,11 @@ async function withRequestDeadline<T>(signal: AbortSignal, code: string, request
   }
 }
 export async function fetchPackageImage(path: string, signal: AbortSignal) {
-  const response = await authenticatedFetch(path, { signal });
-  if (!response.ok) return decode<never>(response);
-  return response.blob();
+  return withRequestDeadline(signal, 'READ_TIMEOUT', async signal => {
+    const response = await authenticatedFetch(path, { signal });
+    if (!response.ok) return decode<never>(response);
+    return response.blob();
+  });
 }
 export async function publicApi<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {
   return decode<T>(await fetch(`/api${path}`, {
@@ -262,10 +281,8 @@ export async function uploadOrderImage(orderId: string, file: File, itemId: stri
   const body = new FormData();
   body.append('file', file);
   if (itemId) body.append('itemId', itemId);
-  return api<OrderImage>(`/orders/${orderId}/images`, { method: 'POST', body, signal, headers: requestId ? { 'Idempotency-Key': requestId } : undefined });
+  return writeRequest<OrderImage>(`/orders/${orderId}/images`, { method: 'POST', body, signal: signal ?? new AbortController().signal, headers: requestId ? { 'Idempotency-Key': requestId } : undefined });
 }
 export async function fetchOrderImage(orderId: string, imageId: string, signal: AbortSignal): Promise<Blob> {
-  const response = await authenticatedFetch(`/orders/${orderId}/images/${imageId}`, { signal });
-  if (!response.ok) return decode<never>(response);
-  return response.blob();
+  return fetchPackageImage(`/orders/${orderId}/images/${imageId}`, signal);
 }
