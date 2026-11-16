@@ -27,7 +27,7 @@ public class ApiErrors {
             case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE", "PACKAGE_NOT_FOUND" -> 404;
             case "FORBIDDEN", "SUBMISSION_FORBIDDEN", "PACKAGE_FORBIDDEN", "ORDER_DELETED_FORBIDDEN" -> 403;
             case "IMAGE_TOO_LARGE", "IMAGE_BATCH_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
-            case "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE" -> 503;
+            case "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE", "EXPORT_TIMEOUT" -> 503;
             case "UNSUPPORTED_IMAGE_FORMAT" -> 415;
             case "ORDER_QUOTE_INCOMPLETE", "ORDER_PAID_AMOUNT_LOCKED", "SUBMISSION_ITEM_ID_CONFLICT", "ITEM_ID_CONFLICT", "IMAGE_UPLOAD_REMOVED", "ORDER_DELETED", "PACKAGE_NAME_CONFLICT", "PACKAGE_CREATION_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
                     "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED", "DUPLICATE_REVIEW_REQUIRED", "SUBMISSION_NOT_PENDING", "OTHER_ITEMS_INCOMPLETE" -> 409;
@@ -39,6 +39,7 @@ public class ApiErrors {
             case "ORDER_PAID_AMOUNT_LOCKED" -> "已登记付款，请先撤销付款登记再改价";
             case "ORDER_DELETED" -> "订单已删除，仅可在保留期内查询，不可修改或恢复";
             case "ORDER_DELETED_FORBIDDEN" -> "当前岗位不能访问已删除订单";
+            case "EXPORT_TIMEOUT" -> "导出超时，请缩小导出范围后重试";
             case "EXPORT_LIMIT_EXCEEDED" -> "导出超过日期、订单或图片数量上限，请缩小筛选范围";
             case "EXPORT_FILE_TOO_LARGE" -> "导出文件过大，请缩小筛选范围或减少图片";
             case "EXPORT_CONTENT_TOO_LARGE" -> "导出正文或记录数过大，请缩小范围；单张订单请精简备注或规格";
@@ -79,8 +80,12 @@ public class ApiErrors {
     ResponseEntity<ApiResponse<Void>> uploadSize(Exception failure) { return response(413, "IMAGE_TOO_LARGE"); }
     @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
     ResponseEntity<ApiResponse<Void>> forbidden(org.springframework.security.access.AccessDeniedException failure) { return response(403, "FORBIDDEN"); }
-    @ExceptionHandler(DataAccessException.class)
-    ResponseEntity<ApiResponse<Void>> unavailable(DataAccessException failure) { return response(503, "SERVICE_UNAVAILABLE"); }
+    @ExceptionHandler({DataAccessException.class, org.springframework.transaction.CannotCreateTransactionException.class,
+            org.springframework.transaction.TransactionTimedOutException.class})
+    ResponseEntity<ApiResponse<Void>> unavailable(Exception failure) { return response(503, "SERVICE_UNAVAILABLE"); }
+
+    @ExceptionHandler(org.springframework.web.multipart.MultipartException.class)
+    ResponseEntity<ApiResponse<Void>> multipart(Exception failure) { return response(400, "VALIDATION_FAILED"); }
     @ExceptionHandler(NoResourceFoundException.class)
     ResponseEntity<ApiResponse<Void>> missing(NoResourceFoundException failure) { return response(404, "NOT_FOUND"); }
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

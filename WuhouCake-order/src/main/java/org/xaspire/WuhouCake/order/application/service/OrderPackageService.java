@@ -1,6 +1,8 @@
 package org.xaspire.WuhouCake.order.application.service;
 
 import java.time.Clock;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ItemPricing;
 import java.util.*;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,7 +31,7 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 public class OrderPackageService {
     public static final int MAX_IMAGE_BYTES = IMAGE_BYTES;
     public static void requireUploadSize(long imageBytes, int count, long totalBytes) {
-        if (imageBytes > IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
+        OrderImageService.requireUploadSize(imageBytes);
         if (count > PACKAGE_IMAGES || totalBytes > PACKAGE_IMAGE_BYTES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
     }
     private final OrderPackages packages;
@@ -71,7 +73,7 @@ public class OrderPackageService {
         var prepared = prepareImages(packages.findCreation(key).orElse(null), items, uploads);
         return writes.execute(transaction -> {
             var me = manager();
-            var value = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), 0, clock.instant(), null);
+            var value = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), 0, clock.instant().truncatedTo(ChronoUnit.MICROS), null);
             if (!packages.create(value, key)) {
                 var previous = packages.findCreation(key).orElseThrow(() -> new OrderFailure("PACKAGE_NOT_FOUND"));
                 if (previous.deletedAt() != null) throw new OrderFailure("PACKAGE_NOT_FOUND");
@@ -97,7 +99,7 @@ public class OrderPackageService {
         return writes.execute(transaction -> {
             var me = manager(); var before = active(id);
             if (before.version() != command.expectedVersion()) throw new OrderFailure("CONCURRENT_MODIFICATION");
-            var after = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), before.version() + 1, clock.instant(), null);
+            var after = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), before.version() + 1, clock.instant().truncatedTo(ChronoUnit.MICROS), null);
             if (!packages.update(after, command.expectedVersion())) throw new OrderFailure("CONCURRENT_MODIFICATION");
             writeImages(after, prepared, false);
             packages.cleanImages(id);
@@ -114,10 +116,11 @@ public class OrderPackageService {
         var itemByImage = new HashMap<UUID, OrderPackages.Item>();
         for (var item : items) if (item.imageId() != null) itemByImage.put(item.imageId(), item);
         if (!itemByImage.keySet().containsAll(uploads.keySet())) throw invalid();
-        long received = 0, storedBytes = 0, expires = System.nanoTime() + java.time.Duration.ofSeconds(30).toNanos();
+        long received = 0, storedBytes = 0;
+        long expires = System.nanoTime() + Duration.ofSeconds(30).toNanos();
         var prepared = new HashMap<UUID, Prepared>();
         for (var entry : uploads.entrySet()) {
-            if (System.nanoTime() >= expires) throw new OrderFailure("IMAGE_PROCESSING_TIMEOUT");
+            remainingImageTime(expires);
             byte[] raw = entry.getValue().source().get();
             if (raw == null || raw.length == 0) throw new OrderFailure("INVALID_IMAGE");
             if (raw.length > IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
@@ -129,16 +132,23 @@ public class OrderPackageService {
                 var stored = existing.get();
                 prepared.put(entry.getKey(), new Prepared(null, fingerprint(OrderImageName.normalized(entry.getValue().filename(), stored.contentType()), raw)));
             } else {
-                var checked = validator.validate(raw, entry.getValue().filename());
-                if (System.nanoTime() >= expires) throw new OrderFailure("IMAGE_PROCESSING_TIMEOUT");
+                var checked = validator.validate(raw, entry.getValue().filename(), remainingImageTime(expires));
                 byte[] content = checked.content() == null ? raw : checked.content();
                 storedBytes += content.length;
                 if (storedBytes > PACKAGE_STORED_IMAGE_BYTES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
                 prepared.put(entry.getKey(), new Prepared(new OrderImageValidator.Checked(checked.contentType(), checked.filename(), checked.width(), checked.height(), content), fingerprint(checked.filename(), raw)));
             }
+            remainingImageTime(expires);
         }
         return prepared;
     }
+
+    private static Duration remainingImageTime(long expires) {
+        long remaining = expires - System.nanoTime();
+        if (remaining <= 0) throw new OrderFailure("IMAGE_PROCESSING_TIMEOUT");
+        return Duration.ofNanos(remaining);
+    }
+
     private void writeImages(OrderPackages.Package value, Map<UUID, Prepared> prepared, boolean replay) {
         var remaining = new HashMap<>(prepared);
         for (var item : value.items()) {

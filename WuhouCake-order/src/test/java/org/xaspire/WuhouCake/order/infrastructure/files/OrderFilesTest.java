@@ -107,6 +107,12 @@ class OrderFilesTest {
         var before = temporaryFiles();
         assertThrows(OrderFailure.class, () -> files.generate(List.of(new OrderExportFiles.Snapshot(order, List.of(), List.of(image))), "a.zip", true));
         assertEquals(before, temporaryFiles());
+        var checks = new java.util.concurrent.atomic.AtomicInteger();
+        assertEquals("EXPORT_TIMEOUT", assertThrows(OrderFailure.class, () -> files.generate(
+                List.of(new OrderExportFiles.Snapshot(order, List.of(), List.of())), "timeout.xlsx", false, () -> {
+                    if (checks.incrementAndGet() == 3) throw new OrderFailure("EXPORT_TIMEOUT");
+                })).code());
+        assertEquals(before, temporaryFiles());
     }
     @Test void actualWorkbookAndArchiveSizeFailuresRetainTheirErrorAndCleanFiles() throws Exception {
         var data = List.of(new OrderExportFiles.Snapshot(order("0000001"), List.of(), List.of()));

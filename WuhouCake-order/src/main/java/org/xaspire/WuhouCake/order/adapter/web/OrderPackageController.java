@@ -59,9 +59,8 @@ public class OrderPackageController {
             total += file.getSize();
             OrderPackageService.requireUploadSize(file.getSize(), uploads.size() + 1, total);
             if (uploads.putIfAbsent(id, new OrderPackageService.Upload(file.getOriginalFilename(), () -> {
-                try (var input = file.getInputStream()) {
-                    return input.readNBytes(OrderPackageService.MAX_IMAGE_BYTES + 1);
-                } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
+                try { return OrderFileController.readUpload(file); }
+                catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
             })) != null)
                 throw new IllegalArgumentException("Invalid package image part");
         }

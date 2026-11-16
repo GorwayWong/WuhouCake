@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Function;
 import java.util.function.BooleanSupplier;
 import org.slf4j.*;
@@ -16,7 +17,13 @@ import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.CredentialsRevok
 public final class OrderStreams implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(OrderStreams.class);
     private static final Duration MAX_LIFETIME = Duration.ofMinutes(5);
+    public static final int MAX_CONNECTIONS = 24;
+    private static final int MAX_CONNECTIONS_PER_ACCOUNT = 3;
     private static final int MAX_PENDING = 64;
+    private final Object membership = new Object();
+    private final LongAdder rejected = new LongAdder();
+    private final LongAdder sendFailures = new LongAdder();
+    private final LongAdder overflows = new LongAdder();
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     private final Clock clock;
     private final ScheduledExecutorService scheduler;
@@ -32,32 +39,47 @@ public final class OrderStreams implements AutoCloseable {
         this.clock = clock; this.scheduler = scheduler; this.sender = sender; this.emitters = emitters;
         heartbeat = scheduler.scheduleWithFixedDelay(this::heartbeat, 15, 15, TimeUnit.SECONDS);
     }
-    public synchronized SseEmitter subscribe(UUID accountId, long credentialVersion, Instant expiresAt, BooleanSupplier authorized) {
-        if (closed) throw new RejectedExecutionException("Order streams closed");
+    public int connectionCount() { return connections.size(); }
+    public long rejectedCount() { return rejected.sum(); }
+    public long sendFailureCount() { return sendFailures.sum(); }
+    public long overflowCount() { return overflows.sum(); }
+
+    public SseEmitter subscribe(UUID accountId, long credentialVersion, Instant expiresAt, BooleanSupplier authorized) {
         var now = clock.instant();
         if (expiresAt == null || !expiresAt.isAfter(now)) throw new IllegalArgumentException("Expired token");
         var deadline = expiresAt.isBefore(now.plus(MAX_LIFETIME)) ? expiresAt : now.plus(MAX_LIFETIME);
         long timeout = Duration.between(now, deadline).toMillis();
         if (timeout < 1) throw new IllegalArgumentException("Expired token");
-        var connection = new Connection(emitters.apply(timeout), deadline, Objects.requireNonNull(accountId), credentialVersion, Objects.requireNonNull(authorized));
-        connection.emitter.onCompletion(() -> connection.close(false));
-        connection.emitter.onTimeout(() -> connection.close(true));
-        connection.emitter.onError(failure -> connection.close(false));
-        // Register first so a concurrent revocation is either delivered here or observed by authentication.
-        connection.register();
+        Connection connection;
+        synchronized (membership) {
+            if (closed || connections.size() >= MAX_CONNECTIONS
+                    || connections.stream().filter(current -> current.accountId.equals(accountId)).count() >= MAX_CONNECTIONS_PER_ACCOUNT) {
+                rejected.increment();
+                throw new RejectedExecutionException("Order stream capacity unavailable");
+            }
+            connection = new Connection(emitters.apply(timeout), deadline, Objects.requireNonNull(accountId),
+                    credentialVersion, Objects.requireNonNull(authorized));
+            connection.emitter.onCompletion(() -> connection.close(false));
+            connection.emitter.onTimeout(() -> connection.close(true));
+            connection.emitter.onError(failure -> connection.sendFailed(false));
+            // Establish the ready event before any queued change can be sent.
+            connection.sending = true;
+            connections.add(connection);
+        }
         try {
             synchronized (connection.delivery) {
                 if (!connection.authorized()) throw new IllegalArgumentException("Inactive session");
                 connection.emitter.send(SseEmitter.event().name("ready").data(Map.of()));
             }
             long remaining = Math.max(0, Duration.between(clock.instant(), deadline).toNanos());
-            connection.expire(scheduler.schedule(() -> connection.close(true), remaining, TimeUnit.NANOSECONDS));
+            connection.expire(scheduler.schedule(() -> { connection.close(true); }, remaining, TimeUnit.NANOSECONDS));
+            connection.startPending();
         } catch (RejectedExecutionException failure) {
             connection.close(true); throw failure;
         } catch (IllegalArgumentException failure) {
             connection.close(true); throw failure;
         } catch (IOException | RuntimeException failure) {
-            connection.close(true);
+            connection.sendFailed(true);
             LOG.debug("order_stream_open_failed failureType={}", failure.getClass().getSimpleName());
         }
         return connection.emitter;
@@ -78,9 +100,12 @@ public final class OrderStreams implements AutoCloseable {
     private synchronized void heartbeat() {
         for (var connection : connections) connection.enqueue(SseEmitter.event().comment("heartbeat"));
     }
-    @Override public synchronized void close() {
-        if (closed) return;
-        closed = true; heartbeat.cancel(false);
+    @Override public void close() {
+        synchronized (membership) {
+            if (closed) return;
+            closed = true;
+        }
+        heartbeat.cancel(false);
         for (var connection : connections) connection.close(true);
     }
 
@@ -94,6 +119,8 @@ public final class OrderStreams implements AutoCloseable {
         private final ArrayDeque<SseEmitter.SseEventBuilder> pending = new ArrayDeque<>();
         private ScheduledFuture<?> expiry;
         private boolean sending;
+        private boolean delivering;
+        private boolean completeAfterDelivery;
         private volatile boolean closed;
 
         private Connection(SseEmitter emitter, Instant deadline, UUID accountId, long credentialVersion, BooleanSupplier authorized) {
@@ -107,7 +134,6 @@ public final class OrderStreams implements AutoCloseable {
                 LOG.warn("order_stream_authentication_failed failureType={}", failure.getClass().getSimpleName()); return false;
             }
         }
-        private synchronized void register() { if (!closed) connections.add(this); }
         private synchronized void expire(ScheduledFuture<?> task) {
             if (closed) task.cancel(false); else expiry = task;
         }
@@ -121,11 +147,27 @@ public final class OrderStreams implements AutoCloseable {
                     if (!sending) { sending = true; start = true; }
                 }
             }
-            if (overflow) { close(true); return; }
-            if (start) {
-                try { sender.execute(this::drain); }
-                catch (RuntimeException failure) { close(true); }
+            if (overflow) {
+                overflows.increment();
+                close(true);
+                return;
             }
+            if (start) dispatch();
+        }
+
+        private void startPending() {
+            synchronized (this) {
+                if (closed || pending.isEmpty()) {
+                    sending = false;
+                    return;
+                }
+            }
+            dispatch();
+        }
+
+        private void dispatch() {
+            try { sender.execute(this::drain); }
+            catch (RejectedExecutionException failure) { sendFailed(true); }
         }
         private void drain() {
             while (true) {
@@ -137,11 +179,26 @@ public final class OrderStreams implements AutoCloseable {
                 }
                 synchronized (delivery) {
                     if (!authorized()) { close(true); return; }
+                    synchronized (this) {
+                        if (closed) return;
+                        delivering = true;
+                    }
                     try { emitter.send(event); }
                     catch (IOException failure) {
                         // The servlet container completes an emitter after a write I/O failure.
-                        close(false); return;
-                    } catch (RuntimeException failure) { close(true); return; }
+                        sendFailed(false);
+                        return;
+                    } catch (RuntimeException failure) {
+                        sendFailed(true);
+                        return;
+                    } finally {
+                        boolean finish;
+                        synchronized (this) {
+                            delivering = false;
+                            finish = completeAfterDelivery;
+                        }
+                        if (finish) complete();
+                    }
                 }
             }
         }
@@ -164,6 +221,21 @@ public final class OrderStreams implements AutoCloseable {
                 if (removed) complete();
             }
         }
-        private void close(boolean complete) { if (invalidate() && complete) complete(); }
+        private void sendFailed(boolean complete) {
+            if (close(complete)) sendFailures.increment();
+        }
+
+        private boolean close(boolean complete) {
+            synchronized (this) {
+                if (!invalidate()) return false;
+                if (complete && delivering) {
+                    // Spring's emitter completion takes the same write lock as send.
+                    completeAfterDelivery = true;
+                    return true;
+                }
+            }
+            if (complete) complete();
+            return true;
+        }
     }
 }

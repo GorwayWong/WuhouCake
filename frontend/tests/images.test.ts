@@ -1,7 +1,7 @@
 import { testJwt } from './testJwt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError, forgetSession, session, uploadOrderImage } from '../src/api.ts';
+import { ApiError, fetchPackageImage, forgetSession, session, uploadOrderImage } from '../src/api.ts';
 import { imageFileError, loadImagePreview } from '../src/imagePreview.ts';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -61,6 +61,7 @@ test('Blob 读取沿用 Bearer 和 401 刷新；释放 URL，切换订单后丢�
   try {
     await session.login('test', 'test');
     const stopOld = loadImagePreview('order-old', 'old-image', url => shown.push(`old:${url}`), failed);
+    await tick();
     stopOld();
     stopNew = loadImagePreview('order-new', 'new-image', url => shown.push(url), failed);
     await tick(); await tick();
@@ -76,4 +77,34 @@ test('只接受非空 JPG/PNG，单张最多 5 MiB', () => {
   assert.match(imageFileError(new File(['x'], 'cake.heic', { type: 'image/heic' })), /JPG\/PNG/);
   assert.match(imageFileError(new File([], 'cake.jpg', { type: 'image/jpeg' })), /为空/);
   assert.match(imageFileError(new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'cake.jpg', { type: 'image/jpeg' })), /5 MiB/);
+});
+
+test('预览最多两个并发读取，取消尚未开始的请求不会访问网络', async () => {
+  const original = globalThis.fetch;
+  const complete = new Map<string, (response: Response) => void>();
+  Object.defineProperty(globalThis, 'document', { value: { cookie: 'XSRF-TOKEN=test' }, configurable: true });
+  globalThis.fetch = async path => {
+    if (String(path).endsWith('/csrf')) return Response.json({ success: true, data: { headerName: 'X-XSRF-TOKEN' } });
+    if (String(path).endsWith('/login')) return Response.json({ success: true, data: { accessToken: testJwt('jwt'), expiresIn: 900 } });
+    return new Promise(resolve => { complete.set(String(path), resolve); });
+  };
+  const active = new AbortController(), queued = new AbortController();
+  try {
+    await session.login('test', 'test');
+    const first = fetchPackageImage('/images/first', active.signal);
+    const second = fetchPackageImage('/images/second', active.signal);
+    const cancelled = fetchPackageImage('/images/third', queued.signal);
+    const next = fetchPackageImage('/images/fourth', active.signal);
+    const rejection = assert.rejects(cancelled);
+    queued.abort();
+    await rejection;
+    await tick();
+    assert.deepEqual([...complete.keys()], ['/api/images/first', '/api/images/second']);
+    complete.get('/api/images/first')!(new Response('png'));
+    await first; await tick();
+    assert.deepEqual([...complete.keys()], ['/api/images/first', '/api/images/second', '/api/images/fourth']);
+    complete.get('/api/images/second')!(new Response('png'));
+    complete.get('/api/images/fourth')!(new Response('png'));
+    await Promise.all([second, next]);
+  } finally { forgetSession(); globalThis.fetch = original; }
 });

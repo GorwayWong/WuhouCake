@@ -25,14 +25,14 @@ class OrderExportServiceTest {
         var request = new OrderExportRequest(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 11, 1), null, null, null);
         var file = new OrderExportFiles.File("/tmp/internal", "orders.zip", "application/zip", 10);
         when(snapshots.batch(any())).thenReturn(data);
-        when(files.generate(any(), anyString(), eq(true))).thenReturn(file);
+        when(files.generate(any(), anyString(), eq(true), any())).thenReturn(file);
         assertEquals("orders.zip", service.batch(request, operator).filename());
         var ordered = inOrder(snapshots, files); ordered.verify(snapshots).batch(any());
-        ordered.verify(files).generate(any(), anyString(), eq(true)); verify(files, never()).delete(any());
+        ordered.verify(files).generate(any(), anyString(), eq(true), any()); verify(files, never()).delete(any());
     }
     @Test void generationFailureNeverAppendsLog() {
         when(snapshots.batch(any())).thenReturn(List.of());
-        when(files.generate(any(), anyString(), anyBoolean())).thenThrow(new IllegalStateException("render failed"));
+        when(files.generate(any(), anyString(), anyBoolean(), any())).thenThrow(new IllegalStateException("render failed"));
         assertThrows(IllegalStateException.class, () -> service.batch(new OrderExportRequest(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 2), null, null, null), operator));
         verify(files, never()).delete(any());
     }

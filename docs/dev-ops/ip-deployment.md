@@ -10,15 +10,15 @@
 
 配置来源为 [Compose](compose/docker-compose-ip.yml)、[Caddy 配置](compose/Caddyfile.ip)、[证书续期脚本](compose/renew-ip-certificate.sh)和[数据库备份脚本](compose/backup-ip-database.sh)。服务器的 `compose.yml` 对应仓库 Compose 文件；`.env` 包含随机数据库密码、运行 UID/GID、发布目录和镜像名，权限为 `600`，不纳入版本控制。当前网关复用服务器已有 Caddy 2.10.2 镜像，并创建独立的 Wuhou 容器。
 
-应用使用 `prod` profile，保留 Secure Cookie 和 CSRF 校验。客户填单 origin 为 `https://47.106.168.39`。Caddy 配置 `default_sni`，兼容直接访问 IP 时不发送 SNI 的客户端；API 与前端同源，SSE 关闭代理缓冲。公网仅发布 80/443；后端 8080 绑定回环地址，数据库和 Redis 不发布宿主机端口。
+应用使用 `prod` profile，保留 Secure Cookie 和 CSRF 校验。客户填单 origin 为 `https://47.106.168.39`。Caddy 配置 `default_sni`，兼容直接访问 IP 时不发送 SNI 的客户端；API 与前端同源，Caddy 根据事件流响应头即时转发 SSE。公网仅发布 80/443；后端 8080 绑定回环地址，数据库和 Redis 不发布宿主机端口。
 
-服务器为 2 核、约 1.6 GiB 内存。Compose 限制应用 640 MiB、图片处理端 320 MiB/1 核、PostgreSQL 256 MiB、Redis 96 MiB、网关 64 MiB，主 JVM 堆上限 256 MiB，数据库连接池为 5。图片端与应用使用同一发布镜像，但运行独立监督进程和有期限的解码子进程，不暴露公网端口。该配置用于少量员工协作，承载量须按实际图片、导出与并发量另行压测。
+最近记录的服务器规格为 2 核、约 1.6 GiB 内存。仓库候选配置限制 app 为 640 MiB / 1.5 CPU / 160 PIDs，图片端为 320 MiB / 1 CPU / 64 PIDs，PostgreSQL、Redis 和网关分别为 256、96 和 64 MiB。发布前以实际服务器及其他容器占用复核容量。各服务的内存与临时文件预算见[稳定性专项报告](../verification/2026-11-16-production-stability.md)。
 
-`prod` Web 应用必须设置 `IMAGE_WORKER_URL=http://image-worker:8091/process`，缺失时拒绝启动，禁止自动退回主 JVM 解码。无图操作不依赖图片端的健康状态。部署须同时更新 `app` 和 `image-worker`；仅替换旧 Compose 中的 app 镜像不足以启用隔离。非 Web 管理员初始化/恢复命令不需要图片端，图片维护命令仍须配置图片端。
+`prod` 应用需要 `IMAGE_WORKER_URL=http://image-worker:8091/process`。应用可在图片端未就绪或重启时启动和提供无图操作。部署须使用配套的 app、图片端镜像与 Compose 配置。服务更新可通过 `docker compose up -d --wait` 等待两个健康检查，app 的 liveness 和 readiness 独立于图片端。
 
-主应用最多同时处理一批图片上传，另允许两个请求等待最多 2 秒，超额返回 `503 IMAGE_PROCESSING_BUSY`。套餐单批最多 16 张、原始文件总量最多 64 MiB、处理后图片总量最多 32 MiB；仍保留单图 5 MiB、8192 单边和 2400 万像素限制。图片端单张处理期限为 10 秒，主应用调用期限 12 秒；套餐在每张处理前后检查 30 秒整批预算，最后一张调用最多额外占用一个调用期限。超时或处理端失联不会进入套餐写事务。
+套餐和订单图片上传分别允许一个请求解析 Multipart，竞争同一个解码槽。套餐入口超额时立即返回 `503 IMAGE_PROCESSING_BUSY`。订单入口保留两个等待位，每个最多等 2 秒。套餐按顺序解码，整批处理期限 30 秒，每次调用最多 12 秒且不得超过剩余批次时间。输入和输出都受大小限制，超时或解码失败时尚未进入套餐写事务。
 
-图片端以只读文件系统、32 MiB 临时内存盘、64 PIDs 上限运行，每张图由独立 128 MiB 堆子进程处理。监督进程在期限后终止并回收子进程。主应用 GC/safepoint 输出到 Docker 轮转日志；图片端日志记录处理结果和耗时，不含图片内容。`unhealthy` 只是健康状态，`restart: unless-stopped` 不会仅因健康失败重启。健康失败先采集日志和线程现场，再人工恢复，避免无上限重启掩盖故障。
+图片端以只读文件系统和 16 MiB tmpfs 运行。子 JVM 可在异常退出后重新启动处理下一张图。子进程强杀后两秒仍存活或临时文件无法清理时，监督进程退出，容器由 `restart: unless-stopped` 恢复。若健康检查持续失败，检查 tmpfs、容器退出状态、cgroup OOM 与网络。运行时监控和预发布压测步骤见专项报告。
 
 ## 日常操作
 

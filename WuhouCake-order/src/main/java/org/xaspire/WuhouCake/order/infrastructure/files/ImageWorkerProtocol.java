@@ -2,9 +2,13 @@ package org.xaspire.WuhouCake.order.infrastructure.files;
 
 import java.io.*;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.Flow;
+import java.net.http.HttpRequest.BodyPublisher;
+import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse;
 import org.xaspire.WuhouCake.order.domain.port.OrderImageValidator.Checked;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
@@ -16,15 +20,15 @@ final class ImageWorkerProtocol {
     private static final int VERSION = 1;
     private ImageWorkerProtocol() { }
 
-    static byte[] request(byte[] content, String filename) throws IOException {
+    static BodyPublisher request(byte[] content, String filename) throws IOException {
         if (content == null || content.length == 0) throw new OrderFailure("INVALID_IMAGE");
         if (content.length > IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeInt(VERSION);
         out.writeUTF(OrderImageName.sourceName(filename));
-        out.writeInt(content.length); out.write(content);
-        return bytes.toByteArray();
+        out.writeInt(content.length);
+        return BodyPublishers.concat(BodyPublishers.ofByteArray(bytes.toByteArray()), BodyPublishers.ofByteArray(content));
     }
     static Checked process(InputStream source) throws IOException {
         var input = new DataInputStream(source);
@@ -47,6 +51,13 @@ final class ImageWorkerProtocol {
         out.writeInt(VERSION); out.writeUTF(code);
         return bytes.toByteArray();
     }
+    static String failureCode(Path output) throws IOException {
+        try (var input = new DataInputStream(Files.newInputStream(output))) {
+            if (input.readInt() != VERSION) throw new IOException("Invalid image protocol");
+            return input.readUTF();
+        }
+    }
+
     static Checked response(byte[] bytes) throws IOException {
         var input = new DataInputStream(new ByteArrayInputStream(bytes));
         if (input.readInt() != VERSION) throw new IOException("Invalid image protocol");
@@ -68,8 +79,8 @@ final class ImageWorkerProtocol {
     private static byte[] content(DataInputStream input) throws IOException {
         int length = input.readInt();
         if (length < 1 || length > IMAGE_BYTES) throw new IOException("Invalid image length");
-        byte[] bytes = input.readNBytes(length);
-        if (bytes.length != length) throw new EOFException("Truncated image message");
+        byte[] bytes = new byte[length];
+        input.readFully(bytes);
         return bytes;
     }
 

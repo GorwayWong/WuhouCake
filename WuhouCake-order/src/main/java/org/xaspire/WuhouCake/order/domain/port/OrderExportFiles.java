@@ -6,7 +6,10 @@ import org.xaspire.WuhouCake.order.domain.model.entity.OrderActivity;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImage;
 
 public interface OrderExportFiles {
-    File generate(List<Snapshot> snapshots, String filename, boolean zip);
+    default File generate(List<Snapshot> snapshots, String filename, boolean zip) {
+        return generate(snapshots, filename, zip, () -> { });
+    }
+    File generate(List<Snapshot> snapshots, String filename, boolean zip, Runnable checkDeadline);
     void delete(File file);
     default Snapshot captureImages(Snapshot snapshot) { return snapshot; }
     default void releaseImages(List<Snapshot> snapshots) { }

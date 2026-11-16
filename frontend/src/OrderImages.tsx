@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Images, Plus, Trash, X } from '@phosphor-icons/react';
 import { api, errorText, uploadOrderImage, readQuery } from './api';
 import { time } from './dates';
-import { loadImagePreview } from './imagePreview';
+import { loadImagePreview, whenImageVisible } from './imagePreview';
 import { editImageQueue, validateEditImages, commitEditImages, removeDraftImages, removeEditImage, imageQueue, imageQueueMetadata, localImageError, readDraftImage, removeQueuedImage, saveDraftImages, updateQueuedImage } from './draftImages';
 import type { ImageScope, QueuedImage } from './draftImages';
 import { synchronize } from './realtime';
@@ -15,12 +15,13 @@ function ImageTile({ image, scope, blocked, remove, productionView }: { image: O
   const [url, setUrl] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
+  const tile = useRef<HTMLLIElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     setUrl(''); setError(null);
-    return loadImagePreview(image.orderId, image.imageId, setUrl, setError);
+    return whenImageVisible(tile.current, () => loadImagePreview(image.orderId, image.imageId, setUrl, setError));
   }, [image.orderId, image.imageId, attempt]);
-  return <li className="reference-image">
+  return <li className="reference-image" ref={tile}>
     {url ? <button className="image-thumbnail" aria-label={`查看大图：${image.filename}`} onClick={() => dialog.current?.showModal()}><img src={url} alt={image.filename} /></button> : <div className="image-placeholder">{error ? <><span>{errorText(error)}</span><button className="text-button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></> : '正在读取图片…'}</div>}
     <div className="image-caption"><strong className="image-scope">{scope}</strong><span className="image-filename" title={image.filename}>{image.filename}</span>{!productionView && <span>{image.uploaderNameSnapshot} · <time dateTime={image.uploadedAt}>{time(image.uploadedAt, true)}</time></span>}<button className="text-button danger" disabled={blocked} aria-label={`移除图片：${image.filename}`} onClick={remove}><Trash />移除</button></div>
     <dialog ref={dialog} className="image-dialog" aria-label={`参考图片：${image.filename}`} onClick={event => { if (event.target === dialog.current) dialog.current.close(); }}>

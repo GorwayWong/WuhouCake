@@ -38,6 +38,7 @@ class OrderPackageIT {
     @Autowired IdentityService identity;
     @Autowired javax.sql.DataSource dataSource;
     @MockitoSpyBean Operations operations;
+    @MockitoSpyBean java.time.Clock clock;
     @MockitoSpyBean org.xaspire.WuhouCake.order.domain.port.OrderImageValidator imageValidator;
     @MockitoSpyBean org.xaspire.WuhouCake.order.domain.port.OrderPackages packageStore;
     Client manager, staff;
@@ -234,6 +235,8 @@ class OrderPackageIT {
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_change", Integer.class));
         reset(imageValidator); calls.set(0);
+        var timestamp = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS).plusNanos(879);
+        doReturn(timestamp).when(clock).instant();
         doAnswer(invocation -> {
             assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
             calls.incrementAndGet(); return invocation.callRealMethod();

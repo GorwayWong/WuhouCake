@@ -32,7 +32,14 @@ public class OrderComposition {
         return new PostgresOrderManagementQueries(mapper);
     }
     @Bean OrderReportFiles orderReportFiles() { return new PoiOrderReportFiles(); }
-    @Bean OrderManagementService orderManagementService(OrderManagementQueries queries, OrderReportFiles files, JsonCodec json, IdentityFacade identity) { return new OrderManagementService(queries, files, json, identity); }
+    @Bean OrderManagementService orderManagementService(OrderManagementQueries queries, OrderReportFiles files, JsonCodec json,
+            IdentityFacade identity, PlatformTransactionManager transactions) {
+        var reads = new TransactionTemplate(transactions);
+        reads.setReadOnly(true);
+        reads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        reads.setTimeout(20);
+        return new OrderManagementService(queries, files, json, identity, reads);
+    }
     @Bean OrderImages orderImages(OrderImageMapper mapper) { return new PostgresOrderImages(mapper); }
     @Bean OrderImageValidator orderImageValidator(org.springframework.core.env.Environment environment) {
         String endpoint = environment.getProperty("wuhoucake.images.worker-url", "");

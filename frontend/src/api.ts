@@ -50,6 +50,9 @@ export function errorText(error: unknown): string {
     ITEM_ID_CONFLICT: '商品标识已被使用，请重新打开录单草稿。',
     IMAGE_UPLOAD_REMOVED: '该图片已被移除，请核对后重新选择图片。',
     ORDER_IMAGE_LIMIT_EXCEEDED: '每个商品最多保留 5 张图片，请先移除误传图片。',
+    EXPORT_BUSY: '导出任务正在运行，请稍后重试。',
+    EXPORT_TIMEOUT: '导出超时，请缩小导出范围后重试。',
+    IMAGE_DOWNLOAD_BUSY: '图片读取请求过多，请稍后重试。',
     EXPORT_EMPTY: '这些条件下没有订单，请调整日期或筛选条件。',
     EXPORT_LIMIT_EXCEEDED: '导出超过当前入口的日期限制或 100 张订单，请缩小范围或增加筛选条件。',
     EXPORT_FILE_TOO_LARGE: '导出文件过大，请缩小筛选范围；单张订单请联系管理员核对。',
@@ -248,11 +251,46 @@ async function withRequestDeadline<T>(signal: AbortSignal, code: string, request
     clearTimeout(deadline); signal.removeEventListener('abort', cancel);
   }
 }
+const IMAGE_READ_LIMIT = 2;
+const IMAGE_READ_WAITING_LIMIT = 32;
+const imageReadsWaiting = new Set<() => void>();
+let imageReads = 0;
+
+async function reserveImageRead(signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  if (imageReads < IMAGE_READ_LIMIT) {
+    imageReads++;
+    return;
+  }
+  if (imageReadsWaiting.size >= IMAGE_READ_WAITING_LIMIT) throw new ApiError(503, 'IMAGE_DOWNLOAD_BUSY');
+  await new Promise<void>((resolve, reject) => {
+    function acquire() {
+      signal.removeEventListener('abort', cancel);
+      imageReadsWaiting.delete(acquire);
+      resolve();
+    }
+    function cancel() {
+      imageReadsWaiting.delete(acquire);
+      reject(signal.reason);
+    }
+    imageReadsWaiting.add(acquire);
+    signal.addEventListener('abort', cancel, { once: true });
+  });
+}
+
 export async function fetchPackageImage(path: string, signal: AbortSignal) {
   return withRequestDeadline(signal, 'READ_TIMEOUT', async signal => {
-    const response = await authenticatedFetch(path, { signal });
-    if (!response.ok) return decode<never>(response);
-    return response.blob();
+    await reserveImageRead(signal);
+    try {
+      signal.throwIfAborted();
+      const response = await authenticatedFetch(path, { signal });
+      if (!response.ok) return await decode<never>(response);
+      return await response.blob();
+    } finally {
+      const next = imageReadsWaiting.values().next().value;
+      if (next) next();
+      else imageReads--;
+    }
   });
 }
 export async function publicApi<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> } = {}): Promise<T> {

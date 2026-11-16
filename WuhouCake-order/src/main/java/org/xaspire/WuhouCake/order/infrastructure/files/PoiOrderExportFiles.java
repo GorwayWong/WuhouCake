@@ -12,6 +12,7 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.Units;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImage;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.port.*;
@@ -28,21 +29,23 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
         this.images = images; this.xlsxLimit = xlsxLimit; this.zipLimit = zipLimit;
     }
 
-    @Override public File generate(List<Snapshot> snapshots, String filename, boolean zip) {
+    @Override public File generate(List<Snapshot> snapshots, String filename, boolean zip, Runnable checkDeadline) {
         Path path = null;
         try {
             path = Files.createTempFile("wuhoucake-export-", zip ? ".zip" : ".xlsx");
-            try (var output = new BoundedOutputStream(Files.newOutputStream(path), zip ? zipLimit : xlsxLimit)) {
+            try (var output = new BoundedOutputStream(Files.newOutputStream(path), zip ? zipLimit : xlsxLimit, checkDeadline)) {
                 if (zip) {
                     try (var archive = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
                         for (var snapshot : snapshots) {
+                            checkDeadline.run();
                             archive.putNextEntry(new ZipEntry(orderFilename(snapshot)));
-                            workbook(snapshot, new BoundedOutputStream(archive, xlsxLimit));
+                            workbook(snapshot, new BoundedOutputStream(archive, xlsxLimit, checkDeadline), checkDeadline);
                             archive.closeEntry();
                         }
                     }
-                } else workbook(snapshots.getFirst(), output);
+                } else workbook(snapshots.getFirst(), output, checkDeadline);
             }
+            checkDeadline.run();
             String name = zip ? filename : "订单-" + orderFilename(snapshots.getFirst());
             return new File(path.toString(), name, zip ? "application/zip" : XLSX, Files.size(path));
         } catch (IOException | RuntimeException failure) {
@@ -89,7 +92,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
     private static RuntimeException exportFailure(Exception failure) {
         // POI 会包装写出异常，恢复大小上限错误，供现有 HTTP 错误映射返回 413。
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
-            if (cause instanceof OrderFailure limit && limit.code().equals("EXPORT_FILE_TOO_LARGE")) {
+            if (cause instanceof OrderFailure limit && (limit.code().equals("EXPORT_FILE_TOO_LARGE") || limit.code().equals("EXPORT_TIMEOUT"))) {
                 if (cause != failure) for (var suppressed : failure.getSuppressed()) limit.addSuppressed(suppressed);
                 return limit;
             }
@@ -101,7 +104,9 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
         if (!number.matches("[0-9]+")) number = snapshot.order().id().toString();
         return number + ".xlsx";
     }
-    private void workbook(Snapshot snapshot, OutputStream output) throws IOException {
+    private void workbook(Snapshot snapshot, OutputStream output, Runnable checkDeadline) throws IOException {
+        if (snapshot.images().stream().mapToLong(OrderImage::size).sum() > EXPORT_WORKBOOK_IMAGE_BYTES)
+            throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
         try (var book = new XSSFWorkbook()) {
             var order = snapshot.order(); var customer = order.customer(); var plan = order.fulfillment();
             var info = sheet(book, "订单信息", "项目", "内容");
@@ -140,13 +145,19 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             var pictures = sheet(book, "参考图片", "所属商品", "图片名称", "上传员工", "上传时间");
             var drawing = pictures.createDrawingPatriarch();
             for (var image : snapshot.images()) {
+                checkDeadline.run();
                 row(pictures, scope(image.itemId(), itemNames), image.filename(), image.uploaderNameSnapshot(), time(image.uploadedAt()));
                 int firstRow = pictures.getLastRowNum() + 1;
                 for (int i = 0; i < 18; i++) pictures.createRow(firstRow + i).setHeightInPoints(15);
                 String captured = snapshot.imageFiles().get(image.imageId());
-                var bytes = captured == null ? images.content(image.orderId(), image.imageId()).orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"))
-                        : Files.readAllBytes(Path.of(captured));
-                int index = book.addPicture(bytes, image.contentType().equals("image/png") ? Workbook.PICTURE_TYPE_PNG : Workbook.PICTURE_TYPE_JPEG);
+                int type = image.contentType().equals("image/png") ? Workbook.PICTURE_TYPE_PNG : Workbook.PICTURE_TYPE_JPEG;
+                int index;
+                if (captured == null) {
+                    var bytes = images.content(image.orderId(), image.imageId()).orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"));
+                    index = book.addPicture(bytes, type);
+                } else {
+                    try (var input = Files.newInputStream(Path.of(captured))) { index = book.addPicture(input, type); }
+                }
                 var anchor = book.getCreationHelper().createClientAnchor();
                 anchor.setCol1(0); anchor.setRow1(firstRow); anchor.setAnchorType(ClientAnchor.AnchorType.MOVE_DONT_RESIZE);
                 double scale = Math.min(1, Math.min(480.0 / image.width(), 320.0 / image.height()));
@@ -162,6 +173,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
                 var sheet = book.getSheetAt(i);
                 book.setPrintArea(i, 0, Math.max(1, sheet.getRow(0).getLastCellNum() - 1), 0, sheet.getLastRowNum());
             }
+            checkDeadline.run();
             book.write(output);
         }
     }
@@ -236,9 +248,16 @@ case "CAKE", "DONUT", "CUPCAKE", "BREAD", "DRINK", "OTHER", "TEA_BREAK", "COOKIE
 
     static final class BoundedOutputStream extends FilterOutputStream {
         private final long limit;
+        private final Runnable checkDeadline;
         private long written;
-        BoundedOutputStream(OutputStream output, long limit) { super(output); this.limit = limit; }
+        BoundedOutputStream(OutputStream output, long limit) { this(output, limit, () -> { }); }
+        BoundedOutputStream(OutputStream output, long limit, Runnable checkDeadline) {
+            super(output);
+            this.limit = limit;
+            this.checkDeadline = checkDeadline;
+        }
         private void reserve(int length) {
+            checkDeadline.run();
             if (length > limit - written) throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
             written += length;
         }

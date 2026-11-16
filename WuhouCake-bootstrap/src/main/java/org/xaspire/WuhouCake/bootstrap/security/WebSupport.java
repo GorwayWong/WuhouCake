@@ -1,6 +1,7 @@
 package org.xaspire.WuhouCake.bootstrap.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import java.io.IOException;
@@ -19,9 +20,14 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WebSupport {
     @Bean SecurityErrors securityErrors(ObjectMapper mapper) { return new SecurityErrors(mapper); }
-    @Bean FilterRegistrationBean<ImageUploadAdmissionFilter> imageUploadAdmission(ObjectMapper mapper) {
-        var registration = new FilterRegistrationBean<>(new ImageUploadAdmissionFilter(mapper));
-        registration.setOrder(0); return registration;
+    @Bean FilterRegistrationBean<ImageUploadAdmissionFilter> imageUploadAdmission(ObjectMapper mapper, MeterRegistry metrics) {
+        var registration = new FilterRegistrationBean<>(new ImageUploadAdmissionFilter(mapper, metrics));
+        registration.setOrder(-102); return registration;
+    }
+    @Bean FilterRegistrationBean<FileDownloadAdmissionFilter> fileDownloadAdmission(ObjectMapper mapper,
+            MeterRegistry metrics) {
+        var registration = new FilterRegistrationBean<>(new FileDownloadAdmissionFilter(mapper, metrics));
+        registration.setOrder(-101); return registration;
     }
     @Bean FilterRegistrationBean<OncePerRequestFilter> requestIds() {
         OncePerRequestFilter filter = new OncePerRequestFilter() {

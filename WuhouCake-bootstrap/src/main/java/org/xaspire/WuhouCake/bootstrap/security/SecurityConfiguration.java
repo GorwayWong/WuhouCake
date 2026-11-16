@@ -64,6 +64,9 @@ public class SecurityConfiguration {
         http.authorizeHttpRequests(authorize -> {
             authorize.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll();
             authorize.requestMatchers("/actuator/health", "/actuator/health/**").permitAll();
+            authorize.requestMatchers(GET, "/actuator/metrics", "/actuator/metrics/**")
+                    .access((authentication, context) -> new org.springframework.security.authorization.AuthorizationDecision(
+                            java.util.Set.of("127.0.0.1", "::1", "0:0:0:0:0:0:0:1").contains(context.getRequest().getRemoteAddr())));
             if (properties.permitApiDocs()) {
                 authorize.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll();
             }

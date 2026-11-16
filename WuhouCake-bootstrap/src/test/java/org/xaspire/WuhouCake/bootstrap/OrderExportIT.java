@@ -309,7 +309,7 @@ class OrderExportIT {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
             return invocation.callRealMethod();
-        }).when(files).generate(any(), anyString(), eq(false));
+        }).when(files).generate(any(), anyString(), eq(false), any());
         var response = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         assertEquals(200, response.statusCode(), text(response));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) { assertEquals(1, book.getAllPictures().size()); }
@@ -352,7 +352,7 @@ class OrderExportIT {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             jdbc.update("UPDATE cake_order SET version=version+1, payment_status='PAID', updated_at=now() WHERE id=?::uuid", id);
             return invocation.callRealMethod();
-        }).when(files).generate(any(), anyString(), eq(false));
+        }).when(files).generate(any(), anyString(), eq(false), any());
         doAnswer(invocation -> { assertTrue(TransactionSynchronizationManager.isActualTransactionActive()); return invocation.callRealMethod(); })
                 .when(activities).append(argThat(activity -> activity.type().equals("ORDER_EXPORTED")));
         var result = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, result.statusCode(), text(result));
@@ -407,7 +407,7 @@ class OrderExportIT {
         var details = staff.request("POST", "/api/orders/exports/zip", range());
         assertEquals(413, details.statusCode()); assertEquals("EXPORT_CONTENT_TOO_LARGE", body(details).path("code").asText());
         assertEquals(0, exportCount()); assertEquals(before, temporaryFiles());
-        verify(files, never()).generate(any(), anyString(), anyBoolean());
+        verify(files, never()).generate(any(), anyString(), anyBoolean(), any());
     }
     @Test void exportIsUnaffectedByDeferredActivityWriteFailure() throws Exception {
         var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));

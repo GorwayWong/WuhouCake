@@ -16,6 +16,7 @@ import org.xaspire.WuhouCake.order.domain.port.OrderImageValidator;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.*;
 
 public final class JavaOrderImageValidator implements OrderImageValidator {
+    private static final long MAX_DECODED_RASTER_BYTES = 48L * 1024 * 1024;
     @Override public Checked validate(byte[] content, String filename) {
         if (content == null || content.length == 0) throw new OrderFailure("INVALID_IMAGE");
         if (content.length > IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
@@ -39,6 +40,11 @@ public final class JavaOrderImageValidator implements OrderImageValidator {
                 var orientation = mime.equals("image/jpeg") ? jpegOrientation(content) : null;
                 var parameters = reader.getDefaultReadParam();
                 int sampling = Math.max(1, Math.max(width, height) / 1920);
+                var rawType = reader.getRawImageType(0);
+                int bytesPerPixel = rawType == null ? 4 : Math.max(4, Math.ceilDiv(rawType.getColorModel().getPixelSize(), 8));
+                // 16-bit RGBA needs eight bytes per pixel before resize. Reserve heap for the second raster and encoding.
+                while ((long) Math.ceilDiv(width, sampling) * Math.ceilDiv(height, sampling) * bytesPerPixel
+                        > MAX_DECODED_RASTER_BYTES) sampling++;
                 parameters.setSourceSubsampling(sampling, sampling, 0, 0);
                 var decoded = reader.read(0, parameters);
                 if (decoded == null) throw new OrderFailure("INVALID_IMAGE");

@@ -1,8 +1,18 @@
 spring:
+  transaction:
+    default-timeout: 15s
   datasource:
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:5}
+      connection-timeout: 1500
+      validation-timeout: 1000
+      data-source-properties:
+        connectTimeout: 2
+        socketTimeout: 15
+        options: "-c lock_timeout=2000 -c statement_timeout=10000 -c idle_in_transaction_session_timeout=15000"
   data:
     redis:
       host: ${SPRING_DATA_REDIS_HOST}
@@ -12,3 +22,37 @@ spring:
 wuhoucake:
   security:
     permit-api-docs: false
+
+server:
+  max-http-request-header-size: 12KB
+  tomcat:
+    mbeanregistry:
+      enabled: true
+    threads:
+      min-spare: 4
+      max: 24
+      max-queue-capacity: 32
+    max-connections: 96
+    accept-count: 24
+    connection-timeout: 10s
+    keep-alive-timeout: 15s
+    max-keep-alive-requests: 100
+    max-http-form-post-size: 128KB
+    max-parameter-count: 96
+    max-part-count: 20
+    max-part-header-size: 1KB
+    max-swallow-size: 0B
+
+mybatis-plus:
+  configuration:
+    default-statement-timeout: 10
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+  metrics:
+    distribution:
+      percentiles:
+        http.server.requests: 0.95,0.99

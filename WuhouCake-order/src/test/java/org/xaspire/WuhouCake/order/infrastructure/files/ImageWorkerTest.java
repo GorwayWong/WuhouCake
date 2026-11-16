@@ -47,6 +47,44 @@ class ImageWorkerTest {
             }
         }
     }
+    @Test void sixteenBitTransparentPngDoesNotExhaustTheDecoderHeap() throws Exception {
+        var png = new ByteArrayOutputStream();
+        try (var output = new DataOutputStream(png)) {
+            output.writeLong(0x89504e470d0a1a0aL);
+            var header = java.nio.ByteBuffer.allocate(13);
+            header.putInt(3838).putInt(3838).put((byte) 16).put((byte) 6);
+            chunk(output, "IHDR", header.array());
+            var compressed = new ByteArrayOutputStream();
+            try (var deflate = new java.util.zip.DeflaterOutputStream(compressed)) {
+                byte[] row = new byte[1 + 3838 * 8];
+                for (int pixel = 0; pixel < 3838; pixel++) row[1 + pixel * 8 + 6] = 127;
+                for (int y = 0; y < 3838; y++) deflate.write(row);
+            }
+            chunk(output, "IDAT", compressed.toByteArray());
+            chunk(output, "IEND", new byte[0]);
+        }
+        try (var server = new ImageWorkerServer(new InetSocketAddress("127.0.0.1", 0), ImageWorkerServer.decoderCommand(), Duration.ofSeconds(10));
+                var validator = new RemoteOrderImageValidator(endpoint(server))) {
+            server.start();
+            var result = validator.validate(png.toByteArray(), "sixteen-bit.png");
+            assertEquals("image/png", result.contentType());
+            assertEquals(1920, result.width());
+            assertEquals(1920, result.height());
+            var decoded = ImageIO.read(new ByteArrayInputStream(result.content()));
+            assertEquals(127, decoded.getRGB(100, 100) >>> 24);
+        }
+    }
+
+    private static void chunk(DataOutputStream output, String name, byte[] content) throws IOException {
+        byte[] type = name.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        var crc = new java.util.zip.CRC32();
+        crc.update(type);
+        crc.update(content);
+        output.writeInt(content.length);
+        output.write(type);
+        output.write(content);
+        output.writeInt((int) crc.getValue());
+    }
     @Test void hungDecoderIsKilledAndCapacityIsAvailableForNextImage() throws Exception {
         var command = new ArrayList<>(ImageWorkerServer.decoderCommand());
         command.set(command.size() - 1, DecoderFixture.class.getName());
@@ -86,10 +124,34 @@ class ImageWorkerTest {
             }
         });
         server.start();
-        try (var validator = new RemoteOrderImageValidator(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/process"), Duration.ofMillis(200))) {
+        try (var validator = new RemoteOrderImageValidator(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/process"), Duration.ofSeconds(5))) {
             assertTimeoutPreemptively(Duration.ofSeconds(2), () -> assertEquals("IMAGE_PROCESSING_TIMEOUT",
-                    assertThrows(OrderFailure.class, () -> validator.validate(picture(), "cake.png")).code()));
+                    assertThrows(OrderFailure.class, () -> validator.validate(picture(), "cake.png", Duration.ofMillis(200))).code()));
         } finally { release.countDown(); server.stop(0); }
+    }
+    @Test void supervisorRequestsRestartWhenForceKillCannotReapTheDecoder() throws Exception {
+        var child = org.mockito.Mockito.mock(Process.class);
+        org.mockito.Mockito.when(child.isAlive()).thenReturn(true);
+        var restarts = new java.util.concurrent.atomic.AtomicInteger();
+        ImageWorkerServer.terminateOrRestart(child, Duration.ofMillis(20), restarts::incrementAndGet);
+        org.mockito.Mockito.verify(child).destroyForcibly();
+        assertEquals(1, restarts.get());
+    }
+
+    @Test void temporaryStorageFailureReturnsUnavailableAndReleasesCapacity() throws Exception {
+        var dir = Files.createTempDirectory("image-worker-test-");
+        Files.delete(dir);
+        try (var server = new ImageWorkerServer(new InetSocketAddress("127.0.0.1", 0), ImageWorkerServer.decoderCommand(),
+                Duration.ofSeconds(5), dir, () -> fail("a storage failure must not restart the worker"))) {
+            server.start();
+            try (var validator = new RemoteOrderImageValidator(endpoint(server))) {
+                assertEquals("IMAGE_PROCESSING_UNAVAILABLE", assertThrows(OrderFailure.class,
+                        () -> validator.validate(picture(), "cake.png")).code());
+                Files.createDirectory(dir);
+                assertEquals(24, validator.validate(picture(), "cake.png").width());
+                try (var files = Files.list(dir)) { assertEquals(0, files.count()); }
+            }
+        } finally { Files.deleteIfExists(dir); }
     }
     public static class DecoderFixture {
         public static void main(String[] args) throws Exception {

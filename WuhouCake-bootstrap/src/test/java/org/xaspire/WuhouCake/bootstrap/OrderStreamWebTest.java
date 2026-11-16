@@ -39,6 +39,9 @@ class OrderStreamWebTest {
     @TestConfiguration(proxyBeanMethods = false) @EnableConfigurationProperties(IdentityProperties.class)
     static class Beans {
         @Bean Clock clock() { return Clock.systemUTC(); }
+        @Bean io.micrometer.core.instrument.MeterRegistry metrics() {
+            return new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        }
         @Bean SecurityErrors securityErrors(ObjectMapper json) { return new SecurityErrors(json); }
     }
     @Autowired MockMvc mvc;

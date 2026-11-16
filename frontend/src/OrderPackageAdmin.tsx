@@ -1,3 +1,4 @@
+import { whenImageVisible } from './imagePreview';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
@@ -331,15 +332,21 @@ function PackageConflictChoice({ entry, packageId, choice, disabled, onChoose }:
 
 function PackageImagePreview({ file, path }: { file?: File; path?: string }) {
   const [url, setUrl] = useState(''), [problem, setProblem] = useState(''), [attempt, setAttempt] = useState(0);
+  const previewElement = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    const controller = new AbortController(); let preview = '';
     setUrl(''); setProblem('');
-    if (file || path) void (file ? Promise.resolve(file) : fetchPackageImage(path!, controller.signal)).then(blob => {
-      if (!controller.signal.aborted) { preview = URL.createObjectURL(blob); setUrl(preview); }
-    }).catch(error => { if (!controller.signal.aborted) setProblem(errorText(error)); });
-    return () => { controller.abort(); if (preview) URL.revokeObjectURL(preview); };
+    return whenImageVisible(file ? null : previewElement.current, () => {
+      const controller = new AbortController(); let preview = '';
+      const source = file ? Promise.resolve(file) : path ? fetchPackageImage(path, controller.signal) : null;
+      if (source) void source.then(blob => {
+        if (!controller.signal.aborted) { preview = URL.createObjectURL(blob); setUrl(preview); }
+      }).catch(error => { if (!controller.signal.aborted) setProblem(errorText(error)); });
+      return () => { controller.abort(); if (preview) URL.revokeObjectURL(preview); };
+    });
   }, [file, path, attempt]);
-  if (url) return <img className="package-thumbnail" src={url} alt="套餐商品参考图" />;
-  if (problem) return <button type="button" className="text-button package-row-action" title={problem} onClick={() => setAttempt(attempt + 1)}>重试</button>;
-  return <span className="package-thumbnail package-thumbnail-empty" aria-label={file || path ? '正在读取图片' : '未选图片'}><ImageSquare aria-hidden="true" /></span>;
+  return <span ref={previewElement} style={{ display: 'inline-block' }}>
+    {url ? <img className="package-thumbnail" src={url} alt="套餐商品参考图" />
+      : problem ? <button type="button" className="text-button package-row-action" title={problem} onClick={() => setAttempt(attempt + 1)}>重试</button>
+        : <span className="package-thumbnail package-thumbnail-empty" aria-label={file || path ? '正在读取图片' : '未选图片'}><ImageSquare aria-hidden="true" /></span>}
+  </span>;
 }

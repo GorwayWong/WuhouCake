@@ -26,9 +26,9 @@ public class OrderExportSnapshotService {
         this.management = management; this.identity = identity; this.clock = clock;
         this.files = files;
     }
-    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, timeout = 20)
     public List<Snapshot> single(UUID orderId) { checkContent(List.of(orderId)); return capture(List.of(orderId)); }
-    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, timeout = 20)
     public List<Snapshot> batch(OrderExportQueries.Filter filter) {
         var ids = queries.select(filter);
         if (ids.isEmpty()) throw new OrderFailure("EXPORT_EMPTY");
@@ -36,7 +36,7 @@ public class OrderExportSnapshotService {
         checkContent(ids);
         return capture(ids);
     }
-    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, timeout = 20)
     public List<Snapshot> management(org.xaspire.WuhouCake.order.api.query.OrderManagementQuery query) {
         var filter = OrderManagementService.filter(query);
         if (filter.deleted()) OrderReadAccess.requireDeletedRead(identity);
@@ -51,7 +51,10 @@ public class OrderExportSnapshotService {
         try {
             for (var id : ids) {
                 var snapshot = snapshot(id);
-                imageCount += snapshot.images().size(); imageBytes += snapshot.images().stream().mapToLong(image -> image.size()).sum();
+                long workbookImageBytes = snapshot.images().stream().mapToLong(image -> image.size()).sum();
+                if (workbookImageBytes > EXPORT_WORKBOOK_IMAGE_BYTES) throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
+                imageCount += snapshot.images().size();
+                imageBytes += workbookImageBytes;
                 if (imageCount > EXPORT_IMAGES) throw new OrderFailure("EXPORT_LIMIT_EXCEEDED");
                 if (imageBytes > ZIP_BYTES) throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
                 result.add(files == null ? snapshot : files.captureImages(snapshot));

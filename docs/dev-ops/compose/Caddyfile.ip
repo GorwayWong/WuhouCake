@@ -1,6 +1,13 @@
 {
   auto_https off
   admin localhost:2019
+  servers {
+    timeouts {
+      read_header 5s
+      read_body 30s
+      idle 30s
+    }
+  }
   default_sni {$PUBLIC_IP}
 }
 
@@ -19,9 +26,27 @@ https://{$PUBLIC_IP} {
   encode zstd gzip
   header X-Content-Type-Options nosniff
   header Referrer-Policy same-origin
+  @upload {
+    path /api/orders/*/images /api/order-packages /api/order-packages/*
+    header Content-Type multipart/form-data*
+  }
+  @jsonWrite {
+    path /api/*
+    method POST PUT PATCH
+    header Content-Type application/json*
+  }
+  request_body @upload {
+    max_size 65MiB
+  }
+  request_body @jsonWrite {
+    max_size 1MiB
+  }
   handle /api/* {
     reverse_proxy app:8080 {
-      flush_interval -1
+      transport http {
+        dial_timeout 2s
+        response_header_timeout 90s
+      }
     }
   }
   handle {

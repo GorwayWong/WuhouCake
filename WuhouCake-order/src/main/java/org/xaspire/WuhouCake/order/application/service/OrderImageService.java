@@ -19,6 +19,10 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.*;
 
 public class OrderImageService {
     public static final int MAX_IMAGE_BYTES = IMAGE_BYTES;
+    public static void requireUploadSize(long size) {
+        if (size > MAX_IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
+    }
+
     private final Orders orders;
     private final OrderImages images;
     private final OrderImageValidator validator;

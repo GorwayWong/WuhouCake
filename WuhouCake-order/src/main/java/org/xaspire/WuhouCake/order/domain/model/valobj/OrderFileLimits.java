@@ -14,6 +14,7 @@ public final class OrderFileLimits {
     public static final int EXPORT_IMAGES = 800;
     public static final long EXPORT_TEXT_BYTES = 8L * 1024 * 1024;
     public static final long EXPORT_DATA_ROWS = 10_000;
+    public static final long EXPORT_WORKBOOK_IMAGE_BYTES = 24L * 1024 * 1024;
     public static final long XLSX_BYTES = 64L * 1024 * 1024;
     public static final long ZIP_BYTES = 256L * 1024 * 1024;
 }
