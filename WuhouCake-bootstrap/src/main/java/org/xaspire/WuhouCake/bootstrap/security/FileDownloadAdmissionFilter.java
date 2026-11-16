@@ -20,10 +20,16 @@ final class FileDownloadAdmissionFilter extends OncePerRequestFilter {
     private final Semaphore exports = new Semaphore(1);
     private final ObjectMapper mapper;
     private final MeterRegistry metrics;
+    private final ScratchSpace scratch;
 
     FileDownloadAdmissionFilter(ObjectMapper mapper, MeterRegistry metrics) {
+        this(mapper, metrics, null);
+    }
+    FileDownloadAdmissionFilter(ObjectMapper mapper, MeterRegistry metrics, ScratchSpace scratch) {
         this.mapper = mapper;
         this.metrics = metrics;
+        this.scratch = scratch;
+        metrics.counter("wuhou.exports.requests");
         metrics.gauge("wuhou.files.active", java.util.List.of(io.micrometer.core.instrument.Tag.of("kind", "image")),
                 images, limit -> 2 - limit.availablePermits());
         metrics.gauge("wuhou.files.active", java.util.List.of(io.micrometer.core.instrument.Tag.of("kind", "export")),
@@ -32,7 +38,8 @@ final class FileDownloadAdmissionFilter extends OncePerRequestFilter {
 
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws IOException, ServletException {
-        String path = request.getRequestURI();
+        String path = request.getServletPath();
+        if (path == null || path.isEmpty()) path = request.getRequestURI();
         String method = request.getMethod();
         boolean read = method.equals("GET") || method.equals("HEAD");
         boolean export = read && path.equals("/api/admin/orders/export")
@@ -42,6 +49,7 @@ final class FileDownloadAdmissionFilter extends OncePerRequestFilter {
             chain.doFilter(request, response);
             return;
         }
+        if (export) metrics.counter("wuhou.exports.requests").increment();
         var limit = export ? exports : images;
         String kind = export ? "export" : "image";
         if (!limit.tryAcquire()) {
@@ -54,7 +62,15 @@ final class FileDownloadAdmissionFilter extends OncePerRequestFilter {
                     export ? "导出任务正在运行，请稍后重试" : "图片读取请求过多，请稍后重试"));
             return;
         }
-        try { chain.doFilter(request, response); }
-        finally { limit.release(); }
+        try (var space = export && scratch != null ? scratch.reserve(ScratchSpace.EXPORT_RESERVATION) : null) {
+            if (export && scratch != null && space == null) {
+                metrics.counter("wuhou.files.rejected", "kind", kind).increment();
+                response.setStatus(503); response.setContentType("application/json"); response.setCharacterEncoding("UTF-8");
+                response.setHeader("Retry-After", "2");
+                mapper.writeValue(response.getOutputStream(), ApiResponse.failure("TEMP_STORAGE_UNAVAILABLE", "临时空间不足，请稍后重试"));
+                return;
+            }
+            chain.doFilter(request, response);
+        } finally { limit.release(); }
     }
 }

@@ -1,0 +1,17 @@
+# Example targets backed by a private, authenticated collector.
+# Export /app and /worker by running the in-container commands in README.md.
+scrape_configs:
+  - job_name: wuhou-app
+    scheme: https
+    metrics_path: /app
+    authorization:
+      credentials_file: /etc/prometheus/secrets/wuhou-metrics-token
+    static_configs:
+      - targets: ["metrics-gateway.example.internal:443"]
+  - job_name: wuhou-worker
+    scheme: https
+    metrics_path: /worker
+    authorization:
+      credentials_file: /etc/prometheus/secrets/wuhou-metrics-token
+    static_configs:
+      - targets: ["metrics-gateway.example.internal:443"]

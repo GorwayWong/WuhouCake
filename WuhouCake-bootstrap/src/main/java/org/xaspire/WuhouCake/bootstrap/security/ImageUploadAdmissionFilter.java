@@ -20,32 +20,69 @@ public final class ImageUploadAdmissionFilter extends OncePerRequestFilter {
     private final Semaphore packages = new Semaphore(1);
     private final ObjectMapper mapper;
     private final MeterRegistry metrics;
+    private final ScratchSpace scratch;
 
     public ImageUploadAdmissionFilter(ObjectMapper mapper, MeterRegistry metrics) {
+        this(mapper, metrics, null);
+    }
+    ImageUploadAdmissionFilter(ObjectMapper mapper, MeterRegistry metrics, ScratchSpace scratch) {
         this.mapper = mapper;
         this.metrics = metrics;
+        this.scratch = scratch;
         metrics.gauge("wuhou.uploads.active", List.of(Tag.of("kind", "order")), orders, limit -> 1 - limit.availablePermits());
         metrics.gauge("wuhou.uploads.active", List.of(Tag.of("kind", "package")), packages, limit -> 1 - limit.availablePermits());
     }
-    @Override protected boolean shouldNotFilter(HttpServletRequest request) {
-        String type = request.getContentType(), path = request.getRequestURI();
-        return !(request.getMethod().equals("POST") || request.getMethod().equals("PUT")) || type == null
-                || !type.toLowerCase(Locale.ROOT).startsWith("multipart/form-data")
-                || !(path.equals("/api/order-packages") || path.startsWith("/api/order-packages/")
-                || path.matches("/api/orders/[^/]+/images"));
+    @Override protected boolean shouldNotFilter(HttpServletRequest request) { return !matches(request); }
+
+    static boolean matches(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.toLowerCase(Locale.ROOT).startsWith("multipart/form-data")
+                && (isPackage(request) || request.getMethod().equals("POST") && path(request).matches("/api/orders/[^/]+/images"));
     }
+
+    static boolean isPackage(HttpServletRequest request) {
+        String path = path(request);
+        return request.getMethod().equals("POST") && path.equals("/api/order-packages")
+                || request.getMethod().equals("PUT") && path.matches("/api/order-packages/[^/]+");
+    }
+
+    private static String path(HttpServletRequest request) {
+        String path = request.getServletPath();
+        return path == null || path.isEmpty() ? request.getRequestURI() : path;
+    }
+
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
-        boolean packageUpload = request.getRequestURI().startsWith("/api/order-packages");
+        boolean packageUpload = isPackage(request);
         var admission = packageUpload ? packages : orders;
         if (!(packageUpload ? admission.tryAcquire() : acquireOrderUpload())) {
             metrics.counter("wuhou.uploads.rejected", "kind", packageUpload ? "package" : "order").increment();
-            response.setStatus(503); response.setContentType("application/json"); response.setCharacterEncoding("UTF-8");
-            response.setHeader("Retry-After", "2");
-            mapper.writeValue(response.getOutputStream(), ApiResponse.failure("IMAGE_PROCESSING_BUSY", "图片正在处理中，请稍后重试"));
+            unavailable(response, "IMAGE_PROCESSING_BUSY", "图片正在处理中，请稍后重试");
             return;
         }
-        try { chain.doFilter(request, response); }
-        finally { admission.release(); }
+        String kind = packageUpload ? "package" : "order";
+        long bytes = packageUpload ? UploadMultipartFilter.PACKAGE_REQUEST_BYTES : UploadMultipartFilter.ORDER_REQUEST_BYTES;
+        boolean completed = false;
+        try (var space = scratch == null ? null : scratch.reserve(bytes)) {
+            if (scratch != null && space == null) {
+                unavailable(response, "TEMP_STORAGE_UNAVAILABLE", "临时空间不足，请稍后重试");
+                completed = true;
+                return;
+            }
+            chain.doFilter(request, response);
+            completed = true;
+        } finally {
+            admission.release();
+            int status = response.getStatus();
+            if (completed && status >= 200 && status < 300) metrics.counter("wuhou.uploads.succeeded", "kind", kind).increment();
+            else if (completed && status < 500) metrics.counter("wuhou.uploads.rejected", "kind", kind).increment();
+            else metrics.counter("wuhou.uploads.failed", "kind", kind).increment();
+        }
+    }
+
+    private void unavailable(HttpServletResponse response, String code, String message) throws IOException {
+        response.setStatus(503); response.setContentType("application/json"); response.setCharacterEncoding("UTF-8");
+        response.setHeader("Retry-After", "2");
+        mapper.writeValue(response.getOutputStream(), ApiResponse.failure(code, message));
     }
 
     private boolean acquireOrderUpload() {

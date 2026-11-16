@@ -11,6 +11,7 @@ public final class PostgresOrderImages implements OrderImages {
     @Override public boolean lockOrder(UUID id) { return mapper.lockOrder(id.toString()) != null; }
     @Override public boolean activeItem(UUID orderId, UUID itemId) { return mapper.activeItem(orderId.toString(), itemId.toString()); }
     @Override public int count(UUID orderId) { return mapper.count(orderId.toString()); }
+    @Override public long storedBytes(UUID orderId) { return mapper.storedBytes(orderId.toString()); }
     @Override public int countItem(UUID orderId, UUID itemId) { return mapper.countItem(orderId.toString(), itemId.toString()); }
     @Override public Optional<Upload> findUpload(UUID orderId, UUID requestId) {
         return Optional.ofNullable(mapper.findUpload(orderId.toString(), requestId.toString()))
@@ -24,11 +25,14 @@ public final class PostgresOrderImages implements OrderImages {
     @Override public void insert(OrderImage image, byte[] content) {
         mapper.insert(new OrderImageMapper.Row(image.imageId().toString(), image.orderId().toString(), string(image.itemId()),
                 image.contentType(), image.filename(), image.size(), image.width(), image.height(), image.uploadedBy().toString(),
-                image.uploaderNameSnapshot(), image.uploadedAt()), content);
+                image.uploaderNameSnapshot(), image.uploadedAt(), image.processingVersion()), content);
     }
     @Override public List<OrderImage> list(UUID orderId) { return mapper.list(orderId.toString()).stream().map(PostgresOrderImages::image).toList(); }
     @Override public Optional<OrderImage> find(UUID orderId, UUID imageId) {
         return Optional.ofNullable(mapper.find(orderId.toString(), imageId.toString())).map(PostgresOrderImages::image);
+    }
+    @Override public Optional<Integer> processingVersion(UUID orderId, UUID imageId) {
+        return Optional.ofNullable(mapper.processingVersion(orderId.toString(), imageId.toString()));
     }
     @Override public Optional<byte[]> content(UUID orderId, UUID imageId) {
         return Optional.ofNullable(mapper.content(orderId.toString(), imageId.toString())).map(OrderImageMapper.ContentRow::content);
@@ -37,6 +41,6 @@ public final class PostgresOrderImages implements OrderImages {
     private static OrderImage image(OrderImageMapper.Row row) {
         return new OrderImage(UUID.fromString(row.imageId()), UUID.fromString(row.orderId()),
                 row.itemId() == null ? null : UUID.fromString(row.itemId()), row.contentType(), row.filename(), row.size(), row.width(), row.height(),
-                UUID.fromString(row.uploadedBy()), row.uploaderNameSnapshot(), row.uploadedAt());
+                UUID.fromString(row.uploadedBy()), row.uploaderNameSnapshot(), row.uploadedAt(), row.processingVersion());
     }
 }

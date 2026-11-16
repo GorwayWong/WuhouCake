@@ -11,7 +11,9 @@ services:
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-5}
       IMAGE_WORKER_URL: http://image-worker:8091/process
-      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--Xms64m -Xmx256m -XX:MaxDirectMemorySize=24m -XX:MaxMetaspaceSize=136m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -Xlog:gc,safepoint:stdout:time,uptime,level,tags}
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx256m -XX:MaxDirectMemorySize=24m -XX:MaxMetaspaceSize=136m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -Xlog:gc,safepoint:stdout:time,uptime,level,tags
+      APP_TEMP_DIR: /run/wuhou-scratch
+      SPRING_SERVLET_MULTIPART_LOCATION: /run/wuhou-scratch
       TZ: Asia/Shanghai
       IDENTITY_PRIVATE_KEY: /run/identity/private.pem
       IDENTITY_PUBLIC_KEY: /run/identity/public.pem
@@ -21,9 +23,14 @@ services:
       CUSTOMER_ENTRY_MAX_BODY_BYTES: ${CUSTOMER_ENTRY_MAX_BODY_BYTES:-131072}
       CUSTOMER_ENTRY_TRUSTED_PROXIES: ${CUSTOMER_ENTRY_TRUSTED_PROXIES:-}
     volumes:
+      - type: bind
+        source: ${APP_TEMP_DIR:?dedicated scratch mount is required}
+        target: /run/wuhou-scratch
+        bind:
+          create_host_path: false
       - ${IDENTITY_KEY_DIR:?IDENTITY_KEY_DIR is required}:/run/identity:ro
     ports:
-      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
     init: true
     mem_limit: 640m
     cpus: 1.5

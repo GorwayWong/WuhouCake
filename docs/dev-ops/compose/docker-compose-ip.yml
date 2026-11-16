@@ -13,7 +13,10 @@ services:
       POSTGRES_DB: wuhou
       POSTGRES_USER: wuhou
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
-    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=40", "-c", "work_mem=2MB"]
+    command: ["postgres", "-c", "shared_buffers=${POSTGRES_SHARED_BUFFERS:-64MB}", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-24}", "-c", "work_mem=${POSTGRES_WORK_MEM:-2MB}", "-c", "temp_file_limit=${POSTGRES_TEMP_FILE_LIMIT:-64MB}"]
+    mem_limit: ${POSTGRES_MEM_LIMIT:-256m}
+    cpus: ${POSTGRES_CPUS:-0.75}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-64}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -21,14 +24,16 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
-    mem_limit: 256m
     restart: unless-stopped
     logging: *logging
   redis:
     image: redis:7-bookworm
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?required}", "--maxmemory", "48mb", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?required}", "--maxmemory", "${REDIS_MAXMEMORY:-32mb}", "--maxmemory-policy", "noeviction"]
+    mem_limit: ${REDIS_MEM_LIMIT:-96m}
+    cpus: ${REDIS_CPUS:-0.35}
+    pids_limit: ${REDIS_PIDS_LIMIT:-32}
     volumes:
       - redis-data:/data
     healthcheck:
@@ -36,7 +41,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
-    mem_limit: 96m
     restart: unless-stopped
     logging: *logging
   app:
@@ -56,8 +60,15 @@ services:
       DB_POOL_MAX_SIZE: 5
       IMAGE_WORKER_URL: http://image-worker:8091/process
       JAVA_TOOL_OPTIONS: -Xms64m -Xmx256m -XX:MaxDirectMemorySize=24m -XX:MaxMetaspaceSize=136m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -Xlog:gc,safepoint:stdout:time,uptime,level,tags
+      APP_TEMP_DIR: /run/wuhou-scratch
+      SPRING_SERVLET_MULTIPART_LOCATION: /run/wuhou-scratch
       TZ: Asia/Shanghai
     volumes:
+      - type: bind
+        source: ${APP_TEMP_DIR:?dedicated scratch mount is required}
+        target: /run/wuhou-scratch
+        bind:
+          create_host_path: false
       - ./keys:/run/identity:ro
     depends_on:
       postgres:

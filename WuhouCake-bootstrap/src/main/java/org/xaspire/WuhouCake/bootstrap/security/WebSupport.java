@@ -6,7 +6,9 @@ import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import java.io.IOException;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.autoconfigure.security.SecurityProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.*;
 import org.springframework.core.Ordered;
@@ -19,15 +21,23 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WebSupport {
+    @Bean ScratchSpace scratchSpace(@Value("${APP_TEMP_DIR:}") String directory, MeterRegistry metrics) throws IOException {
+        return ScratchSpace.open(directory, metrics);
+    }
     @Bean SecurityErrors securityErrors(ObjectMapper mapper) { return new SecurityErrors(mapper); }
-    @Bean FilterRegistrationBean<ImageUploadAdmissionFilter> imageUploadAdmission(ObjectMapper mapper, MeterRegistry metrics) {
-        var registration = new FilterRegistrationBean<>(new ImageUploadAdmissionFilter(mapper, metrics));
-        registration.setOrder(-102); return registration;
+    @Bean FilterRegistrationBean<ImageUploadAdmissionFilter> imageUploadAdmission(ObjectMapper mapper, MeterRegistry metrics, SecurityProperties security, ScratchSpace scratch) {
+        var registration = new FilterRegistrationBean<>(new ImageUploadAdmissionFilter(mapper, metrics, scratch));
+        registration.setOrder(security.getFilter().getOrder() + 1); return registration;
     }
     @Bean FilterRegistrationBean<FileDownloadAdmissionFilter> fileDownloadAdmission(ObjectMapper mapper,
-            MeterRegistry metrics) {
-        var registration = new FilterRegistrationBean<>(new FileDownloadAdmissionFilter(mapper, metrics));
-        registration.setOrder(-101); return registration;
+            MeterRegistry metrics, SecurityProperties security, ScratchSpace scratch) {
+        var registration = new FilterRegistrationBean<>(new FileDownloadAdmissionFilter(mapper, metrics, scratch));
+        registration.setOrder(security.getFilter().getOrder() + 1); return registration;
+    }
+    @Bean FilterRegistrationBean<UploadMultipartFilter> uploadMultipart(ObjectMapper mapper, MeterRegistry metrics, SecurityProperties security) {
+        var registration = new FilterRegistrationBean<>(new UploadMultipartFilter(mapper, metrics));
+        registration.setOrder(security.getFilter().getOrder() + 2);
+        return registration;
     }
     @Bean FilterRegistrationBean<OncePerRequestFilter> requestIds() {
         OncePerRequestFilter filter = new OncePerRequestFilter() {

@@ -98,6 +98,13 @@ class OrderFilesTest {
             }
         } finally { files.delete(file); }
     }
+    @Test void failedScratchCleanupDoesNotInvalidateACompletedResponse(@org.junit.jupiter.api.io.TempDir Path scratch) throws Exception {
+        var undeletable = Files.createDirectory(scratch.resolve("wuhoucake-export-fixture.zip"));
+        Files.writeString(undeletable.resolve("fixture"), "prevents deletion");
+        assertDoesNotThrow(() -> files.delete(new OrderExportFiles.File(undeletable.toString(), "fixture.zip", "application/zip", 1)));
+        assertTrue(Files.exists(undeletable));
+    }
+
     @Test void outputLimitAndRenderingFailureAreExplicitAndCleanTemporaryFiles() throws Exception {
         var output = new PoiOrderExportFiles.BoundedOutputStream(new ByteArrayOutputStream(), 3);
         output.write(new byte[3]);

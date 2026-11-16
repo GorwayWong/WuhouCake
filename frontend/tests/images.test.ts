@@ -1,7 +1,7 @@
 import { testJwt } from './testJwt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError, fetchPackageImage, forgetSession, session, uploadOrderImage } from '../src/api.ts';
+import { ApiError, errorText, fetchPackageImage, forgetSession, session, uploadOrderImage } from '../src/api.ts';
 import { imageFileError, loadImagePreview } from '../src/imagePreview.ts';
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -18,6 +18,7 @@ test('图片 FormData 保留真实文件、商品 ID和稳定幂等键；失败�
     assert.equal(new Headers(init?.headers).has('Content-Type'), false);
     requests.push(init!);
     if (failure === 1) return Response.json({ success: false, code: 'ORDER_IMAGE_LIMIT_EXCEEDED' }, { status: 409 });
+    if (failure === 3) return Response.json({ success: false, code: 'ORDER_IMAGE_STORAGE_EXCEEDED' }, { status: 409 });
     if (failure === 2) throw new TypeError('response lost');
     return Response.json({ success: true, data: { imageId: 'server-image-id' } });
   };
@@ -35,7 +36,12 @@ test('图片 FormData 保留真实文件、商品 ID和稳定幂等键；失败�
     assert.equal((requests[1].body as FormData).get('itemId'), 'item-a');
     failure = 1; await assert.rejects(uploadOrderImage('order-a', file, 'item-a'), ApiError);
     failure = 2; await assert.rejects(uploadOrderImage('order-a', file, 'item-a'), TypeError);
-    await tick(); assert.equal(requests.length, 4);
+    failure = 3;
+    await assert.rejects(uploadOrderImage('order-a', file, 'item-a', undefined, 'stable-upload-id'), error => error instanceof ApiError
+      && error.code === 'ORDER_IMAGE_STORAGE_EXCEEDED' && /32 MiB/.test(errorText(error)));
+    await tick(); assert.equal(requests.length, 5);
+    assert.equal(new Headers(requests[4].headers).get('Idempotency-Key'), 'stable-upload-id');
+    assert.equal((requests[4].body as FormData).get('file'), file);
   } finally { forgetSession(); globalThis.fetch = original; }
 });
 

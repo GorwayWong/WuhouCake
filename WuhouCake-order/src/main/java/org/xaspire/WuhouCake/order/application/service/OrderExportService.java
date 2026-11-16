@@ -36,22 +36,9 @@ public class OrderExportService {
     }
 
     private Download generate(List<OrderExportFiles.Snapshot> data, boolean batch, String filename, Runnable checkDeadline) {
-        OrderExportFiles.File file = null; Throwable failure = null;
-        try {
-            checkDeadline.run();
-            file = files.generate(data, filename, batch, checkDeadline);
-            return new Download(file.path(), file.filename(), file.contentType(), file.size());
-        } catch (RuntimeException | Error problem) { failure = problem; throw problem; }
-        finally {
-            try { files.releaseImages(data); }
-            catch (RuntimeException cleanup) {
-                if (failure != null) failure.addSuppressed(cleanup);
-                else {
-                    if (file != null) try { files.delete(file); } catch (RuntimeException extra) { cleanup.addSuppressed(extra); }
-                    throw cleanup;
-                }
-            }
-        }
+        checkDeadline.run();
+        var file = files.generate(data, filename, batch, checkDeadline);
+        return new Download(file.path(), file.filename(), file.contentType(), file.size());
     }
     public void delete(Download file) { files.delete(new OrderExportFiles.File(file.path(), file.filename(), file.contentType(), file.size())); }
     public Download management(org.xaspire.WuhouCake.order.api.query.OrderManagementQuery query, Operator operator) {

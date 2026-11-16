@@ -116,8 +116,24 @@ public class OrderPackageService {
         var itemByImage = new HashMap<UUID, OrderPackages.Item>();
         for (var item : items) if (item.imageId() != null) itemByImage.put(item.imageId(), item);
         if (!itemByImage.keySet().containsAll(uploads.keySet())) throw invalid();
-        long received = 0, storedBytes = 0;
+        if (uploads.isEmpty()) return Map.of();
         long expires = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        var existing = new HashMap<UUID, OrderPackages.ImageMetadata>();
+        if (before != null) {
+            for (UUID imageId : uploads.keySet()) {
+                var item = itemByImage.get(imageId);
+                packages.imageMetadata(before.id(), item.itemId(), imageId).ifPresent(metadata -> existing.put(imageId, metadata));
+                remainingImageTime(expires);
+            }
+        }
+        // Replays of saved files only compare fingerprints and never contend for the decoder.
+        if (existing.size() == uploads.size()) return prepareBatch(uploads, existing, expires);
+        return validator.inBatch(() -> prepareBatch(uploads, existing, expires));
+    }
+
+    private Map<UUID, Prepared> prepareBatch(Map<UUID, Upload> uploads, Map<UUID, OrderPackages.ImageMetadata> existing,
+            long expires) {
+        long received = 0, storedBytes = 0;
         var prepared = new HashMap<UUID, Prepared>();
         for (var entry : uploads.entrySet()) {
             remainingImageTime(expires);
@@ -126,10 +142,8 @@ public class OrderPackageService {
             if (raw.length > IMAGE_BYTES) throw new OrderFailure("IMAGE_TOO_LARGE");
             received += raw.length;
             if (received > PACKAGE_IMAGE_BYTES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
-            var item = itemByImage.get(entry.getKey());
-            var existing = before == null ? Optional.<OrderPackages.ImageMetadata>empty() : packages.imageMetadata(before.id(), item.itemId(), item.imageId());
-            if (existing.isPresent()) {
-                var stored = existing.get();
+            var stored = existing.get(entry.getKey());
+            if (stored != null) {
                 prepared.put(entry.getKey(), new Prepared(null, fingerprint(OrderImageName.normalized(entry.getValue().filename(), stored.contentType()), raw)));
             } else {
                 var checked = validator.validate(raw, entry.getValue().filename(), remainingImageTime(expires));

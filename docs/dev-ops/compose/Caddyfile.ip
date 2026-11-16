@@ -26,8 +26,14 @@ https://{$PUBLIC_IP} {
   encode zstd gzip
   header X-Content-Type-Options nosniff
   header Referrer-Policy same-origin
-  @upload {
-    path /api/orders/*/images /api/order-packages /api/order-packages/*
+  @orderUpload {
+    path /api/orders/*/images
+    method POST
+    header Content-Type multipart/form-data*
+  }
+  @packageUpload {
+    path /api/order-packages /api/order-packages/*
+    method POST PUT
     header Content-Type multipart/form-data*
   }
   @jsonWrite {
@@ -35,11 +41,22 @@ https://{$PUBLIC_IP} {
     method POST PUT PATCH
     header Content-Type application/json*
   }
-  request_body @upload {
+  request_body @orderUpload {
+    max_size 6MiB
+  }
+  request_body @packageUpload {
     max_size 65MiB
   }
   request_body @jsonWrite {
     max_size 1MiB
+  }
+  handle_errors 413 {
+    header Content-Type application/json
+    respond `{"success":false,"code":"UPLOAD_REQUEST_TOO_LARGE","message":"请求超过大小上限"}` 413
+  }
+  @management path /actuator /actuator/*
+  handle @management {
+    respond 404
   }
   handle /api/* {
     reverse_proxy app:8080 {

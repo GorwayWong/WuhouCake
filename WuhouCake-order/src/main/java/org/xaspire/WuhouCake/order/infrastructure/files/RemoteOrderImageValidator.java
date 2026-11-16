@@ -5,6 +5,8 @@ import java.net.URI;
 import java.net.http.*;
 import java.time.Duration;
 import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 import org.xaspire.WuhouCake.order.domain.port.OrderImageValidator;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 
@@ -13,7 +15,7 @@ public final class RemoteOrderImageValidator implements OrderImageValidator, Aut
     private final ExecutorService io = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(16), Thread.ofPlatform().name("image-worker-http-", 0).factory());
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).executor(io).build();
-    private final Semaphore admission = new Semaphore(1);
+    private final ReentrantLock admission = new ReentrantLock();
     private final URI endpoint;
     private final Duration deadline;
     public RemoteOrderImageValidator(URI endpoint) { this(endpoint, Duration.ofSeconds(12)); }
@@ -22,6 +24,12 @@ public final class RemoteOrderImageValidator implements OrderImageValidator, Aut
             throw new IllegalArgumentException("Image worker must use an internal HTTP endpoint");
         this.endpoint = endpoint; this.deadline = deadline;
     }
+    @Override public <T> T inBatch(Supplier<T> task) {
+        if (!admission.tryLock()) throw new OrderFailure("IMAGE_PROCESSING_BUSY");
+        try { return task.get(); }
+        finally { admission.unlock(); }
+    }
+
     @Override public Checked validate(byte[] content, String filename) {
         return validate(content, filename, deadline);
     }
@@ -29,7 +37,7 @@ public final class RemoteOrderImageValidator implements OrderImageValidator, Aut
     @Override public Checked validate(byte[] content, String filename, Duration remaining) {
         if (remaining.isNegative() || remaining.isZero()) throw new OrderFailure("IMAGE_PROCESSING_TIMEOUT");
         Duration budget = remaining.compareTo(deadline) < 0 ? remaining : deadline;
-        if (!admission.tryAcquire()) throw new OrderFailure("IMAGE_PROCESSING_BUSY");
+        if (!admission.tryLock()) throw new OrderFailure("IMAGE_PROCESSING_BUSY");
         long started = System.nanoTime();
         CompletableFuture<HttpResponse<byte[]>> pending = null;
         try {
@@ -53,7 +61,7 @@ public final class RemoteOrderImageValidator implements OrderImageValidator, Aut
         }
         finally {
             try { if (pending != null && !pending.isDone()) pending.cancel(true); }
-            finally { admission.release(); }
+            finally { admission.unlock(); }
         }
     }
     @Override public void close() {

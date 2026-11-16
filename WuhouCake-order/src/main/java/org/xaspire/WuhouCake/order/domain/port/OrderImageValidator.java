@@ -8,6 +8,9 @@ public interface OrderImageValidator {
         return validate(content, filename);
     }
 
+    /** 同步执行同一个图片批次。 */
+    default <T> T inBatch(java.util.function.Supplier<T> task) { return task.get(); }
+
     /** content 是校验、方向纠正及压缩后的实际存储内容。 */
     record Checked(String contentType, String filename, int width, int height, byte[] content) {
         public Checked(String contentType, String filename, int width, int height) { this(contentType, filename, width, height, null); }

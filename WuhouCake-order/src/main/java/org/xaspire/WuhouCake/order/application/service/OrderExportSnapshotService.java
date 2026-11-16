@@ -16,15 +16,13 @@ public class OrderExportSnapshotService {
     private final OrderManagementQueries management;
     private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity;
     private final java.time.Clock clock;
-    private final OrderExportFiles files;
     public OrderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images) {
-        this(orders, activities, queries, images, null, null, java.time.Clock.systemUTC(), null);
+        this(orders, activities, queries, images, null, null, java.time.Clock.systemUTC());
     }
     public OrderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images,
-            OrderManagementQueries management, org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity, java.time.Clock clock, OrderExportFiles files) {
+            OrderManagementQueries management, org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity, java.time.Clock clock) {
         this.orders = orders; this.activities = activities; this.queries = queries; this.images = images;
         this.management = management; this.identity = identity; this.clock = clock;
-        this.files = files;
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, timeout = 20)
     public List<Snapshot> single(UUID orderId) { checkContent(List.of(orderId)); return capture(List.of(orderId)); }
@@ -48,31 +46,17 @@ public class OrderExportSnapshotService {
     }
     private List<Snapshot> capture(List<UUID> ids) {
         var result = new ArrayList<Snapshot>(); long imageBytes = 0; int imageCount = 0;
-        try {
-            for (var id : ids) {
-                var snapshot = snapshot(id);
-                long workbookImageBytes = snapshot.images().stream().mapToLong(image -> image.size()).sum();
-                if (workbookImageBytes > EXPORT_WORKBOOK_IMAGE_BYTES) throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
-                imageCount += snapshot.images().size();
-                imageBytes += workbookImageBytes;
-                if (imageCount > EXPORT_IMAGES) throw new OrderFailure("EXPORT_LIMIT_EXCEEDED");
-                if (imageBytes > ZIP_BYTES) throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
-                result.add(files == null ? snapshot : files.captureImages(snapshot));
-            }
-            var captured = List.copyOf(result);
-            if (files != null && org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
-                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
-                        new org.springframework.transaction.support.TransactionSynchronization() {
-                            @Override public void afterCompletion(int status) {
-                                if (status != STATUS_COMMITTED) files.releaseImages(captured);
-                            }
-                        });
-            }
-            return captured;
-        } catch (RuntimeException | Error failure) {
-            if (files != null) try { files.releaseImages(result); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
-            throw failure;
+        for (var id : ids) {
+            var snapshot = snapshot(id);
+            long workbookImageBytes = snapshot.images().stream().mapToLong(image -> image.size()).sum();
+            if (workbookImageBytes > EXPORT_WORKBOOK_IMAGE_BYTES) throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
+            imageCount += snapshot.images().size();
+            imageBytes += workbookImageBytes;
+            if (imageCount > EXPORT_IMAGES) throw new OrderFailure("EXPORT_LIMIT_EXCEEDED");
+            if (imageBytes > ZIP_BYTES) throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
+            result.add(snapshot);
         }
+        return List.copyOf(result);
     }
     private void checkContent(List<UUID> ids) {
         var size = queries.contentSize(ids);

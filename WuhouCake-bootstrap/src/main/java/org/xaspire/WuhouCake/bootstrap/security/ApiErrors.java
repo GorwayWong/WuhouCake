@@ -21,16 +21,21 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 @RestControllerAdvice
 public class ApiErrors {
     private static final Logger LOG = LoggerFactory.getLogger(ApiErrors.class);
+    private final io.micrometer.core.instrument.Counter exportTimeouts;
+    public ApiErrors(io.micrometer.core.instrument.MeterRegistry metrics) {
+        this.exportTimeouts = metrics.counter("wuhou.exports.timeouts");
+    }
     @ExceptionHandler(OrderFailure.class)
     ResponseEntity<ApiResponse<Void>> order(OrderFailure failure) {
+        if (failure.code().equals("EXPORT_TIMEOUT")) exportTimeouts.increment();
         int status = switch (failure.code()) {
             case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE", "PACKAGE_NOT_FOUND" -> 404;
             case "FORBIDDEN", "SUBMISSION_FORBIDDEN", "PACKAGE_FORBIDDEN", "ORDER_DELETED_FORBIDDEN" -> 403;
             case "IMAGE_TOO_LARGE", "IMAGE_BATCH_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
             case "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE", "EXPORT_TIMEOUT" -> 503;
             case "UNSUPPORTED_IMAGE_FORMAT" -> 415;
-            case "ORDER_QUOTE_INCOMPLETE", "ORDER_PAID_AMOUNT_LOCKED", "SUBMISSION_ITEM_ID_CONFLICT", "ITEM_ID_CONFLICT", "IMAGE_UPLOAD_REMOVED", "ORDER_DELETED", "PACKAGE_NAME_CONFLICT", "PACKAGE_CREATION_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
-                    "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED", "DUPLICATE_REVIEW_REQUIRED", "SUBMISSION_NOT_PENDING", "OTHER_ITEMS_INCOMPLETE" -> 409;
+            case "ORDER_QUOTE_INCOMPLETE", "ORDER_PAID_AMOUNT_LOCKED", "SUBMISSION_ITEM_ID_CONFLICT", "ITEM_ID_CONFLICT", "IMAGE_UPLOAD_REMOVED", "ORDER_DELETED", "PACKAGE_NAME_CONFLICT", "PACKAGE_CREATION_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "EXPORT_IMAGE_CHANGED", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
+                    "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED", "ORDER_IMAGE_COUNT_EXCEEDED", "ORDER_IMAGE_STORAGE_EXCEEDED", "ORDER_ITEM_LIMIT_EXCEEDED", "DUPLICATE_REVIEW_REQUIRED", "SUBMISSION_NOT_PENDING", "OTHER_ITEMS_INCOMPLETE" -> 409;
             default -> 400;
         };
         String message = switch (failure.code()) {
@@ -39,12 +44,16 @@ public class ApiErrors {
             case "ORDER_PAID_AMOUNT_LOCKED" -> "已登记付款，请先撤销付款登记再改价";
             case "ORDER_DELETED" -> "订单已删除，仅可在保留期内查询，不可修改或恢复";
             case "ORDER_DELETED_FORBIDDEN" -> "当前岗位不能访问已删除订单";
+            case "EXPORT_IMAGE_CHANGED" -> "导出期间图片已变化，请重新导出";
             case "EXPORT_TIMEOUT" -> "导出超时，请缩小导出范围后重试";
             case "EXPORT_LIMIT_EXCEEDED" -> "导出超过日期、订单或图片数量上限，请缩小筛选范围";
             case "EXPORT_FILE_TOO_LARGE" -> "导出文件过大，请缩小筛选范围或减少图片";
             case "EXPORT_CONTENT_TOO_LARGE" -> "导出正文或记录数过大，请缩小范围；单张订单请精简备注或规格";
             case "EXPORT_EMPTY" -> "筛选范围内没有订单";
             case "ORDER_IMAGE_LIMIT_EXCEEDED" -> "每个商品最多保留 5 张图片";
+            case "ORDER_IMAGE_COUNT_EXCEEDED" -> "每个订单最多保留 40 张有效图片，请移除误传图片后重试";
+            case "ORDER_IMAGE_STORAGE_EXCEEDED" -> "订单图片存储上限为 32 MiB，已移除图片仍占用容量";
+            case "ORDER_ITEM_LIMIT_EXCEEDED" -> "每个订单最多记录 100 个商品项，包含已移除商品";
             case "IMAGE_ITEM_REQUIRED" -> "请选择图片对应的商品";
             case "ITEM_ID_CONFLICT" -> "商品标识已被使用，请重新打开录单草稿";
             case "IMAGE_UPLOAD_REMOVED" -> "该图片已被移除，请核对后重新选择图片";

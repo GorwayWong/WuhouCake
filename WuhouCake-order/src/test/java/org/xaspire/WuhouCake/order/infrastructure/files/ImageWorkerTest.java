@@ -20,6 +20,37 @@ class ImageWorkerTest {
         return bytes.toByteArray();
     }
     private static URI endpoint(ImageWorkerServer server) { return URI.create("http://127.0.0.1:" + server.port() + "/process"); }
+    @Test void batchKeepsAdmissionBetweenImagesAndReleasesItOnFailure() throws Exception {
+        try (var server = new ImageWorkerServer(new InetSocketAddress("127.0.0.1", 0), ImageWorkerServer.decoderCommand(), Duration.ofSeconds(5));
+                var validator = new RemoteOrderImageValidator(endpoint(server));
+                var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            server.start();
+            byte[] image = picture();
+            var betweenImages = new CountDownLatch(1);
+            var resume = new CountDownLatch(1);
+            var batch = executor.submit(() -> validator.inBatch(() -> {
+                assertEquals(24, validator.validate(image, "first.png").width());
+                betweenImages.countDown();
+                try { assertTrue(resume.await(5, TimeUnit.SECONDS)); }
+                catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new AssertionError(failure); }
+                return validator.validate(image, "second.png");
+            }));
+            try {
+                assertTrue(betweenImages.await(5, TimeUnit.SECONDS));
+                assertEquals("IMAGE_PROCESSING_BUSY",
+                        assertThrows(OrderFailure.class, () -> validator.validate(image, "ordinary.png")).code());
+                assertEquals("IMAGE_PROCESSING_BUSY",
+                        assertThrows(OrderFailure.class, () -> validator.inBatch(() -> fail("busy batch started"))).code());
+            } finally { resume.countDown(); }
+            assertEquals(24, batch.get(5, TimeUnit.SECONDS).width());
+            assertEquals("IMAGE_PROCESSING_TIMEOUT", assertThrows(OrderFailure.class,
+                    () -> validator.inBatch(() -> validator.validate(image, "expired.png", Duration.ZERO))).code());
+            assertEquals("UNSUPPORTED_IMAGE_FORMAT", assertThrows(OrderFailure.class,
+                    () -> validator.inBatch(() -> validator.validate(new byte[]{1}, "broken.png"))).code());
+            assertEquals(24, validator.validate(image, "after-batch.png").width());
+        }
+    }
+
     @Test void isolatedDecoderPreservesImagesAndRejectsDamagedContent() throws Exception {
         try (var server = new ImageWorkerServer(new InetSocketAddress("127.0.0.1", 0), ImageWorkerServer.decoderCommand(), Duration.ofSeconds(5))) {
             server.start();

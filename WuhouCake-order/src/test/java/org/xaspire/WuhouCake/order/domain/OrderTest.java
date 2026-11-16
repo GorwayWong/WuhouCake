@@ -14,6 +14,23 @@ import static org.junit.jupiter.api.Assertions.*;
 class OrderTest {
     private static final Instant NOW = Instant.parse("2026-10-12T01:00:00Z");
 
+    @Test void creationAndAppendBoundRetainedItems() {
+        var hundred = java.util.stream.IntStream.range(0, 100)
+                .mapToObj(i -> item("商品 " + i, Map.of())).toArray(OrderItem[]::new);
+        var order = order(java.util.Arrays.copyOf(hundred, 99));
+        order.addItem(hundred[99], NOW);
+        assertEquals(100, order.activeItems().size());
+        order.removeItem(hundred[99].itemId(), NOW);
+        long version = order.version();
+        assertEquals("ORDER_ITEM_LIMIT_EXCEEDED",
+                assertThrows(OrderFailure.class, () -> order.addItem(item("超额商品", Map.of()), NOW)).code());
+        assertEquals(version, order.version());
+        assertEquals(100, order(hundred).activeItems().size());
+        var oversized = java.util.Arrays.copyOf(hundred, 101);
+        oversized[100] = item("第 101 项", Map.of());
+        assertEquals("ORDER_ITEM_LIMIT_EXCEEDED", assertThrows(OrderFailure.class, () -> order(oversized)).code());
+    }
+
     @Test void orderingMethodIsOptionalNormalizedAuditedAndValidatedAtomically() {
         var order = order(item("蛋糕", Map.of()));
         assertNull(order.orderingMethod());

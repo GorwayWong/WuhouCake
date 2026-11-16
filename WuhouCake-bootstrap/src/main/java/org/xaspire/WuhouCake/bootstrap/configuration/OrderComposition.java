@@ -61,10 +61,16 @@ public class OrderComposition {
     @Bean OrderExportQueries orderExportQueries(OrderQueryMapper queries, OrderActivityMapper activities, JsonCodec json) {
         return new PostgresOrderExportQueries(queries, activities, json);
     }
-    @Bean OrderExportFiles orderExportFiles(OrderImages images) { return new PoiOrderExportFiles(images); }
+    @Bean OrderExportFiles orderExportFiles(OrderImages images, PlatformTransactionManager transactions, io.micrometer.core.instrument.MeterRegistry metrics) {
+        var legacyReads = new TransactionTemplate(transactions);
+        legacyReads.setReadOnly(true);
+        legacyReads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        legacyReads.setTimeout(10);
+        return new PoiOrderExportFiles(images, legacyReads, metrics.counter("wuhou.temp.cleanup.failures")::increment);
+    }
     @Bean OrderExportSnapshotService orderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images,
-            OrderManagementQueries management, IdentityFacade identity, Clock clock, OrderExportFiles files) {
-        return new OrderExportSnapshotService(orders, activities, queries, images, management, identity, clock, files);
+            OrderManagementQueries management, IdentityFacade identity, Clock clock) {
+        return new OrderExportSnapshotService(orders, activities, queries, images, management, identity, clock);
     }
     @Bean OrderExportService orderExportService(OrderExportSnapshotService snapshots, OrderExportFiles files) {
         return new OrderExportService(snapshots, files);

@@ -39,7 +39,7 @@ server:
     max-keep-alive-requests: 100
     max-http-form-post-size: 128KB
     max-parameter-count: 96
-    max-part-count: 20
+    max-part-count: 17
     max-part-header-size: 1KB
     max-swallow-size: 0B
 
@@ -51,8 +51,8 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,metrics
+        include: health,metrics,prometheus
   metrics:
     distribution:
-      percentiles:
-        http.server.requests: 0.95,0.99
+      percentiles-histogram:
+        http.server.requests: true

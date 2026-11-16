@@ -11,6 +11,7 @@ import java.util.zip.*;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.util.Units;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.transaction.support.TransactionOperations;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImage;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
@@ -21,12 +22,26 @@ import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.*;
 public final class PoiOrderExportFiles implements OrderExportFiles {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai"));
     private static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    private static final System.Logger LOG = System.getLogger(PoiOrderExportFiles.class.getName());
     private final OrderImages images;
+    private final TransactionOperations legacyReads;
+    private final Runnable cleanupFailure;
     private final long xlsxLimit;
     private final long zipLimit;
     public PoiOrderExportFiles(OrderImages images) { this(images, XLSX_BYTES, ZIP_BYTES); }
     PoiOrderExportFiles(OrderImages images, long xlsxLimit, long zipLimit) {
-        this.images = images; this.xlsxLimit = xlsxLimit; this.zipLimit = zipLimit;
+        this(images, TransactionOperations.withoutTransaction(), () -> { }, xlsxLimit, zipLimit);
+    }
+    public PoiOrderExportFiles(OrderImages images, TransactionOperations legacyReads, Runnable cleanupFailure) {
+        this(images, legacyReads, cleanupFailure, XLSX_BYTES, ZIP_BYTES);
+    }
+    private PoiOrderExportFiles(OrderImages images, TransactionOperations legacyReads, Runnable cleanupFailure,
+            long xlsxLimit, long zipLimit) {
+        this.images = images;
+        this.legacyReads = legacyReads;
+        this.cleanupFailure = cleanupFailure;
+        this.xlsxLimit = xlsxLimit;
+        this.zipLimit = zipLimit;
     }
 
     @Override public File generate(List<Snapshot> snapshots, String filename, boolean zip, Runnable checkDeadline) {
@@ -54,41 +69,51 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
         } catch (Error failure) { cleanup(path, failure); throw failure; }
     }
     @Override public void delete(File file) {
-        try { Files.deleteIfExists(Path.of(file.path())); }
-        catch (IOException failure) { throw new UncheckedIOException("订单导出临时文件清理失败", failure); }
+        cleanup(Path.of(file.path()), null);
     }
-    @Override public Snapshot captureImages(Snapshot snapshot) {
-        var captured = new LinkedHashMap<UUID, String>();
+
+    private Map<UUID, Path> captureImages(Snapshot snapshot, Runnable checkDeadline) {
+        var captured = new LinkedHashMap<UUID, Path>();
         try {
             for (var image : snapshot.images()) {
-                byte[] content = images.content(image.orderId(), image.imageId()).orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"));
+                checkDeadline.run();
+                byte[] content = image.canBeRecompressed() ? legacyReads.execute(transaction -> {
+                    int version = images.processingVersion(image.orderId(), image.imageId())
+                            .orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"));
+                    if (version != image.processingVersion()) throw new OrderFailure("EXPORT_IMAGE_CHANGED");
+                    return readContent(image);
+                }) : readContent(image);
+                checkDeadline.run();
                 Path path = Files.createTempFile("wuhoucake-export-image-", ".bin");
-                captured.put(image.imageId(), path.toString());
+                captured.put(image.imageId(), path);
                 Files.write(path, content);
             }
-            return new Snapshot(snapshot.order(), snapshot.notes(), snapshot.images(), captured);
+            return captured;
         } catch (IOException | RuntimeException failure) {
-            for (String path : captured.values()) cleanup(Path.of(path), failure);
+            for (Path path : captured.values()) cleanup(path, failure);
             throw failure instanceof RuntimeException runtime ? runtime : new UncheckedIOException((IOException) failure);
         } catch (Error failure) {
-            for (String path : captured.values()) cleanup(Path.of(path), failure);
+            for (Path path : captured.values()) cleanup(path, failure);
             throw failure;
         }
     }
-    @Override public void releaseImages(List<Snapshot> snapshots) {
-        IOException failure = null;
-        for (var snapshot : snapshots) for (String path : snapshot.imageFiles().values()) {
-            try { Files.deleteIfExists(Path.of(path)); }
-            catch (IOException cleanup) {
-                if (failure == null) failure = new IOException("订单图片快照临时文件清理失败");
-                failure.addSuppressed(cleanup);
-            }
+
+    private byte[] readContent(OrderImage image) {
+        var content = images.content(image.orderId(), image.imageId()).orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"));
+        if (content.length != image.size()) throw new OrderFailure("EXPORT_IMAGE_CHANGED");
+        return content;
+    }
+
+    private void cleanup(Path path, Throwable failure) {
+        if (path == null) return;
+        try { Files.deleteIfExists(path); }
+        catch (IOException cleanup) {
+            if (failure != null) failure.addSuppressed(cleanup);
+            cleanupFailure.run();
+            LOG.log(System.Logger.Level.WARNING, "Could not delete an order export scratch file", cleanup);
         }
-        if (failure != null) throw new UncheckedIOException(failure);
     }
-    private static void cleanup(Path path, Throwable failure) {
-        if (path != null) try { Files.deleteIfExists(path); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
-    }
+
     private static RuntimeException exportFailure(Exception failure) {
         // POI 会包装写出异常，恢复大小上限错误，供现有 HTTP 错误映射返回 413。
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
@@ -107,6 +132,12 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
     private void workbook(Snapshot snapshot, OutputStream output, Runnable checkDeadline) throws IOException {
         if (snapshot.images().stream().mapToLong(OrderImage::size).sum() > EXPORT_WORKBOOK_IMAGE_BYTES)
             throw new OrderFailure("EXPORT_FILE_TOO_LARGE");
+        var copied = captureImages(snapshot, checkDeadline);
+        try { writeWorkbook(snapshot, copied, output, checkDeadline); }
+        finally { for (Path path : copied.values()) cleanup(path, null); }
+    }
+
+    private void writeWorkbook(Snapshot snapshot, Map<UUID, Path> imageFiles, OutputStream output, Runnable checkDeadline) throws IOException {
         try (var book = new XSSFWorkbook()) {
             var order = snapshot.order(); var customer = order.customer(); var plan = order.fulfillment();
             var info = sheet(book, "订单信息", "项目", "内容");
@@ -149,15 +180,10 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
                 row(pictures, scope(image.itemId(), itemNames), image.filename(), image.uploaderNameSnapshot(), time(image.uploadedAt()));
                 int firstRow = pictures.getLastRowNum() + 1;
                 for (int i = 0; i < 18; i++) pictures.createRow(firstRow + i).setHeightInPoints(15);
-                String captured = snapshot.imageFiles().get(image.imageId());
+                Path captured = imageFiles.get(image.imageId());
                 int type = image.contentType().equals("image/png") ? Workbook.PICTURE_TYPE_PNG : Workbook.PICTURE_TYPE_JPEG;
                 int index;
-                if (captured == null) {
-                    var bytes = images.content(image.orderId(), image.imageId()).orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"));
-                    index = book.addPicture(bytes, type);
-                } else {
-                    try (var input = Files.newInputStream(Path.of(captured))) { index = book.addPicture(input, type); }
-                }
+                try (var input = Files.newInputStream(captured)) { index = book.addPicture(input, type); }
                 var anchor = book.getCreationHelper().createClientAnchor();
                 anchor.setCol1(0); anchor.setRow1(firstRow); anchor.setAnchorType(ClientAnchor.AnchorType.MOVE_DONT_RESIZE);
                 double scale = Math.min(1, Math.min(480.0 / image.width(), 320.0 / image.height()));

@@ -6,16 +6,18 @@ import org.apache.ibatis.annotations.*;
 
 public interface OrderImageMapper {
     record Row(String imageId, String orderId, String itemId, String contentType, String filename, long size,
-            int width, int height, String uploadedBy, String uploaderNameSnapshot, Instant uploadedAt) { }
+            int width, int height, String uploadedBy, String uploaderNameSnapshot, Instant uploadedAt, int processingVersion) { }
     record ContentRow(byte[] content) { }
     String COLUMNS = "id::text AS image_id, order_id::text, item_id::text, content_type, filename, size, width, height,"
-            + " uploaded_by::text, uploader_name_snapshot, uploaded_at";
+            + " uploaded_by::text, uploader_name_snapshot, uploaded_at, processing_version";
     @Select("SELECT id::text FROM cake_order WHERE id=CAST(#{id} AS uuid) FOR UPDATE")
     String lockOrder(String id);
     @Select("SELECT EXISTS(SELECT 1 FROM cake_order_item WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{itemId} AS uuid) AND NOT is_removed)")
     boolean activeItem(@Param("orderId") String orderId, @Param("itemId") String itemId);
     @Select("SELECT count(*) FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed")
     int count(String id);
+    @Select("SELECT COALESCE(sum(size), 0) FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid)")
+    long storedBytes(String id);
     @Select("SELECT count(*) FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND item_id=CAST(#{itemId} AS uuid) AND NOT is_removed")
     int countItem(@Param("orderId") String orderId, @Param("itemId") String itemId);
     record UploadRow(String imageId, String fingerprint) { }
@@ -34,6 +36,8 @@ public interface OrderImageMapper {
     Row find(@Param("orderId") String orderId, @Param("imageId") String imageId);
     @Select("SELECT EXISTS(SELECT 1 FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid))")
     boolean contains(@Param("orderId") String orderId, @Param("imageId") String imageId);
+    @Select("SELECT processing_version FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid)")
+    Integer processingVersion(@Param("orderId") String orderId, @Param("imageId") String imageId);
     @Select("SELECT content FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid)")
     ContentRow content(@Param("orderId") String orderId, @Param("imageId") String imageId);
     @Update("UPDATE cake_order_image SET is_removed=true WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid) AND NOT is_removed")

@@ -47,6 +47,7 @@ public class OrderService {
     private OrderViews.Detail createInternal(OrderCommands.Create command, Operator operator, UUID submissionId) {
         var actor = actor(operator); var now = now();
         if (command.customer() == null || command.fulfillment() == null || command.items() == null || command.items().isEmpty()) throw invalid();
+        Order.requireItemCapacity(command.items().size());
         var customer = command.customer(); var fulfillment = command.fulfillment();
         var contact = new CustomerContact(customer.customerName(), customer.phone(), customer.memberPhone(), customer.buyerName());
         FulfillmentType type;

@@ -1,7 +1,15 @@
 services:
   postgres:
+    command: ["postgres", "-c", "shared_buffers=${POSTGRES_SHARED_BUFFERS:-128MB}", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-40}", "-c", "work_mem=${POSTGRES_WORK_MEM:-4MB}", "-c", "temp_file_limit=${POSTGRES_TEMP_FILE_LIMIT:-128MB}"]
+    mem_limit: ${POSTGRES_MEM_LIMIT:-512m}
+    cpus: ${POSTGRES_CPUS:-1.5}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-96}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
   redis:
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?required}", "--maxmemory", "${REDIS_MAXMEMORY:-96mb}", "--maxmemory-policy", "noeviction"]
+    mem_limit: ${REDIS_MEM_LIMIT:-192m}
+    cpus: ${REDIS_CPUS:-0.75}
+    pids_limit: ${REDIS_PIDS_LIMIT:-48}
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"

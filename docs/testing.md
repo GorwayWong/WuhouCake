@@ -24,7 +24,7 @@ python3 docs/verification/image-isolation-probe.py --base http://127.0.0.1:18080
 | 前端表单数据、路由、请求、草稿与同步 | `npm --prefix frontend test` | Node.js 24、`npm --prefix frontend ci` |
 | 前端类型与打包 | `npm --prefix frontend run build` | 同上 |
 
-本地集成测试的连接参数见 [integration profile](../WuhouCake-bootstrap/src/main/resources/application-integration.yml)。使用专用测试实例，按实际连接设置 `SPRING_DATASOURCE_*` 和 `SPRING_DATA_REDIS_*`。测试使用随机数据库 schema 和 Redis 键前缀，测试数据使用合成样本。复现 CI 时关闭外部识别并清空模型密钥，参见 [CI 环境配置](../.github/workflows/ci.yml)。
+本地集成测试的连接参数见 [integration profile](../WuhouCake-bootstrap/src/main/resources/application-integration.yml)。使用专用测试实例，按实际连接设置 `SPRING_DATASOURCE_*` 和 `SPRING_DATA_REDIS_*`。测试 HTTP 服务绑定 IPv4 回环并使用随机端口，避免系统其他服务的 IPv4 回环监听覆盖双栈通配监听。测试使用随机数据库 schema、Redis 键前缀与合成样本。复现 CI 时关闭外部识别并清空模型密钥，参见 [CI 环境配置](../.github/workflows/ci.yml)。
 
 单独重跑某一条 HTTP 集成用例时，可以指定类和方法。测试报告分别在各模块的 `target/surefire-reports` 和 `target/failsafe-reports`。
 
@@ -33,6 +33,17 @@ python3 docs/verification/image-isolation-probe.py --base http://127.0.0.1:18080
   '-Dit.test=IdentityIT#auditFiltersByActorActionResultAndTimeWithStablePagination' \
   -Dfailsafe.failIfNoSpecifiedTests=false
 ```
+
+## 生产稳定性确定性回归
+
+使用 Java 21 运行完整后端校验，再以专用 PostgreSQL 17、Redis 7 和合成数据运行 integration profile。执行 `python3 docs/dev-ops/compose/test-resource-config.py` 核验四组 Compose 和 JVM 参数。在有本地 Docker 的环境，用 Caddy 2.10.2 和合成证书执行 `caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`，分别验证 6 MiB 订单路由、65 MiB 套餐路由和公网管理路径。告警规则用 `promtool check rules docs/dev-ops/monitoring/alerts.yml` 解析。
+
+- `OrderTest` 验证 100 个含软删除的订单商品项边界。`OrderExportIT` 验证整单图片数量、32 MiB 精确字节和超一字节、幂等、两条事务争用真实 PostgreSQL 行锁、历史图片保留和导出失败清理。
+- `OrderExportIT`、`OrderPackageIT` 通过真实 HTTP 验证鉴权先于准入、无 Content-Length 时的正文限制、额外 Part、JSON 限额、16 图套餐和释放准入。检查 `/actuator/prometheus` 回环采集与非回环拒绝。
+- `ScratchSpaceTest` 验证预留边界、异常释放、独占锁、活动文件保护和孤儿文件期限。`ImageWorkerTest` 验证批次独占、快速 BUSY、期限和 Worker 错误后的恢复。
+- `frontend/tests/images.test.ts` 验证容量错误提示以及原文件和幂等键的重试行为。保留草稿、权限、套餐和原导出内容回归。
+
+本轮验收只使用确定性回归和少量并发请求。后续独立资源验收由专用环境执行，流程可参照上文。
 
 ## 业务覆盖入口
 

@@ -46,6 +46,8 @@ import static org.mockito.Mockito.*;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("integration")
+@org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
+@org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Import(OrderExportIT.EventsConfiguration.class)
 class OrderExportIT {
@@ -55,9 +57,12 @@ class OrderExportIT {
     @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
         JwtTestKeys.properties(registry);
         registry.add("spring.flyway.default-schema", () -> SCHEMA); registry.add("spring.flyway.schemas", () -> SCHEMA);
+        registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus");
+        registry.add("management.metrics.distribution.percentiles-histogram.http.server.requests", () -> "true");
         registry.add("spring.datasource.hikari.schema", () -> SCHEMA); registry.add("wuhoucake.identity.redis-namespace", () -> NAMESPACE);
     }
     @LocalServerPort int port;
+    @Autowired org.springframework.test.web.servlet.MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
     @Autowired StringRedisTemplate redis;
@@ -65,6 +70,7 @@ class OrderExportIT {
     @Autowired Changes changes;
     @Autowired org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderImageMaintenanceMapper maintenance;
     @Autowired OrderImageValidator validator;
+    @Autowired org.xaspire.WuhouCake.order.application.service.OrderImageService uploads;
     @Autowired org.xaspire.WuhouCake.order.application.service.OrderExportSnapshotService snapshots;
     @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @MockitoSpyBean OrderImages images;
@@ -241,6 +247,148 @@ class OrderExportIT {
         assertEquals(5, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
         assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
     }
+    @Test void authenticatedUploadRejectsExtraPartsAndOversizedChunkedBodyBeforeDecoding() throws Exception {
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String path = "/api/orders/" + order.path("orderId").asText() + "/images";
+        String item = order.at("/items/0/itemId").asText();
+        byte[] png = picture("png");
+        String boundary = "BoundedOrderImage";
+        var body = new ByteArrayOutputStream();
+        body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"itemId\"\r\n\r\n" + item
+                + "\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.png\""
+                + "\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+        body.write(png);
+        var extra = new ByteArrayOutputStream();
+        body.writeTo(extra);
+        extra.write(("\r\n--" + boundary + "\r\nContent-Disposition: form-data; name=\"extra\"; filename=\"y.png\""
+                + "\r\nContent-Type: image/png\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+        extra.write(png);
+        byte[] ending = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.US_ASCII);
+        extra.write(ending);
+        body.write(ending);
+        var request = staff.builder(path, false).header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(extra.toByteArray())).build();
+        var rejected = staff.client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(400, rejected.statusCode(), text(rejected));
+        assertEquals("INVALID_UPLOAD_PARTS", body(rejected).path("code").asText());
+        var chunked = staff.builder(path, false).header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofInputStream(() -> new java.io.SequenceInputStream(
+                        new ByteArrayInputStream(body.toByteArray()), new ByteArrayInputStream(new byte[6 * 1024 * 1024])))).build();
+        assertEquals(-1, chunked.bodyPublisher().orElseThrow().contentLength());
+        assertEquals(413, staff.client.send(chunked, HttpResponse.BodyHandlers.ofByteArray()).statusCode());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_image", Integer.class));
+        assertEquals(201, staff.upload(order.path("orderId").asText(), item, png, "accepted.png").statusCode());
+    }
+
+    @Test void fullOrderAllowsIdempotentReplayAndRejectsAnotherActiveImage() throws Exception {
+        var staff = staff();
+        var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
+        for (int i = 2; i < 10; i++) input.withArray("items").addObject().put("name", "合成商品 " + i).put("quantity", 1);
+        var order = data(staff.request("POST", "/api/orders", input));
+        String id = order.path("orderId").asText();
+        var png = picture("png");
+        for (int i = 0; i < 8; i++) {
+            seedImages(id, order.at("/items/" + i + "/itemId").asText(), staff.accountId, png.length, i == 7 ? 4 : 5, false);
+        }
+        String first = order.at("/items/8/itemId").asText(), second = order.at("/items/9/itemId").asText();
+        UUID key = UUID.randomUUID();
+        var last = staff.upload(id, first, png, "last.png", key);
+        assertEquals(201, last.statusCode(), text(last));
+        var excessive = staff.upload(id, second, png, "excessive.png", UUID.randomUUID());
+        assertEquals(409, excessive.statusCode(), text(excessive));
+        assertEquals("ORDER_IMAGE_COUNT_EXCEEDED", body(excessive).path("code").asText());
+        assertEquals(data(last), data(staff.upload(id, first, png, "last.png", key)));
+        assertEquals("IDEMPOTENCY_KEY_CONFLICT",
+                body(staff.upload(id, second, png, "last.png", key)).path("code").asText());
+        assertEquals(40, jdbc.queryForObject("SELECT count(*) FROM cake_order_image", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_image_upload", Integer.class));
+    }
+
+    @Test void retainedImagesCountAgainstStorageAndExactByteLimitIsAllowed() throws Exception {
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
+        byte[] png = picture("png");
+        int mib = 1024 * 1024;
+        seedImages(id, item, staff.accountId, 5 * mib, 6, true);
+        seedImages(id, item, staff.accountId, 2 * mib - png.length + 1, 1, true);
+        var overByOne = staff.upload(id, item, png, "limit.png", UUID.randomUUID());
+        assertEquals(409, overByOne.statusCode(), text(overByOne));
+        assertEquals("ORDER_IMAGE_STORAGE_EXCEEDED", body(overByOne).path("code").asText());
+        assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_image", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_image_upload", Integer.class));
+        jdbc.update("UPDATE cake_order_image SET content=substring(content FOR (size-1)::int), size=size-1 WHERE size < ?", 5 * mib);
+        var exact = staff.upload(id, item, png, "limit.png", UUID.randomUUID());
+        assertEquals(201, exact.statusCode(), text(exact));
+        String image = data(exact).path("imageId").asText();
+        assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + image, null).statusCode());
+        assertEquals("ORDER_IMAGE_STORAGE_EXCEEDED",
+                body(staff.upload(id, item, png, "replacement.png")).path("code").asText());
+        assertEquals(32L * mib, jdbc.queryForObject("SELECT sum(size) FROM cake_order_image", Long.class));
+        assertArrayEquals(png, jdbc.queryForObject("SELECT content FROM cake_order_image WHERE id=?::uuid", byte[].class, image));
+        assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
+    }
+
+    @Test void concurrentUploadsToDifferentItemsCannotExceedStoredBytes() throws Exception {
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var id = UUID.fromString(order.path("orderId").asText());
+        var first = UUID.fromString(order.at("/items/0/itemId").asText());
+        var second = UUID.fromString(order.at("/items/1/itemId").asText());
+        var author = new org.xaspire.WuhouCake.order.api.command.OrderCommands.Operator(UUID.fromString(staff.accountId), "Fixture");
+        var png = picture("png");
+        int mib = 1024 * 1024;
+        seedImages(id.toString(), first.toString(), staff.accountId, 5 * mib, 6, true);
+        seedImages(id.toString(), first.toString(), staff.accountId, 2 * mib - png.length, 1, true);
+        var arriving = new CountDownLatch(2);
+        doAnswer(invocation -> {
+            arriving.countDown();
+            return invocation.callRealMethod();
+        }).when(images).lockOrder(id);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var held = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var lock = executor.submit(() -> new org.springframework.transaction.support.TransactionTemplate(transactions)
+                    .executeWithoutResult(status -> {
+                        jdbc.queryForObject("SELECT id::text FROM cake_order WHERE id=? FOR UPDATE", String.class, id);
+                        held.countDown();
+                        try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                        catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new AssertionError(failure); }
+                    }));
+            assertTrue(held.await(5, TimeUnit.SECONDS));
+            var a = executor.submit(() -> uploadResult(id, first, author, png));
+            var b = executor.submit(() -> uploadResult(id, second, author, png));
+            try { assertTrue(arriving.await(5, TimeUnit.SECONDS)); }
+            finally { release.countDown(); }
+            lock.get(5, TimeUnit.SECONDS);
+            assertEquals(Set.of("STORED", "ORDER_IMAGE_STORAGE_EXCEEDED"),
+                    new HashSet<>(List.of(a.get(5, TimeUnit.SECONDS), b.get(5, TimeUnit.SECONDS))));
+        }
+        assertEquals(32L * mib, jdbc.queryForObject("SELECT sum(size) FROM cake_order_image", Long.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_image_upload", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='IMAGE_ADDED'", Integer.class));
+    }
+
+    private String uploadResult(UUID order, UUID item, org.xaspire.WuhouCake.order.api.command.OrderCommands.Operator author, byte[] png) {
+        try {
+            uploads.upload(order, item, png, "race.png", author, UUID.randomUUID());
+            return "STORED";
+        } catch (org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure failure) {
+            return failure.code();
+        }
+    }
+
+    private void seedImages(String order, String item, String author, int bytes, int count, boolean removed) {
+        jdbc.update("""
+                INSERT INTO cake_order_image(id, order_id, item_id, content_type, filename, content, size, width, height,
+                                              uploaded_by, uploader_name_snapshot, uploaded_at, is_removed)
+                SELECT gen_random_uuid(), ?::uuid, ?::uuid, 'image/png', 'fixture.png',
+                       decode(repeat('00', ?), 'hex'), ?, 1, 1, ?::uuid, 'Fixture', now(), ?
+                  FROM generate_series(1, ?)
+                """, order, item, bytes, bytes, author, removed, count);
+    }
+
     @Test void removedItemImageIsRetainedButExcludedFromFutureExports() throws Exception {
         var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
@@ -597,14 +745,114 @@ class OrderExportIT {
             assertEquals(1 + notes, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Integer.class));
         } finally { root.detachAppender(logs); logs.stop(); logger.setLevel(previous); reset(streams, activities); }
     }
+    @Test void immutableImageCopyDoesNotHoldMetadataTransactionAndMissingContentCancelsDownload() throws Exception {
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        UUID id = UUID.fromString(order.path("orderId").asText());
+        UUID image = UUID.fromString(data(staff.upload(id.toString(), null, picture("png"), "captured.png")).path("imageId").asText());
+        var before = temporaryFiles();
+        doAnswer(invocation -> {
+            assertFalse(TransactionSynchronizationManager.isActualTransactionActive(), "immutable BYTEA read holds metadata transaction");
+            return invocation.callRealMethod();
+        }).when(images).content(id, image);
+        var path = "/api/orders/" + id + "/exports/xlsx";
+        var copied = staff.request("POST", path, null);
+        assertEquals(200, copied.statusCode(), text(copied));
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(copied.body()))) {
+            assertEquals(1, workbook.getAllPictures().size());
+        }
+        doAnswer(invocation -> {
+            jdbc.update("DELETE FROM cake_order_image WHERE id=?", image);
+            return invocation.callRealMethod();
+        }).when(images).content(id, image);
+        var missing = staff.request("POST", path, null);
+        assertEquals(404, missing.statusCode(), text(missing));
+        assertEquals("IMAGE_NOT_FOUND", body(missing).path("code").asText());
+        assertEquals("", header(missing, "Content-Disposition"));
+        assertEquals(before, temporaryFiles());
+    }
+
+    @Test void unauthorizedDownloadDoesNotCompeteForAnActiveExport() throws Exception {
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var path = "/api/orders/" + order.path("orderId").asText() + "/exports/xlsx";
+        var entered = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            entered.countDown();
+            assertTrue(resume.await(10, TimeUnit.SECONDS));
+            return invocation.callRealMethod();
+        }).when(files).generate(any(), anyString(), eq(false), any());
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var active = executor.submit(() -> staff.request("POST", path, null));
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(401, new Client().request("POST", path, null).statusCode());
+                var busy = staff.request("POST", path, null);
+                assertEquals(503, busy.statusCode(), text(busy));
+                assertEquals("EXPORT_BUSY", body(busy).path("code").asText());
+            } finally { resume.countDown(); }
+            assertEquals(200, active.get(10, TimeUnit.SECONDS).statusCode());
+        }
+        assertEquals(200, staff.request("POST", path, null).statusCode());
+    }
+
+    @Test void prometheusExposesBoundedInfrastructureMetricsOnLoopback() throws Exception {
+        var remote = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/actuator/prometheus")
+                .header("X-Forwarded-For", "127.0.0.1").with(request -> {
+                    request.setRemoteAddr("192.0.2.10");
+                    return request;
+                })).andReturn().getResponse();
+        assertEquals(401, remote.getStatus());
+        var client = new Client();
+        assertEquals(200, client.request("GET", "/actuator/health", null).statusCode());
+        var response = client.request("GET", "/actuator/prometheus", null);
+        assertEquals(200, response.statusCode(), text(response));
+        String metrics = new String(response.body(), StandardCharsets.UTF_8);
+        assertTrue(metrics.contains("jvm_memory_used_bytes"));
+        assertTrue(metrics.contains("hikaricp_connections_active"));
+        assertTrue(metrics.contains("wuhou_uploads_active"));
+        assertTrue(metrics.contains("wuhou_sse_connections"));
+        assertTrue(metrics.contains("wuhou_temp_reserved_bytes"));
+        assertTrue(metrics.contains("tomcat_threads_current_threads"));
+        assertTrue(metrics.contains("http_server_requests_seconds_bucket"));
+        assertFalse(metrics.contains("orderId="));
+        assertFalse(metrics.contains("employeeId="));
+        assertFalse(metrics.contains("requestId="));
+    }
+
+    @Test void legacyMetadataSnapshotDoesNotStageBytesAndRecompressionBeforeCopyCancelsExport() throws Exception {
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String id = order.path("orderId").asText();
+        String image = data(staff.upload(id, null, picture("png"), "before.png")).path("imageId").asText();
+        jdbc.update("UPDATE cake_order_image SET processing_version=0 WHERE id=?::uuid", image);
+        var before = temporaryFiles();
+        var snapshot = snapshots.single(UUID.fromString(id));
+        assertEquals(1, snapshot.getFirst().images().size());
+        assertEquals(before, temporaryFiles());
+        var recompressed = picture("jpeg");
+        doAnswer(invocation -> {
+            assertEquals(1, maintenance.replace(image, recompressed, "image/jpeg", "after.jpg", recompressed.length, 12, 6));
+            return invocation.callRealMethod();
+        }).when(files).generate(any(), anyString(), eq(false), any());
+        var result = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        assertEquals(409, result.statusCode(), text(result));
+        assertEquals("EXPORT_IMAGE_CHANGED", body(result).path("code").asText());
+        assertEquals("", header(result, "Content-Disposition"));
+        assertEquals(before, temporaryFiles());
+    }
+
     @Test void rolledBackSnapshotTransactionReleasesEveryCapturedImage() throws Exception {
         var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
         staff.upload(id, null, picture("png"), "rollback.png");
+        jdbc.update("UPDATE cake_order_image SET processing_version=0 WHERE order_id=?::uuid", id);
         var before = temporaryFiles();
         var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
         transaction.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
         assertThrows(IllegalStateException.class, () -> transaction.executeWithoutResult(status -> {
             snapshots.single(UUID.fromString(id));
+            assertEquals(before, temporaryFilesUnchecked());
             throw new IllegalStateException("synthetic snapshot rollback");
         }));
         assertEquals(before, temporaryFiles());
@@ -613,8 +861,10 @@ class OrderExportIT {
         var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(); byte[] png = picture("png"), jpeg = picture("jpeg");
         String image = data(staff.upload(id, null, png, "snapshot.png")).path("imageId").asText();
+        jdbc.update("UPDATE cake_order_image SET processing_version=0 WHERE id=?::uuid", image);
         var readStarted = new CountDownLatch(1); var resume = new CountDownLatch(1);
         doAnswer(invocation -> {
+            assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
             readStarted.countDown();
             if (!resume.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("image read did not resume");
             return invocation.callRealMethod();
@@ -623,7 +873,7 @@ class OrderExportIT {
             var exported = executor.submit(() -> staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null));
             try {
                 assertTrue(readStarted.await(10, TimeUnit.SECONDS));
-                jdbc.update("UPDATE cake_order_image SET content=?,content_type='image/jpeg',filename='snapshot.jpg',size=? WHERE id=?::uuid", jpeg, jpeg.length, image);
+                assertEquals(1, maintenance.replace(image, jpeg, "image/jpeg", "snapshot.jpg", jpeg.length, 12, 6));
             } finally { resume.countDown(); }
             var result = exported.get(15, TimeUnit.SECONDS); assertEquals(200, result.statusCode(), text(result));
             try (var book = new XSSFWorkbook(new ByteArrayInputStream(result.body()))) {
@@ -703,6 +953,10 @@ class OrderExportIT {
     private static byte[] picture(String format) throws IOException {
         var image = new BufferedImage(12, 6, BufferedImage.TYPE_INT_RGB);
         try (var output = new ByteArrayOutputStream()) { assertTrue(ImageIO.write(image, format, output)); return output.toByteArray(); } finally { image.flush(); }
+    }
+    private static Set<String> temporaryFilesUnchecked() {
+        try { return temporaryFiles(); }
+        catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
     }
     private static Set<String> temporaryFiles() throws IOException {
         try (var paths = Files.list(Path.of(System.getProperty("java.io.tmpdir")))) {

@@ -212,6 +212,44 @@ class OrderPackageIT {
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
     }
 
+    @Test void onlyAuthorizedRequestsReachAdmissionAndSixteenPartsCanBeSaved() throws Exception {
+        var picture = new ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(10, 10, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", picture);
+        var images = new LinkedHashMap<UUID, byte[]>();
+        var items = new ArrayList<Map<String, Object>>();
+        for (int i = 0; i < 16; i++) {
+            var image = UUID.randomUUID();
+            images.put(image, picture.toByteArray());
+            items.add(Map.of("itemId", UUID.randomUUID(), "imageId", image, "name", "商品" + i, "productType", "OTHER", "quantity", 1));
+        }
+        var entered = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            entered.countDown();
+            assertTrue(resume.await(10, TimeUnit.SECONDS));
+            return invocation.callRealMethod();
+        }).when(imageValidator).validate(any(), any());
+        var command = Map.of("name", "十六图套餐", "items", items);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = executor.submit(() -> manager.multipart(command, images, UUID.randomUUID().toString()));
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(401, new Client().multipart(command, Map.of(), UUID.randomUUID().toString()).statusCode());
+                assertEquals(403, staff.multipart(command, Map.of(), UUID.randomUUID().toString()).statusCode());
+                var busy = manager.multipart(command, Map.of(), UUID.randomUUID().toString());
+                assertEquals(503, busy.statusCode(), busy.body());
+                assertEquals("IMAGE_PROCESSING_BUSY", json.readTree(busy.body()).path("code").asText());
+            } finally { resume.countDown(); }
+            assertEquals(201, first.get(10, TimeUnit.SECONDS).statusCode());
+        }
+        assertEquals(16, jdbc.queryForObject("SELECT count(*) FROM cake_order_package_image", Integer.class));
+        var oversized = manager.multipart(Map.of("name", "x".repeat(256 * 1024), "items", items), Map.of(), UUID.randomUUID().toString());
+        assertEquals(413, oversized.statusCode(), oversized.body());
+        assertEquals("UPLOAD_PART_TOO_LARGE", json.readTree(oversized.body()).path("code").asText());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_package", Integer.class));
+        assertEquals(201, manager.multipart(bundle("拒绝后继续", 1), Map.of(), UUID.randomUUID().toString()).statusCode());
+    }
+
     @Test void sevenPicturesPrepareOutsideTransactionsAndFailedBatchDoesNotPartiallyCommit() throws Exception {
         var images = new LinkedHashMap<UUID, byte[]>();
         var items = new ArrayList<Map<String, Object>>();
@@ -359,9 +397,11 @@ class OrderPackageIT {
             }
             parts.add(HttpRequest.BodyPublishers.ofString("\r\n--" + boundary + "--\r\n", utf8));
             var content = HttpRequest.BodyPublishers.concat(parts.toArray(HttpRequest.BodyPublisher[]::new));
-            return client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/order-packages"))
-                    .header("Authorization", "Bearer " + token).header("Idempotency-Key", key)
-                    .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(content).build(), HttpResponse.BodyHandlers.ofString());
+            var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/order-packages"))
+                    .timeout(java.time.Duration.ofSeconds(15)).header("Idempotency-Key", key)
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary).POST(content);
+            if (token != null) request.header("Authorization", "Bearer " + token);
+            return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
         }
         HttpResponse<String> raw(String method, String path, Object body) throws Exception { return raw(method, path, body, UUID.randomUUID().toString()); }
         HttpResponse<String> raw(String method, String path, Object body, String key) throws Exception {

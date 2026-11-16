@@ -64,6 +64,10 @@ public class OrderImageService {
                 }
             }
             if (images.countItem(orderId, itemId) >= IMAGES_PER_ITEM) throw new OrderFailure("ORDER_IMAGE_LIMIT_EXCEEDED");
+            if (images.count(orderId) >= IMAGES_PER_ORDER) throw new OrderFailure("ORDER_IMAGE_COUNT_EXCEEDED");
+            // Soft-removed rows still contain BYTEA and count against retained storage.
+            if (images.storedBytes(orderId) > STORED_IMAGE_BYTES_PER_ORDER - stored.length)
+                throw new OrderFailure("ORDER_IMAGE_STORAGE_EXCEEDED");
             var image = new OrderImage(ids.nextId(), orderId, itemId, checked.contentType(), checked.filename(), stored.length,
                     checked.width(), checked.height(), actor.accountId(), actor.nickname(), clock.instant().truncatedTo(ChronoUnit.MICROS));
             images.insert(image, stored);

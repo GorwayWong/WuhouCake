@@ -39,7 +39,7 @@ class ApiErrorsTest {
 
     @BeforeEach void setup() {
         previous = logger.getLevel(); logger.setLevel(Level.DEBUG); logs.start(); logger.addAppender(logs);
-        mvc = MockMvcBuilders.standaloneSetup(endpoints).setControllerAdvice(new ApiErrors())
+        mvc = MockMvcBuilders.standaloneSetup(endpoints).setControllerAdvice(new ApiErrors(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()))
                 .setMessageConverters(new StringHttpMessageConverter(), json).build();
     }
     @AfterEach void close() { logger.detachAppender(logs); logs.stop(); logger.setLevel(previous); }

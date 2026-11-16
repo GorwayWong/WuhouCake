@@ -5,6 +5,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    command: ["postgres", "-c", "shared_buffers=${POSTGRES_SHARED_BUFFERS:-64MB}", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-24}", "-c", "work_mem=${POSTGRES_WORK_MEM:-2MB}", "-c", "temp_file_limit=${POSTGRES_TEMP_FILE_LIMIT:-64MB}"]
+    mem_limit: ${POSTGRES_MEM_LIMIT:-256m}
+    cpus: ${POSTGRES_CPUS:-0.75}
+    pids_limit: ${POSTGRES_PIDS_LIMIT:-64}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -17,7 +21,10 @@ services:
     image: redis:7-bookworm
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?required}", "--maxmemory", "${REDIS_MAXMEMORY:-32mb}", "--maxmemory-policy", "noeviction"]
+    mem_limit: ${REDIS_MEM_LIMIT:-96m}
+    cpus: ${REDIS_CPUS:-0.35}
+    pids_limit: ${REDIS_PIDS_LIMIT:-32}
     volumes:
       - redis-data:/data
     healthcheck:

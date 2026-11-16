@@ -98,22 +98,25 @@ public final class Order {
         for (var item : items) if (this.items.putIfAbsent(item.itemId(), item) != null) throw invalid();
         if (activeItems().isEmpty()) throw invalid();
     }
+    public static void requireItemCapacity(int size) {
+        if (size > 100) throw new OrderFailure("ORDER_ITEM_LIMIT_EXCEEDED");
+    }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now) {
-        return new Order(id, orderNo, 0, "CAKE_BASE", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items);
+        return create(id, orderNo, customer, fulfillment, total, items, actorId, now, null, null, null, null, null);
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee) {
-        return new Order(id, orderNo, 0, "CAKE_BASE", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now, items, creditedEmployee);
+        return create(id, orderNo, customer, fulfillment, total, items, actorId, now, creditedEmployee, null, null, null, null);
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod) {
-        return new Order(id, orderNo, 0, "CAKE_BASE", "UNPAID", null, customer, fulfillment, total, actorId, now, now, now,
-                items, creditedEmployee, null, null, orderingMethod);
+        return create(id, orderNo, customer, fulfillment, total, items, actorId, now, creditedEmployee, orderingMethod, null, null, null);
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod,
             Long originalAmountCents, Long memberAmountCents, String paymentMethod) {
+        if (items != null) requireItemCapacity(items.size());
         Long original = money(originalAmountCents), member = money(memberAmountCents);
         Long effective = member != null ? member : original;
         if (original != null || member != null) {
@@ -129,6 +132,7 @@ public final class Order {
             Long original, Long member, String method, String pricingMode) {
         if (ItemPricing.mode(pricingMode).equals("MANUAL"))
             return create(id, orderNo, customer, fulfillment, total, items, actorId, now, employee, orderingMethod, original, member, method);
+        if (items != null) requireItemCapacity(items.size());
         var totals = totals(items);
         var payment = normalizePaymentMethod(method);
         boolean paid = payment != null && !payment.equals("UNPAID");
@@ -222,6 +226,7 @@ public final class Order {
         requireEditableItems();
         if (item == null || items.containsKey(item.itemId()) || item.removed() || !"NOT_STARTED".equals(item.productionStatus())
                 || item.currentStageCode() != null) throw invalid();
+        requireItemCapacity(items.size() + 1);
         requireNextVersion();
         var before = new LinkedHashMap<String, Object>();
         var after = new LinkedHashMap<String, Object>();

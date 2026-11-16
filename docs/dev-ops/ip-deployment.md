@@ -12,7 +12,9 @@
 
 应用使用 `prod` profile，保留 Secure Cookie 和 CSRF 校验。客户填单 origin 为 `https://47.106.168.39`。Caddy 配置 `default_sni`，兼容直接访问 IP 时不发送 SNI 的客户端；API 与前端同源，Caddy 根据事件流响应头即时转发 SSE。公网仅发布 80/443；后端 8080 绑定回环地址，数据库和 Redis 不发布宿主机端口。
 
-最近记录的服务器规格为 2 核、约 1.6 GiB 内存。仓库候选配置限制 app 为 640 MiB / 1.5 CPU / 160 PIDs，图片端为 320 MiB / 1 CPU / 64 PIDs，PostgreSQL、Redis 和网关分别为 256、96 和 64 MiB。发布前以实际服务器及其他容器占用复核容量。各服务的内存与临时文件预算见[稳定性专项报告](../verification/2026-11-16-production-stability.md)。
+最近记录的服务器规格为 2 核、约 1.6 GiB 内存。仓库候选配置限制 app 为 640 MiB / 1.5 CPU / 160 PIDs，图片端为 320 MiB / 1 CPU / 64 PIDs，PostgreSQL、Redis 和网关分别为 256、96 和 64 MiB。发布前以实际服务器及其他容器占用复核容量。稳态内存上限合计 1,376 MiB，约占 1.6 GiB 的 84%。另运行 Certbot 时上限合计 1,568 MiB，执行续期前核对宿主机余量。PostgreSQL、Redis 参数与标准生产 Compose 一致。计算和边界见[本轮稳定性验收](../verification/2026-11-16-stability-followup.md)。
+
+部署启用 `APP_TEMP_DIR` 前，按[专用临时盘](README.md#专用临时盘)配置和检查独立的约 1 GiB ext4/XFS 挂载。将绝对路径写入 `.env`，宿主机挂载根目录的 UID/GID 必须等于 `APP_UID:APP_GID`，模式为 `0700`。临时盘挂载于容器 `/run/wuhou-scratch`。Caddy 分别限制订单图片正文 6 MiB 与套餐正文 65 MiB，并拒绝公网 Actuator。采集入口和告警规则见[生产监控](monitoring/README.md)。
 
 `prod` 应用需要 `IMAGE_WORKER_URL=http://image-worker:8091/process`。应用可在图片端未就绪或重启时启动和提供无图操作。部署须使用配套的 app、图片端镜像与 Compose 配置。服务更新可通过 `docker compose up -d --wait` 等待两个健康检查，app 的 liveness 和 readiness 独立于图片端。
 

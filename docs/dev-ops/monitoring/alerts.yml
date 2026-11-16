@@ -1,0 +1,47 @@
+groups:
+  - name: wuhoucake
+    rules:
+      - alert: WuhouContainerOomKilled
+        expr: increase(container_oom_events_total{container_label_com_docker_compose_service=~"app|image-worker|postgres|redis|gateway"}[10m]) > 0
+        labels: {severity: critical}
+        annotations: {summary: "午逅容器出现 OOM 事件，核查 Docker OOMKilled 状态"}
+      - alert: WuhouJvmHeapNearLimit
+        expr: sum by (instance) (jvm_memory_used_bytes{area="heap"}) / sum by (instance) (jvm_memory_max_bytes{area="heap"} > 0) > 0.9
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "午逅应用堆持续超过 90%"}
+      - alert: WuhouHikariSaturated
+        expr: (hikaricp_connections_active >= hikaricp_connections_max) and (hikaricp_connections_pending > 0)
+        for: 3m
+        labels: {severity: warning}
+        annotations: {summary: "午逅数据库连接池饱和且有等待线程"}
+      - alert: WuhouWorkerUnavailableOrFailing
+        expr: |
+          up{job="wuhou-worker"} == 0
+          or increase(wuhou_image_worker_failed_total[10m]) + increase(wuhou_image_worker_timeout_total[10m]) >= 3
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "午逅图片端不可达或连续处理失败"}
+      - alert: WuhouScratchLowSpace
+        expr: wuhou_temp_free_bytes < 134217728
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "午逅应用临时盘剩余不足 128 MiB 或读取失败"}
+      - alert: WuhouScratchCleanupFailed
+        expr: increase(wuhou_temp_cleanup_failures_total[10m]) > 0
+        labels: {severity: warning}
+        annotations: {summary: "午逅应用临时文件清理失败"}
+      - alert: WuhouHttp5xxHigh
+        expr: |
+          sum by (instance) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+          / clamp_min(sum by (instance) (rate(http_server_requests_seconds_count[5m])), 0.01) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "午逅 HTTP 5xx 比率持续超过 5%"}
+      - alert: WuhouExportTimeouts
+        expr: |
+          increase(wuhou_exports_timeouts_total[15m]) >= 2
+          and increase(wuhou_exports_timeouts_total[15m]) / clamp_min(increase(wuhou_exports_requests_total[15m]), 1) > 0.1
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "午逅导出超时率异常"}
