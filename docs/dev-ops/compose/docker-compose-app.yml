@@ -9,8 +9,9 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
-      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-10}
-      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:-}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-5}
+      IMAGE_WORKER_URL: http://image-worker:8091/process
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--Xms64m -Xmx256m -XX:MaxDirectMemorySize=24m -XX:MaxMetaspaceSize=136m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -Xlog:gc,safepoint:stdout:time,uptime,level,tags}
       TZ: Asia/Shanghai
       IDENTITY_PRIVATE_KEY: /run/identity/private.pem
       IDENTITY_PUBLIC_KEY: /run/identity/public.pem
@@ -23,12 +24,37 @@ services:
       - ${IDENTITY_KEY_DIR:?IDENTITY_KEY_DIR is required}:/run/identity:ro
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    init: true
+    mem_limit: 640m
+    cpus: 1.5
+    pids_limit: 160
     restart: unless-stopped
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "3"
+  image-worker:
+    image: ${APP_IMAGE:?APP_IMAGE is required}
+    entrypoint: ["java", "-Xms8m", "-Xmx24m", "-XX:MaxMetaspaceSize=24m", "-XX:MaxDirectMemorySize=4m", "-XX:ReservedCodeCacheSize=8m", "-Xss512k", "-XX:+UseSerialGC", "-XX:CICompilerCount=2", "-XX:ActiveProcessorCount=1", "-XX:+ExitOnOutOfMemoryError", "-Djdk.httpserver.maxConnections=12", "-Dsun.net.httpserver.maxReqTime=12", "-Dsun.net.httpserver.maxRspTime=15", "-Dsun.net.httpserver.timerMillis=1000", "-cp", "/app/image-worker/*", "org.xaspire.WuhouCake.order.infrastructure.files.ImageWorkerServer"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    mem_limit: 320m
+    cpus: 1
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "--spider", "http://127.0.0.1:8091/health"]
+      start_period: 10s
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
 networks:
   default:
     name: ${COMPOSE_PROJECT_NAME:-wuhoucake}-network

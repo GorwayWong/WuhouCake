@@ -9,9 +9,11 @@ public record CustomerEntryProperties(String publicOrigin, Integer perMinute, In
     public CustomerEntryProperties {
         publicOrigin = publicOrigin == null ? "http://localhost:5173" : publicOrigin;
         var origin = URI.create(publicOrigin);
-        if (origin.getHost() == null || origin.getUserInfo() != null || origin.getQuery() != null || origin.getFragment() != null
-                || !("https".equals(origin.getScheme()) || "http".equals(origin.getScheme()) && List.of("localhost", "127.0.0.1", "[::1]").contains(origin.getHost()))
-                || !(origin.getPath().isEmpty() || "/".equals(origin.getPath()))) throw new IllegalArgumentException("Customer entry requires an HTTPS origin (HTTP allowed on localhost only)");
+        if (!"auto".equals(publicOrigin)) {
+            if (origin.getHost() == null || origin.getUserInfo() != null || origin.getQuery() != null || origin.getFragment() != null
+                    || !("https".equals(origin.getScheme()) || "http".equals(origin.getScheme()))
+                    || !(origin.getPath().isEmpty() || "/".equals(origin.getPath()))) throw new IllegalArgumentException("Customer entry requires an HTTP or HTTPS origin without credentials, path, query or fragment");
+        }
         perMinute = perMinute == null ? 10 : perMinute; perHour = perHour == null ? 100 : perHour;
         maxBodyBytes = maxBodyBytes == null ? 131072 : maxBodyBytes;
         trustedProxies = trustedProxies == null ? List.of() : List.copyOf(trustedProxies);

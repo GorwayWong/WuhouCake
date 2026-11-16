@@ -7,7 +7,7 @@ public final class OrderManagementViews {
     private OrderManagementViews() { }
     public record Row(String orderId, String orderNo, LocalDate receiveDate, String status, String paymentStatus,
             String phone, String customerName, String employeeNumber, String employeeName, String createdBy,
-            String totalAmountCents, long matchingQuantity, long cakeQuantity, String products) { }
+            String totalAmountCents, long matchingQuantity, long cakeQuantity, String products, List<String> productTypes, boolean deleted) { }
     public record Totals(long orderCount, long matchingQuantity, long cakeQuantity, long unclassifiedCakeQuantity, String totalAmountCents,
             String paidAmountCents, String unpaidAmountCents, long missingAmountOrders) { }
     public record SizeSummary(String size, long orderCount, long cakeQuantity) { }

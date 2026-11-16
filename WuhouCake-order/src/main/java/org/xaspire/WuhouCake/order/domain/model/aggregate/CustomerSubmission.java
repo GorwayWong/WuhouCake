@@ -4,26 +4,42 @@ import java.time.*;
 import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 /** Customer requirements are immutable; reviewed requirements remain separate until acceptance. */
 public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String ownerName, long version, String status,
         Content original, Review reviewed, UUID orderId, Instant createdAt, Instant updatedAt) {
-    public static final Set<String> ATTRIBUTES = Set.of("size", "base", "filling", "flavor", "message", "requirements");
-    public static final Set<String> PRODUCT_TYPES = Set.of("CAKE", "DONUT", "CUPCAKE", "OTHER");
-    public record Product(String name, String productType, int quantity, Map<String, String> attributes) {
+    public static final Set<String> ATTRIBUTES = Set.of("size", "base", "filling", "flavor", "message", "requirements", "specification");
+    public static final Set<String> PRODUCT_TYPES = ProductCategories.TYPES;
+    public record Product(String name, String productType, int quantity, Map<String, String> attributes,
+            UUID itemId) {
+        public Product(String name, String productType, int quantity, Map<String, String> attributes) {
+            this(name, productType, quantity, attributes, null);
+        }
+
+        public Product withItemId(UUID id) { return new Product(name, productType, quantity, attributes, id); }
+
         public Product {
             name = requiredText(name, 128);
-            if (productType == null || !PRODUCT_TYPES.contains(productType) || quantity < 1) throw invalid();
+            if (productType == null || !PRODUCT_TYPES.contains(ProductCategories.normalize(productType))) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
+            productType = ProductCategories.normalize(productType);
+            if (quantity < 1) throw new OrderFailure("SUBMISSION_QUANTITY_INVALID");
             var values = new TreeMap<String, String>();
             if (attributes != null) attributes.forEach((key, value) -> {
                 if (!ATTRIBUTES.contains(key)) throw invalid();
-                String text = optionalText(value, 2000); if (text != null) values.put(key, text);
+                String text = optionalText(value, key.equals("specification") ? 16000 : 2000); if (text != null) values.put(key, text);
             });
             if ("CAKE".equals(productType)) {
                 String size = CakeSpecifications.size(values.get("size"));
-                if (size == null) throw invalid();
-                values.put("size", size); values.putIfAbsent("base", "原味"); values.putIfAbsent("filling", "芒果");
+                if (size == null) throw new OrderFailure("SUBMISSION_CAKE_SIZE_REQUIRED");
+                values.put("size", size); CakeSpecifications.DEFAULTS.forEach(values::putIfAbsent);
+            }
+            if ("OTHER".equals(productType)) {
+                var merged = CakeSpecifications.other(new LinkedHashMap<>(values));
+                values.clear();
+                if (merged.get("specification") instanceof String spec) values.put("specification", spec);
+                if (merged.get("requirements") instanceof String requirements) values.put("requirements", requirements);
             }
             attributes = Collections.unmodifiableMap(values);
         }
@@ -49,15 +65,21 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
     public record Price(Long unitPriceCents, Long memberPriceCents) {
         public Price { money(unitPriceCents); money(memberPriceCents); }
     }
-    public record Review(Content content, List<Price> prices, Long totalAmountCents, UUID creditedEmployeeId, Instant plannedHandoffAt) {
+    public record Review(Content content, List<Price> prices, Long totalAmountCents, UUID creditedEmployeeId, Instant plannedHandoffAt, Instant plannedFinishAt) {
+        public Review(Content content, List<Price> prices, Long totalAmountCents, UUID creditedEmployeeId, Instant plannedHandoffAt) {
+            this(content, prices, totalAmountCents, creditedEmployeeId, plannedHandoffAt, null);
+        }
         public Review {
             Objects.requireNonNull(content); money(totalAmountCents);
+            content = new Content(content.phone(), content.memberPhone(), content.fulfillmentType(), content.address(), content.requestedReceiveAt(),
+                    content.items().stream().map(item -> item.withItemId(item.itemId())).toList());
             if (prices == null) prices = Collections.nCopies(content.items().size(), new Price(null, null));
-            if (prices.size() != content.items().size() || prices.stream().anyMatch(Objects::isNull)) throw invalid();
+            if (prices.size() != content.items().size() || prices.stream().anyMatch(Objects::isNull)) throw new OrderFailure("SUBMISSION_PRICES_INVALID");
             prices = List.copyOf(prices);
         }
         public void requireConfirmation() {
-            if (totalAmountCents == null || creditedEmployeeId == null || plannedHandoffAt == null) throw invalid();
+            if (totalAmountCents == null) throw new OrderFailure("SUBMISSION_TOTAL_REQUIRED");
+            if (creditedEmployeeId == null) throw new OrderFailure("SUBMISSION_EMPLOYEE_REQUIRED");
         }
     }
     public void requirePending(long expected) {

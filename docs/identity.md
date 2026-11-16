@@ -4,7 +4,7 @@
 
 ## 员工管理与订单归属
 
-管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、随机重置密码、指定新密码和归档。工号固定，岗位不等于系统权限；归档代替物理删除，保留历史身份。账号响应增加 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。
+管理员页面 `#/admin/employees` 提供查询、创建、编辑姓名/岗位、随机重置密码、指定新密码和归档。工号固定，店长岗位同时具有超级管理员身份，撤销店长时同步撤销该身份，并保护最后一位管理员；归档代替物理删除，保留历史身份。账号响应包含 version，管理员编辑使用该业务版本，不能用 credentialVersion 代替。账号视图的 access 返回当前有效权限及派生 UI 能力，契约和岗位配置见[员工权限说明](authorization.md)。
 
 | 接口 | 契约 |
 | --- | --- |
@@ -74,11 +74,11 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 2. POST /api/auth/login 提交 employeeNumber、password。data 返回 accessToken、tokenType、expiresIn、passwordChangeRequired；刷新凭证只通过 Cookie 传输，不在 JSON 中返回。
 3. Cookie 名为 wuhoucake_refresh，HttpOnly、SameSite=Lax、路径 /api/auth，dev 关闭 Secure、prod 启用。业务请求通过 Authorization: Bearer 携带 RS256 JWT；HTTP session 无状态。
 4. login/logout 会清除 CSRF Cookie，后续认证 POST 前重新取得 CSRF。refresh 依赖刷新 Cookie 和 CSRF，不依赖已到期 Bearer。
-5. 前端 access token 仅驻留内存；多个 401 共用一次刷新。切换员工后，旧请求不能使用新员工凭证重试或清除其登录状态。
+5. 前端 access token 仅驻留内存，多个 401 共用一次刷新。已打开的员工页面按 JWT 的账号、会话 ID 和凭证版本核对刷新的令牌。共享 Cookie 切到其他会话时，旧页面清除本页会话和查询，关闭订单通知，并要求重新登录。原请求不会用另一会话重发。共享 Cookie 和原账号已保存的录单草稿仍可使用。已打开的页面需要刷新以加载这一行为。
 
 同一工号的失败次数与正在校验的登录尝试合计最多 5 次，准入通过 Redis 原子占用；超过时返回 LOGIN_THROTTLED。失败转为计数，累计第 5 次失败后锁定 10 分钟；成功清除失败次数但保留其他在途占用，基础设施异常仅释放本次占用。未完成的占用最长保留 10 分钟，避免进程中断后永久占用配额。
 
-每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配。岗位不是权限：MANAGER 不等于 SUPER_ADMIN。所有完成改密的员工共享订单、查询统计及导出权限，包括 GET /api/admin/orders 和 GET /api/admin/orders/export；员工账号管理及其身份审计仍仅管理员可用，其余 /api/admin 路径不因此放开。
+每次鉴权都会检查 Redis 会话是否存在且未到期、账号是否 ACTIVE、会话和账号凭证版本是否匹配，并按当前岗位配置重新计算操作权限。店长 STORE_MANAGER 同时具有 SUPER_ADMIN 身份；多岗位业务权限取并集，员工管理及身份审计只由系统管理员身份授予。默认店长、前厅主管和前厅店员可读取完整业务及财务资料；裱花主管、裱花师、烘焙师仅读取客户手机号及必要时间，不读取其他客户、金额和下单资料，制作操作权限保留。可通过 `wuhoucake.authorization.job-permissions` 覆盖具体岗位。HTTP 方法和路径显式映射权限，未映射路由拒绝；敏感字段、导出、活动记录和 SSE 的边界见[员工权限说明](authorization.md)。
 
 新建、重置或恢复的账号须首次改密。改密前只允许 GET /api/me 和 POST /api/me/password，其他业务请求返回 PASSWORD_CHANGE_REQUIRED；认证端点仍可用于退出。新密码必须与当前密码不同，改密成功会撤销旧凭证，前端需重新登录。
 
@@ -98,7 +98,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 | POST /api/auth/login | employeeNumber、password | CSRF；返回令牌视图并设置刷新 Cookie |
 | POST /api/auth/refresh | 刷新 Cookie，无 JSON 必填字段 | CSRF；绝对会话到期不延长 |
 | POST /api/auth/logout | 刷新 Cookie | CSRF；撤销该 session，清除刷新/CSRF Cookie |
-| GET /api/me | Bearer | 当前账号，可在首次改密前调用 |
+| GET /api/me | Bearer | 当前账号及 access 权限/UI 能力，可在首次改密前调用；改密前 access 为空集合 |
 | PATCH /api/me/nickname | nickname | 改名，不改变固定工号 |
 | POST /api/me/password | currentPassword、newPassword | 改密、清除刷新 Cookie，旧凭证失效 |
 | GET /api/admin/employees | 可选 employeeNumber、nickname、status、jobRole、page、size | SUPER_ADMIN；分页查询 |
@@ -112,7 +112,7 @@ Application 检测到 wuhoucake.identity.command 参数时自动使用非 Web �
 
 - 工号为 1–32 个字母、数字、下划线或短横线，规范化为大写且不可改；归档不释放工号。
 - 昵称去除两端空白后为 1–40 个 Unicode 码点，不允许控制字符；新密码为 8–128 个合法 Unicode 码点。
-- jobRoles 至少一项，取 MANAGER、FRONT_DESK、PASTRY_CHEF；systemRole 为 STAFF（省略时默认）或 SUPER_ADMIN；status 为 ACTIVE/ARCHIVED。
+- jobRoles 至少一项、最多六项，新岗位取 STORE_MANAGER、PASTRY_SUPERVISOR、FRONT_DESK_SUPERVISOR、DECORATOR、BAKER、FRONT_DESK_CLERK。含 STORE_MANAGER 时 systemRole 为 SUPER_ADMIN，其他新岗位为 STAFF；旧 MANAGER、FRONT_DESK、PASTRY_CHEF 保留用于待确认账号与历史解释。status 为 ACTIVE/ARCHIVED。
 - page 从 1 开始，最大 1,000,000；size 为 1–100，默认 20。分页和枚举非法返回 VALIDATION_FAILED。
 - 禁止自行归档；至少保留一位 ACTIVE 超管。归档不物理删除账号，没有取消归档接口，也没有在线解锁/改工号接口。
 

@@ -94,6 +94,11 @@ class ApiErrorsTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON)).andExpect(jsonPath("$.code").value("INTERNAL_ERROR"));
         assertTrue(json.errorAttempts > 0); assertEquals(1, events(Level.ERROR).size()); assertTrue(events(Level.DEBUG).isEmpty());
     }
+    @Test void controllerPermissionDenialReturns403WithoutAnInternalError() throws Exception {
+        mvc.perform(get("/forbidden")).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        assertTrue(events(Level.ERROR).isEmpty());
+    }
     private List<ILoggingEvent> events(Level level) {
         return logs.list.stream().filter(event -> event.getLevel().equals(level) && event.getFormattedMessage().contains(requestId)).toList();
     }
@@ -112,6 +117,7 @@ class ApiErrorsTest {
             if (ready) emitter.send(SseEmitter.event().name("ready").data(Map.of()));
             return emitter;
         }
+        @GetMapping("/forbidden") void forbidden() { throw new org.springframework.security.access.AccessDeniedException("denied"); }
         @GetMapping("/file-eof") void fileEof() throws IOException { throw new EOFException("synthetic local file EOF"); }
     }
 }

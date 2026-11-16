@@ -1,0 +1,154 @@
+{
+  "fingerprint" : "7127d071cc831a425841839515e8ea251607e488bf7762e4e440e5c8a6544b1d",
+  "submissionId" : "6080df48-4c84-423a-8aaa-edc8f2c5d642",
+  "requestId" : "9b1b530b-e1ff-4118-b24a-a3392e363471",
+  "sourceCommit" : "dfe432a",
+  "request" : {
+    "phone" : "13800000000",
+    "address" : "合成地址",
+    "fulfillmentType" : "DELIVERY",
+    "items" : [ {
+      "attributes" : {
+        "size" : "08.00",
+        "flavor" : "  ",
+        "requirements" : " 少糖 "
+      },
+      "quantity" : 1,
+      "name" : "  生日蛋糕  ",
+      "productType" : " cake "
+    }, {
+      "attributes" : {
+        "specification" : " 草莓 ",
+        "requirements" : " 冷藏 "
+      },
+      "quantity" : 2,
+      "name" : "纸杯",
+      "productType" : "CUPCAKE"
+    }, {
+      "attributes" : {
+        "requirements" : "独立包装"
+      },
+      "quantity" : 3,
+      "name" : "饼干",
+      "productType" : "COOKIE"
+    }, {
+      "attributes" : {
+        "specification" : "小份"
+      },
+      "quantity" : 4,
+      "name" : "小吃",
+      "productType" : "SNACK"
+    }, {
+      "attributes" : {
+        "specification" : " 500ml "
+      },
+      "quantity" : 5,
+      "name" : "饮品",
+      "productType" : "DRINK"
+    }, {
+      "attributes" : {
+        "specification" : "吐司"
+      },
+      "quantity" : 6,
+      "name" : "面包",
+      "productType" : "BREAD"
+    }, {
+      "attributes" : { },
+      "quantity" : 7,
+      "name" : "茶歇",
+      "productType" : "TEA_BREAK"
+    }, {
+      "attributes" : { },
+      "quantity" : 8,
+      "name" : "甜甜圈",
+      "productType" : "DONUT"
+    }, {
+      "attributes" : { },
+      "quantity" : 9,
+      "name" : "其他",
+      "productType" : "OTHER"
+    }, {
+      "attributes" : { },
+      "quantity" : 10,
+      "name" : "现货",
+      "productType" : "READY_BAKERY"
+    } ],
+    "requestedReceiveAt" : "2026-11-02T18:00:00+08:00",
+    "memberPhone" : "13800000088"
+  },
+  "original" : {
+    "items" : [ {
+      "name" : "生日蛋糕",
+      "quantity" : 1,
+      "attributes" : {
+        "base" : "原味",
+        "size" : "8",
+        "flavor" : "原味奶油",
+        "filling" : "芒果",
+        "requirements" : "少糖"
+      },
+      "productType" : "CAKE"
+    }, {
+      "name" : "纸杯",
+      "quantity" : 2,
+      "attributes" : {
+        "requirements" : "冷藏",
+        "specification" : "草莓"
+      },
+      "productType" : "TEA_BREAK"
+    }, {
+      "name" : "饼干",
+      "quantity" : 3,
+      "attributes" : {
+        "requirements" : "独立包装"
+      },
+      "productType" : "COOKIE"
+    }, {
+      "name" : "小吃",
+      "quantity" : 4,
+      "attributes" : {
+        "specification" : "小份"
+      },
+      "productType" : "SNACK"
+    }, {
+      "name" : "饮品",
+      "quantity" : 5,
+      "attributes" : {
+        "specification" : "500ml"
+      },
+      "productType" : "DRINK"
+    }, {
+      "name" : "面包",
+      "quantity" : 6,
+      "attributes" : {
+        "specification" : "吐司"
+      },
+      "productType" : "READY_BAKERY"
+    }, {
+      "name" : "茶歇",
+      "quantity" : 7,
+      "attributes" : { },
+      "productType" : "TEA_BREAK"
+    }, {
+      "name" : "甜甜圈",
+      "quantity" : 8,
+      "attributes" : { },
+      "productType" : "TEA_BREAK"
+    }, {
+      "name" : "其他",
+      "quantity" : 9,
+      "attributes" : { },
+      "productType" : "TEA_BREAK"
+    }, {
+      "name" : "现货",
+      "quantity" : 10,
+      "attributes" : { },
+      "productType" : "READY_BAKERY"
+    } ],
+    "phone" : "13800000000",
+    "address" : "合成地址",
+    "memberPhone" : "13800000088",
+    "fulfillmentType" : "DELIVERY",
+    "requestedReceiveAt" : "2026-11-02T10:00:00Z"
+  }
+}

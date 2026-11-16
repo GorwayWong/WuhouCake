@@ -1,9 +1,12 @@
 export interface Token { accessToken: string; tokenType: string; expiresIn: number; passwordChangeRequired: boolean }
-export interface Account { accountId: string; employeeNumber: string; nickname: string; jobRoles: string[]; systemRole?: string }
+export interface EmployeeAccess { permissions: string[]; uiCapabilities: string[] }
+export interface Account { accountId: string; employeeNumber: string; nickname: string; jobRoles: string[]; systemRole?: string; access?: EmployeeAccess }
+export interface PaymentGroup { orderCount: number; amountCents: string; missingAmountOrderCount: number }
+export interface PaymentSummary { date: string; totalOrderCount: number; waitingDeliveryOrderCount: number; paid: PaymentGroup; unpaid: PaymentGroup; paidWithoutDateOrderCount: number }
 export interface EmployeeOption { accountId: string; employeeNumber: string; nickname: string; status: string }
 export interface EmployeeAccount extends Account { status: string; version: number; passwordChangeRequired: boolean; createdAt: string }
 export interface Customer { customerName: string | null; phone: string; memberPhone: string | null; buyerName: string | null }
-export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; requestedReceiveAt?: string | null; plannedHandoffAt: string; plannedFinishAt: string | null }
+export interface Fulfillment { type: string; address: string | null; requestedReceiveDate: string; requestedReceiveAt?: string | null; plannedHandoffAt: string | null; plannedFinishAt: string | null }
 export interface Note { id: number; itemId: string | null; actorNameSnapshot: string; createdAt: string; content: string }
 export interface Activity extends Note { orderId: string; type: string; details: Record<string, unknown> }
 export interface OrderImage {
@@ -17,27 +20,34 @@ export interface Item {
   recentNotes: Note[];
   productionStatus?: string; currentStageCode?: string | null;
 }
-export interface OrderStatus { status: string; currentStageCode: string | null; paymentStatus: string }
+export interface OrderStatus { fulfillmentType?: string; fulfillment?: { type: string }; status: string; currentStageCode: string | null; paymentStatus: string | null; deletion?: unknown; deleted?: boolean }
 export interface CalendarOrder extends OrderStatus {
   orderId: string; orderNo: string; calendarDate: string; fulfillmentType: string;
-  plannedHandoffAt: string; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
+  plannedHandoffAt: string | null; customerPhoneLast4: string | null; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
 }
-export interface PendingOrder extends CalendarOrder { customer: Customer; address: string | null; plannedFinishAt: string | null; items: Item[] }
+export interface PendingOrder extends Omit<CalendarOrder, 'customerPhoneLast4'> { customer: Customer | null; address: string | null; plannedFinishAt: string | null; requestedReceiveAt?: string | null; items: Item[]; latestNote?: Note | null }
 export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number } | null; pendingOrders: PendingOrder[] }
 export interface Detail extends OrderStatus {
-  createdBy?: string; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
-  orderId: string; orderNo: string; version: number; customer: Customer; fulfillment: Fulfillment;
-  totalAmountCents: number | null; createdAt: string; updatedAt: string; items: Item[];
+  pricingMode?: 'MANUAL' | 'ITEM_SUM';
+  deletion?: { deletedAt: string; deletedBy: string; employeeName: string; reason: string; expiresAt: string } | null;
+  orderingMethod?: string | null;
+  createdBy?: string | null; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
+  orderId: string; orderNo: string; version: number; customer: Customer | null; fulfillment: Fulfillment;
+  originalAmountCents?: number | null; memberAmountCents?: number | null; paymentMethod?: string | null;
+  totalAmountCents: number | null; paidAt?: string | null; createdAt: string | null; updatedAt: string; items: Item[];
 }
 export interface CreateOrderRequest {
+  pricingMode?: 'MANUAL' | 'ITEM_SUM';
+  originalAmountCents?: number | null; memberAmountCents?: number | null; paymentMethod?: string;
+  orderingMethod?: string | null;
   creditedEmployeeId?: string;
   customer: Customer;
   fulfillment: Omit<Fulfillment, 'type'> & { type: 'DELIVERY' | 'PICKUP' };
-  items: Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'>[];
+  items: (Pick<Item, 'name' | 'productType' | 'quantity' | 'unitPriceCents' | 'memberPriceCents' | 'attributes'> & { itemId?: string; referenceUnitPriceCents?: number | null; referenceMemberPriceCents?: number | null })[];
   totalAmountCents: number | null;
 }
 export type InformationChanges = Partial<Customer & Omit<Fulfillment, 'type'> & {
-  fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null; creditedEmployeeId: string;
+  originalAmountCents: number | null; memberAmountCents: number | null; orderingMethod: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; totalAmountCents: number | null; creditedEmployeeId: string;
 }>;
 export interface InformationRequest { expectedVersion: number; changes: InformationChanges }
 export type ItemInput = CreateOrderRequest['items'][number];

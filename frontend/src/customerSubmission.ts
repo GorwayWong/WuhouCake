@@ -1,13 +1,19 @@
+import { asOtherDraft } from './orderForm.ts';
+import { defaultFinishTime, finishTooLate, finishLeadTimeMessage } from './orderTimes.ts';
+import type { FinishTimeMode } from './orderTimes.ts';
 import { itemInput, newItem, moneyToCents } from './orderForm.ts';
 import type { ItemDraft } from './orderForm.ts';
+import { randomUUID } from './uuid.ts';
+import { normalizeProductType, productTypes } from './productTypes.ts';
+import { exactYuan } from './money.ts';
 
 export interface SubmissionContent {
   phone: string; memberPhone: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string | null;
-  requestedReceiveAt: string; items: { name: string; productType: string; quantity: number; attributes: Record<string, string> }[];
+  requestedReceiveAt: string; items: { itemId?: string; name: string; productType: string; quantity: number; attributes: Record<string, string> }[];
 }
 export interface SubmissionReview {
   content: SubmissionContent; prices: { unitPriceCents: number | null; memberPriceCents: number | null }[];
-  totalAmountCents: number | null; creditedEmployeeId: string | null; plannedHandoffAt: string | null;
+  totalAmountCents: number | null; creditedEmployeeId: string | null; plannedHandoffAt: string | null; plannedFinishAt?: string | null;
 }
 export interface Submission {
   id: string; entryId: string; ownerId: string; ownerName: string; version: number; status: 'PENDING' | 'CONFIRMED' | 'DELETED';
@@ -27,27 +33,40 @@ export interface EntryLink { ownerId: string; ownerName: string; url: string; en
 export interface SubmissionOrigin { submissionId: string; entryOwnerName: string; submittedAt: string; requestedReceiveAt: string }
 export interface SubmissionDraft {
   phone: string; memberPhone: string; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveAt: string;
-  items: ItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string;
+  items: ItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode;
+  originalTime?: { requestedReceiveAt: string; plannedHandoffAt: string | null; plannedFinishAt: string | null; pickupTime: string };
 }
 export function localTime(instant: string | null): string {
   if (!instant) return '';
   return new Date(Date.parse(instant) + 8 * 3600000).toISOString().slice(0, 16);
 }
+export function overdueSubmissionDate(submission: Submission, todayDate: string): string | null {
+  if (submission.status !== 'PENDING') return null;
+  const content = submission.reviewed?.content || submission.original;
+  const date = localTime(submission.reviewed?.plannedHandoffAt || content.requestedReceiveAt).slice(0, 10);
+  return date < todayDate ? date : null;
+}
 export function newSubmissionDraft(): SubmissionDraft {
-  return { phone: '', memberPhone: '', fulfillmentType: 'DELIVERY', address: '', requestedReceiveAt: '', items: [{ ...newItem(), name: '蛋糕' }], totalAmount: '', creditedEmployeeId: '', plannedHandoffAt: '' };
+  return { phone: '', memberPhone: '', fulfillmentType: 'DELIVERY', address: '', requestedReceiveAt: '', items: [{ ...newItem(), name: '蛋糕' }], totalAmount: '', creditedEmployeeId: '', plannedHandoffAt: '', plannedFinishAt: '', finishTimeMode: 'AUTO' };
 }
 export function submissionDirty(draft: SubmissionDraft, initial: SubmissionDraft): boolean {
   return JSON.stringify(draft) !== JSON.stringify(initial);
 }
 export function draftFromSubmission(submission: Submission): SubmissionDraft {
   const review = submission.reviewed, content = review?.content || submission.original;
-  const amount = (value: number | null | undefined) => value == null ? '' : (value / 100).toFixed(2);
+  const amount = (value: number | null | undefined) => value == null ? '' : exactYuan(value);
+  return { ...draftFromSubmissionContent(content),
+    requestedReceiveAt: localTime(review?.plannedHandoffAt || content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
+    creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null), plannedFinishAt: localTime(review?.plannedFinishAt || null) || (!review ? defaultFinishTime(localTime(content.requestedReceiveAt)) : ''), finishTimeMode: review?.plannedFinishAt ? 'MANUAL' : 'AUTO',
+    ...(review ? { originalTime: { requestedReceiveAt: content.requestedReceiveAt, plannedHandoffAt: review.plannedHandoffAt, plannedFinishAt: review.plannedFinishAt || null,
+      pickupTime: localTime(review.plannedHandoffAt || content.requestedReceiveAt) } } : {}) };
+}
+export function draftFromSubmissionContent(content: SubmissionContent): SubmissionDraft {
   return { ...newSubmissionDraft(), ...content, memberPhone: content.memberPhone || '', address: content.address || '',
-    requestedReceiveAt: localTime(content.requestedReceiveAt), totalAmount: amount(review?.totalAmountCents),
-    creditedEmployeeId: review?.creditedEmployeeId || '', plannedHandoffAt: localTime(review?.plannedHandoffAt || null),
-    items: content.items.map((item, i) => ({ ...newItem(), ...item, key: crypto.randomUUID(), quantity: String(item.quantity),
-      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', ...item.attributes },
-      defaultSpecifications: [], unitPrice: amount(review?.prices[i]?.unitPriceCents), memberPrice: amount(review?.prices[i]?.memberPriceCents) })) };
+    requestedReceiveAt: localTime(content.requestedReceiveAt),
+    items: content.items.map(item => ({ ...newItem(), ...item, productType: normalizeProductType(item.productType), preservedAttributes: item.attributes, key: item.itemId || randomUUID(), quantity: String(item.quantity),
+      attributes: { size: '', base: '', filling: '', flavor: '', message: '', requirements: '', specification: '', ...item.attributes },
+      defaultSpecifications: [], unitPrice: '', memberPrice: '' })).map(item => item.productType === 'OTHER' ? asOtherDraft(item) : item) };
 }
 export function submissionRequest(draft: SubmissionDraft, staff = false) {
   const errors: Record<string, string> = {};
@@ -68,23 +87,44 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
     if (localTime(result) !== value) { errors[field] = '请填写有效日期和时刻。'; return null; }
     return result;
   };
-  const requestedReceiveAt = instant(draft.requestedReceiveAt, 'requestedReceiveAt', true) || '';
+  const pickupAt = instant(draft.requestedReceiveAt, 'requestedReceiveAt', true) || '';
+  const unchangedTime = staff && draft.originalTime?.pickupTime === draft.requestedReceiveAt;
+  const requestedReceiveAt = unchangedTime ? draft.originalTime!.requestedReceiveAt : pickupAt;
   if (!draft.items.length || draft.items.length > 30) errors.items = '请保留 1–30 项商品。';
   const items = draft.items.map((item, index) => {
-    const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '' });
+    const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '',
+      attributes: { ...item.attributes, ...(item.productType === 'CAKE' ? { flavor: item.attributes.flavor.trim() || '原味动物奶油' } : {}) } });
+    const type = normalizeProductType(item.productType);
+    if (!Object.hasOwn(productTypes, type)) errors[`items.${index}.productType`] = '请选择蛋糕或其他。';
+    if (result.item) result.item.productType = type;
     Object.entries(result.errors).forEach(([key, value]) => { errors[`items.${index}.${key}`] = value; });
     if (item.productType === 'CAKE' && !item.attributes.size.trim()) errors[`items.${index}.size`] = '请填写蛋糕尺寸。';
-    Object.entries(item.attributes).forEach(([key, value]) => { if (value.length > 2000) errors[`items.${index}.${key}`] = '最多填写 2000 个字符。'; });
-    return result.item;
+    Object.entries(item.attributes).forEach(([key, value]) => { if (value.length > (key === 'specification' ? 16000 : 2000)) errors[`items.${index}.${key}`] = key === 'specification' ? '最多填写 16000 个字符。' : '最多填写 2000 个字符。'; });
+    return result.item ? { ...result.item, ...(staff ? { itemId: item.key } : {}) } : null;
   });
   const content: SubmissionContent = { phone: contactPhone, memberPhone, fulfillmentType: draft.fulfillmentType,
     address: draft.address.trim() || null, requestedReceiveAt,
     items: items.filter(item => item !== null).map(item => ({ name: item.name, productType: item.productType || 'CAKE', quantity: item.quantity,
-      attributes: item.attributes as Record<string, string> })) };
+      attributes: item.attributes as Record<string, string>, ...(item.itemId ? { itemId: item.itemId } : {}) })) };
   let totalAmountCents: number | null = null;
   if (staff) { try { totalAmountCents = moneyToCents(draft.totalAmount); } catch (error) { errors.totalAmount = (error as Error).message; } }
   const review: SubmissionReview = { content, totalAmountCents, creditedEmployeeId: draft.creditedEmployeeId || null,
     prices: items.filter(item => item !== null).map(item => ({ unitPriceCents: item.unitPriceCents, memberPriceCents: item.memberPriceCents })),
-    plannedHandoffAt: staff ? instant(draft.plannedHandoffAt, 'plannedHandoffAt', false) : null };
+    plannedHandoffAt: staff ? unchangedTime ? draft.originalTime!.plannedHandoffAt : pickupAt || null : null,
+    plannedFinishAt: staff ? draft.originalTime && unchangedTime && (draft.finishTimeMode !== 'AUTO' || !draft.originalTime.plannedFinishAt)
+      && draft.plannedFinishAt === localTime(draft.originalTime.plannedFinishAt)
+      ? draft.originalTime.plannedFinishAt : instant(draft.plannedFinishAt || (draft.finishTimeMode === 'AUTO' ? defaultFinishTime(draft.requestedReceiveAt) : ''), 'plannedFinishAt', false) : null };
+  if (staff && finishTooLate(review.plannedHandoffAt || content.requestedReceiveAt, review.plannedFinishAt)) {
+    errors.plannedFinishAt = finishLeadTimeMessage;
+  }
   return { content, review, errors };
+}
+
+export interface SubmissionListView { mine: boolean; status: 'ALL' | 'PENDING' | 'CONFIRMED'; keyword: string; page: number }
+export function searchSubmissionView(view: SubmissionListView, text: string): SubmissionListView {
+  const keyword = text.trim();
+  return { ...view, keyword, status: !keyword ? 'PENDING' : keyword !== view.keyword ? 'ALL' : view.status, page: 1 };
+}
+export function submissionListQuery(view: SubmissionListView): string {
+  return new URLSearchParams({ mine: String(view.mine), status: view.status, keyword: view.keyword, page: String(view.page) }).toString();
 }

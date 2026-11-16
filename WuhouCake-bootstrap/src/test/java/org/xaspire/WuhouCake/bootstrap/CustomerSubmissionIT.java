@@ -1,6 +1,7 @@
 package org.xaspire.WuhouCake.bootstrap;
 
 import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.*;
 import java.net.http.*;
 import java.util.*;
@@ -49,6 +50,7 @@ class CustomerSubmissionIT {
     @MockitoSpyBean Operations auditOperations;
     @Autowired DataSource dataSource;
     @Autowired PlatformTransactionManager transactions;
+    @Autowired org.xaspire.WuhouCake.order.application.service.OrderRetentionService retention;
     @BeforeEach void clean() {
         reset(store, auditOperations); jdbc.execute("TRUNCATE customer_order_entry,customer_order_submission,customer_submission_activity,cake_order,identity_account,audit_operation CASCADE");
         clearRedis();
@@ -56,24 +58,318 @@ class CustomerSubmissionIT {
     @AfterAll void cleanup() { reset(store, auditOperations); clearRedis(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE"); }
     private void clearRedis() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
+    @Test void deletedCustomerOrderPurgeScrubsTheSubmissionButRetainsItsIdempotentReceipt() throws Exception {
+        var staff = admin(); String token = entry(staff); UUID key = UUID.randomUUID();
+        var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String submission = submit(token, input, key).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        String order = staff.data("POST", "/api/customer-submissions/" + submission + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
+        staff.data("POST", "/api/orders/" + order + "/delete", Map.of("expectedVersion", 0, "reason", "测试清理"));
+        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE id=?::uuid", order);
+        assertEquals(404, staff.request("GET", "/api/customer-submissions/" + submission, null).status);
+        assertEquals(0, staff.data("GET", "/api/customer-submissions?status=CONFIRMED", null).path("total").asInt());
+        assertEquals(1, retention.purgeExpired().purged());
+        assertEquals(0, count("cake_order")); assertEquals(0, count("customer_submission_activity")); assertEquals(1, count("customer_order_entry"));
+        var kept = jdbc.queryForMap("SELECT status,original::text,reviewed,original_phone,requested_date,order_id FROM customer_order_submission WHERE id=?::uuid", submission);
+        assertEquals("PURGED", kept.get("status")); assertEquals("{}", kept.get("original")); assertNull(kept.get("reviewed"));
+        assertEquals("", kept.get("original_phone")); assertNull(kept.get("requested_date")); assertNull(kept.get("order_id"));
+        assertEquals(404, new Client().request("POST", submitPath(token), input, key.toString()).status);
+        assertEquals(1, count("customer_order_submission")); assertEquals(0, count("cake_order"));
+    }
+
+    @Test void searchMatchesPhonesAndReceiptsAcrossStatesWithConsistentPaging() throws Exception {
+        var admin = admin(); var front = employee(admin, "0002", "FRONT_DESK");
+        String frontEntry = entry(front), adminEntry = entry(admin);
+        String pending = submit(frontEntry, content("13800001111", "2026-11-02T18:00:00+08:00"), UUID.randomUUID()).at("/data/submissionId").asText();
+        String confirmed = submit(adminEntry, content("13900002222", "2026-11-03T18:00:00+08:00"), UUID.randomUUID()).at("/data/submissionId").asText();
+        submit(frontEntry, content("13800004444", "2026-11-04T18:00:00+08:00"), UUID.randomUUID());
+        var corrected = content("13700003333", "2026-11-03T18:00:00+08:00");
+        admin.data("PATCH", "/api/customer-submissions/" + confirmed, Map.of("expectedVersion", 0, "review", review(corrected, admin.id, 12300)));
+        admin.data("POST", "/api/customer-submissions/" + confirmed + "/confirm", Map.of("expectedVersion", 1));
+        String all = "/api/customer-submissions?mine=false&status=ALL&keyword=";
+        for (String keyword : List.of("13900002222", "13700003333", "3333", "F" + confirmed, confirmed.toUpperCase(Locale.ROOT), "137 0000-3333")) {
+            var found = front.data("GET", all + URLEncoder.encode(keyword, java.nio.charset.StandardCharsets.UTF_8), null);
+            assertEquals(1, found.path("total").asInt(), keyword);
+            assertEquals(confirmed, found.at("/items/0/submission/id").asText());
+        }
+        assertEquals(0, front.data("GET", "/api/customer-submissions?mine=true&status=ALL&keyword=" + confirmed, null).path("total").asInt());
+        assertEquals(1, admin.data("GET", "/api/customer-submissions?mine=true&status=ALL&keyword=" + confirmed, null).path("total").asInt());
+        assertEquals(0, front.data("GET", "/api/customer-submissions?mine=false&keyword=" + confirmed, null).path("total").asInt());
+        assertEquals(1, front.data("GET", "/api/customer-submissions?mine=false&status=CONFIRMED&keyword=" + confirmed, null).path("total").asInt());
+        var first = front.data("GET", all + "0000&size=1&page=1", null);
+        var second = front.data("GET", all + "0000&size=1&page=2", null);
+        assertEquals(3, first.path("total").asInt()); assertEquals(3, second.path("total").asInt());
+        assertEquals(1, first.path("items").size()); assertEquals(1, second.path("items").size());
+        assertNotEquals(first.at("/items/0/submission/id").asText(), second.at("/items/0/submission/id").asText());
+        assertEquals(0, front.data("GET", all + "not-a-receipt", null).path("total").asInt());
+        front.data("DELETE", "/api/customer-submissions/" + pending, Map.of("expectedVersion", 0));
+        assertEquals(0, front.data("GET", all + pending, null).path("total").asInt());
+    }
+
+    @Test void pendingLastPageReturnsRemainingOrdersAfterAnotherClerkProcessesOne() throws Exception {
+        var staff = admin(); entry(staff); String last = null;
+        var source = store.entryForOwner(UUID.fromString(staff.id));
+        // 队列容量夹具直接入库，公开入口限流由独立测试覆盖。
+        for (int i = 0; i < 21; i++) {
+            var input = json.convertValue(content("1380000" + String.format("%04d", i), "2026-11-02T18:00:00+08:00"),
+                    org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission.Content.class);
+            last = new TransactionTemplate(transactions).execute(tx ->
+                    store.submit(source, UUID.randomUUID(), UUID.randomUUID().toString(), null, input, Instant.now()).id().toString());
+        }
+        String path = "/api/customer-submissions?mine=true&status=PENDING&keyword=1380000&page=2&size=20";
+        var before = staff.data("GET", path, null);
+        assertEquals(2, before.path("page").asInt()); assertEquals(21, before.path("total").asInt());
+        assertEquals(1, before.path("items").size());
+        staff.data("DELETE", "/api/customer-submissions/" + last, Map.of("expectedVersion", 0));
+        var after = staff.data("GET", path, null);
+        assertEquals(1, after.path("page").asInt()); assertEquals(20, after.path("total").asInt());
+        assertEquals(20, after.path("items").size());
+        var empty = staff.data("GET", path.replace("keyword=1380000", "keyword=999999"), null);
+        assertEquals(1, empty.path("page").asInt()); assertEquals(0, empty.path("total").asInt());
+    }
+
+    @Test void submissionListKeepsCountAndRowsInOneSnapshotDuringConfirmation() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        var counted = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var once = new java.util.concurrent.atomic.AtomicBoolean();
+        org.mockito.stubbing.Answer<Object> pause = invocation -> {
+            Object result = invocation.callRealMethod();
+            if (once.compareAndSet(false, true)) { counted.countDown(); await(release); }
+            return result;
+        };
+        doAnswer(pause).when(store).count(null, "PENDING", "");
+        doAnswer(pause).when(store).search(isNull(), eq("PENDING"), eq(""), anyInt(), anyLong());
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var read = pool.submit(() -> staff.data("GET", "/api/customer-submissions?mine=false&status=PENDING", null));
+            try {
+                assertTrue(counted.await(10, TimeUnit.SECONDS));
+                staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
+            } finally { release.countDown(); }
+            var result = read.get(10, TimeUnit.SECONDS);
+            assertEquals(1, result.path("total").asInt()); assertEquals(1, result.path("items").size());
+            assertEquals("PENDING", result.at("/items/0/submission/status").asText());
+            assertEquals(0, result.at("/items/0/duplicates").size());
+        } finally { release.countDown(); }
+        assertEquals(0, staff.data("GET", "/api/customer-submissions?status=PENDING", null).path("total").asInt());
+    }
+
+    @Test void submissionDetailKeepsStatusAndHistoryInOneSnapshotDuringConfirmation() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        var loaded = new CountDownLatch(1); var release = new CountDownLatch(1);
+        var once = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation -> {
+            Object result = invocation.callRealMethod();
+            if (once.compareAndSet(false, true)) { loaded.countDown(); await(release); }
+            return result;
+        }).when(store).find(UUID.fromString(id), false);
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var read = pool.submit(() -> staff.data("GET", "/api/customer-submissions/" + id, null));
+            try {
+                assertTrue(loaded.await(10, TimeUnit.SECONDS));
+                staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
+            } finally { release.countDown(); }
+            var result = read.get(10, TimeUnit.SECONDS);
+            assertEquals("PENDING", result.at("/submission/status").asText());
+            assertEquals(0, result.path("duplicates").size());
+            for (var activity : result.path("activities")) assertNotEquals("CONFIRMED", activity.path("type").asText());
+        } finally { release.countDown(); }
+        assertEquals("CONFIRMED", staff.data("GET", "/api/customer-submissions/" + id, null).at("/submission/status").asText());
+    }
+
+    @Test void newReviewPricesAreIgnoredAndLegacyPricesAreRetainedOnConfirmation() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        var review = new LinkedHashMap<String, Object>(review(input, staff.id, 12300));
+        review.put("prices", List.of(Map.of("unitPriceCents", -1, "memberPriceCents", 1.234), Map.of("unitPriceCents", 2300, "memberPriceCents", 0)));
+        var saved = staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review));
+        assertTrue(saved.at("/submission/reviewed/prices/0/unitPriceCents").isNull());
+        assertTrue(saved.at("/submission/reviewed/prices/0/memberPriceCents").isNull());
+        assertTrue(saved.at("/submission/reviewed/prices/1/unitPriceCents").isNull());
+        jdbc.update("UPDATE customer_order_submission SET reviewed=jsonb_set(jsonb_set(reviewed,'{prices,0,unitPriceCents}','12000'::jsonb),'{prices,0,memberPriceCents}','10000'::jsonb) WHERE id=?::uuid", id);
+        var old = staff.data("GET", "/api/customer-submissions/" + id, null);
+        assertEquals(12000, old.at("/submission/reviewed/prices/0/unitPriceCents").asInt());
+        assertEquals(12000L, jdbc.queryForObject("SELECT (reviewed#>>'{prices,0,unitPriceCents}')::bigint FROM customer_order_submission WHERE id=?::uuid", Long.class, id));
+        var invalid = new LinkedHashMap<>(review); invalid.put("prices", List.of(Map.of("unitPriceCents", 500), Map.of("unitPriceCents", -1)));
+        assertEquals(200, staff.request("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 1, "review", invalid)).status);
+        var confirmed = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
+        String orderId = confirmed.at("/submission/orderId").asText();
+        assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND product_type='CAKE'", Long.class, orderId));
+        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND product_type='OTHER'", Long.class, orderId));
+        assertEquals(12300L, jdbc.queryForObject("SELECT total_amount_cents FROM cake_order WHERE id=?::uuid", Long.class, orderId));
+    }
+
+    @Test void actualV26SubmissionCanRetryAfterUpgradeWithoutReplacingOriginal() throws Exception {
+        JsonNode fixture;
+        try (var file = getClass().getResourceAsStream("/v26-submission-retry.json")) {
+            fixture = json.readTree(Objects.requireNonNull(file));
+        }
+        UUID requestId = UUID.fromString(fixture.path("requestId").asText());
+        UUID id = UUID.fromString(fixture.path("submissionId").asText());
+        String fingerprint = fixture.path("fingerprint").asText();
+        var staff = admin(); String token = entry(staff);
+        UUID entryId = jdbc.queryForObject("SELECT id FROM customer_order_entry WHERE token=?", UUID.class, token);
+        UUID owner = UUID.fromString(staff.id);
+        String schema = "retry_v26_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).locations("classpath:db/migration");
+            flyway.target("26").load().migrate();
+            jdbc.update("INSERT INTO " + schema + ".customer_order_entry(id,owner_id,owner_name,token,enabled) VALUES(?,?,?,'v26-retry-fixture',true)", entryId, owner, "合成客服");
+            jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,original_phone,requested_date,status,created_at,updated_at)"
+                            + " VALUES(?,?,?,'合成客服',?,?,?::jsonb,'13800000000',DATE '2026-11-02','PENDING',now(),now())",
+                    id, entryId, owner, requestId, fingerprint, fixture.path("original").toString());
+            flyway.target("29").load().migrate();
+            jdbc.update("INSERT INTO customer_order_submission SELECT * FROM " + schema + ".customer_order_submission WHERE id=?", id);
+        } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
+        jdbc.update("INSERT INTO customer_submission_activity(submission_id,type,actor_type,actor_name,details,created_at) VALUES(?,'SUBMITTED','CUSTOMER','合成客户','{}'::jsonb,now())", id);
+        var original = jdbc.queryForObject("SELECT original::text FROM customer_order_submission WHERE id=?", String.class, id);
+        var input = fixture.path("request");
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> submit(token, input, requestId));
+            var second = pool.submit(() -> submit(token, input, requestId));
+            assertEquals(id.toString(), first.get(10, TimeUnit.SECONDS).at("/data/submissionId").asText());
+            assertEquals(id.toString(), second.get(10, TimeUnit.SECONDS).at("/data/submissionId").asText());
+        }
+        assertEquals(original, jdbc.queryForObject("SELECT original::text FROM customer_order_submission WHERE id=?", String.class, id));
+        assertEquals(fingerprint, jdbc.queryForObject("SELECT fingerprint FROM customer_order_submission WHERE id=?", String.class, id));
+        assertEquals(1, count("customer_order_submission"));
+        assertEquals(1, count("customer_submission_activity"));
+        for (String field : List.of("quantity", "specification", "phone", "requestedReceiveAt")) {
+            var changed = ((com.fasterxml.jackson.databind.node.ObjectNode) input).deepCopy();
+            var product = (com.fasterxml.jackson.databind.node.ObjectNode) changed.path("items").get(1);
+            switch (field) {
+                case "quantity" -> product.put(field, 44);
+                case "specification" -> ((com.fasterxml.jackson.databind.node.ObjectNode) product.path("attributes")).put(field, "改备注");
+                case "phone" -> changed.put(field, "13800000001");
+                case "requestedReceiveAt" -> changed.put(field, "2026-11-02T19:00:00+08:00");
+                default -> throw new AssertionError(field);
+            }
+            var conflict = new Client().request("POST", submitPath(token), changed, requestId.toString());
+            assertEquals(409, conflict.status, field);
+            assertEquals("IDEMPOTENCY_KEY_CONFLICT", conflict.body.path("code").asText(), field);
+        }
+        String path = "/api/customer-submissions/" + id;
+        var review = Map.of("content", input, "totalAmountCents", 10000, "creditedEmployeeId", staff.id);
+        staff.data("PATCH", path, Map.of("expectedVersion", 0, "review", review));
+        staff.data("POST", path + "/confirm", Map.of("expectedVersion", 1));
+        assertEquals(id.toString(), submit(token, input, requestId).at("/data/submissionId").asText());
+        assertEquals(1, count("cake_order"));
+    }
+
+    @Test void reviewedQuotesFollowIdsThroughDeletionReorderAndConfirmation() throws Exception {
+        var staff = admin(); String token = entry(staff);
+        var input = new LinkedHashMap<>(content("13800000000", "2026-11-02T18:00:00+08:00"));
+        var a = Map.of("name", "茶饮", "productType", "OTHER", "quantity", 1, "attributes", Map.of("specification", "多冰"));
+        var b = Map.of("name", "茶饮", "productType", "OTHER", "quantity", 1, "attributes", Map.of("specification", "少冰"));
+        input.put("items", List.of(a, b, b));
+        UUID requestId = UUID.randomUUID();
+        var receipt = submit(token, input, requestId);
+        String path = "/api/customer-submissions/" + receipt.at("/data/submissionId").asText();
+        var withClientId = new LinkedHashMap<>(input);
+        var claimedId = new LinkedHashMap<String, Object>(a); claimedId.put("itemId", UUID.randomUUID());
+        withClientId.put("items", List.of(claimedId, b, b));
+        assertEquals(receipt, submit(token, withClientId, requestId));
+        var reviewed = staff.data("PATCH", path, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12000)));
+        assertTrue(reviewed.at("/submission/original/items/0/itemId").isMissingNode());
+        var savedItems = reviewed.at("/submission/reviewed/content/items");
+        String first = savedItems.get(0).path("itemId").asText(), second = savedItems.get(1).path("itemId").asText(), third = savedItems.get(2).path("itemId").asText();
+        assertEquals(3, Set.of(UUID.fromString(first), UUID.fromString(second), UUID.fromString(third)).size());
+        jdbc.update("UPDATE customer_order_submission SET reviewed=jsonb_set(reviewed,'{prices}',?::jsonb) WHERE id=?::uuid",
+                "[{\"unitPriceCents\":1000},{\"unitPriceCents\":2200,\"memberPriceCents\":0},{\"unitPriceCents\":3300}]", receipt.at("/data/submissionId").asText());
+
+        var legacy = new LinkedHashMap<>(input); legacy.put("items", List.of(b, b));
+        var conflict = staff.request("PATCH", path, Map.of("expectedVersion", 1, "review", review(legacy, staff.id, 12000)));
+        assertEquals(409, conflict.status);
+        assertEquals("SUBMISSION_ITEM_ID_CONFLICT", conflict.body.path("code").asText());
+        assertEquals(1000, staff.data("GET", path, null).at("/submission/reviewed/prices/0/unitPriceCents").asInt());
+
+        var editedSecond = new LinkedHashMap<String, Object>(b);
+        editedSecond.put("itemId", second); editedSecond.put("name", "核对茶饮"); editedSecond.put("quantity", 2);
+        var retainedThird = new LinkedHashMap<String, Object>(b); retainedThird.put("itemId", third);
+        var added = new LinkedHashMap<String, Object>(b); added.put("itemId", UUID.randomUUID());
+        var changed = new LinkedHashMap<>(input); changed.put("items", List.of(retainedThird, editedSecond, added));
+        var duplicateIds = new LinkedHashMap<>(input); duplicateIds.put("items", List.of(editedSecond, editedSecond));
+        assertEquals(409, staff.request("PATCH", path, Map.of("expectedVersion", 1, "review", review(duplicateIds, staff.id, 12000))).status);
+        var request = Map.of("expectedVersion", 1, "review", review(changed, staff.id, 12000));
+        var saved = staff.data("PATCH", path, request);
+        assertEquals(third, saved.at("/submission/reviewed/content/items/0/itemId").asText());
+        assertEquals(3300, saved.at("/submission/reviewed/prices/0/unitPriceCents").asInt());
+        assertEquals(2200, saved.at("/submission/reviewed/prices/1/unitPriceCents").asInt());
+        assertEquals(0, saved.at("/submission/reviewed/prices/1/memberPriceCents").asInt());
+        assertTrue(saved.at("/submission/reviewed/prices/2/unitPriceCents").isNull());
+        assertEquals(409, staff.request("PATCH", path, request).status);
+        var confirmed = staff.data("POST", path + "/confirm", Map.of("expectedVersion", 2));
+        String orderId = confirmed.at("/submission/orderId").asText();
+        assertEquals(2200L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE order_id=?::uuid AND name='核对茶饮'", Long.class, orderId));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND unit_price_cents=3300", Integer.class, orderId));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND unit_price_cents IS NULL", Integer.class, orderId));
+    }
+
+    @Test void migrationAssignsIdsToReviewedPendingRowsWithoutReorderingPrices() throws Exception {
+        String schema = "reviewed_migration_" + UUID.randomUUID().toString().replace("-", "");
+        try (var connection = dataSource.getConnection()) {
+            var single = new SingleConnectionDataSource(connection, true);
+            var flyway = Flyway.configure().dataSource(single).schemas(schema).defaultSchema(schema).locations("classpath:db/migration");
+            flyway.target("28").load().migrate();
+            connection.setSchema(schema);
+            var old = new JdbcTemplate(single);
+            UUID owner = UUID.randomUUID(), entry = UUID.randomUUID(), id = UUID.randomUUID();
+            old.update("INSERT INTO customer_order_entry(id,owner_id,owner_name,token,enabled) VALUES(?,?,?,'reviewed-migration-token',true)", entry, owner, "合成客服");
+            var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+            var review = new LinkedHashMap<String, Object>(review(input, owner.toString(), 10000));
+            review.put("prices", List.of(Map.of("unitPriceCents", 1200), Map.of("unitPriceCents", 3900)));
+            old.update("INSERT INTO customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,reviewed,original_phone,requested_date,status,created_at,updated_at)"
+                            + " VALUES(?,?,?,'合成客服',?,'old-fingerprint',?::jsonb,?::jsonb,'13800000000',DATE '2026-11-02','PENDING',now(),now())",
+                    id, entry, owner, UUID.randomUUID(), json.writeValueAsString(input), json.writeValueAsString(review));
+            var migrated = flyway.target("29").load();
+            migrated.migrate();
+            connection.setSchema(schema);
+            var first = old.queryForObject("SELECT reviewed::text FROM customer_order_submission WHERE id=?", String.class, id);
+            var value = json.readTree(first);
+            assertNotEquals(UUID.fromString(value.at("/content/items/0/itemId").asText()), UUID.fromString(value.at("/content/items/1/itemId").asText()));
+            assertEquals(1200, value.at("/prices/0/unitPriceCents").asInt());
+            assertEquals(3900, value.at("/prices/1/unitPriceCents").asInt());
+            assertTrue(old.queryForObject("SELECT original #>> '{items,0,itemId}' IS NULL FROM customer_order_submission WHERE id=?", Boolean.class, id));
+            assertEquals(0, migrated.migrate().migrationsExecuted);
+            connection.setSchema(schema);
+            assertEquals(first, old.queryForObject("SELECT reviewed::text FROM customer_order_submission WHERE id=?", String.class, id));
+        } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
+    }
+
     @Test void anonymousMultiProductRequirementsRemainOutsideOrdersUntilExplicitConfirmation() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         var receipt = submit(token, input, UUID.randomUUID()); String id = receipt.at("/data/submissionId").asText();
         assertEquals(0, count("cake_order")); assertEquals(1, count("customer_order_submission"));
+        assertEquals(1, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
         var detail = staff.data("GET", "/api/customer-submissions/" + id, null);
         assertEquals("客户（手机号未验证）", detail.at("/activities/0/actorName").asText());
         assertTrue(detail.at("/activities/0/actorId").isNull()); assertEquals("CUSTOMER", detail.at("/activities/0/actorType").asText());
         assertEquals("原味", detail.at("/submission/original/items/0/attributes/base").asText());
+        assertEquals("原味奶油", detail.at("/submission/original/items/0/attributes/flavor").asText());
         assertFalse(detail.at("/submission/original/items/1/attributes").has("base"));
+        assertFalse(detail.at("/submission/original/items/1/attributes").has("flavor"));
         var review = review(input, staff.id, 12300);
         assertEquals(400, staff.request("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 0)).status);
         staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review));
+        assertEquals("原味奶油", staff.data("GET", "/api/customer-submissions/" + id, null).at("/submission/reviewed/content/items/0/attributes/flavor").asText());
         var confirmed = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1));
         String orderId = confirmed.at("/submission/orderId").asText(); assertEquals(1, count("cake_order"));
+        assertEquals(0, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
         var order = staff.data("GET", "/api/orders/" + orderId, null);
+        assertTrue(order.path("orderingMethod").isNull(), "客户填单不能自动归为小程序");
         assertEquals(staff.id, order.at("/creditedEmployee/accountId").asText()); assertEquals(staff.id, order.path("createdBy").asText());
-        assertEquals("WAITING_PRODUCTION", order.path("status").asText()); assertEquals("UNPAID", order.path("paymentStatus").asText());
+        assertEquals("CAKE_BASE", order.path("status").asText()); assertEquals("UNPAID", order.path("paymentStatus").asText());
         assertEquals(12300, order.path("totalAmountCents").asLong()); assertEquals(2, order.path("items").size());
+        assertEquals(List.of("生日蛋糕", "纸杯蛋糕"), order.path("items").valueStream().map(i -> i.path("name").asText()).toList());
+        assertEquals(List.of(1, 2), jdbc.queryForList(
+                "SELECT position FROM cake_order_item WHERE order_id=?::uuid ORDER BY position", Integer.class, orderId));
+        order.path("items").forEach(product -> {
+            if ("CAKE".equals(product.path("productType").asText())) assertEquals("原味奶油", product.at("/attributes/flavor").asText());
+        });
+        assertEquals("原味奶油", jdbc.queryForObject("SELECT attributes->>'flavor' FROM cake_order_item WHERE order_id=?::uuid AND product_type='CAKE'", String.class, orderId));
         assertEquals("2026-11-02T08:00:00Z", order.at("/fulfillment/plannedHandoffAt").asText());
         assertEquals("CUSTOMER_SUBMITTED", jdbc.queryForObject("SELECT source FROM cake_order WHERE id=?::uuid", String.class, orderId));
         var log = staff.data("GET", "/api/orders/" + orderId + "/activities", null).at("/items/0");
@@ -82,6 +378,58 @@ class CustomerSubmissionIT {
         assertEquals(id, origin.path("submissionId").asText()); assertEquals("2026-11-02T10:00:00Z", origin.path("requestedReceiveAt").asText());
         assertEquals(orderId, staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText());
         assertEquals(409, staff.request("DELETE", "/api/customer-submissions/" + id, Map.of("expectedVersion", 2)).status);
+    }
+    @Test void missingHandoffUsesPickupAliasAndExplicitClearingClearsBothMirrors() throws Exception {
+        var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        var review = new LinkedHashMap<>(review(input, staff.id, 12300)); review.put("plannedHandoffAt", null); review.put("plannedFinishAt", "2026-11-02T15:00:00+08:00");
+        staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review));
+        String orderId = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
+        var order = staff.data("GET", "/api/orders/" + orderId, null);
+        assertEquals("2026-11-02T10:00:00Z", order.at("/fulfillment/plannedHandoffAt").asText());
+        assertEquals("2026-11-02T07:00:00Z", order.at("/fulfillment/plannedFinishAt").asText());
+        assertEquals("2026-11-02T10:00:00Z", order.at("/fulfillment/requestedReceiveAt").asText());
+        assertNotNull(jdbc.queryForObject("SELECT planned_handoff_at FROM cake_order WHERE id=?::uuid", java.sql.Timestamp.class, orderId));
+        var calendar = staff.data("GET", "/api/orders/calendar?from=2026-11-02&to=2026-11-03", null).get(0);
+        assertEquals(orderId, calendar.path("orderId").asText()); assertEquals("2026-11-02T10:00:00Z", calendar.path("plannedHandoffAt").asText());
+        var pending = staff.data("GET", "/api/orders/workbench?date=2026-11-02", null).at("/pendingOrders/0");
+        assertEquals(orderId, pending.path("orderId").asText()); assertEquals("2026-11-02T10:00:00Z", pending.path("plannedHandoffAt").asText());
+        assertEquals("2026-11-02T10:00:00Z", pending.path("requestedReceiveAt").asText());
+        var export = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/orders/" + orderId + "/exports/xlsx"))
+                .header("Authorization", "Bearer " + staff.token).POST(HttpRequest.BodyPublishers.noBody()).build();
+        var download = staff.http.send(export, HttpResponse.BodyHandlers.ofByteArray()); assertEquals(200, download.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(download.body()))) { assertTrue(book.getNumberOfSheets() > 0); }
+        var filled = staff.data("PATCH", "/api/orders/" + orderId + "/information", Map.of("expectedVersion", 0, "changes", Map.of("plannedHandoffAt", "2026-11-02T16:00:00+08:00")));
+        assertEquals("2026-11-02T08:00:00Z", filled.at("/fulfillment/plannedHandoffAt").asText());
+        var clear = new LinkedHashMap<String, Object>(); clear.put("plannedHandoffAt", null);
+        staff.data("PATCH", "/api/orders/" + orderId + "/information", Map.of("expectedVersion", 1, "changes", clear));
+        var cleared = staff.data("GET", "/api/orders/" + orderId, null);
+        assertTrue(cleared.at("/fulfillment/plannedHandoffAt").isNull());
+        assertTrue(cleared.at("/fulfillment/requestedReceiveAt").isNull());
+    }
+
+    @Test void orderingRequirementsStaySeparateFromWorkNotesAndReflectCurrentOrderEdits() throws Exception {
+        var staff = admin();
+        var input = Map.of("phone", "13800000000", "fulfillmentType", "PICKUP", "requestedReceiveAt", "2026-11-02T18:00:00+08:00",
+                "items", List.of(Map.of("name", "生日蛋糕", "productType", "CAKE", "quantity", 1,
+                        "attributes", Map.of("size", "8", "requirements", "少糖\n不放坚果"))));
+        String submission = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12000)));
+        String id = staff.data("POST", "/api/customer-submissions/" + submission + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
+        var order = staff.data("GET", "/api/orders/" + id, null);
+        assertEquals("少糖\n不放坚果", order.at("/items/0/attributes/requirements").asText());
+        assertEquals(0, staff.data("GET", "/api/orders/" + id + "/notes", null).path("total").asLong());
+        staff.data("POST", "/api/orders/" + id + "/notes", Map.of("content", "工作交接：由晚班制作"));
+        assertEquals("少糖\n不放坚果", staff.data("GET", "/api/orders/" + id, null).at("/items/0/attributes/requirements").asText());
+        var attributes = new LinkedHashMap<String, Object>(json.convertValue(order.at("/items/0/attributes"), Map.class));
+        attributes.put("requirements", "顾客改为正常糖");
+        var revised = staff.data("PATCH", "/api/orders/" + id, Map.of("expectedVersion", order.path("version").asLong(),
+                "itemId", order.at("/items/0/itemId").asText(), "changes", Map.of("attributes", attributes)));
+        assertEquals("顾客改为正常糖", revised.at("/items/0/attributes/requirements").asText());
+        var history = staff.data("GET", "/api/orders/" + id + "/activities?type=ITEM_CHANGED", null);
+        assertEquals(staff.id, history.at("/items/0/actorId").asText());
+        assertTrue(history.toString().contains("顾客改为正常糖"));
+        assertEquals("工作交接：由晚班制作", staff.data("GET", "/api/orders/" + id + "/notes", null).at("/items/0/content").asText());
     }
     @Test void publicRequestsRejectInternalFieldsAndExposeNoReadOrModificationCapabilities() throws Exception {
         var staff = admin(); String token = entry(staff); var client = new Client(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
@@ -94,6 +442,25 @@ class CustomerSubmissionIT {
         assertTrue(client.request("GET", submitPath(token) + "/" + id, null).status >= 400);
         assertEquals(400, client.request("POST", submitPath(token), input).status);
         assertEquals(0, count("cake_order")); assertEquals(1, count("customer_order_submission"));
+        assertEquals(1, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
+    }
+    @Test void publicRequestsRejectNullAndFractionalQuantitiesWithoutConsumingTheRequestKey() throws Exception {
+        var staff = admin();
+        String token = entry(staff);
+        var client = new Client();
+        var key = UUID.randomUUID();
+        var valid = content("13800000000", "2026-11-02T18:00:00+08:00");
+        ObjectNode invalid = json.valueToTree(valid);
+        var item = (ObjectNode) invalid.at("/items/0");
+        item.putNull("quantity");
+        assertEquals(400, client.request("POST", submitPath(token), invalid, key.toString()).status);
+        item.put("quantity", 1.5);
+        assertEquals(400, client.request("POST", submitPath(token), invalid, key.toString()).status);
+        assertEquals(0, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
+
+        submit(token, valid, key);
+        assertEquals(1, staff.data("GET", "/api/customer-submissions/pending-count", null).path("count").asInt());
+        assertEquals(0, count("cake_order"));
     }
     @Test void sameRequestIsIdempotentButNewRequestsNeedFullDuplicateAcknowledgement() throws Exception {
         var staff = admin(); String token = entry(staff); var input = content("13800000000", "2026-11-02T18:00:00+08:00"); var key = UUID.randomUUID();
@@ -160,7 +527,8 @@ class CustomerSubmissionIT {
         assertEquals(Set.of(manual, peer), duplicateIds(changed));
         assertNotEquals(initial.path("duplicateCheckToken"), changed.path("duplicateCheckToken"));
         var revised = content("13800000000", "2026-11-03T00:30:00+08:00");
-        staff.data("PATCH", "/api/customer-submissions/" + first, Map.of("expectedVersion", 0, "review", review(revised, staff.id, 12300)));
+        var revisedReview = new LinkedHashMap<>(review(revised, staff.id, 12300)); revisedReview.put("plannedHandoffAt", "2026-11-03T00:30:00+08:00");
+        staff.data("PATCH", "/api/customer-submissions/" + first, Map.of("expectedVersion", 0, "review", revisedReview));
         assertTrue(duplicateIds(staff.data("GET", "/api/customer-submissions/" + first, null)).isEmpty());
         staff.data("PATCH", "/api/orders/" + manual + "/information", Map.of("expectedVersion", 0, "changes", Map.of("requestedReceiveAt", "2026-11-03T00:30:00+08:00")));
         assertEquals(Set.of(manual), duplicateIds(staff.data("GET", "/api/customer-submissions/" + first, null)));
@@ -257,6 +625,24 @@ class CustomerSubmissionIT {
         var stats = staff.data("GET", "/api/admin/orders?from=2026-11-01&to=2026-11-04", null);
         assertEquals(0, stats.at("/totals/orderCount").asInt());
     }
+
+    @Test void reviewMoneyUsesTheSameSafeLimitAsFormalOrders() throws Exception {
+        long maximum = 9_007_199_254_740_991L;
+        var staff = admin(); var original = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String id = submit(entry(staff), original, UUID.randomUUID()).at("/data/submissionId").asText();
+        var draft = new LinkedHashMap<>(review(original, staff.id, maximum));
+        draft.put("prices", List.of(Map.of(), Map.of("unitPriceCents", maximum, "memberPriceCents", maximum)));
+        var saved = staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", draft));
+        assertEquals(maximum, saved.at("/submission/reviewed/totalAmountCents").asLong());
+        var invalid = new LinkedHashMap<>(draft);
+        invalid.put("totalAmountCents", maximum + 1);
+        assertEquals(400, staff.request("PATCH", "/api/customer-submissions/" + id,
+                Map.of("expectedVersion", 1, "review", invalid)).status);
+        assertTrue(saved.at("/submission/reviewed/prices/1/unitPriceCents").isNull());
+        var unchanged = staff.data("GET", "/api/customer-submissions/" + id, null);
+        assertEquals(1, unchanged.at("/submission/version").asLong());
+        assertEquals(maximum, unchanged.at("/submission/reviewed/totalAmountCents").asLong());
+    }
     @Test void concurrentIdenticalAnonymousRequestsHaveOneReceiptAndOneSubmissionActivity() throws Exception {
         var staff = admin(); String token = entry(staff); String key = UUID.randomUUID().toString(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -280,13 +666,13 @@ class CustomerSubmissionIT {
         var data = staff.data("GET", "/api/customer-submissions/" + id, null).path("submission");
         assertEquals(2, data.path("version").asLong()); assertEquals(data.path("status").asText().equals("CONFIRMED") ? 1 : 0, count("cake_order"));
     }
-    @Test void acceptedReceiveTimeUsesReviewAndRemainsTheOnlyCurrentTimeAfterCorrections() throws Exception {
+    @Test void reviewedPickupOwnsCurrentTimesAndPreservesOriginalCustomerSnapshot() throws Exception {
         var staff = admin(); var original = content("13800000000", "2026-11-02T18:00:00+08:00");
         String id = submit(entry(staff), original, UUID.randomUUID()).at("/data/submissionId").asText();
         var reviewed = new LinkedHashMap<>(original); reviewed.put("requestedReceiveAt", "2026-11-02T19:00:00+08:00");
         staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(reviewed, staff.id, 12300)));
         String order = staff.data("POST", "/api/customer-submissions/" + id + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
-        assertEquals("2026-11-02T11:00:00Z", staff.data("GET", "/api/orders/" + order, null).at("/fulfillment/requestedReceiveAt").asText());
+        assertEquals("2026-11-02T08:00:00Z", staff.data("GET", "/api/orders/" + order, null).at("/fulfillment/requestedReceiveAt").asText());
         assertEquals("2026-11-02T10:00:00Z", staff.data("GET", "/api/orders/" + order + "/customer-origin", null).path("requestedReceiveAt").asText());
         var export = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/orders/" + order + "/exports/xlsx"))
                 .header("Authorization", "Bearer " + staff.token).POST(HttpRequest.BodyPublishers.noBody()).build();
@@ -294,17 +680,17 @@ class CustomerSubmissionIT {
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(download.body()))) {
             var text = new StringBuilder(); var formatter = new DataFormatter();
             for (var sheet : book) for (var row : sheet) for (var cell : row) text.append(formatter.formatCellValue(cell)).append('\n');
-            assertTrue(text.toString().contains("2026-11-02 19:00"), text.toString());
+            assertTrue(text.toString().contains("2026-11-02 16:00"), text.toString());
         }
         assertEquals(400, staff.request("PATCH", "/api/orders/" + order + "/information", Map.of("expectedVersion", 0, "changes", Map.of("requestedReceiveDate", "2026-11-03"))).status);
         var updated = staff.data("PATCH", "/api/orders/" + order + "/information", Map.of("expectedVersion", 0, "changes", Map.of("requestedReceiveAt", "2026-11-03T00:30:00+08:00")));
         assertEquals("2026-11-03", updated.at("/fulfillment/requestedReceiveDate").asText());
         assertEquals("2026-11-02T16:30:00Z", updated.at("/fulfillment/requestedReceiveAt").asText());
-        assertEquals("2026-11-02T08:00:00Z", updated.at("/fulfillment/plannedHandoffAt").asText());
+        assertEquals("2026-11-02T16:30:00Z", updated.at("/fulfillment/plannedHandoffAt").asText());
         assertEquals(0, staff.data("GET", "/api/orders/calendar?from=2026-11-02&to=2026-11-03", null).size());
         assertEquals(order, staff.data("GET", "/api/orders/calendar?from=2026-11-03&to=2026-11-04", null).get(0).path("orderId").asText());
         var log = staff.data("GET", "/api/orders/" + order + "/activities?type=ORDER_INFORMATION_CHANGED", null).at("/items/0");
-        assertEquals("2026-11-02T11:00:00Z", log.at("/details/before/requestedReceiveAt").asText());
+        assertEquals("2026-11-02T08:00:00Z", log.at("/details/before/requestedReceiveAt").asText());
         assertEquals("2026-11-02T16:30:00Z", log.at("/details/after/requestedReceiveAt").asText());
     }
     @Test void qrResetsPreserveStateAndAuditRealActorWithoutTokensAndRollbackOnAuditFailure() throws Exception {
@@ -345,7 +731,7 @@ class CustomerSubmissionIT {
     }
     @Test void twoDifferentSubmissionsHoldConcurrentSharedOwnerLocks() throws Exception {
         var staff = admin(); String token = entry(staff); var entered = new CountDownLatch(2); var release = new CountDownLatch(1);
-        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any());
+        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any(), any());
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
             var first = pool.submit(() -> new Client().request("POST", submitPath(token), content("13800000001", "2026-11-02T18:00:00+08:00"), UUID.randomUUID().toString()));
             var second = pool.submit(() -> new Client().request("POST", submitPath(token), content("13800000002", "2026-11-02T18:00:00+08:00"), UUID.randomUUID().toString()));
@@ -358,7 +744,7 @@ class CustomerSubmissionIT {
     @Test void ownerSharedLockBlocksArchivalUntilTheSubmissionCommits() throws Exception {
         var admin = admin(); var front = employee(admin, "0002", "FRONT_DESK"); String token = entry(front);
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1);
-        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any());
+        doAnswer(invocation -> { entered.countDown(); await(release); return invocation.callRealMethod(); }).when(store).submit(any(), any(), anyString(), any(), any(), any());
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
             var post = pool.submit(() -> new Client().request("POST", submitPath(token), content("13800000001", "2026-11-02T18:00:00+08:00"), UUID.randomUUID().toString()));
             Future<Result> archive;

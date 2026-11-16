@@ -6,7 +6,7 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ContactRecognitionTest {
-    private final OrderRecognition parser = new OrderRecognition(CakeSpecifications.DEFAULTS);
+    private final OrderRecognition parser = new OrderRecognition(CakeSpecifications.DEFAULTS, java.time.Clock.systemUTC());
     @Test void partialAndMixedLabelContactsKeepIndependentlyRecognizedFields() {
         for (String text : List.of("王女士，13900000000", "王女士 13900000000 地址：四川省成都市武侯区合成路1号")) {
             var fields = parser.parse(text).fields();

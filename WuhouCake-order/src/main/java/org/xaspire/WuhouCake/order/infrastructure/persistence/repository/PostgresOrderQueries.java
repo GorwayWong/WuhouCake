@@ -10,18 +10,46 @@ import org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderQueryM
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
 
 public final class PostgresOrderQueries implements OrderQueries {
+    @Override public List<ProductionDay> productionCounts(Instant from, Instant to, Set<String> stages) {
+        return mapper.productionCounts(from, to, stages).stream().map(row -> new ProductionDay(row.date(), row.orderCount())).toList();
+    }
+    @Override public long productionOrderCount(Instant from, Instant to, Set<String> stages) {
+        return mapper.productionOrderCount(from, to, stages);
+    }
+    @Override public List<ProductionOrder> productionOrders(Instant from, Instant to, Set<String> stages, int limit, long offset) {
+        return mapper.productionOrders(from, to, stages, limit, offset).stream()
+                .map(row -> new ProductionOrder(UUID.fromString(row.orderId()), row.orderNo(), row.itemName(), row.status(),
+                        row.plannedFinishAt(), row.pickupAt(), row.pickupDate())).toList();
+    }
+    @Override public long paymentOrderCount(LocalDate date, String kind, Instant from, Instant to) {
+        return mapper.paymentOrderCount(date, kind, from, to);
+    }
+    @Override public List<PaymentOrder> paymentOrders(LocalDate date, String kind, Instant from, Instant to, long offset) {
+        return mapper.paymentOrders(date, kind, from, to, offset).stream().map(row -> new PaymentOrder(
+                UUID.fromString(row.orderId()), row.orderNo(), row.createdAt(), row.calendarDate(), row.paidAt(),
+                row.amountCents(), row.paymentStatus(), row.status(), row.currentStageCode())).toList();
+    }
     private final OrderQueryMapper mapper;
     private final JsonCodec json;
     public PostgresOrderQueries(OrderQueryMapper mapper, JsonCodec json) { this.mapper = mapper; this.json = json; }
 
     @Override public List<CalendarOrder> calendar(LocalDate from, LocalDate to) {
         return mapper.calendar(from, to).stream().map(row -> new CalendarOrder(UUID.fromString(row.orderId()), row.orderNo(),
-                row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt())).toList();
+                row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt(), row.customerPhoneLast4())).toList();
     }
     @Override public List<PendingOrder> pending(LocalDate date) {
-        return mapper.pending(date).stream().map(row -> new PendingOrder(UUID.fromString(row.orderId()), row.orderNo(),
+        return mapper.pending(date).stream().map(PostgresOrderQueries::pendingOrder).toList();
+    }
+    @Override public long countScheduledProduction(Instant from, Instant to, Set<String> stages) {
+        return mapper.countScheduledProduction(from, to, stages);
+    }
+    @Override public List<PendingOrder> scheduledProduction(Instant from, Instant to, Set<String> stages, int limit, long offset) {
+        return mapper.scheduledProduction(from, to, stages, limit, offset).stream().map(PostgresOrderQueries::pendingOrder).toList();
+    }
+    private static PendingOrder pendingOrder(OrderQueryMapper.PendingRow row) {
+        return new PendingOrder(UUID.fromString(row.orderId()), row.orderNo(),
                 row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt(),
-                row.customerName(), row.phone(), row.memberPhone(), row.buyerName(), row.address(), row.plannedFinishAt())).toList();
+                row.customerName(), row.phone(), row.memberPhone(), row.buyerName(), row.address(), row.plannedFinishAt(), row.requestedReceiveAt());
     }
     @Override public List<CalendarItem> calendarItems(List<UUID> orderIds) {
         if (orderIds.isEmpty()) return List.of();
@@ -39,9 +67,28 @@ public final class PostgresOrderQueries implements OrderQueries {
         return mapper.recentNotes(ids(orderIds), ids(itemIds)).stream().map(row -> new Note(row.id(), UUID.fromString(row.itemId()),
                 UUID.fromString(row.actorId()), row.actorNameSnapshot(), row.createdAt(), row.content())).toList();
     }
+    @Override public List<OrderNote> latestNotes(List<UUID> orderIds) {
+        if (orderIds.isEmpty()) return List.of();
+        return mapper.latestNotes(ids(orderIds)).stream().map(row -> new OrderNote(UUID.fromString(row.orderId()),
+                new Note(row.id(), row.itemId() == null ? null : UUID.fromString(row.itemId()), UUID.fromString(row.actorId()),
+                        row.actorNameSnapshot(), row.createdAt(), row.content()))).toList();
+    }
     @Override public Metrics metrics(LocalDate date, Instant createdFrom, Instant createdTo) {
         var row = mapper.metrics(date, createdFrom, createdTo);
         return new Metrics(row.totalOrders(), row.createdOnDate(), row.deliveryDueOnDate());
     }
+    @Override public PaymentSummary paymentSummary(LocalDate date) {
+        var row = mapper.paymentSummary(date);
+        return new PaymentSummary(row.totalOrderCount(), row.waitingDeliveryOrderCount(),
+                row.paidOrderCount(), row.paidAmountCents(), row.paidMissingAmountOrderCount(),
+                row.unpaidOrderCount(), row.unpaidAmountCents(), row.unpaidMissingAmountOrderCount(), row.paidWithoutDateOrderCount());
+    }
     private static List<String> ids(List<UUID> ids) { return ids.stream().map(UUID::toString).toList(); }
+    @Override public ReceiptSummary receiptSummary(Instant from, Instant to) {
+        var row = mapper.receiptSummary(from, to);
+        return new ReceiptSummary(row.orderCount(), row.amountCents(), row.missingAmountOrderCount());
+    }
+    @Override public List<CakeBase> cakeBases(LocalDate date) {
+        return mapper.cakeBases(date).stream().map(row -> new CakeBase(row.size(), row.flavor(), row.quantity())).toList();
+    }
 }

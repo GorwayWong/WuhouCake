@@ -31,7 +31,7 @@ public interface AccountMapper {
             + "#{passwordChangeRequired}, #{credentialVersion}, #{version}, #{createdAt}, #{updatedAt}, #{archivedAt}, CAST(#{archivedBy} AS uuid))") void insert(Row row);
     @Insert("INSERT INTO identity_account_role VALUES (CAST(#{id} AS uuid), #{role})") void insertRole(@Param("id") String id, @Param("role") String role);
     @Delete("DELETE FROM identity_account_role WHERE account_id=CAST(#{id} AS uuid)") void deleteRoles(String id);
-    @Update("UPDATE identity_account SET nickname=#{row.nickname}, status=#{row.status}, password_hash=#{row.passwordHash},"
+    @Update("UPDATE identity_account SET nickname=#{row.nickname}, system_role=#{row.systemRole}, status=#{row.status}, password_hash=#{row.passwordHash},"
             + " password_change_required=#{row.passwordChangeRequired}, credential_version=#{row.credentialVersion}, version=#{row.version},"
             + " updated_at=#{row.updatedAt}, archived_at=#{row.archivedAt}, archived_by=CAST(#{row.archivedBy} AS uuid)"
             + " WHERE id=CAST(#{row.id} AS uuid) AND version=#{expected}") int update(@Param("row") Row row, @Param("expected") long expected);

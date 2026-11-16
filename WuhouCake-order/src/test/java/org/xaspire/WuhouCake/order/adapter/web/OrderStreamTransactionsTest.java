@@ -19,6 +19,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands;
 import org.xaspire.WuhouCake.order.api.dto.OrderViews;
 import org.xaspire.WuhouCake.order.application.event.OrderChanged;
+import org.xaspire.WuhouCake.order.application.event.OrderPackageChanged;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
 import org.xaspire.WuhouCake.order.application.service.OrderImageService;
 import org.xaspire.WuhouCake.order.domain.port.OrderImages;
@@ -65,6 +66,7 @@ class OrderStreamTransactionsTest {
                 new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
                 null, List.of(OrderItem.create(UUID.randomUUID(), "蛋糕", null, 1, null, null, Map.of(), NOW)), operator.accountId(), NOW);
         when(orders.find(order.id())).thenReturn(Optional.of(order));
+        when(orders.lock(any())).thenAnswer(invocation -> orders.find(invocation.getArgument(0)));
         when(activities.append(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
     @AfterEach void close() { context.close(); }
@@ -87,6 +89,28 @@ class OrderStreamTransactionsTest {
         verify(connection, times(2)).rollback();
         doThrow(new SQLException("commit failed")).when(connection).commit();
         assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event())));
+        verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+    }
+    @Test void packageEventUsesTheExistingStreamOnlyAfterCommit() throws Exception {
+        var event = new OrderPackageChanged(UUID.randomUUID(), 3, true);
+        context.publishEvent(event);
+        new TransactionTemplate(manager).executeWithoutResult(status -> {
+            context.publishEvent(event);
+            try { verify(emitter).send(any(SseEmitter.SseEventBuilder.class)); }
+            catch (IOException failure) { throw new AssertionError(failure); }
+        });
+        var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class);
+        var sequence = inOrder(connection, emitter);
+        sequence.verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
+        sequence.verify(connection).commit(); sequence.verify(emitter).send(sent.capture());
+        assertTrue(sent.getValue().build().stream().anyMatch(value -> value.getData() instanceof String text && text.contains("event:package.changed")));
+        assertTrue(sent.getValue().build().stream().anyMatch(value -> value.getData().equals(event)));
+    }
+    @Test void rolledBackOrFailedPackageCommitNeverNotifies() throws Exception {
+        var event = new OrderPackageChanged(UUID.randomUUID(), 2, false);
+        new TransactionTemplate(manager).executeWithoutResult(status -> { context.publishEvent(event); status.setRollbackOnly(); });
+        doThrow(new SQLException("commit failed")).when(connection).commit();
+        assertThrows(TransactionException.class, () -> new TransactionTemplate(manager).executeWithoutResult(status -> context.publishEvent(event)));
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
     }
     @Test void credentialRevocationClosesOnlyAfterCommit() throws Exception {
@@ -144,12 +168,13 @@ class OrderStreamTransactionsTest {
         var image = new OrderImage(UUID.randomUUID(), order.id(), null, "image/png", "cake.png", 1, 1, 1,
                 operator.accountId(), operator.nickname(), NOW);
         when(images.lockOrder(order.id())).thenReturn(true);
+        when(images.activeItem(eq(order.id()), any())).thenReturn(true);
         when(images.find(order.id(), image.imageId())).thenReturn(Optional.of(image));
         when(validator.validate(any(), anyString())).thenReturn(new OrderImageValidator.Checked("image/png", "cake.png", 1, 1));
         var service = new OrderImageService(orders, images, validator, new TransactionTemplate(manager), UUID::randomUUID,
                 Clock.fixed(NOW, ZoneOffset.UTC), activities, context);
         return removal ? () -> service.remove(order.id(), image.imageId(), operator)
-                : () -> service.upload(order.id(), null, new byte[]{1}, "cake.png", operator);
+                : () -> service.upload(order.id(), order.activeItems().getFirst().itemId(), new byte[]{1}, "cake.png", operator);
     }
     @Test void sendFailureCannotFailTheCommittedServiceOperation() throws Exception {
         doThrow(new IOException("disconnected")).when(emitter).send(any(SseEmitter.SseEventBuilder.class));
@@ -243,7 +268,12 @@ class OrderStreamTransactionsTest {
         verify(emitter).send(any(SseEmitter.SseEventBuilder.class));
     }
     private long prepare(boolean fulfillment) {
-        if (fulfillment) { order.applyProductionAction("START_PRODUCTION", NOW); order.applyProductionAction("COMPLETE_PRODUCTION", NOW); }
+        if (fulfillment) {
+            order.applyProductionAction("COMPLETE_BASE", NOW);
+            order.applyProductionAction("COMPLETE_LAYER", NOW); order.applyProductionAction("COMPLETE_FROSTING", NOW);
+            for (var item : order.activeItems()) order.completeSimpleItem(item.itemId(), true, NOW);
+            order.applyProductionAction("COMPLETE_DECORATION", NOW);
+        }
         return order.version();
     }
     private OrderViews.Detail change(boolean fulfillment, long expected) {

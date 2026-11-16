@@ -1,30 +1,97 @@
 import { createParser } from 'eventsource-parser';
-import type { QueryClient } from '@tanstack/react-query';
+import { isCancelledError } from '@tanstack/react-query';
+import type { Query, QueryClient, QueryFilters } from '@tanstack/react-query';
 import { authenticatedFetch } from './api.ts';
+import type { CalendarOrder, Detail } from './types.ts';
 
-export function synchronize(client: QueryClient, orderId?: string) {
+function orderFilters(orderId?: string): QueryFilters[] {
   // 日历范围整体失效：通知不带原日期，迁日必须同时清除旧日期投影。
+  return [
+    { queryKey: ['calendar'] }, { queryKey: ['workbench'] }, { queryKey: ['management-orders'] },
+    { queryKey: orderId ? ['order', orderId] : ['order'] },
+  ];
+}
+
+const followUps = new WeakSet<Query>();
+
+function synchronizeChange(client: QueryClient, orderId: string) {
+  const cache = client.getQueryCache();
+  const queries = new Set(orderFilters(orderId).flatMap(filter => cache.findAll(filter)));
+  for (const query of queries) {
+    query.invalidate();
+    const refetch = () => client.refetchQueries({ type: 'active', predicate: candidate => candidate === query }, { cancelRefetch: false });
+    const running = query.state.fetchStatus === 'idle' ? undefined : query.promise;
+    if (!running) {
+      if (query.isActive()) void refetch();
+    } else if (!followUps.has(query)) {
+      followUps.add(query);
+      const finish = (cancelled: boolean) => {
+        followUps.delete(query);
+        if (cache.get(query.queryHash) !== query) return;
+        // 主动取消的读取由删除、恢复或离页流程接管。
+        if (cancelled && query.isActive()) return;
+        // 成功响应会清除失效状态，结束后重新标记。
+        query.invalidate();
+        void refetch();
+      };
+      void running.then(() => finish(false), error => finish(isCancelledError(error)));
+    }
+  }
+}
+
+export async function synchronize(client: QueryClient, orderId?: string, deleted = false) {
+  const filters = orderFilters(orderId);
+  // 首读没有缓存数据时，失效会复用旧请求；先取消，再维护删除状态与补读。
+  await Promise.all(filters.map(filter => client.cancelQueries(filter)));
+  if (deleted && orderId) {
+    client.setQueryData<Detail>(['order', orderId, 'detail'], current => current ? { ...current, deleted: true } : current);
+    client.setQueriesData<CalendarOrder[]>({ queryKey: ['calendar'] }, current => Array.isArray(current) ? current.filter(order => order.orderId !== orderId) : current);
+    client.setQueriesData({ queryKey: ['workbench'] }, current => {
+      if (!current || typeof current !== 'object' || !('pendingOrders' in current) || !Array.isArray(current.pendingOrders)) return current;
+      return { ...current, pendingOrders: current.pendingOrders.filter(order => order.orderId !== orderId) };
+    });
+  }
   return Promise.all([
-    client.invalidateQueries({ queryKey: ['calendar'] }),
-    client.invalidateQueries({ queryKey: ['workbench'] }),
-    client.invalidateQueries({ queryKey: ['management-orders'] }),
-    client.invalidateQueries({ queryKey: orderId ? ['order', orderId] : ['order'] }),
+    ...filters.map(filter => client.invalidateQueries(filter)),
+    ...(orderId ? [] : [synchronizePackages(client)]),
   ]);
+}
+export async function synchronizePackages(client: QueryClient, packageId?: string) {
+  const lists: QueryFilters = { queryKey: ['order-packages'], predicate: query => query.queryKey[1] !== 'detail' };
+  // 首次列表读取也必须取消，否则失效操作可能复用通知之前的旧请求。
+  await Promise.all([
+    client.cancelQueries(lists),
+    client.cancelQueries({ queryKey: packageId ? ['order-packages', 'detail', packageId] : ['order-packages', 'detail'] }),
+  ]);
+  return client.invalidateQueries(lists);
 }
 export const changeLabels: Record<string, string> = { CREATED: '新订单', ITEM_CHANGED: '商品资料已更新', NOTE: '新增协作备注', PAYMENT_STATUS_CHANGED: '付款状态已更新',
   ORDER_PRODUCTION_CHANGED: '制作进度已更新', ORDER_FULFILLMENT_CHANGED: '交付状态已更新', ORDER_CANCELLED: '订单已取消', ORDER_INFORMATION_CHANGED: '订单资料已更新',
-  ITEM_ADDED: '新增商品', ITEM_REMOVED: '商品已移除', IMAGE_ADDED: '新增参考图片', IMAGE_REMOVED: '参考图片已移除' };
+  ITEM_ADDED: '新增商品', ITEM_REMOVED: '商品已移除', IMAGE_ADDED: '新增参考图片', IMAGE_REMOVED: '参考图片已移除', ORDER_DELETED: '订单已删除' };
 export interface OrderUpdate { orderId: string; changeType: string; version: number; receivedAt: number; orderNo?: string }
 export function collectUpdate(updates: OrderUpdate[], change: OrderUpdate): OrderUpdate[] {
+  if (updates.some(item => item.orderId === change.orderId && item.version > change.version)) return updates;
   return [change, ...updates.filter(item => item.orderId !== change.orderId)].slice(0, 20);
 }
 export function receiveEvent(client: QueryClient, event: { event?: string; data: string }, notify?: (change: OrderUpdate) => void) {
   if (event.event === 'ready') synchronize(client);
+  if (event.event === 'package.changed') {
+    let packageId: string | undefined;
+    try {
+      const change = JSON.parse(event.data);
+      if (typeof change?.packageId === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.packageId)) packageId = change.packageId;
+    } catch { /* 无法识别目标时重新核对全部套餐读取。 */ }
+    void synchronizePackages(client, packageId);
+    return;
+  }
   if (event.event !== 'order.changed') return;
   try {
     const change = JSON.parse(event.data);
+    const deleted = change.changeType === 'ORDER_DELETED' && typeof change.orderId === 'string'
+      && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.orderId);
     // 备注和图片变化不递增订单版本；所有合法通知都触发重新获取。
-    synchronize(client, typeof change.orderId === 'string' ? change.orderId : undefined);
+    if (typeof change.orderId === 'string' && !deleted) synchronizeChange(client, change.orderId);
+    else void synchronize(client, typeof change.orderId === 'string' ? change.orderId : undefined, deleted);
     if (/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.orderId) && Object.hasOwn(changeLabels, change.changeType)
         && Number.isSafeInteger(change.version) && change.version >= 0) {
       const detail = client.getQueryData<{ orderNo: string }>(['order', change.orderId, 'detail']);

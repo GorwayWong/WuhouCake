@@ -6,6 +6,7 @@ import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.entity.OrderActivity;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.*;
+import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.ORDER_STATUSES;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
 
 public interface OrderExportQueries {
@@ -19,8 +20,7 @@ public interface OrderExportQueries {
         public Filter {
             if (from == null || to == null || !from.isBefore(to)) throw invalid();
             if (ChronoUnit.DAYS.between(from, to) > EXPORT_DAYS) throw new OrderFailure("EXPORT_LIMIT_EXCEEDED");
-            if (status != null && !Set.of("WAITING_PRODUCTION", "PROCESSING", "WAITING_DELIVERY", "WAITING_PICKUP",
-                    "DELIVERING", "COMPLETED", "CANCELLED").contains(status)) throw invalid();
+            if (status != null && !ORDER_STATUSES.contains(status)) throw invalid();
             if (fulfillmentType != null && !Set.of("DELIVERY", "PICKUP").contains(fulfillmentType)) throw invalid();
             if (paymentStatus != null && !Set.of("UNPAID", "PAID").contains(paymentStatus)) throw invalid();
         }

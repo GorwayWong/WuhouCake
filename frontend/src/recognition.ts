@@ -1,18 +1,22 @@
+import { changePickupTime, changeFinishTime, finishMode, restoreAutomaticFinish } from './orderTimes.ts';
 import type { OrderDraft, ItemDraft } from './orderForm.ts';
-import { moneyToCents, storeTime, validDate, newItem } from './orderForm.ts';
+import { moneyToCents, storeTime, validDate, newItem, asOtherDraft } from './orderForm.ts';
 import { normalizeSize } from './productRules.ts';
+import { normalizeProductType, productTypes } from './productTypes.ts';
+import { randomUUID } from './uuid.ts';
+import { visibleSpecification } from './specificationText.ts';
 import type { RecognitionDraft, RecognitionField } from './types.ts';
 
 export const recognitionLimit = 12000;
 export const recognitionLabels: Record<string, string> = {
-  customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '客户订购人',
-  fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '收货日期',
-  plannedHandoffAt: '取货时间', plannedFinishAt: '计划出品时间', totalAmountCents: '约定总金额（元）',
-  name: '商品名称', productType: '商品类型', quantity: '数量', size: '尺寸', flavor: '奶油', base: '内胚',
+  customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '订购人姓名',
+  fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '取货日期', requestedReceiveAt: '取货时间',
+  plannedHandoffAt: '取货时间', plannedFinishAt: '出品时间', totalAmountCents: '约定总金额（元）',
+  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '商品说明', size: '尺寸（寸）', flavor: '奶油', base: '蛋糕胚',
   filling: '夹馅', message: '祝福语', requirements: '其他要求', unitPriceCents: '商品单价（元）', memberPriceCents: '会员单价（元）',
 };
-const rootFields = new Set(['customerName', 'phone', 'memberPhone', 'buyerName', 'fulfillmentType', 'address', 'requestedReceiveDate', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmountCents']);
-const specificationKeys = new Set(['size', 'flavor', 'base', 'filling', 'message', 'requirements']);
+const rootFields = new Set(['customerName', 'phone', 'memberPhone', 'buyerName', 'fulfillmentType', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmountCents']);
+const specificationKeys = new Set(['specification', 'size', 'flavor', 'base', 'filling', 'message', 'requirements']);
 const moneyFields: Record<string, string> = { totalAmountCents: 'totalAmount', unitPriceCents: 'unitPrice', memberPriceCents: 'memberPrice' };
 export function recognitionValue(field: string, value: string | null): string {
   if (value == null) return '';
@@ -26,10 +30,15 @@ export function validateCandidate(field: string, value: string): string {
   const text = value.trim();
   if (!text) throw new Error('该字段待填写。');
   if (moneyFields[field]) { moneyToCents(text); return text; }
+  if (field === 'productType') {
+    const type = normalizeProductType(text);
+    if (!Object.hasOwn(productTypes, type)) throw new Error('请选择商品类型。');
+    return type;
+  }
   if (field === 'size') return normalizeSize(text);
   if (field === 'quantity' && (!/^\d+$/.test(text) || BigInt(text) < 1n || BigInt(text) > 2147483647n)) throw new Error('数量需要有效正整数。');
-  if (field === 'requestedReceiveDate' && !validDate(text)) throw new Error('需要带年份的有效收货日期。');
-  if (field === 'plannedHandoffAt' || field === 'plannedFinishAt') storeTime(text);
+  if (field === 'requestedReceiveDate' && !validDate(text)) throw new Error('需要带年份的有效取货日期。');
+  if (field === 'requestedReceiveAt' || field === 'plannedHandoffAt' || field === 'plannedFinishAt') storeTime(text);
   if (field === 'fulfillmentType' && text !== 'DELIVERY' && text !== 'PICKUP') throw new Error('请选择 DELIVERY 或 PICKUP。');
   const maximum = field === 'customerName' || field === 'buyerName' ? 80 : field === 'phone' || field === 'memberPhone' || field === 'productType' ? 32 : field === 'name' ? 128 : 12000;
   if (text.length > maximum) throw new Error('字段过长，请手工核对。');
@@ -44,6 +53,7 @@ export function currentValue(draft: OrderDraft, field: string, itemKey?: string)
   return rootFields.has(field) ? String(draft[key as keyof OrderDraft] ?? '') : '';
 }
 export function setCandidate(draft: OrderDraft, field: string, value: string, itemKey?: string, source?: RecognitionField['source']): OrderDraft {
+  if (field === 'unitPriceCents' || field === 'memberPriceCents') return draft;
   const text = validateCandidate(field, value), next = structuredClone(draft), key = moneyFields[field] || field;
   if (itemKey !== undefined) {
     const item = next.items.find(x => x.key === itemKey);
@@ -51,37 +61,42 @@ export function setCandidate(draft: OrderDraft, field: string, value: string, it
     if (specificationKeys.has(key)) {
       item.attributes[key as keyof ItemDraft['attributes']] = text;
       item.defaultSpecifications = (item.defaultSpecifications || []).filter(x => x !== key);
-      if (source === 'DEFAULT' && (key === 'base' || key === 'filling')) item.defaultSpecifications.push(key);
+      if (source === 'DEFAULT' && (key === 'base' || key === 'filling' || key === 'flavor')) item.defaultSpecifications.push(key);
     } else if (['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'].includes(key)) {
-      Object.assign(item, { [key]: text }); if (key === 'productType') item.requiresTypeConfirmation = false;
+      Object.assign(item, { [key]: text }); if (key === 'productType') {
+        item.requiresTypeConfirmation = false;
+      }
     }
     else throw new Error('不支持的商品字段。');
-  } else if (rootFields.has(field)) Object.assign(next, { [key]: text });
+  } else if (rootFields.has(field)) {
+    Object.assign(next, { [key]: text });
+    if (field === 'requestedReceiveDate') Object.assign(next, changePickupTime(next, text));
+    if (field === 'requestedReceiveAt') { Object.assign(next, changePickupTime(next, text)); next.requestedReceiveDate = text.slice(0, 10); }
+    if (field === 'plannedFinishAt') Object.assign(next, changeFinishTime(next, text));
+  }
   else throw new Error('不支持的订单字段。');
   return next;
 }
-export function pristineItem(item: ItemDraft): boolean {
-  const initial = newItem();
-  return !item.requiresTypeConfirmation && ['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'].every(key => item[key as keyof ItemDraft] === initial[key as keyof ItemDraft])
-    && (Object.keys(initial.attributes) as (keyof ItemDraft['attributes'])[]).every(key => item.attributes[key] === initial.attributes[key])
-    && item.defaultSpecifications?.length === initial.defaultSpecifications?.length
-    && initial.defaultSpecifications!.every(key => item.defaultSpecifications?.includes(key));
-}
-export function emptyRecognitionItem(key: string = crypto.randomUUID()): ItemDraft {
+export function emptyRecognitionItem(key: string = randomUUID()): ItemDraft {
   return { key, name: '', productType: '', quantity: '', unitPrice: '', memberPrice: '',
-    attributes: { size: '', flavor: '', base: '', filling: '', message: '', requirements: '' }, defaultSpecifications: [], requiresTypeConfirmation: true };
+    attributes: { size: '', flavor: '', base: '', filling: '', message: '', requirements: '', specification: '' }, defaultSpecifications: [], requiresTypeConfirmation: true };
 }
 /** Undo only unchanged values written by this fill, preserving later manual edits/removals. */
 export function undoRecognition(current: OrderDraft, before: OrderDraft, after: OrderDraft): OrderDraft {
   const result = structuredClone(current);
+  if (result.requestedReceiveDate === after.requestedReceiveDate && result.requestedReceiveAt === after.requestedReceiveAt) {
+    result.requestedReceiveDate = before.requestedReceiveDate;
+    result.requestedReceiveAt = before.requestedReceiveAt;
+  }
   for (const field of rootFields) {
+    if (field === 'requestedReceiveDate' || field === 'requestedReceiveAt' || field === 'plannedFinishAt') continue;
     const key = (moneyFields[field] || field) as Exclude<keyof OrderDraft, 'items'>;
     if (before[key] !== after[key] && result[key] === after[key]) Object.assign(result, { [key]: before[key] });
   }
   result.items = result.items.flatMap(item => {
     const written = after.items.find(x => x.key === item.key), original = before.items.find(x => x.key === item.key);
     if (!written) return [item];
-    if (!original && JSON.stringify(item) === JSON.stringify(written)) return [];
+    if (!original) return JSON.stringify(item) === JSON.stringify(written) ? [] : [item];
     const baseline = original || emptyRecognitionItem(item.key);
     for (const field of ['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const)
       if (baseline[field] !== written[field] && item[field] === written[field]) item[field] = baseline[field];
@@ -96,6 +111,12 @@ export function undoRecognition(current: OrderDraft, before: OrderDraft, after: 
     }
     return [item];
   });
+  if (current.plannedFinishAt === after.plannedFinishAt && finishMode(current) === finishMode(after)) {
+    result.plannedFinishAt = before.plannedFinishAt; result.finishTimeMode = finishMode(before);
+  }
+  if (finishMode(result) === 'AUTO') Object.assign(result, restoreAutomaticFinish(result));
+  const replaced = before.items.filter(item => !after.items.some(written => written.key === item.key));
+  result.items.unshift(...structuredClone(replaced));
   if (!result.items.length) result.items.push(newItem());
   return result;
 }
@@ -122,63 +143,145 @@ export function mergeModelFields(rules: RecognitionDraft, suggestions: { itemId:
   return result;
 }
 export const recognitionRowKey = (field: string, itemId?: string) => (itemId || 'order') + '.' + field;
-export function candidateEdits(result: RecognitionDraft): { values: Record<string, string>; errors: Record<string, string> } {
-  const values: Record<string, string> = {}, errors: Record<string, string> = {};
-  const read = (field: string, candidate: RecognitionField, id?: string) => {
-    const key = recognitionRowKey(field, id);
-    try { values[key] = recognitionValue(field, candidate.value); }
-    catch (error) { values[key] = ''; errors[key] = (error as Error).message; }
-  };
-  Object.entries(result.fields).forEach(([field, candidate]) => read(field, candidate));
-  result.items.forEach(item => Object.entries(item.fields).forEach(([field, candidate]) => read(field, candidate, item.id)));
-  return { values, errors };
+export interface RecognitionFeedback {
+  field: string; itemKey?: string; value: string; source: RecognitionField['source']; needsReview: boolean; error?: string; hint?: string;
 }
-export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result: RecognitionDraft,
-  edits: Record<string, string>, targets: Record<string, string>, manualFields: ReadonlySet<string>,
-  only?: { field: string; candidate: RecognitionField; itemId?: string }) {
-  let next = structuredClone(draft), applied = 0, skipped = 0, cleared = 0;
-  const recognizable = result.items.length > 0 || Object.values(result.fields).some(field => field.source === 'RULE');
-  const bound = { ...targets }, errors: Record<string, string> = {};
-  const pristine = (key: string) => next.items.some(x => x.key === key && pristineItem(x))
-    && ![...manualFields].some(field => field.startsWith(key + '.'));
-  const itemKey = (id: string) => {
-    let key = bound[id] || 'new';
-    if (key === 'new') { const item = emptyRecognitionItem(); key = item.key; next.items.push(item); bound[id] = key; }
-    else {
-      const index = next.items.findIndex(x => x.key === key);
-      if (index < 0) throw new Error('目标商品已移除，请重新选择。');
-      if (pristine(key)) next.items[index] = emptyRecognitionItem(key);
-    }
-    return key;
+export type RecognitionFeedbackMap = Record<string, RecognitionFeedback>;
+export function feedbackKey(field: string, itemKey?: string): string {
+  return recognitionRowKey(field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field, itemKey);
+}
+export function retainRecognitionFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
+  return Object.fromEntries(Object.entries(feedback).filter(([, mark]) =>
+    mark.field !== 'unitPriceCents' && mark.field !== 'memberPriceCents' &&
+    (!mark.itemKey || draft.items.some(item => item.key === mark.itemKey)) && currentValue(draft, mark.field, mark.itemKey) === mark.value));
+}
+/** Move feedback alongside the fields collapsed by asOtherDraft. */
+export function foldOtherRecognitionFeedback(item: ItemDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
+  const keys = [...specificationKeys].filter(field => field !== 'requirements').map(field => feedbackKey(field, item.key));
+  const marks = keys.flatMap(key => feedback[key] ? [feedback[key]] : []);
+  if (!marks.length) return feedback;
+  const next = { ...feedback };
+  for (const key of keys) delete next[key];
+  const messages = (kind: 'error' | 'hint') => [...new Set(marks.flatMap(mark =>
+    mark[kind]?.split('；').filter(Boolean).map(message =>
+      mark.field === 'specification' ? message : `${recognitionLabels[mark.field]}：${message}`) || []))].join('；');
+  const source = (['MODEL', 'RULE', 'DEFAULT'] as const).find(value => marks.some(mark => mark.source === value)) ?? null;
+  const error = messages('error'), hint = messages('hint');
+  next[feedbackKey('specification', item.key)] = {
+    field: 'specification', itemKey: item.key, value: item.attributes.specification, source,
+    needsReview: marks.some(mark => mark.needsReview),
+    ...(error ? { error } : {}), ...(hint ? { hint } : {}),
   };
-  const write = (field: string, candidate: RecognitionField, id?: string) => {
-    const value = edits[recognitionRowKey(field, id)] ?? '';
-    if (!only && !id && field === 'requestedReceiveDate' && candidate.value === null && !value.trim() && recognizable) {
-      if (next.requestedReceiveDate && !manualFields.has(field) && next.requestedReceiveDate === initial.requestedReceiveDate) {
-        next.requestedReceiveDate = ''; cleared++;
-      } else if (next.requestedReceiveDate) skipped++;
+  return next;
+}
+export function formFeedback(draft: OrderDraft, feedback: RecognitionFeedbackMap): RecognitionFeedbackMap {
+  return Object.fromEntries(Object.values(feedback).flatMap(mark => {
+    const field = moneyFields[mark.field] || mark.field;
+    const index = mark.itemKey ? draft.items.findIndex(item => item.key === mark.itemKey) : -1;
+    if (mark.itemKey && index < 0) return [];
+    return [[mark.itemKey ? `items.${index}.${field}` : field, mark]];
+  }));
+}
+export function orderEntryRecognition(result: RecognitionDraft, manualFields: ReadonlySet<string>): RecognitionDraft {
+  const next = structuredClone(result), fields = next.fields;
+  if (fields.fulfillmentType?.value === 'PICKUP' && fields.address?.value?.trim() === '自提') delete fields.address;
+  const handoff = fields.plannedHandoffAt;
+  if (handoff?.value || handoff?.needsReview || handoff?.source === 'RULE') {
+    fields.requestedReceiveAt = handoff;
+    if (handoff.value) delete fields.requestedReceiveDate;
+  }
+  delete fields.plannedHandoffAt;
+  const manualReceive = manualFields.has('requestedReceiveAt') || manualFields.has('requestedReceiveDate');
+  for (const field of Object.keys(fields)) {
+    if (manualFields.has(field) || (manualReceive && (field === 'requestedReceiveAt' || field === 'requestedReceiveDate'))) {
+      if (fields[field].value || !fields[field].needsReview) delete fields[field];
+    }
+  }
+  return next;
+}
+
+export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result: RecognitionDraft,
+  manualFields: ReadonlySet<string>, options: { supplement?: boolean; targets?: Record<string, string> } = {}) {
+  let next = structuredClone(draft), cleared = 0;
+  let feedback: RecognitionFeedbackMap = {};
+  const targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
+  const ignoredField = (field: string, value: string | null) =>
+    field === 'unitPriceCents' || field === 'memberPriceCents' ||
+    (field === 'specification' && Boolean(value) && visibleSpecification(value) === '');
+  const validContent = (fields: Record<string, RecognitionField>) => Object.entries(fields).some(([field, candidate]) => {
+    if (ignoredField(field, candidate.value)) return false;
+    if (field === 'productType' || candidate.source === 'DEFAULT' || !candidate.value?.trim()) return false;
+    try { validateCandidate(field, recognitionValue(field, candidate.value)); return true; } catch { return false; }
+  });
+  const products = result.items.filter(item => validContent(item.fields));
+  const replacedItems = !options.supplement && products.length > 0;
+  if (replacedItems) {
+    next.items = products.map(item => { const empty = emptyRecognitionItem(); targets[item.id] = empty.key; return empty; });
+  }
+  const write = (field: string, candidate: RecognitionField, itemKey?: string, onlyErrors = false) => {
+    if (ignoredField(field, candidate.value)) return;
+    const displayField = field === 'requestedReceiveDate' ? 'requestedReceiveAt' : field;
+    const key = feedbackKey(field, itemKey), previous = feedback[key];
+    const mark = (error?: string, hints: string[] = []) => {
+      const hint = [...new Set([...(previous?.hint?.split('；') ?? []), ...hints])].join('；');
+      const problems = [...new Set([...(previous?.error?.split('；') ?? []), ...(error ? error.split('；') : [])])].join('；');
+      feedback[key] = { field: displayField, itemKey, value: currentValue(next, displayField, itemKey),
+        source: candidate.source, needsReview: Boolean(previous?.needsReview || candidate.needsReview || candidate.source === 'MODEL'),
+        ...(problems ? { error: problems } : {}), ...(hint ? { hint } : {}) };
+    };
+    if (!candidate.value?.trim()) {
+      if (candidate.needsReview && candidate.issues.length) mark(candidate.issues.join('；'));
       return;
     }
-    if (!value.trim() || (!only && candidate.needsReview)) return;
-    const selected = id ? bound[id] || 'new' : undefined;
-    if (selected === 'choose') { skipped++; return; }
-    const current = selected === 'new' ? '' : currentValue(next, field, selected);
-    if (current === value && !(selected && selected !== 'new' && pristine(selected))) return;
-    const manual = manualFields.has(id ? selected + '.' + field : field);
-    const untouchedDefault = id ? selected !== 'new' && pristine(selected!) : current === currentValue(initial, field);
-    if (!only && (manual || (current && current !== value && !untouchedDefault))) { skipped++; return; }
     try {
-      validateCandidate(field, value);
-      const source = candidate.source === 'DEFAULT' && value !== candidate.value ? null : candidate.source;
-      next = setCandidate(next, field, value, id ? itemKey(id) : undefined, source); applied++;
-    } catch (error) { errors[recognitionRowKey(field, id)] = (error as Error).message; }
+      const value = validateCandidate(field, recognitionValue(field, candidate.value));
+      if (onlyErrors) return;
+      next = setCandidate(next, field, value, itemKey, candidate.source);
+      mark(undefined, candidate.issues);
+    } catch (error) {
+      mark((error as Error).message);
+    }
   };
-  if (only) write(only.field, only.candidate, only.itemId);
-  else {
-    Object.entries(result.fields).forEach(([field, candidate]) => write(field, candidate));
-    result.items.forEach(item => Object.entries(item.fields).forEach(([field, candidate]) => write(field, candidate, item.id)));
+  if (!options.supplement) {
+    const recognizable = products.length > 0 || Object.values(result.fields).some(field => field.source === 'RULE');
+    if (recognizable && !result.fields.requestedReceiveDate?.value && !result.fields.requestedReceiveAt?.value
+      && !manualFields.has('requestedReceiveDate') && !manualFields.has('requestedReceiveAt')
+      && next.requestedReceiveDate === initial.requestedReceiveDate && next.requestedReceiveAt === initial.requestedReceiveAt) {
+      next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared = 1;
+      if (![result.fields.requestedReceiveDate, result.fields.requestedReceiveAt].some(field => field?.needsReview && field.issues.length)) {
+        feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填取货日期。' };
+      }
+    }
+    // 日期先于完整时刻写入，避免服务端字段顺序影响最终值。
+    const order = ['requestedReceiveDate', 'requestedReceiveAt', 'plannedFinishAt'];
+    const fields = Object.entries(result.fields).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
+    fields.forEach(([field, candidate]) => write(field, candidate));
   }
-  return { draft: next, targets: bound, applied, skipped, cleared, errors };
+  for (const [index, item] of result.items.entries()) {
+    const onlyErrors = !options.supplement && !replacedItems;
+    const itemKey = onlyErrors ? next.items[index]?.key : targets[item.id];
+    if (!itemKey || !next.items.some(existing => existing.key === itemKey)) continue;
+    Object.entries(item.fields).sort(([a], [b]) => Number(b === 'productType') - Number(a === 'productType')).forEach(([field, candidate]) => {
+      if (!options.supplement || candidate.source === 'MODEL') write(field, candidate, itemKey, onlyErrors);
+    });
+  }
+  for (const mark of Object.values(feedback)) {
+    if (mark.hint && mark.error) {
+      const hints = new Set(mark.hint.split('；'));
+      mark.error = mark.error.split('；').filter(issue => !hints.has(issue)).join('；') || undefined;
+    }
+    if (mark.error && mark.value && mark.value === currentValue(draft, mark.field, mark.itemKey)) mark.error += '。原值未修改。';
+  }
+  const changed = Object.values(feedback).filter(mark => !mark.error && currentValue(draft, mark.field, mark.itemKey) !== mark.value);
+  const applied = changed.length, overwritten = changed.filter(mark => currentValue(draft, mark.field, mark.itemKey)).length;
+  next.items = next.items.map(item => {
+    if (normalizeProductType(item.productType) !== 'OTHER') return item;
+    if (!replacedItems && !Object.values(feedback).some(mark => mark.itemKey === item.key)) return item;
+    const converted = asOtherDraft(item);
+    feedback = foldOtherRecognitionFeedback(converted, feedback);
+    return converted;
+  });
+  return { draft: next, targets, applied, overwritten, cleared, feedback, replacedItems };
 }
 export class RecognitionLifecycle {
   private generation = 0;

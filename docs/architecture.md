@@ -97,7 +97,7 @@ shared 中的响应、异常和 ID 契约使用纯 Java；JSON、Redis 技术包
 - 【推荐】表结构及迁移由所属领域维护，按业务需要划分 schema。
 - 空白模板不提供表结构或迁移脚本，业务开发时按需创建。
 
-基础设施测试扫描 `db/integration-migration`，写入 `integration_probe.integration_flyway_schema_history`。测试迁移与业务历史隔离，测试资源不进入运行 JAR。
+基础设施测试扫描 `db/integration-migration`，将 `integration_flyway_schema_history` 写入本次运行的随机 schema，并在测试结束时清理。测试迁移与业务历史隔离，测试资源不进入运行 JAR。
 
 ## 6. 架构检查
 

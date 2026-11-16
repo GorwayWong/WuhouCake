@@ -4,9 +4,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.time.Clock;
 import java.util.*;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
+import org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission;
 import org.xaspire.WuhouCake.order.api.command.*;
 import org.xaspire.WuhouCake.order.api.dto.SubmissionViews;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
@@ -15,6 +17,7 @@ import org.xaspire.WuhouCake.order.domain.port.CustomerSubmissions;
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
 import org.xaspire.WuhouCake.shared.response.Page;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.*;
 
 public class CustomerSubmissionService {
     private final CustomerSubmissions submissions; private final IdentityFacade identity; private final OrderService orders;
@@ -26,11 +29,11 @@ public class CustomerSubmissionService {
         this.publicOrigin = publicOrigin.replaceAll("/+$", "");
     }
     @Transactional(readOnly = true) public SubmissionViews.Entry entry(UUID ownerId) {
-        var me = staff(); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
+        var me = staff(CUSTOMER_ENTRY_MANAGE); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
         return entryView(submissions.entryForOwner(owner));
     }
     @Transactional public SubmissionViews.Entry changeEntry(UUID ownerId, String action, String requestId) {
-        var me = staff(); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
+        var me = staff(CUSTOMER_ENTRY_MANAGE); var owner = ownerId == null ? me.accountId() : ownerId; manage(me, owner);
         var employee = identity.selectEmployee(owner); var old = submissions.entryForOwner(owner);
         if (action == null || !Set.of("CREATE", "RESET", "ENABLE", "DISABLE").contains(action)) throw invalid();
         if (old == null && (!owner.equals(me.accountId()) || !"CREATE".equals(action))) throw invalid();
@@ -56,26 +59,47 @@ public class CustomerSubmissionService {
     }
     @Transactional public SubmissionViews.Receipt submit(String token, UUID requestId, SubmissionCommands.Content command) {
         if (requestId == null || command == null) throw invalid();
-        var entry = validEntry(token, true); var content = convert(command, CustomerSubmission.Content.class);
-        var submission = submissions.submit(entry, requestId, fingerprint(content), content, clock.instant());
+        var entry = validEntry(token, true);
+        var content = convert(command, CustomerSubmission.Content.class);
+        if (content.items().stream().anyMatch(item -> item.itemId() != null))
+            content = withProducts(content, content.items().stream().map(item -> item.withItemId(null)).toList());
+        // Keep the public fingerprint in the same shape as before staff item IDs.
+        String current = fingerprint(convert(content, SubmissionCommands.Content.class));
+        String legacy = LegacySubmissionFingerprint.v26(command, content).map(this::fingerprint).orElse(null);
+        var submission = submissions.submit(entry, requestId, current, legacy, content, clock.instant());
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
-    @Transactional(readOnly = true) public Page<SubmissionViews.Detail> search(boolean mine, String status, int page, int size) {
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {
         var me = staff();
-        if (page < 1 || size < 1 || size > 50 || !Set.of("PENDING", "CONFIRMED").contains(status)) throw invalid();
+        if (page < 1 || size < 1 || size > 50 || !Set.of("PENDING", "CONFIRMED", "ALL").contains(status)) throw invalid();
+        String term = keyword == null ? "" : keyword.strip().toLowerCase(Locale.ROOT);
+        if (term.length() > 100) throw invalid();
+        if (term.matches("f?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")) {
+            if (term.startsWith("f") && term.length() == 37) term = term.substring(1);
+        } else term = term.replaceAll("[\\s()（）+－–—-]", "");
         UUID owner = mine ? me.accountId() : null;
-        return new Page<>(submissions.search(owner, status, size, ((long) page - 1) * size).stream().map(s -> view(s, false)).toList(),
-                submissions.count(owner, status), page, size);
+        long total = submissions.count(owner, status, term);
+        int current = (int) Math.min(page, total == 0 ? 1 : 1 + (total - 1) / size);
+        var items = total == 0 ? List.<SubmissionViews.Detail>of()
+                : submissions.search(owner, status, term, size, (current - 1L) * size).stream().map(s -> view(s, false)).toList();
+        return new Page<>(items, total, current, size);
     }
-    @Transactional(readOnly = true) public SubmissionViews.Detail detail(UUID id) { staff(); return view(require(id, false), true); }
+    @Transactional(readOnly = true) public long pendingCount() {
+        staff(CUSTOMER_SUBMISSION_PROCESS);
+        return submissions.count(null, "PENDING", "");
+    }
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ) public SubmissionViews.Detail detail(UUID id) { staff(); return view(require(id, false), true); }
     @Transactional public SubmissionViews.Detail save(UUID id, SubmissionCommands.Save command) {
         var me = staff(); var submission = require(id, true); submission.requirePending(nonNegativeInteger(command.expectedVersion()));
         if (command.review() == null) throw invalid();
-        money(command.review().totalAmountCents());
-        if (command.review().prices() != null) command.review().prices().forEach(price -> {
-            if (price == null) throw invalid(); money(price.unitPriceCents()); money(price.memberPriceCents());
-        });
-        var review = convert(command.review(), CustomerSubmission.Review.class);
+        var previous = submission.reviewed();
+        var review = reviewForWrite(command.review(), previous);
+        var pickup = review.plannedHandoffAt() == null ? review.content().requestedReceiveAt() : review.plannedHandoffAt();
+        if (previous == null || !Objects.equals(review.plannedHandoffAt(), previous.plannedHandoffAt())
+                || !Objects.equals(review.content().requestedReceiveAt(), previous.content().requestedReceiveAt())
+                || !Objects.equals(review.plannedFinishAt(), previous.plannedFinishAt())) {
+            requireFinishLeadTime(pickup, review.plannedFinishAt());
+        }
         if (review.creditedEmployeeId() != null) identity.selectEmployee(review.creditedEmployeeId());
         if (Objects.equals(submission.reviewed(), review)) return view(submission, true);
         var before = submission.reviewed() == null ? submission.original() : submission.reviewed().content();
@@ -86,12 +110,15 @@ public class CustomerSubmissionService {
         return view(require(id, false), true);
     }
     @Transactional public SubmissionViews.Detail confirm(UUID id, SubmissionCommands.Confirm command) {
-        var me = staff(); var submission = require(id, true);
+        var me = staff(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_CREATE); var submission = require(id, true);
         long expected = nonNegativeInteger(command.expectedVersion());
         // A lost confirmation response can be retried without creating another order.
-        if ("CONFIRMED".equals(submission.status())) return view(submission, true);
+        if ("CONFIRMED".equals(submission.status())) {
+            orders.detail(submission.orderId());
+            return view(submission, true);
+        }
         submission.requirePending(expected);
-        var review = submission.reviewed(); if (review == null) throw invalid(); review.requireConfirmation();
+        var review = submission.reviewed(); if (review == null) throw new OrderFailure("SUBMISSION_REVIEW_REQUIRED"); review.requireConfirmation();
         var duplicates = submissions.duplicates(submission);
         boolean requiresAcknowledgement = duplicates.stream().anyMatch(CustomerSubmissions.Duplicate::requiresAcknowledgement);
         if ((requiresAcknowledgement || command.duplicateCheckToken() != null)
@@ -104,7 +131,7 @@ public class CustomerSubmissionService {
             items.add(new OrderCommands.Item(item.name(), item.productType(), item.quantity(), price.unitPriceCents(), price.memberPriceCents(), new LinkedHashMap<>(item.attributes())));
         }
         var create = new OrderCommands.Create(new OrderCommands.Customer(null, content.phone(), content.memberPhone(), null),
-                new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), null, content.requestedReceiveAt()),
+                new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), review.plannedFinishAt(), content.requestedReceiveAt()),
                 items, review.totalAmountCents(), review.creditedEmployeeId());
         var order = orders.createCustomer(create, new OrderCommands.Operator(me.accountId(), me.nickname()), id);
         submissions.update(submission, review, "CONFIRMED", order.orderId(), clock.instant());
@@ -119,7 +146,7 @@ public class CustomerSubmissionService {
         return view(require(id, false), true);
     }
     @Transactional public void delete(UUID id, Number expectedVersion) {
-        var me = staff(); var submission = require(id, true); submission.requirePending(nonNegativeInteger(expectedVersion));
+        var me = staff(CUSTOMER_SUBMISSION_PROCESS); var submission = require(id, true); submission.requirePending(nonNegativeInteger(expectedVersion));
         submissions.update(submission, submission.reviewed(), "DELETED", null, clock.instant());
         submissions.append(id, "DELETED", me.accountId(), me.nickname(), Map.of("before", "PENDING", "after", "DELETED"), clock.instant());
     }
@@ -139,12 +166,16 @@ public class CustomerSubmissionService {
         return entry;
     }
     private IdentityFacade.AccountView staff() {
+        return staff(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ);
+    }
+    private IdentityFacade.AccountView staff(Permission... required) {
         var me = identity.me();
-        if (!"ACTIVE".equals(me.status()) || !(me.jobRoles().contains("FRONT_DESK") || me.jobRoles().contains("MANAGER"))) throw new OrderFailure("SUBMISSION_FORBIDDEN");
+        if (!"ACTIVE".equals(me.status()) || me.passwordChangeRequired()
+                || !Arrays.stream(required).allMatch(me.access()::allows)) throw new OrderFailure("SUBMISSION_FORBIDDEN");
         return me;
     }
     private static void manage(IdentityFacade.AccountView me, UUID owner) {
-        if (!me.accountId().equals(owner) && !me.jobRoles().contains("MANAGER")) throw new OrderFailure("SUBMISSION_FORBIDDEN");
+        if (!me.accountId().equals(owner) && !me.access().allows(CUSTOMER_ENTRY_MANAGE_ALL)) throw new OrderFailure("SUBMISSION_FORBIDDEN");
     }
     private SubmissionViews.Entry entryView(CustomerSubmissions.Entry entry) {
         return entry == null ? null : new SubmissionViews.Entry(entry.ownerId(), entry.ownerName(), publicOrigin + "/#/fill/" + entry.token(), entry.enabled());
@@ -154,15 +185,80 @@ public class CustomerSubmissionService {
     }
     private SubmissionViews.Detail view(CustomerSubmission submission, boolean history) {
         var duplicates = "PENDING".equals(submission.status()) ? submissions.duplicates(submission) : List.<CustomerSubmissions.Duplicate>of();
-        return new SubmissionViews.Detail(convert(submission, SubmissionViews.Submission.class),
+        var exposed = snapshot(submission);
+        return new SubmissionViews.Detail(convert(exposed, SubmissionViews.Submission.class),
                 duplicates.stream().map(record -> convert(record, SubmissionViews.Duplicate.class)).toList(),
                 "PENDING".equals(submission.status()) ? duplicateCheckToken(submission, duplicates) : null,
                 history ? submissions.activities(submission.id()).stream().map(a -> convert(a, SubmissionViews.Activity.class)).toList() : List.of());
     }
+    private CustomerSubmission.Review reviewForWrite(SubmissionCommands.Review command, CustomerSubmission.Review previous) {
+        if (command.content() == null) throw invalid();
+        var content = convert(command.content(), CustomerSubmission.Content.class);
+        if (command.prices() != null && (command.prices().size() != content.items().size() || command.prices().stream().anyMatch(Objects::isNull)))
+            throw new OrderFailure("SUBMISSION_PRICES_INVALID");
+        var prior = reviewedProducts(previous);
+        var byId = new HashMap<UUID, ReviewedProduct>();
+        for (var row : prior) if (row.product().itemId() != null) byId.put(row.product().itemId(), row);
+        var usedIds = new HashSet<UUID>();
+        for (var item : content.items()) {
+            if (item.itemId() != null && !usedIds.add(item.itemId())) throw new OrderFailure("SUBMISSION_ITEM_ID_CONFLICT");
+        }
+
+        var products = new ArrayList<CustomerSubmission.Product>();
+        var prices = new ArrayList<CustomerSubmission.Price>();
+        var retained = new HashSet<ReviewedProduct>();
+        boolean legacyRequest = content.items().stream().anyMatch(item -> item.itemId() == null);
+        for (var item : content.items()) {
+            UUID itemId = item.itemId();
+            var old = itemId == null ? findLegacyProduct(item, prior, usedIds, retained) : byId.get(itemId);
+            if (itemId == null && old != null) itemId = old.product().itemId();
+            if (itemId == null) {
+                do { itemId = UUID.randomUUID(); } while (usedIds.contains(itemId) || byId.containsKey(itemId));
+            }
+            usedIds.add(itemId);
+            products.add(item.withItemId(itemId));
+            prices.add(old == null ? new CustomerSubmission.Price(null, null) : old.price());
+            if (old != null) retained.add(old);
+        }
+        if ((legacyRequest || prior.stream().anyMatch(row -> row.product().itemId() == null)) &&
+                prior.stream().anyMatch(row -> row.hasQuote() && !retained.contains(row)))
+            throw new OrderFailure("SUBMISSION_ITEM_ID_CONFLICT");
+        return new CustomerSubmission.Review(withProducts(content, products), prices, money(command.totalAmountCents()),
+                command.creditedEmployeeId(), command.plannedHandoffAt(), command.plannedFinishAt());
+    }
+
+    private record ReviewedProduct(CustomerSubmission.Product product, CustomerSubmission.Price price) {
+        boolean hasQuote() { return price.unitPriceCents() != null || price.memberPriceCents() != null; }
+    }
+    private static List<ReviewedProduct> reviewedProducts(CustomerSubmission.Review review) {
+        if (review == null) return List.of();
+        var rows = new ArrayList<ReviewedProduct>();
+        for (int i = 0; i < review.content().items().size(); i++)
+            rows.add(new ReviewedProduct(review.content().items().get(i), review.prices().get(i)));
+        return rows;
+    }
+    private static ReviewedProduct findLegacyProduct(CustomerSubmission.Product item, List<ReviewedProduct> prior,
+            Set<UUID> usedIds, Set<ReviewedProduct> retained) {
+        var matches = prior.stream().filter(row -> row.product().withItemId(null).equals(item)).toList();
+        if (matches.size() == 1 && !usedIds.contains(matches.getFirst().product().itemId()) && !retained.contains(matches.getFirst()))
+            return matches.getFirst();
+        if (matches.stream().anyMatch(ReviewedProduct::hasQuote)) throw new OrderFailure("SUBMISSION_ITEM_ID_CONFLICT");
+        return null;
+    }
+    private static CustomerSubmission.Content withProducts(CustomerSubmission.Content content, List<CustomerSubmission.Product> products) {
+        return new CustomerSubmission.Content(content.phone(), content.memberPhone(), content.fulfillmentType(), content.address(),
+                content.requestedReceiveAt(), products);
+    }
     private String duplicateCheckToken(CustomerSubmission submission, List<CustomerSubmissions.Duplicate> duplicates) {
         return fingerprint(List.of(submission.id(), submission.version(), duplicates));
     }
-    private <T> T convert(Object value, Class<T> type) { return json.read(json.write(value), type); }
+    private <T> T convert(Object value, Class<T> type) {
+        try { return json.read(json.write(value), type); }
+        catch (IllegalArgumentException failure) {
+            for (Throwable cause = failure; cause != null; cause = cause.getCause()) if (cause instanceof OrderFailure domain) throw domain;
+            throw failure;
+        }
+    }
     @SuppressWarnings("unchecked") private Map<String, Object> snapshot(Object value) { return convert(value, Map.class); }
     private Map<String, Object> reviewSnapshot(CustomerSubmission.Review review) {
         var result = new LinkedHashMap<>(snapshot(review));

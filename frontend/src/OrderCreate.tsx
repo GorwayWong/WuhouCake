@@ -1,32 +1,97 @@
-import { useCallback, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import { ArrowLeft, ArrowRight, Cake, Plus, Trash, UserCircle, Truck, CurrencyCny } from '@phosphor-icons/react';
-import { creationResultUnknown, errorText } from './api';
-import { changeItemDraft, createOrderRequest, newItem, specificationFields } from './orderForm';
-import { OrderRecognition } from './OrderRecognition';
-import { EmployeeSelect } from './EmployeeSelect';
-import { DateInput } from './DateInput';
-import { ProductTypeSelect } from './ProductTypeSelect';
+import { draftTotals } from './orderForm';
+import { exactYuan } from './money';
 import { Select } from './Select';
+import { paymentMethods } from './orderPayment';
+import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
+import { firstProductFormError, productFormRows } from './productFormLayout';
+import { DraftItemImages } from './DraftItemImages';
+import { localImageError, requireDraftImages } from './draftImages';
+import type { ImageScope } from './draftImages';
+import { changePickupTime, changeFinishTime, pickupTimeLabel } from './orderTimes';
+import { FinishTimeHelp } from './FinishTimeHelp';
+import { createContext, useContext, useCallback, useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { ArrowLeft, ArrowRight, Cake, Plus, Trash, Receipt, CurrencyCny } from '@phosphor-icons/react';
+import { creationResultUnknown, errorText } from './api';
+import { changeItemDraft, createOrderRequest, newItem } from './orderForm';
+import { OrderRecognition } from './OrderRecognition';
+import { foldOtherRecognitionFeedback, formFeedback, retainRecognitionFeedback } from './recognition';
+import type { RecognitionFeedbackMap } from './recognition';
+import { ItemPageNumber } from './ItemPageNumber';
+import { OrderPackagePicker } from './OrderPackagePicker';
+import { DateInput } from './DateInput';
+import { OrderingMethodInput } from './OrderingMethodInput';
+import { ProductTypeSelect } from './ProductTypeSelect';
 import { focusFormField } from './formFocus';
+import { itemKeyForField, selectItemAfterChange } from './orderItemView';
 import type { ItemDraft, OrderDraft } from './orderForm';
 import type { CreateOrderRequest } from './types';
+import type { DraftEditor } from './orderDraftStorage';
 
-function Field({ label, name, error, children, wide = false }: { label: string; name: string; error?: string; children: ReactNode; wide?: boolean }) {
-  return <label className={wide ? 'form-wide' : undefined} htmlFor={name}>{label}{children}{error && <span className="field-error" id={`${name}-error`}>{error}</span>}</label>;
+const RecognitionFields = createContext<RecognitionFeedbackMap>({});
+function Field({ label, name, error, children, wide = false, className = '' }: { label: ReactNode; name: string; error?: string; children: ReactNode; wide?: boolean; className?: string }) {
+  const mark = useContext(RecognitionFields)[name];
+  const message = error || mark?.error;
+  const imported = Boolean(mark && !mark.error && mark.source !== 'DEFAULT');
+  return <label className={[wide ? 'form-wide' : '', imported ? 'recognition-filled' : '', className].filter(Boolean).join(' ') || undefined} htmlFor={name} data-recognition={mark ? 'true' : undefined}>
+    <span className="form-field-heading">{label}{mark && !mark.error && (mark.source !== 'DEFAULT' || mark.needsReview) && <span className="recognition-field-badge">{mark.needsReview ? '请核对' : '已带入'}</span>}</span>
+    {children}{message && <span className="field-error" id={`${name}-error`}>{message}</span>}
+    {mark?.hint && <span className="form-help" id={`${name}-recognition-hint`}>{mark.hint}</span>}
+  </label>;
 }
-export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, error, submitted, onRecognitionDirtyChange }: {
-  draft: OrderDraft; onChange: (draft: OrderDraft) => void; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
-  onRecognitionDirtyChange: (dirty: boolean) => void;
+export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, error, submitted, editor, onEditorChange, blocked, imageScope, canUploadImages = false, canRecordPayment = false, onImageWritingChange, createdOrderId }: {
+  draft: OrderDraft; onChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean, requireSaved?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
+  imageScope: ImageScope; canUploadImages?: boolean; canRecordPayment?: boolean; onImageWritingChange: (busy: boolean) => void; createdOrderId?: string;
+  blocked: boolean; editor: DraftEditor; onEditorChange: (editor: Partial<DraftEditor>) => void;
   initialDraft: OrderDraft;
 }) {
+  const totals = draftTotals(draft.items);
+  const autoPrice = draft.pricingMode === 'ITEM_SUM';
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [imageBusy, setImageBusy] = useState(false);
+  const imageWriting = (pending: boolean) => { setImageBusy(pending); onImageWritingChange(pending); };
+  const [selectedItemKey, selectItem] = useState(editor.selectedItemKey || draft.items[0]?.key || '');
+  const setSelectedItemKey = (key: string) => { selectItem(key); onEditorChange({ selectedItemKey: key }); };
+  const activeIndex = Math.max(0, draft.items.findIndex(item => item.key === selectedItemKey));
+  const activeItem = draft.items[activeIndex];
+  const cardStart = useRef<HTMLDivElement>(null);
+  const [pendingTarget, setPendingTarget] = useState<{ field?: string; focus?: boolean } | null>(null);
+  const [feedback, setFeedback] = useState<RecognitionFeedbackMap>(editor.feedback);
+  const feedbackRef = useRef(feedback);
+  const getFeedback = useCallback(() => feedbackRef.current, []);
+  const updateFeedback = (next: RecognitionFeedbackMap) => { feedbackRef.current = next; setFeedback(next); };
+  const feedbackByName = formFeedback(draft, feedback);
   const form = useRef<HTMLFormElement>(null);
+  useLayoutEffect(() => {
+    let frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => window.scrollTo(0, editor.scrollY)); });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  useLayoutEffect(() => {
+    if (!pendingTarget) return;
+    if (pendingTarget.field) {
+      if (pendingTarget.focus) focusFormField(form.current, pendingTarget.field);
+      else Array.from(form.current?.querySelectorAll<HTMLElement>('label[for]') || [])
+        .find(element => element.getAttribute('for') === pendingTarget.field)?.scrollIntoView({ block: 'center' });
+    } else cardStart.current?.scrollIntoView({ block: 'start' });
+    setPendingTarget(null);
+  }, [pendingTarget, activeItem?.key]);
+  const revealField = (field: string, items: ItemDraft[], focus = false) => {
+    const key = itemKeyForField(items, field);
+    if (key) setSelectedItemKey(key);
+    setPendingTarget({ field, focus });
+  };
+  const selectProduct = (index: number) => {
+    const item = draft.items[index];
+    if (!item) return;
+    setSelectedItemKey(item.key); setPendingTarget({});
+  };
   const latest = useRef(draft); latest.current = draft;
-  const manualFields = useRef(new Set<string>());
+  const manualFields = useRef(new Set<string>(editor.manualFields));
   const getDraft = useCallback(() => latest.current, []);
-  const change = (next: OrderDraft) => {
-    for (const field of Object.keys(next) as (keyof OrderDraft)[]) if (field !== 'items' && next[field] !== latest.current[field]) manualFields.current.add(field === 'totalAmount' ? 'totalAmountCents' : field);
+  const change = (next: OrderDraft, requireSaved = false) => {
+    const previousFields = requireSaved ? new Set(manualFields.current) : null;
+    const selection = selectItemAfterChange(latest.current.items, next.items, activeItem?.key || '');
+    for (const field of Object.keys(next) as (keyof OrderDraft)[]) if (field !== 'items' && field !== 'finishTimeMode' && (field !== 'plannedFinishAt' || next.finishTimeMode === 'MANUAL') && next[field] !== latest.current[field]) manualFields.current.add(field === 'totalAmount' ? 'totalAmountCents' : field);
     for (const item of next.items) {
       const previous = latest.current.items.find(x => x.key === item.key);
       if (!previous) manualFields.current.add(item.key + '.new');
@@ -36,70 +101,132 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
         for (const field of Object.keys(item.attributes) as (keyof ItemDraft['attributes'])[]) if (previous.attributes[field] !== item.attributes[field]) manualFields.current.add(item.key + '.' + field);
       }
     }
-    latest.current = next; setErrors({}); onChange(next);
+    if (next.finishTimeMode === 'AUTO') manualFields.current.delete('plannedFinishAt');
+    let marks = retainRecognitionFeedback(latest.current, feedbackRef.current);
+    for (const item of next.items) {
+      const previous = latest.current.items.find(candidate => candidate.key === item.key);
+      if (previous && previous.productType !== 'OTHER' && item.productType === 'OTHER')
+        marks = foldOtherRecognitionFeedback(item, marks);
+    }
+    const feedback = retainRecognitionFeedback(next, marks);
+    const saved = onChange(next, { feedback, manualFields: [...manualFields.current], selectedItemKey: selection }, false, requireSaved);
+    if (!saved && previousFields) { manualFields.current = previousFields; return false; }
+    if (selection !== activeItem?.key) { selectItem(selection); setPendingTarget({}); }
+    updateFeedback(feedback);
+    latest.current = next; setErrors({});
+    return saved;
   };
-  const recognitionChange = (next: OrderDraft) => { latest.current = next; setErrors({}); onChange(next); };
+  const recognitionChange = (next: OrderDraft, marks: RecognitionFeedbackMap, restore = false) => {
+    const selection = selectItemAfterChange(latest.current.items, next.items, activeItem?.key || '', !restore);
+    selectItem(selection);
+    updateFeedback(retainRecognitionFeedback(next, restore ? marks : { ...feedbackRef.current, ...marks }));
+    latest.current = next; setErrors({}); onChange(next, { feedback: feedbackRef.current, manualFields: [...manualFields.current], selectedItemKey: selection }, true);
+    const first = firstProductFormError(formFeedback(next, marks), next.items);
+    if (!restore && first) revealField(first, next.items);
+    else if (selection !== activeItem?.key) setPendingTarget({});
+  };
   const updateItem = (key: string, changes: Partial<ItemDraft>, editedSpecification?: string) => {
     if (editedSpecification === 'size' && changes.attributes && !/^[0-9]{0,9}(?:\.[0-9]{0,2})?$/.test(changes.attributes.size)) {
       setErrors({ [`items.${draft.items.findIndex(item => item.key === key)}.size`]: '尺寸只能填写数字，最多两位小数。' }); return;
     }
     change({ ...draft, items: draft.items.map(item => item.key === key ? changeItemDraft(item, changes, editedSpecification) : item) });
   };
-  const inputProps = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': errors[name] ? `${name}-error` : undefined });
-  const customerFields = [['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32], ['buyerName', '客户订购人（可选）', 80]] as const;
-  const submittedDate = submitted?.fulfillment.requestedReceiveDate || draft.requestedReceiveDate;
-  const submittedPhone = submitted?.customer.phone || draft.phone;
+  const inputProps = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': [
+    errors[name] || feedbackByName[name]?.error ? `${name}-error` : '',
+    feedbackByName[name]?.hint ? `${name}-recognition-hint` : '',
+  ].filter(Boolean).join(' ') || undefined });
+  const customerFields = [['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32]] as const;
   const unknownResult = creationResultUnknown(error);
+  const editBlocked = busy || imageBusy || unknownResult || blocked || Boolean(createdOrderId);
   return <div className="create-page">
-    <a className="back-link" href="#" aria-disabled={busy}><ArrowLeft />返回工作台</a>
-    <div className="page-heading"><div><h1>新建订单</h1></div></div>
-    <OrderRecognition draft={draft} initialDraft={initialDraft} getDraft={getDraft} manualFields={manualFields.current} onChange={recognitionChange} busy={busy || unknownResult} onDirtyChange={onRecognitionDirtyChange} />
-    <form ref={form} noValidate onSubmit={event => {
+    <OrderRecognition initialDraft={initialDraft} getDraft={getDraft} getFeedback={getFeedback} manualFields={manualFields.current} onChange={recognitionChange} busy={editBlocked} text={editor.text} open={editor.open} onEditorChange={onEditorChange} />
+    <RecognitionFields.Provider value={feedbackByName}><form ref={form} noValidate onSubmit={async event => {
       event.preventDefault();
-      if (busy) return;
+      if (busy || imageBusy || blocked) return;
       if (unknownResult && submitted) { onSubmit(submitted); return; }
-      if (!draft.creditedEmployeeId) { setErrors({ creditedEmployeeId: '请选择下单员工。' }); document.getElementById('creditedEmployeeId')?.focus(); return; }
+      if (!canUploadImages && draft.items.some(item => item.images?.length)) { setErrors({ images: '当前账号没有图片上传或订单查看权限，请移除已选图片后提交，或联系店长调整权限。' }); return; }
       const result = createOrderRequest(draft);
+      if (result.request?.paymentMethod && result.request.paymentMethod !== 'UNPAID' && !canRecordPayment) result.errors.paymentMethod = '当前账号不能登记已付款，请选择未付或联系店长。';
       setErrors(result.errors);
-      if (result.request) onSubmit(result.request);
+      if (result.request && !Object.keys(result.errors).length) {
+        imageWriting(true);
+        try { await requireDraftImages({ ...imageScope, value: draft }); onSubmit(result.request); }
+        catch (failure) { setErrors({ images: localImageError(failure) }); }
+        finally { imageWriting(false); }
+      }
       else {
-        focusFormField(form.current, Object.keys(result.errors)[0]);
+        revealField(firstProductFormError(result.errors, draft.items)!, draft.items, true);
       }
     }}>
-      <fieldset className="create-fields" disabled={busy || unknownResult}>
-        <div className="create-top-groups">
-          <section className="panel create-group"><h2><UserCircle />客户信息</h2><div className="create-grid">
-            <Field label="下单员工（业绩归属）" name="creditedEmployeeId" error={errors.creditedEmployeeId}><EmployeeSelect name="creditedEmployeeId" disabled={busy || unknownResult} id="creditedEmployeeId" value={draft.creditedEmployeeId || ''} onChange={value => change({ ...draft, creditedEmployeeId: value })} /></Field>
-            {customerFields.map(([name, label, maximum]) => <Field key={name} label={label} name={name} error={errors[name]}><input {...inputProps(name)} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} onChange={event => change({ ...draft, [name]: event.target.value })} required={name === 'phone'} maxLength={maximum} autoComplete="off" /></Field>)}
-          </div></section>
-          <section className="panel create-group"><h2><Truck />交接信息</h2><div className="create-grid">
-            <Field label="交接方式" name="fulfillmentType"><Select label="交接方式" disabled={busy || unknownResult} {...inputProps('fulfillmentType')} value={draft.fulfillmentType} onChange={value => change({ ...draft, fulfillmentType: value as OrderDraft['fulfillmentType'] })}><option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option></Select></Field>
-            <Field label="收货日期 *" name="requestedReceiveDate" error={errors.requestedReceiveDate}><DateInput label="收货日期" disabled={busy || unknownResult} {...inputProps('requestedReceiveDate')} value={draft.requestedReceiveDate} onChange={value => change({ ...draft, requestedReceiveDate: value })} required /></Field>
-            <Field label="取货时间 *" name="plannedHandoffAt" error={errors.plannedHandoffAt} wide><DateInput label="取货时间" disabled={busy || unknownResult} {...inputProps('plannedHandoffAt')} type="datetime-local" value={draft.plannedHandoffAt} onChange={value => change({ ...draft, plannedHandoffAt: value })} required /></Field>
-            <Field label="计划出品时间" name="plannedFinishAt" error={errors.plannedFinishAt} wide><DateInput label="计划出品时间" disabled={busy || unknownResult} {...inputProps('plannedFinishAt')} type="datetime-local" value={draft.plannedFinishAt} onChange={value => change({ ...draft, plannedFinishAt: value })} /></Field>
-            <Field label={draft.fulfillmentType === 'DELIVERY' ? '配送地址 *' : '地址（自提可留空）'} name="address" error={errors.address} wide><textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} required={draft.fulfillmentType === 'DELIVERY'} /></Field>
-          </div><p className="form-help">北京时间；取货指客户自提或配送员到店取走。</p></section>
-        </div>
-        <section className="panel create-group"><div className="section-heading"><h2><Cake />商品信息</h2><span className="muted">{draft.items.length} 项</span></div>
-          {draft.items.map((item, index) => <div className="create-item" key={item.key}>
-            <div className="create-item-heading"><h3>商品 {index + 1}</h3><button type="button" className="text-button danger" aria-label={`移除商品 ${index + 1}`} disabled={draft.items.length === 1} onClick={() => change({ ...draft, items: draft.items.filter(other => other.key !== item.key) })}><Trash />移除</button></div>
-            <div className="create-grid">
-              {(['name', 'productType', 'quantity', 'unitPrice', 'memberPrice'] as const).map(field => {
-                const name = `items.${index}.${field}`;
-                const confirmType = field === 'productType' && item.requiresTypeConfirmation;
-                const label = { name: '商品名称 *', productType: confirmType ? '商品类型 *' : '商品类型', quantity: '数量 *', unitPrice: '商品单价（元）', memberPrice: '会员单价（元）' }[field];
-                return <Field key={field} label={label} name={name} error={errors[name]} wide={field === 'name'}>{field === 'productType' ? <ProductTypeSelect disabled={busy || unknownResult} {...inputProps(name)} value={item.productType} onChange={value => updateItem(item.key, { productType: value })} required={confirmType} /> : <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} onChange={event => updateItem(item.key, { [field]: event.target.value })} required={field === 'name' || field === 'quantity'} maxLength={field === 'name' ? 128 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} />}</Field>;
-              })}
-              {specificationFields.map(([key, label]) => { const name = `items.${index}.${key}`; return <Field key={key} label={key === 'size' ? '尺寸（寸，只填数字）' : label} name={name} error={errors[name]} wide={key === 'requirements'}>{key === 'requirements' ? <textarea id={name} name={name} rows={2} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} /> : <input {...inputProps(name)} inputMode={key === 'size' ? 'decimal' : undefined} value={item.attributes[key]} onChange={event => updateItem(item.key, { attributes: { ...item.attributes, [key]: event.target.value } }, key)} />}</Field>; })}
+      <fieldset className="create-fields" disabled={editBlocked}>
+        <section className="panel create-group create-order-info"><h2><Receipt />订单信息</h2>
+          <Field className="create-fulfillment-field" label="交接方式" name="fulfillmentType" error={errors.fulfillmentType}><Select label="交接方式"
+            {...inputProps('fulfillmentType')} value={draft.fulfillmentType} disabled={editBlocked}
+            onChange={value => change({ ...draft, fulfillmentType: value as OrderDraft['fulfillmentType'] })}>
+            <option value="DELIVERY">配送上门</option><option value="PICKUP">门店自提</option>
+          </Select></Field>
+          <div className="create-grid create-time-grid">
+            <Field label={pickupTimeLabel(draft.fulfillmentType) + ' *'} name="requestedReceiveAt" error={errors.requestedReceiveAt || errors.requestedReceiveDate}><DateInput label={pickupTimeLabel(draft.fulfillmentType)} disabled={editBlocked} {...inputProps('requestedReceiveAt')} type="datetime-local" dateDisplay={draft.plannedFinishAt && draft.plannedFinishAt.slice(0, 10) !== draft.requestedReceiveDate ? 'full' : 'business'} compactTime showTimeHint={false} timeOptional resetTimeOnDateChange value={draft.requestedReceiveAt} onChange={(value, parts) => change({ ...changePickupTime(draft, value), requestedReceiveDate: parts?.date || '' })} required /></Field>
+            <Field label="出品时间" name="plannedFinishAt" error={errors.plannedFinishAt}><DateInput label="出品时间" disabled={editBlocked} {...inputProps('plannedFinishAt')} type="datetime-local" dateDisplay={draft.plannedFinishAt && draft.plannedFinishAt.slice(0, 10) !== draft.requestedReceiveDate ? 'full' : 'business'} compactTime value={draft.plannedFinishAt} onChange={value => change(changeFinishTime(draft, value))} /><FinishTimeHelp draft={draft} error={errors.plannedFinishAt} disabled={editBlocked} onChange={change} /></Field>
+          </div>
+          <div className="create-grid create-customer-grid">
+            <Field label="下单方式" name="orderingMethod" error={errors.orderingMethod} wide><OrderingMethodInput id="orderingMethod" disabled={editBlocked} value={draft.orderingMethod || ''} custom={draft.orderingMethodCustom} invalid={Boolean(errors.orderingMethod)} describedBy={inputProps('orderingMethod')['aria-describedby']} onChange={method => change({ ...draft, ...method })} /></Field>
+            {customerFields.map(([name, label, maximum]) => <Field key={name} label={label} name={name} error={errors[name]} wide={name === 'memberPhone'}><input {...inputProps(name)} type={name === 'phone' || name === 'memberPhone' ? 'tel' : 'text'} value={draft[name]} onChange={event => change({ ...draft, [name]: event.target.value })} required={name === 'phone'} maxLength={maximum} autoComplete="off" /></Field>)}
+            {draft.fulfillmentType === 'DELIVERY' && <Field label="配送地址 *" name="address" error={errors.address} wide>
+              <textarea {...inputProps('address')} rows={2} value={draft.address} onChange={event => change({ ...draft, address: event.target.value })} required />
+            </Field>}
+        </div></section>
+        <section className="panel create-group">
+          <OrderPackagePicker draft={draft} getDraft={getDraft} onChange={next => change(next, true)}
+            imageScope={imageScope} canUploadImages={canUploadImages} onImageWritingChange={imageWriting} disabled={editBlocked}
+            heading={<h2><Cake />商品信息</h2>}
+            actions={<div className="actions"><span className="muted">{draft.items.length} 项</span>
+              <button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}>
+                <Plus />添加商品
+              </button></div>} />
+          <div className="create-product-page" data-item-tone={activeIndex % 10}>
+          <div className="item-card-navigation" ref={cardStart} role="group" aria-label="商品切换">
+            <button type="button" className="secondary icon-button" aria-label="上一个商品" disabled={activeIndex === 0} onClick={() => selectProduct(activeIndex - 1)}><ArrowLeft /></button>
+            <div className="item-card-caption"><ItemPageNumber current={activeIndex + 1} total={draft.items.length} disabled={editBlocked} onJump={selectProduct} /><strong>{activeItem?.name.trim() || '未命名商品'}</strong></div>
+            <button type="button" className="secondary icon-button" aria-label="下一个商品" disabled={activeIndex >= draft.items.length - 1} onClick={() => selectProduct(activeIndex + 1)}><ArrowRight /></button>
+          </div>
+          {activeItem && <div className="create-item" key={`fields:${activeItem.key}`}>
+            <div className="create-item-heading product-form-heading"><h3>商品 {activeIndex + 1}</h3>
+              <Field className="product-type-field" label={activeItem.requiresTypeConfirmation ? '商品类型 *' : '商品类型'} name={`items.${activeIndex}.productType`} error={errors[`items.${activeIndex}.productType`]}>
+                <ProductTypeSelect disabled={editBlocked} {...inputProps(`items.${activeIndex}.productType`)} value={activeItem.productType} onChange={value => updateItem(activeItem.key, { productType: value })} required={Boolean(activeItem.requiresTypeConfirmation)} />
+              </Field>
+              <button type="button" className="text-button danger" aria-label={`移除商品 ${activeIndex + 1}`} disabled={draft.items.length === 1} onClick={() => change({ ...draft, items: draft.items.filter(other => other.key !== activeItem.key) })}><Trash />移除</button>
             </div>
-          </div>)}
-          <button type="button" className="secondary" onClick={() => change({ ...draft, items: [...draft.items, newItem()] })}><Plus />添加商品</button>
+            <ProductFormFields type={activeItem.productType}
+              rows={productFormRows(activeItem.productType, true).filter(row => !row.includes('specification'))} renderField={field => {
+              const name = `items.${activeIndex}.${field}`;
+              const required = field === 'name' || field === 'quantity';
+              if (field === 'name' || field === 'quantity' || field === 'unitPrice' || field === 'memberPrice') return <Field label={<ProductFieldLabel field={field} required={required} />} name={name} error={errors[name]}>
+                <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={activeItem[field]} onChange={event => updateItem(activeItem.key, { [field]: event.target.value })} required={required} maxLength={field === 'name' ? 128 : undefined} placeholder={field.endsWith('Price') ? '未填写' : undefined} />
+              </Field>;
+              return <Field label={<ProductFieldLabel field={field} />} name={name} error={errors[name]}>
+                {(field === 'requirements' || field === 'filling') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} inputMode={field === 'size' ? 'decimal' : undefined} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
+                {!autoPrice && field === 'requirements' && (activeItem.unitPrice || activeItem.memberPrice) && <span className="form-help product-spec-text">
+                  {[activeItem.unitPrice && `参考单价：¥${activeItem.unitPrice}`, activeItem.memberPrice && `参考会员价：¥${activeItem.memberPrice}`].filter(Boolean).join('\n')}
+                </span>}
+              </Field>;
+            }} />
+          </div>}
+          {draft.items.length > 1 && <div className="item-card-footer" role="group" aria-label="商品底部切换">
+            <button type="button" className="secondary" disabled={activeIndex === 0} onClick={() => selectProduct(activeIndex - 1)}><ArrowLeft />上一项</button>
+            <span>{activeIndex + 1} / {draft.items.length}</span>
+            <button type="button" className="secondary" disabled={activeIndex >= draft.items.length - 1} onClick={() => selectProduct(activeIndex + 1)}>下一项<ArrowRight /></button>
+          </div>}
+          <DraftItemImages before={null} key={`images:${activeItem.key}`} scope={imageScope} itemId={activeItem.key} images={activeItem.images || []} disabled={editBlocked} allowed={canUploadImages} onBusyChange={imageWriting} onChange={images => change({ ...latest.current, items: latest.current.items.map(item => item.key === activeItem.key ? { ...item, images } : item) })} />
+          </div>
         </section>
-        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid"><Field label="订单约定总金额（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" value={draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field></div><p className="form-help">填写整单约定金额；留空为未报价，0 为零元。</p></section>
+        <section className="panel create-group"><h2><CurrencyCny />金额信息</h2><div className="create-grid order-pricing-fields"><Field label="原价（元）" name="totalAmount" error={errors.totalAmount}><input {...inputProps('totalAmount')} inputMode="decimal" readOnly={autoPrice} value={autoPrice ? totals.original === null ? '' : exactYuan(totals.original) : draft.totalAmount} onChange={event => change({ ...draft, totalAmount: event.target.value })} placeholder="未填写" /></Field><Field label="会员价（元）" name="memberAmount" error={errors.memberAmount}><input {...inputProps('memberAmount')} inputMode="decimal" readOnly={autoPrice} value={autoPrice ? totals.member === null ? '' : exactYuan(totals.member) : draft.memberAmount || ''} onChange={event => change({ ...draft, memberAmount: event.target.value })} placeholder="未填写" /></Field><Field label="支付方式" name="paymentMethod" error={errors.paymentMethod} wide><Select label="支付方式" id="paymentMethod" value={draft.paymentMethod || 'UNPAID'} disabled={editBlocked} onChange={paymentMethod => change({ ...draft, paymentMethod })}>{Object.entries(paymentMethods).map(([value, label]) => <option key={value} value={value} disabled={value !== 'UNPAID' && (!canRecordPayment || autoPrice && (totals.invalid || totals.total === null))}>{label}</option>)}</Select></Field></div><p className="form-help">{autoPrice ? '按商品单价 × 数量自动合计。会员单价未填时采用原单价；留空为未报价，0 为零元。' : '历史草稿保留手填整单金额。会员价优先，未填则采用原价。'}</p></section>
       </fieldset>
-      {Object.keys(errors).length > 0 && <div className="notice error" role="alert">请检查标出的内容后再创建订单。</div>}
-      {error ? unknownResult ? <div className="notice error create-result" role="alert"><p>创建结果暂时无法确认，录单内容已保留。可重试确认上次提交；系统会返回原订单或完成原提交，不会因同次重试重复建单。确认成功后可在详情中修改。也可先核对收货日期 <strong>{submittedDate}</strong>、联系电话 <strong>{submittedPhone}</strong>。</p><a className="text-button" href={`#/?date=${submittedDate}`} target="_blank" rel="noreferrer">打开 {submittedDate} 工作台核对（新标签页）</a></div> : <div className="notice error" role="alert">本次请求未新增订单。{errorText(error)}</div> : null}
-      <div className="create-submit"><span className="form-help">创建后为待制作、未付款。</span><button className="primary" disabled={busy}>{busy ? '正在创建订单…' : unknownResult ? '重试确认原订单' : '创建订单'}<ArrowRight /></button></div>
-    </form>
+      {Object.keys(errors).length > 0 && <div className="notice error" role="alert">{errors.images || '请检查标出的内容后再创建订单。'}</div>}
+      {createdOrderId ? <div className="notice error" role="alert">订单已创建，部分图片未上传。<a href={`#/orders/${createdOrderId}`}>查看订单详情</a></div>
+        : unknownResult ? <div className="notice error" role="alert">提交结果待确认，可以重试。</div>
+        : error ? <div className="notice error" role="alert">{errorText(error)}</div> : null}
+      <div className="create-submit"><button className="primary" disabled={busy || imageBusy || blocked}>{busy ? '正在创建订单…' : createdOrderId ? '重试上传图片' : unknownResult ? '重试提交' : '创建订单'}<ArrowRight /></button></div>
+    </form></RecognitionFields.Provider>
   </div>;
 }

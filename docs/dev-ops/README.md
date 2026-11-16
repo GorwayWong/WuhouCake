@@ -86,16 +86,18 @@ docker compose --env-file docs/dev-ops/env/prod.env \
 | `SPRING_DATA_REDIS_HOST`、`SPRING_DATA_REDIS_PORT`、`SPRING_DATA_REDIS_PASSWORD` | 直接运行 JVM 的 Redis 配置 |
 | `APP_IMAGE` | 已构建镜像，必填 |
 | `APP_PORT`、`APP_BIND_ADDRESS` | 宿主机监听端口与地址；容器端口为 8080 |
-| `DB_POOL_MAX_SIZE` | Hikari 最大连接数，默认 10 |
-| `JAVA_TOOL_OPTIONS` | JVM 参数，含空格的 dotenv 值须加引号 |
+| `DB_POOL_MAX_SIZE` | Hikari 最大连接数，prod 默认 5，其余 profile 默认 10 |
+| `JAVA_TOOL_OPTIONS` | 自定义 JVM 参数。空值使用 app Compose 的预算；覆盖值需复核堆外内存及容器上限 |
 | `IDENTITY_KEY_DIR` | 应用 Compose 只读挂载的宿主机密钥目录，应用用户须可读 |
 | `IDENTITY_PRIVATE_KEY`、`IDENTITY_PUBLIC_KEY` | 直接运行 JVM 时的持久 RSA 密钥绝对路径 |
-| `CUSTOMER_ENTRY_PUBLIC_ORIGIN` | 客户二维码的公开 HTTPS 源站；app Compose 必填 |
+| `CUSTOMER_ENTRY_PUBLIC_ORIGIN` | dev 默认 auto，启动时探测 Wi-Fi IPv4；prod 使用配置的 HTTPS 服务器 IP 或域名源站且禁止 auto；app Compose 必填 |
 | `CUSTOMER_ENTRY_PER_MINUTE`、`CUSTOMER_ENTRY_PER_HOUR` | 每来源 IP 提交上限，默认 10／100 |
 | `CUSTOMER_ENTRY_MAX_BODY_BYTES` | 客户提交正文上限，默认 131072 字节 |
 | `CUSTOMER_ENTRY_TRUSTED_PROXIES` | 可信直连代理准确 IP，逗号分隔；默认不信任转发头 |
 
 app Compose 根据 `POSTGRES_*`、`REDIS_PASSWORD` 和服务名生成容器的 `SPRING_*` 连接配置。仅修改 env 文件中的 `SPRING_*` 值不会覆盖此映射；使用托管数据库或 Redis 时，应同步调整 app Compose。
+
+app Compose 需要配套反向代理限制上传正文大小与读取时间。应用、图片端、数据库预算及指标采集见[稳定性专项报告](../verification/2026-11-16-production-stability.md)。
 
 客户入口的 HTTPS、代理来源识别和部署前验证要求见[客户扫码填单](../customer-entry.md#部署与保护)。
 

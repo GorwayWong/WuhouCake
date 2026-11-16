@@ -1,12 +1,20 @@
 package org.xaspire.WuhouCake.order.domain.model.valobj;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Set;
 import java.util.UUID;
 
 public final class OrderValues {
     private OrderValues() { }
+    /** Largest integer cent value that remains exact in numeric JSON browser clients. */
+    public static final long MAX_MONEY_CENTS = 9_007_199_254_740_991L;
+
+    public static final Set<String> PRODUCTION_STATUSES = Set.of("CAKE_BASE", "LAYER", "FROSTING", "DECORATING");
+    public static final Set<String> ORDER_STATUSES = Set.of("CAKE_BASE", "LAYER", "FROSTING", "DECORATING",
+            "WAITING_DELIVERY", "COMPLETED", "CANCELLED");
 
     public enum FulfillmentType { DELIVERY, PICKUP }
 
@@ -23,12 +31,20 @@ public final class OrderValues {
         public FulfillmentPlan(FulfillmentType type, String address, LocalDate requestedReceiveDate, Instant plannedHandoffAt, Instant plannedFinishAt) {
             this(type, address, requestedReceiveDate, plannedHandoffAt, plannedFinishAt, null);
         }
+        public Instant pickupAt() { return plannedHandoffAt != null ? plannedHandoffAt : requestedReceiveAt; }
+        public LocalDate pickupDate() { return pickupAt() == null ? requestedReceiveDate : receiveDate(pickupAt()); }
         public FulfillmentPlan {
-            if (type == null || requestedReceiveDate == null || plannedHandoffAt == null) throw invalid();
+            if (type == null || requestedReceiveDate == null) throw invalid();
             if (requestedReceiveAt != null && !requestedReceiveDate.equals(receiveDate(requestedReceiveAt))) throw invalid();
             address = type == FulfillmentType.DELIVERY ? requiredText(address, Integer.MAX_VALUE) : optionalText(address, Integer.MAX_VALUE);
         }
     }
+    public static void requireFinishLeadTime(Instant pickupAt, Instant finishAt) {
+        if (pickupAt != null && finishAt != null && Duration.between(finishAt, pickupAt).compareTo(Duration.ofHours(1)) < 0) {
+            throw new OrderFailure("ORDER_FINISH_TOO_LATE");
+        }
+    }
+
     public static LocalDate receiveDate(Instant value) { return value.atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate(); }
     public record Actor(UUID accountId, String nickname) {
         public Actor {
@@ -60,7 +76,12 @@ public final class OrderValues {
             return result;
         } catch (ArithmeticException | NumberFormatException failure) { throw invalid(); }
     }
-    public static Long money(Object value) { return value == null ? null : nonNegativeInteger(value); }
+    public static Long money(Object value) {
+        if (value == null) return null;
+        long cents = nonNegativeInteger(value);
+        if (cents > MAX_MONEY_CENTS) throw invalid();
+        return cents;
+    }
     public static int quantity(Object value) {
         long result = nonNegativeInteger(value);
         if (result == 0 || result > Integer.MAX_VALUE) throw invalid();

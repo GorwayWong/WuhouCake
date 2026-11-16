@@ -8,10 +8,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class Application {
     public static void main(String[] args) {
         var application = new SpringApplication(Application.class);
-        boolean command = java.util.Arrays.stream(args).anyMatch(arg -> arg.startsWith("--wuhoucake.identity.command="));
+        boolean command = java.util.Arrays.stream(args).anyMatch(arg -> arg.startsWith("--wuhoucake.identity.command=")
+                || arg.equals("--wuhoucake.maintenance.recompress-images=true") || arg.startsWith("--wuhoucake.maintenance.role-assignments="));
         if (command) {
             if (java.util.Arrays.stream(args).anyMatch(arg -> arg.startsWith("--spring.main.web-application-type=") && !arg.endsWith("=none")))
-                throw new IllegalArgumentException("Identity command mode cannot start HTTP");
+                throw new IllegalArgumentException("Maintenance command mode cannot start HTTP");
             application.setWebApplicationType(WebApplicationType.NONE);
             if (java.util.Arrays.stream(args).noneMatch(arg -> arg.equals("--spring.main.web-application-type=none")))
                 args = java.util.stream.Stream.concat(java.util.Arrays.stream(args), java.util.stream.Stream.of("--spring.main.web-application-type=none")).toArray(String[]::new);

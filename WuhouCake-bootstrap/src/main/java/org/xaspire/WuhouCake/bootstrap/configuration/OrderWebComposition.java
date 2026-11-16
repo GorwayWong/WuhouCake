@@ -15,8 +15,9 @@ import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class OrderWebComposition {
-    @Bean org.xaspire.WuhouCake.order.adapter.web.OrderManagementController orderManagementController(org.xaspire.WuhouCake.order.application.service.OrderManagementService service) {
-        return new org.xaspire.WuhouCake.order.adapter.web.OrderManagementController(service);
+    @Bean OrderPackageController orderPackageController(org.xaspire.WuhouCake.order.application.service.OrderPackageService service) { return new OrderPackageController(service); }
+    @Bean org.xaspire.WuhouCake.order.adapter.web.OrderManagementController orderManagementController(org.xaspire.WuhouCake.order.application.service.OrderManagementService service, OrderExportService exports) {
+        return new org.xaspire.WuhouCake.order.adapter.web.OrderManagementController(service, exports);
     }
     @Bean OrderFileController orderFileController(OrderImageService images, OrderExportService exports) { return new OrderFileController(images, exports); }
     @Bean OrderController orderController(OrderService orders, org.xaspire.WuhouCake.order.application.service.OrderCreationService creations) { return new OrderController(orders, creations); }
@@ -27,12 +28,19 @@ public class OrderWebComposition {
         return scheduler;
     }
     @Bean(destroyMethod = "shutdownNow") ExecutorService orderStreamSender() {
-        return Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("order-stream-send-", 0).factory());
+        return new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(OrderStreams.MAX_CONNECTIONS), Thread.ofPlatform().name("order-stream-send-", 0).factory());
     }
     @Bean(destroyMethod = "close") OrderStreams orderStreams(Clock clock,
             @Qualifier("orderStreamScheduler") ScheduledExecutorService scheduler,
-            @Qualifier("orderStreamSender") ExecutorService sender) {
-        return new OrderStreams(clock, scheduler, sender);
+            @Qualifier("orderStreamSender") ExecutorService sender,
+            io.micrometer.core.instrument.MeterRegistry metrics) {
+        var streams = new OrderStreams(clock, scheduler, sender);
+        metrics.gauge("wuhou.sse.connections", streams, OrderStreams::connectionCount);
+        io.micrometer.core.instrument.FunctionCounter.builder("wuhou.sse.rejected", streams, OrderStreams::rejectedCount).register(metrics);
+        io.micrometer.core.instrument.FunctionCounter.builder("wuhou.sse.send.failures", streams, OrderStreams::sendFailureCount).register(metrics);
+        io.micrometer.core.instrument.FunctionCounter.builder("wuhou.sse.queue.overflows", streams, OrderStreams::overflowCount).register(metrics);
+        return streams;
     }
     @Bean OrderStreamController orderStreamController(OrderStreams streams, IdentityFacade identity) { return new OrderStreamController(streams, identity); }
 }

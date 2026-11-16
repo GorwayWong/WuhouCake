@@ -27,23 +27,50 @@ class CustomerSubmissionServiceTest {
             new JsonCodec(new ObjectMapper().findAndRegisterModules()), Clock.fixed(NOW, ZoneOffset.UTC), "https://example.test", mock(AuditFacade.class));
 
     @BeforeEach void setup() {
-        when(identity.me()).thenReturn(new IdentityFacade.AccountView(owner, "0001", "客服", Set.of("FRONT_DESK"), "STAFF", "ACTIVE", false, 0, NOW, null));
+        when(identity.me()).thenReturn(new IdentityFacade.AccountView(owner, "0001", "客服", Set.of("FRONT_DESK"), "STAFF", "ACTIVE", false, 0, NOW, null, 0,
+                org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.of(Set.of(
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.CUSTOMER_SUBMISSION_PROCESS,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.CUSTOMER_ENTRY_MANAGE,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_CUSTOMER_READ,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_AMOUNT_READ,
+                        org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_CREATE))));
         var content = new CustomerSubmission.Content("13800000000", null, "PICKUP", null, NOW,
                 List.of(new CustomerSubmission.Product("蛋糕", "CAKE", 1, Map.of("size", "8"))));
         var submission = new CustomerSubmission(id, UUID.randomUUID(), owner, "客服", 1, "PENDING", content,
                 new CustomerSubmission.Review(content, null, 100L, owner, NOW), null, NOW, NOW);
         when(store.find(eq(id), anyBoolean())).thenReturn(submission);
-        when(store.duplicates(submission)).thenReturn(List.of(record(0, "WAITING_PRODUCTION")));
+        when(store.duplicates(submission)).thenReturn(List.of(record(0, "CAKE_BASE")));
     }
     private CustomerSubmissions.Duplicate record(long version, String status) {
         return new CustomerSubmissions.Duplicate("ORDER", candidate, version, status, "001", "13800000000", LocalDate.of(2026, 11, 2), NOW,
                 List.of(new CustomerSubmissions.DuplicateItem("蛋糕", 1)), 100L, "客服", NOW, !"CANCELLED".equals(status));
     }
+    @Test void searchNormalizesReceiptsAndPhonesAndUsesTheSameScopeForCount() {
+        when(store.count(null, "ALL", id.toString())).thenReturn(21L);
+        when(store.count(owner, "PENDING", "13800001234")).thenReturn(1L);
+        service.search(false, "ALL", " F" + id.toString().toUpperCase(Locale.ROOT) + " ", 2, 20);
+        verify(store).search(null, "ALL", id.toString(), 20, 20L);
+        verify(store).count(null, "ALL", id.toString());
+        service.search(true, "PENDING", "138 0000-1234", 1, 20);
+        verify(store).search(owner, "PENDING", "13800001234", 20, 0L);
+        verify(store).count(owner, "PENDING", "13800001234");
+        service.pendingCount(); verify(store).count(null, "PENDING", "");
+        assertThrows(OrderFailure.class, () -> service.search(false, "DELETED", "", 1, 20));
+    }
+    @Test void searchClampsShrinkingPagesAndEmptyResults() {
+        when(store.count(owner, "PENDING", "138")).thenReturn(20L);
+        var page = service.search(true, "PENDING", "138", 2, 20);
+        assertEquals(1, page.page()); assertEquals(20, page.total());
+        verify(store).search(owner, "PENDING", "138", 20, 0L);
+        when(store.count(owner, "PENDING", "138")).thenReturn(0L);
+        var empty = service.search(true, "PENDING", "138", Integer.MAX_VALUE, 20);
+        assertEquals(1, empty.page()); assertEquals(0, empty.total()); assertTrue(empty.items().isEmpty());
+    }
     @Test void allCandidateVersionsAndStatusesContributeToTheAcknowledgement() {
         String original = service.detail(id).duplicateCheckToken();
         assertEquals(original, service.detail(id).duplicateCheckToken());
         var submission = store.find(id, false);
-        when(store.duplicates(submission)).thenReturn(List.of(record(1, "WAITING_PRODUCTION")));
+        when(store.duplicates(submission)).thenReturn(List.of(record(1, "CAKE_BASE")));
         assertNotEquals(original, service.detail(id).duplicateCheckToken());
         assertRejected(new SubmissionCommands.Confirm(1, original, null));
         when(store.duplicates(submission)).thenReturn(List.of(record(1, "CANCELLED")));

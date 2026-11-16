@@ -36,6 +36,7 @@ class WorkflowManagementIT {
     @Autowired JdbcTemplate jdbc;
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
+    @Autowired org.xaspire.WuhouCake.order.application.service.OrderRetentionService retention;
     @MockitoSpyBean org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries management;
     @MockitoSpyBean Operations operations;
     @MockitoSpyBean org.xaspire.WuhouCake.order.domain.repository.OrderActivities orderActivities;
@@ -43,20 +44,41 @@ class WorkflowManagementIT {
     Browser admin, a, b;
     @BeforeEach void setup() throws Exception {
         reset(operations, orderActivities, management, creations);
-        jdbc.execute("TRUNCATE cake_order_activity,cake_order_item,cake_order,audit_operation,identity_account_role,identity_account CASCADE"); clearRedis();
+        jdbc.execute("TRUNCATE cake_order_deletion_audit,cake_order_activity,cake_order_item,cake_order,audit_operation,identity_account_role,identity_account CASCADE"); clearRedis();
         identity.initializeAdministrator("ADMIN", "店主", INITIAL);
         admin = new Browser(); admin.login("ADMIN", INITIAL); admin.changePassword(INITIAL); admin.login("ADMIN", PASSWORD);
         a = employee("A001", "前台 A"); b = employee("B001", "师傅 B");
     }
     @AfterAll void cleanup() { reset(operations, orderActivities, management, creations); clearRedis(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE"); }
     private void clearRedis() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
+    @Test void managementReceiveFilterAndExportsUseHistoricalPickupDatesWithFallbacks() throws Exception {
+        var created = a.data("POST", "/api/orders", create(a.id)); String id = created.path("orderId").asText();
+        jdbc.update("UPDATE cake_order SET planned_handoff_at='2026-11-03T16:30:00Z' WHERE id=?::uuid", id);
+        var oldRange = admin.data("GET", search(""), null); assertEquals(0, oldRange.at("/totals/orderCount").asInt());
+        String range = "/api/admin/orders?from=2026-11-04&to=2026-11-05";
+        var current = admin.data("GET", range, null);
+        assertEquals(id, current.at("/items/0/orderId").asText()); assertEquals("2026-11-04", current.at("/items/0/receiveDate").asText());
+        assertEquals(1, current.at("/totals/orderCount").asInt());
+        var download = admin.raw("GET", range.replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, download.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(download.body()))) { assertEquals(2, book.getSheet("订单明细").getPhysicalNumberOfRows()); }
+        assertEquals("2026-10-17", a.data("GET", "/api/orders/" + id, null).at("/fulfillment/requestedReceiveDate").asText());
+        jdbc.update("UPDATE cake_order SET planned_handoff_at=NULL WHERE id=?::uuid", id);
+        assertEquals(1, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
+        jdbc.update("UPDATE cake_order SET requested_receive_at=NULL WHERE id=?::uuid", id);
+        assertEquals(1, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
+    }
+
     @Test void mixedProductsAreCountedByQuantityAndFilteredExportMatchesTheListWithoutLogs() throws Exception {
         var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
-        assertEquals(a.id, order.path("createdBy").asText()); assertEquals(b.id, order.at("/creditedEmployee/accountId").asText());
-        var cancelled = a.data("POST", "/api/orders", create(b.id));
+        assertEquals(a.id, order.path("createdBy").asText());
+        assertEquals(a.id, order.at("/creditedEmployee/accountId").asText());
+        a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("creditedEmployeeId", b.id)));
+        var cancelled = a.data("POST", "/api/orders", create(a.id));
         a.data("POST", "/api/orders/" + cancelled.path("orderId").asText() + "/cancel", Map.of("expectedVersion", 0, "reason", "合成取消"));
         assertEquals(1, management.totals(new org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.Filter(java.time.LocalDate.of(2026,10,1), java.time.LocalDate.of(2026,11,1), null,null,null,null,null,false,false,null,null)).orderCount());
         var all = admin.data("GET", search(""), null);
+        assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(all.at("/items/0/productTypes"), Set.class));
         assertEquals(1, all.at("/totals/orderCount").asLong()); assertEquals(9, all.at("/totals/matchingQuantity").asLong()); assertEquals(3, all.at("/totals/cakeQuantity").asLong());
         assertEquals(2, all.path("sizes").size()); assertEquals("8", all.at("/sizes/0/size").asText());
         assertEquals(2, all.at("/sizes/0/cakeQuantity").asInt()); assertEquals(1, all.at("/sizes/0/orderCount").asInt());
@@ -65,6 +87,7 @@ class WorkflowManagementIT {
         var filtered = admin.data("GET", search("&sizeInches=8.00&creditedEmployeeId=" + b.id), null);
         assertEquals(1, filtered.at("/totals/orderCount").asInt()); assertEquals(2, filtered.at("/totals/matchingQuantity").asInt()); assertEquals(2, filtered.at("/totals/cakeQuantity").asInt());
         assertEquals(id, filtered.at("/items/0/orderId").asText());
+        assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
         long before = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
         var response = admin.raw("GET", search("&sizeInches=8.00&creditedEmployeeId=" + b.id).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
         assertEquals(200, response.statusCode());
@@ -83,6 +106,160 @@ class WorkflowManagementIT {
         assertEquals(before, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
         assertEquals(2, admin.data("GET", search("&includeCancelled=true"), null).at("/totals/orderCount").asInt());
         assertEquals(1, admin.data("GET", search("&status=CANCELLED"), null).at("/totals/orderCount").asInt());
+    }
+    @Test void filteredReportPreservesLongProductSpecificationWithoutDuplicatingQuantity() throws Exception {
+        var input = new LinkedHashMap<>(create(a.id));
+        String specification = "茶".repeat(319) + "😀\n" + "备注".repeat(16400);
+        input.put("items", List.of(Map.of("name", "合成长规格饮品", "productType", "OTHER", "quantity", 3,
+                "attributes", Map.of("specification", specification), "referenceUnitPriceCents", 1230),
+                Map.of("name", "不匹配商品", "productType", "OTHER", "quantity", 9, "attributes", Map.of())));
+        var order = a.data("POST", "/api/orders", input);
+        String suffix = "&productName=" + java.net.URLEncoder.encode("长规格饮品", java.nio.charset.StandardCharsets.UTF_8);
+        var filtered = admin.data("GET", search(suffix), null);
+        assertEquals(1, filtered.at("/totals/orderCount").asInt());
+        assertEquals(3, filtered.at("/totals/matchingQuantity").asInt());
+        var response = admin.raw("GET", search(suffix).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, response.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
+            var detail = book.getSheet("商品明细");
+            var text = new StringBuilder(); double quantity = 0;
+            for (var row : detail) {
+                if (row.getRowNum() == 0) continue;
+                assertEquals(order.path("orderNo").asText(), row.getCell(0).getStringCellValue());
+                if (row.getCell(3).getCellType() == org.apache.poi.ss.usermodel.CellType.NUMERIC)
+                    quantity += row.getCell(3).getNumericCellValue();
+                text.append(row.getCell(10).getStringCellValue());
+            }
+            assertEquals(specification + "\n原商品单价：12.30 元（仅供参考）", text.toString());
+            assertEquals(filtered.at("/totals/matchingQuantity").asDouble(), quantity);
+            assertEquals(quantity, book.getSheet("订单明细").getRow(1).getCell(10).getNumericCellValue());
+            assertEquals(quantity, book.getSheet("员工业绩").getRow(1).getCell(3).getNumericCellValue());
+        }
+    }
+
+    @Test void orderingMethodFiltersEveryReportAndExportUsingTheSameExactValue() throws Exception {
+        var names = List.of("下单人", "小程序", "到店", "客服号", "微信%_'\\");
+        var created = new LinkedHashMap<String, JsonNode>();
+        for (String method : names) {
+            var input = new LinkedHashMap<>(create(a.id)); input.put("orderingMethod", " " + method + " ");
+            created.put(method, a.data("POST", "/api/orders", input));
+        }
+        a.data("POST", "/api/orders", create(a.id));
+        for (String method : names) {
+            String suffix = "&orderingMethod=" + java.net.URLEncoder.encode(" " + method + " ", java.nio.charset.StandardCharsets.UTF_8);
+            var report = admin.data("GET", search(suffix), null);
+            assertEquals(1, report.at("/totals/orderCount").asInt()); assertEquals(created.get(method).path("orderId"), report.at("/items/0/orderId"));
+            assertEquals(9, report.at("/totals/matchingQuantity").asInt()); assertEquals("52000", report.at("/totals/totalAmountCents").asText());
+            assertEquals(2, report.path("sizes").size()); assertEquals(9, report.at("/employees/0/matchingQuantity").asInt());
+            assertEquals(0, admin.data("GET", search(suffix + "&page=2&size=1"), null).path("items").size());
+        }
+        assertEquals(6, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
+        assertEquals(6, admin.data("GET", search("&orderingMethod=%20%20"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search("&orderingMethod=%25"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search("&orderingMethod=" + "x".repeat(80)), null).at("/totals/orderCount").asInt());
+        assertEquals(400, admin.raw("GET", search("&orderingMethod=" + "x".repeat(81)), null).statusCode());
+        assertEquals(6, admin.data("GET", "/api/admin/orders?allUnpaid=true&orderingMethod=nomatch", null).at("/totals/orderCount").asInt());
+        String method = names.getLast(), encoded = java.net.URLEncoder.encode(method, java.nio.charset.StandardCharsets.UTF_8);
+        String suffix = "&orderingMethod=" + encoded + "&productName=" + java.net.URLEncoder.encode("八寸", java.nio.charset.StandardCharsets.UTF_8) + "&sizeInches=8&keyword=139";
+        var combined = admin.data("GET", search(suffix), null);
+        assertEquals(1, combined.at("/totals/orderCount").asInt()); assertEquals(2, combined.at("/totals/matchingQuantity").asInt());
+        assertEquals("52000", combined.at("/totals/totalAmountCents").asText()); assertEquals(1, combined.path("sizes").size());
+        assertEquals(2, combined.at("/employees/0/matchingQuantity").asInt());
+        assertEquals(0, admin.data("GET", search(suffix + "&creditedEmployeeId=" + b.id), null).at("/totals/orderCount").asInt());
+        var response = admin.raw("GET", search(suffix).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, response.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
+            assertEquals(2, book.getSheet("订单明细").getPhysicalNumberOfRows()); assertEquals(2, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            assertEquals("520.00", book.getSheet("订单明细").getRow(1).getCell(9).getStringCellValue());
+            boolean recorded = false;
+            for (var row : book.getSheet("统计")) if (row.getCell(0).getStringCellValue().equals("下单方式")) {
+                assertEquals(method, row.getCell(1).getStringCellValue()); recorded = true;
+            }
+            assertTrue(recorded);
+        }
+        var download = admin.raw("POST", "/api/admin/orders/exports/zip", Map.of("from", "2026-10-01", "to", "2026-11-01", "orderingMethod", method));
+        assertEquals(200, download.statusCode());
+        try (var zip = new java.util.zip.ZipInputStream(new ByteArrayInputStream(download.body()))) {
+            assertNotNull(zip.getNextEntry());
+            try (var book = new XSSFWorkbook(new ByteArrayInputStream(zip.readAllBytes()))) {
+                assertEquals(4, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            }
+            assertNull(zip.getNextEntry());
+        }
+        String id = created.get("到店").path("orderId").asText();
+        jdbc.update("UPDATE cake_order SET ordering_method='  Legacy  ' WHERE id=?::uuid", id);
+        assertEquals(1, admin.data("GET", search("&orderingMethod=Legacy"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search("&orderingMethod=legacy"), null).at("/totals/orderCount").asInt());
+        a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("orderingMethod", "电话")));
+        assertEquals(1, admin.data("GET", search("&orderingMethod=" + java.net.URLEncoder.encode("电话", java.nio.charset.StandardCharsets.UTF_8)), null).at("/totals/orderCount").asInt());
+        a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("orderingMethod", "")));
+        assertEquals(0, admin.data("GET", search("&orderingMethod=" + java.net.URLEncoder.encode("电话", java.nio.charset.StandardCharsets.UTF_8)), null).at("/totals/orderCount").asInt());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='ORDER_INFORMATION_CHANGED' AND jsonb_exists(details->'after','orderingMethod')", Integer.class, id));
+        id = created.get(method).path("orderId").asText();
+        admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "合成删除"));
+        var deleted = deletedFilters();
+        String deletedQuery = "/api/admin/orders?deleted=true&from=" + deleted.get("from") + "&to=" + deleted.get("to");
+        assertEquals(1, admin.data("GET", deletedQuery + "&orderingMethod=" + encoded, null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", deletedQuery + "&orderingMethod=nomatch", null).at("/totals/orderCount").asInt());
+    }
+    @Test void productNameSharesItemMatchingAcrossReportsExportsAndZipSelection() throws Exception {
+        var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        var other = a.data("POST", "/api/orders", create(a.id));
+        jdbc.update("UPDATE cake_order_item SET name='普通商品' WHERE order_id=?::uuid", other.path("orderId").asText());
+        String name = java.net.URLEncoder.encode(" 蛋糕 ", java.nio.charset.StandardCharsets.UTF_8);
+        var all = admin.data("GET", search("&productName=" + name), null);
+        assertEquals(1, all.at("/totals/orderCount").asInt()); assertEquals(9, all.at("/totals/matchingQuantity").asInt());
+        assertEquals("52000", all.at("/totals/totalAmountCents").asText());
+        assertEquals(0, admin.data("GET", search("&productName=" + name + "&page=2&size=1"), null).path("items").size());
+        String suffix = "&productName=" + java.net.URLEncoder.encode("八寸", java.nio.charset.StandardCharsets.UTF_8);
+        var filtered = admin.data("GET", search(suffix + "&sizeInches=8&keyword=139"), null);
+        assertEquals(id, filtered.at("/items/0/orderId").asText());
+        assertEquals(2, filtered.at("/totals/matchingQuantity").asInt()); assertEquals(2, filtered.at("/totals/cakeQuantity").asInt());
+        assertEquals("52000", filtered.at("/totals/totalAmountCents").asText());
+        assertEquals(1, filtered.path("sizes").size()); assertEquals("8", filtered.at("/sizes/0/size").asText());
+        assertEquals(2, filtered.at("/employees/0/matchingQuantity").asInt()); assertEquals("52000", filtered.at("/employees/0/totalAmountCents").asText());
+        assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
+        assertFalse(filtered.at("/items/0/products").asText().contains("十寸"));
+        assertEquals(0, admin.data("GET", search(suffix + "&sizeInches=10"), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", search(suffix + "&keyword=nomatch"), null).at("/totals/orderCount").asInt());
+        assertEquals(1, admin.data("GET", search(suffix + "&keyword=" + order.path("orderNo").asText()), null).at("/totals/orderCount").asInt());
+        var response = admin.raw("GET", search(suffix).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, response.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
+            assertEquals(2, book.getSheet("订单明细").getPhysicalNumberOfRows());
+            assertEquals(2, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            assertEquals("八寸蛋糕", book.getSheet("商品明细").getRow(1).getCell(1).getStringCellValue());
+            assertEquals(2d, book.getSheet("订单明细").getRow(1).getCell(10).getNumericCellValue());
+            assertEquals("520.00", book.getSheet("订单明细").getRow(1).getCell(9).getStringCellValue());
+        }
+        var download = admin.raw("POST", "/api/admin/orders/exports/zip", Map.of("from", "2026-10-01", "to", "2026-11-01", "productName", "八寸"));
+        assertEquals(200, download.statusCode());
+        try (var zip = new java.util.zip.ZipInputStream(new ByteArrayInputStream(download.body()))) {
+            assertNotNull(zip.getNextEntry());
+            try (var book = new XSSFWorkbook(new ByteArrayInputStream(zip.readAllBytes()))) {
+                assertEquals(4, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            }
+            assertNull(zip.getNextEntry());
+        }
+    }
+    @Test void productNameIsLiteralOptionalAndRespectsRemovedAndDeletedOrders() throws Exception {
+        var order = a.data("POST", "/api/orders", create(a.id)); String id = order.path("orderId").asText();
+        String name = "点心%_'\\";
+        jdbc.update("UPDATE cake_order_item SET name=? WHERE order_id=?::uuid AND product_type='OTHER'", name, id);
+        String suffix = "&productName=" + java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(6, admin.data("GET", search(suffix), null).at("/totals/matchingQuantity").asInt());
+        assertEquals(0, admin.data("GET", search("&productName=%25%25"), null).at("/totals/orderCount").asInt());
+        assertEquals(1, admin.data("GET", search("&productName=%20%20"), null).at("/totals/orderCount").asInt());
+        assertEquals(200, admin.raw("GET", search("&productName=" + "x".repeat(100)), null).statusCode());
+        assertEquals(400, admin.raw("GET", search("&productName=" + "x".repeat(101)), null).statusCode());
+        assertEquals(1, admin.data("GET", "/api/admin/orders?allUnpaid=true&productName=nomatch", null).at("/totals/orderCount").asInt());
+        jdbc.update("UPDATE cake_order_item SET is_removed=true WHERE order_id=?::uuid AND name=?", id, name);
+        assertEquals(0, admin.data("GET", search(suffix), null).at("/totals/orderCount").asInt());
+        admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "合成删除"));
+        var filters = deletedFilters();
+        String deleted = "/api/admin/orders?deleted=true&from=" + filters.get("from") + "&to=" + filters.get("to");
+        assertEquals(1, admin.data("GET", deleted + "&productName=" + java.net.URLEncoder.encode("八寸", java.nio.charset.StandardCharsets.UTF_8), null).at("/totals/orderCount").asInt());
+        assertEquals(0, admin.data("GET", deleted + suffix, null).at("/totals/orderCount").asInt());
     }
     @Test void abnormalHistoricalSizesRemainReadableAndCannotBreakFiltering() throws Exception {
         var order = a.data("POST", "/api/orders", create(b.id)); String item = null;
@@ -103,15 +280,20 @@ class WorkflowManagementIT {
         assertEquals(1, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
     }
     @Test void ownershipChangesRecordRealActorAndArchivedEmployeeKeepsHistoricalAttribution() throws Exception {
-        var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
-        b.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("creditedEmployeeId", a.id)));
+        var order = b.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        admin.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 0, "changes", Map.of("creditedEmployeeId", a.id)));
         var activity = a.data("GET", "/api/orders/" + id + "/activities?type=ORDER_INFORMATION_CHANGED", null).at("/items/0");
-        assertEquals(b.id, activity.path("actorId").asText()); assertEquals(b.id, activity.at("/details/before/creditedEmployeeId").asText()); assertEquals(a.id, activity.at("/details/after/creditedEmployeeId").asText());
-        var historical = a.data("POST", "/api/orders", create(b.id));
+        assertEquals(admin.id, activity.path("actorId").asText());
+        assertEquals(b.id, activity.at("/details/before/creditedEmployeeId").asText());
+        assertEquals(a.id, activity.at("/details/after/creditedEmployeeId").asText());
+        var historical = b.data("POST", "/api/orders", create(b.id));
         admin.data("POST", "/api/admin/employees/" + b.id + "/archive", null);
         assertEquals("师傅 B", a.data("GET", "/api/orders/" + historical.path("orderId").asText(), null).at("/creditedEmployee/nickname").asText());
         assertEquals(1, admin.data("GET", search("&creditedEmployeeId=" + b.id), null).at("/totals/orderCount").asInt());
-        assertEquals(409, a.raw("POST", "/api/orders", create(b.id)).statusCode());
+        var rejected = a.raw("PATCH", "/api/orders/" + id + "/information",
+                Map.of("expectedVersion", 1, "changes", Map.of("creditedEmployeeId", b.id)));
+        assertEquals(409, rejected.statusCode());
+        assertEquals("ACCOUNT_ARCHIVED", json.readTree(rejected.body()).path("code").asText());
         assertFalse(a.data("GET", "/api/employees/options", null).toString().contains(b.id));
         assertTrue(a.data("GET", "/api/employees/options?includeArchived=true", null).toString().contains(b.id));
         assertEquals(admin.data("GET", search(""), null), a.data("GET", search(""), null));
@@ -143,7 +325,7 @@ class WorkflowManagementIT {
     @Test void managementExportHandlesMoreThanOneHundredOrdersAndLegacyUnassignedOrders() throws Exception {
         a.data("POST", "/api/orders", create(a.id));
         jdbc.update("WITH new_orders AS (INSERT INTO cake_order(id,order_no,version,status,payment_status,customer_phone,fulfillment_type,requested_receive_date,planned_handoff_at,created_by,created_at,confirmed_at,updated_at)"
-                + " SELECT gen_random_uuid(),'legacy-'||n,0,'WAITING_PRODUCTION','UNPAID','13900000000','PICKUP',DATE '2026-10-17',now(),?::uuid,now(),now(),now() FROM generate_series(1,105)n RETURNING id)"
+                + " SELECT gen_random_uuid(),'legacy-'||n,0,'CAKE_BASE','UNPAID','13900000000','PICKUP',DATE '2026-10-17',TIMESTAMPTZ '2026-10-17T06:00:00Z',?::uuid,now(),now(),now() FROM generate_series(1,105)n RETURNING id)"
                 + " INSERT INTO cake_order_item(id,order_id,name,product_type,quantity,attributes,production_status,is_removed,created_at,updated_at) SELECT gen_random_uuid(),id,'旧蛋糕','CAKE',1,'{}'::jsonb,'NOT_STARTED',false,now(),now() FROM new_orders", a.id);
         var data = admin.data("GET", search("&unassigned=true&size=100"), null); assertEquals(105, data.at("/totals/orderCount").asInt()); assertEquals(100, data.path("items").size());
         var result = admin.raw("GET", search("&unassigned=true").replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
@@ -151,12 +333,12 @@ class WorkflowManagementIT {
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_EXPORTED'", Integer.class));
     }
     @Test void employeeGroupsUseStableAccountsAndExposeUnknownAmountsWithoutDuplicatingMixedOrderMoney() throws Exception {
-        var first = a.data("POST", "/api/orders", create(b.id));
+        var first = b.data("POST", "/api/orders", create(b.id));
         a.data("PATCH", "/api/orders/" + first.path("orderId").asText() + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID"));
         var profile = admin.data("GET", "/api/admin/employees?employeeNumber=B001", null).at("/items/0");
         admin.data("PATCH", "/api/admin/employees/" + b.id, Map.of("expectedVersion", profile.path("version").asLong(), "nickname", "新名字", "jobRoles", List.of("FRONT_DESK")));
         var withoutAmount = new LinkedHashMap<>(create(b.id)); withoutAmount.remove("totalAmountCents");
-        a.data("POST", "/api/orders", withoutAmount);
+        b.data("POST", "/api/orders", withoutAmount);
         var data = admin.data("GET", search(""), null);
         assertEquals(1, data.path("employees").size()); assertEquals(b.id, data.at("/employees/0/employeeId").asText());
         assertEquals("新名字", data.at("/employees/0/employeeName").asText());
@@ -234,7 +416,13 @@ class WorkflowManagementIT {
         assertEquals("ACTIVE", archived.path("before.status").asText()); assertEquals("ARCHIVED", archived.path("after.status").asText());
     }
     @Test void exportKeepsOneSnapshotWhileAnotherEmployeeChangesTheMatchingOrder() throws Exception {
-        var order = a.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        var order = b.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
+        String listPath = search("&sizeInches=8&creditedEmployeeId=" + b.id
+                + "&paymentStatus=UNPAID&fulfillmentType=PICKUP&keyword=" + order.path("orderNo").asText());
+        var before = admin.data("GET", listPath, null);
+        assertEquals(1, before.at("/totals/orderCount").asInt());
+        assertEquals(id, before.at("/items/0/orderId").asText());
+        String exportPath = listPath.replace("/api/admin/orders?", "/api/admin/orders/export?");
         var totalsRead = new java.util.concurrent.CountDownLatch(1); var resumeExport = new java.util.concurrent.CountDownLatch(1);
         doAnswer(invocation -> {
             var result = invocation.callRealMethod(); totalsRead.countDown();
@@ -242,24 +430,27 @@ class WorkflowManagementIT {
             return result;
         }).when(management).totals(any());
         try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var export = executor.submit(() -> admin.raw("GET", search("&sizeInches=8&creditedEmployeeId=" + b.id + "&paymentStatus=UNPAID&fulfillmentType=PICKUP&keyword=" + order.path("orderNo").asText()).replace("/api/admin/orders?", "/api/admin/orders/export?"), null));
+            var export = executor.submit(() -> admin.raw("GET", exportPath, null));
             try {
                 assertTrue(totalsRead.await(10, java.util.concurrent.TimeUnit.SECONDS));
                 String itemId = null; for (var item : order.path("items")) if (item.path("name").asText().equals("八寸蛋糕")) itemId = item.path("itemId").asText();
                 assertNotNull(itemId);
-                b.data("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 0, "itemId", itemId, "changes", Map.of("quantity", 3)));
-                b.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("totalAmountCents", 60000)));
+                a.data("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 0, "itemId", itemId, "changes", Map.of("quantity", 3)));
+                a.data("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("totalAmountCents", 60000)));
             } finally { resumeExport.countDown(); }
             var response = export.get(); assertEquals(200, response.statusCode());
             try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
-                assertEquals("520.00", book.getSheet("订单明细").getRow(1).getCell(9).getStringCellValue());
-                assertEquals(2d, book.getSheet("订单明细").getRow(1).getCell(10).getNumericCellValue());
+                var orderRow = book.getSheet("订单明细").getRow(1);
+                assertNotNull(orderRow, "筛选后的导出应包含目标订单");
+                assertEquals(order.path("orderNo").asText(), orderRow.getCell(0).getStringCellValue());
+                assertEquals("520.00", orderRow.getCell(9).getStringCellValue());
+                assertEquals(2d, orderRow.getCell(10).getNumericCellValue());
                 assertEquals(2d, book.getSheet("尺寸统计").getRow(1).getCell(2).getNumericCellValue());
                 assertEquals("520.00", book.getSheet("员工业绩").getRow(1).getCell(5).getStringCellValue());
                 assertEquals(2d, book.getSheet("商品明细").getRow(1).getCell(3).getNumericCellValue());
             }
         } finally { reset(management); }
-        var latest = admin.data("GET", search("&sizeInches=8"), null);
+        var latest = admin.data("GET", listPath, null);
         assertEquals("60000", latest.at("/totals/totalAmountCents").asText()); assertEquals(3, latest.at("/totals/matchingQuantity").asInt());
     }
     @Test void crossAttributedConcurrentCreationsDoNotDeadlock() throws Exception {
@@ -275,6 +466,148 @@ class WorkflowManagementIT {
             assertEquals(201, x.get().statusCode()); assertEquals(201, y.get().statusCode());
         }
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+    }
+    @Test void deletionIsReadOnlyIdempotentAndSeparateFromNormalQueriesAndReports() throws Exception {
+        for (String status : List.of("CAKE_BASE", "LAYER", "FROSTING", "DECORATING", "WAITING_DELIVERY", "COMPLETED", "CANCELLED")) {
+            var original = a.data("POST", "/api/orders", create(a.id)); String id = original.path("orderId").asText();
+            jdbc.update("UPDATE cake_order SET status=?,payment_status='PAID',paid_at=CURRENT_TIMESTAMP WHERE id=?::uuid", status, id);
+            assertEquals(403, a.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "无权限")).statusCode());
+            var deleted = admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", " 合成删除 "));
+            assertEquals(status, deleted.path("status").asText()); assertEquals("合成删除", deleted.at("/deletion/reason").asText());
+            assertEquals(admin.id, deleted.at("/deletion/deletedBy").asText()); assertEquals(1, deleted.path("version").asInt());
+            assertEquals(deleted, admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "重试不覆盖")));
+            assertEquals(409, a.raw("POST", "/api/orders/" + id + "/notes", Map.of("content", "不得写入")).statusCode());
+            assertEquals(409, a.raw("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "UNPAID")).statusCode());
+            String restartPath = "/api/orders/" + id + "/restart";
+            var restart = Map.of("expectedVersion", 1);
+            var forbidden = a.raw("POST", restartPath, restart);
+            assertEquals(403, forbidden.statusCode());
+            assertEquals("FORBIDDEN", json.readTree(forbidden.body()).path("code").asText());
+            var rejected = admin.raw("POST", restartPath, restart);
+            assertEquals(409, rejected.statusCode());
+            assertEquals("ORDER_DELETED", json.readTree(rejected.body()).path("code").asText());
+            assertEquals(200, a.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+        }
+        assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));
+        assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_DELETED'", Integer.class));
+        assertEquals(0, admin.data("GET", search("&includeCancelled=true"), null).at("/totals/orderCount").asInt());
+        assertTrue(a.data("GET", "/api/orders/calendar?from=2026-10-01&to=2026-11-01", null).isEmpty());
+        assertEquals(0, a.data("GET", "/api/orders/workbench?date=2026-10-17", null).path("pendingOrders").size());
+        assertTrue(a.data("GET", "/api/orders/workbench/cake-bases?date=2026-10-17", null).path("items").isEmpty());
+        assertEquals(0, a.data("GET", "/api/orders/workbench/payment-summary?date=2026-10-17", null).path("totalOrderCount").asInt());
+        var filters = deletedFilters();
+        var query = "/api/admin/orders?deleted=true&from=" + filters.get("from") + "&to=" + filters.get("to");
+        var result = a.data("GET", query, null);
+        assertEquals(7, result.at("/totals/orderCount").asInt()); assertEquals("0", result.at("/totals/totalAmountCents").asText());
+        assertTrue(result.path("sizes").isEmpty()); assertTrue(result.path("employees").isEmpty());
+        assertEquals(400, a.raw("GET", query.replace("/api/admin/orders?", "/api/admin/orders/export?"), null).statusCode());
+        var zip = a.raw("POST", "/api/admin/orders/exports/zip", filters); assertEquals(200, zip.statusCode());
+        assertTrue(zip.headers().firstValue("Content-Disposition").orElseThrow().contains("filename*=UTF-8''"));
+        int files = 0;
+        try (var archive = new java.util.zip.ZipInputStream(new ByteArrayInputStream(zip.body()), java.nio.charset.StandardCharsets.UTF_8)) {
+            while (archive.getNextEntry() != null) {
+                try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(archive.readAllBytes()))) {
+                    assertEquals("已删除", workbook.getSheet("订单信息").getRow(2).getCell(1).getStringCellValue());
+                }
+                files++;
+            }
+        }
+        assertEquals(7, files);
+    }
+    @Test void deletionRequiresCurrentVersionAndReasonAndRollsBackWithItsAudit() throws Exception {
+        var order = a.data("POST", "/api/orders", create(a.id)); String id = order.path("orderId").asText();
+        assertEquals(400, admin.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", " ")).statusCode());
+        assertEquals(409, admin.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 99, "reason", "合成删除")).statusCode());
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("synthetic delete audit unavailable")).when(orderActivities)
+                .append(argThat(activity -> activity.type().equals("ORDER_DELETED")));
+        assertEquals(503, admin.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "合成删除")).statusCode());
+        assertEquals(order, a.data("GET", "/api/orders/" + id, null));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));
+    }
+    @Test void expiryHidesRecordsBeforeCleanupAndPurgePreservesOnlyDeletionAndCreationReceipts() throws Exception {
+        String key = UUID.randomUUID().toString(); var body = create(a.id);
+        var order = json.readTree(a.raw("POST", "/api/orders", body, key).body()).path("data"); String id = order.path("orderId").asText();
+        admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "到期清理"));
+        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE id=?::uuid", id);
+        assertEquals(404, a.raw("GET", "/api/orders/" + id, null).statusCode());
+        assertEquals(404, a.raw("GET", "/api/orders/" + id + "/images", null).statusCode());
+        assertEquals(404, a.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+        assertEquals(0, a.data("GET", "/api/admin/orders?deleted=true", null).at("/totals/orderCount").asInt());
+        var result = retention.purgeExpired(); assertEquals(1, result.purged()); assertEquals(0, result.failed()); assertEquals(0, result.pending());
+        for (String table : List.of("cake_order", "cake_order_item", "cake_order_activity", "cake_order_image")) assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit WHERE purged_at IS NOT NULL", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_creation", Integer.class));
+        assertEquals(404, a.raw("POST", "/api/orders", body, key).statusCode());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+        assertEquals(0, retention.purgeExpired().purged());
+        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM identity_account", Integer.class));
+    }
+    @Test void sixJobsProjectPhoneAndTimesAndOnlyStoreManagersAreAdministrators() throws Exception {
+        var command = new LinkedHashMap<>(create(b.id));
+        command.put("customer", Map.of("customerName", "隐私客户", "phone", "13900000000", "memberPhone", "13811112222", "buyerName", "隐私订购人"));
+        command.put("orderingMethod", "到店");
+        var order = a.data("POST", "/api/orders", command); String id = order.path("orderId").asText();
+        for (String role : List.of("STORE_MANAGER", "FRONT_DESK_SUPERVISOR", "FRONT_DESK_CLERK", "PASTRY_SUPERVISOR", "DECORATOR", "BAKER")) {
+            var current = admin.data("GET", "/api/admin/employees?employeeNumber=A001", null).at("/items/0");
+            admin.data("PATCH", "/api/admin/employees/" + a.id, Map.of("expectedVersion", current.path("version").asLong(), "nickname", "岗位测试", "jobRoles", List.of(role)));
+            a.login("A001", PASSWORD);
+            var me = a.data("GET", "/api/me", null); assertEquals(role.equals("STORE_MANAGER") ? "SUPER_ADMIN" : "STAFF", me.path("systemRole").asText());
+            var detail = a.data("GET", "/api/orders/" + id, null); assertEquals("13900000000", detail.at("/customer/phone").asText());
+            boolean production = Set.of("PASTRY_SUPERVISOR", "DECORATOR", "BAKER").contains(role);
+            assertEquals(production, detail.at("/customer/customerName").isNull()); assertEquals(production, detail.at("/customer/memberPhone").isNull());
+            assertEquals("隐私订购人", detail.at("/customer/buyerName").asText()); assertEquals("到店", detail.path("orderingMethod").asText());
+            assertEquals(production, detail.path("totalAmountCents").isNull());
+            assertEquals("2026-10-17", detail.at("/fulfillment/requestedReceiveDate").asText());
+            if (production) {
+                assertEquals(403, a.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "越权")).statusCode());
+                var updated = a.data("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", detail.path("version").asLong(), "action", "COMPLETE_BASE"));
+                assertEquals("13900000000", updated.at("/customer/phone").asText()); assertTrue(updated.at("/customer/customerName").isNull());
+                assertEquals("隐私订购人", updated.at("/customer/buyerName").asText()); assertEquals("到店", updated.path("orderingMethod").asText());
+                a.data("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", updated.path("version").asLong(), "action", "ROLLBACK_PRODUCTION"));
+            }
+        }
+        var adminProfile = admin.data("GET", "/api/me", null);
+        assertEquals(409, admin.raw("PATCH", "/api/admin/employees/" + admin.id, Map.of("expectedVersion", adminProfile.path("version").asLong(), "nickname", "店主", "jobRoles", List.of("FRONT_DESK_CLERK"))).statusCode());
+    }
+    @Test void cleanupFailureRollsBackOnlyThatOrderAndIsRetriedWithoutBlockingOthers() throws Exception {
+        String first = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
+        String second = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
+        for (String id : List.of(first, second)) admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "清理测试"));
+        jdbc.execute("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '31 days'");
+        jdbc.execute("CREATE FUNCTION prevent_one_purge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.order_id='" + first + "'::uuid THEN RAISE EXCEPTION 'synthetic purge failure'; END IF; RETURN OLD; END $$");
+        jdbc.execute("CREATE TRIGGER prevent_purge BEFORE DELETE ON cake_order_item FOR EACH ROW EXECUTE FUNCTION prevent_one_purge()");
+        try {
+            var result = retention.purgeExpired(); assertEquals(1, result.purged()); assertEquals(1, result.failed()); assertEquals(1, result.pending());
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order WHERE id=?::uuid", Integer.class, first));
+            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order WHERE id=?::uuid", Integer.class, second));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='ORDER_DELETED'", Integer.class, first));
+        } finally { jdbc.execute("DROP TRIGGER prevent_purge ON cake_order_item"); jdbc.execute("DROP FUNCTION prevent_one_purge()"); }
+        assertEquals(1, retention.purgeExpired().purged());
+    }
+    @Test void confirmedLegacyRoleAssignmentsAreAtomicAuditedAndSafeToRepeat() {
+        var assignments = Map.of("A001", Set.of("FRONT_DESK_CLERK"), "B001", Set.of("DECORATOR"));
+        var result = identity.migrateLegacyJobs("ADMIN", assignments); assertEquals(2, result.size());
+        assertEquals(Set.of("FRONT_DESK_CLERK"), result.stream().filter(account -> account.employeeNumber().equals("A001")).findFirst().orElseThrow().jobRoles());
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action='identity.roles_migrated'", Integer.class));
+        identity.migrateLegacyJobs("ADMIN", assignments);
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action='identity.roles_migrated'", Integer.class));
+        assertThrows(org.xaspire.WuhouCake.identity.domain.model.valobj.IdentityFailure.class,
+                () -> identity.migrateLegacyJobs("ADMIN", Map.of("A001", Set.of("BAKER"))));
+    }
+    @Test void paymentAndDeletionCannotBothCommitAgainstTheSameVersion() throws Exception {
+        String id = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var deletion = executor.submit(() -> { start.await(); return admin.raw("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "并发删除")); });
+            var payment = executor.submit(() -> { start.await(); return b.raw("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID")); });
+            start.countDown();
+            assertEquals(Set.of(200, 409), Set.of(deletion.get().statusCode(), payment.get().statusCode()));
+        }
+        assertEquals(1, a.data("GET", "/api/orders/" + id, null).path("version").asInt());
+    }
+    private Map<String, Object> deletedFilters() {
+        var date = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        return Map.of("from", date.minusDays(29).toString(), "to", date.plusDays(1).toString(), "deleted", true);
     }
     private String search(String suffix) { return "/api/admin/orders?from=2026-10-01&to=2026-11-01" + suffix; }
     private Map<String, Object> create(String employee) {

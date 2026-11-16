@@ -63,6 +63,10 @@ class OrderExportIT {
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
     @Autowired Changes changes;
+    @Autowired org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderImageMaintenanceMapper maintenance;
+    @Autowired OrderImageValidator validator;
+    @Autowired org.xaspire.WuhouCake.order.application.service.OrderExportSnapshotService snapshots;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @MockitoSpyBean OrderImages images;
     @MockitoSpyBean OrderActivities activities;
     @MockitoSpyBean OrderExportFiles files;
@@ -77,13 +81,114 @@ class OrderExportIT {
     }
     private void clearSessions() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
+    @Test void exportsPlaceLegacyPricesInSpecsWithoutWritingNewProductPrices() throws Exception {
+        var staff = staff(); var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
+        String cakeId = UUID.randomUUID().toString(), drinkId = UUID.randomUUID().toString();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(0)).put("itemId", cakeId).put("memberPriceCents", 9000);
+        ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(1)).put("itemId", drinkId).put("productType", "DRINK").put("unitPriceCents", 2300).put("memberPriceCents", 0);
+        var created = staff.request("POST", "/api/orders", input); assertEquals(201, created.statusCode(), text(created));
+        String id = data(created).path("orderId").asText();
+        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
+        assertNull(jdbc.queryForObject("SELECT member_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
+        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, drinkId));
+        jdbc.update("UPDATE cake_order_item SET unit_price_cents=12000,member_price_cents=10000 WHERE id=?::uuid", cakeId);
+        jdbc.update("UPDATE cake_order_item SET unit_price_cents=2300,member_price_cents=0,attributes=jsonb_build_object('specification',?) WHERE id=?::uuid", "果汁\n少冰", drinkId);
+        var detail = data(staff.request("GET", "/api/orders/" + id, null));
+        for (var item : detail.path("items")) if (item.path("itemId").asText().equals(cakeId)) { assertEquals(12000, item.path("unitPriceCents").asInt()); assertEquals(10000, item.path("memberPriceCents").asInt()); }
+        var workbench = data(staff.request("GET", "/api/orders/workbench?date=2026-10-16", null));
+        for (var item : workbench.at("/pendingOrders/0/items")) if (item.path("itemId").asText().equals(cakeId)) assertEquals(12000, item.path("unitPriceCents").asInt());
+        var revised = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 0, "itemId", cakeId, "changes", Map.of("quantity", 2)));
+        assertEquals(200, revised.statusCode(), text(revised));
+        long count = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
+        var ignored = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 1, "itemId", cakeId, "changes", Map.of("unitPriceCents", -1, "memberPriceCents", 5)));
+        assertEquals(400, ignored.statusCode(), text(ignored));
+        assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
+        assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
+        var single = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, single.statusCode(), text(single));
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(single.body()))) { assertHistoricalSpecs(book, 2, 4); }
+        var batch = staff.request("POST", "/api/orders/exports/zip", range()); assertEquals(200, batch.statusCode(), text(batch));
+        try (var zip = new ZipInputStream(new ByteArrayInputStream(batch.body()))) {
+            assertNotNull(zip.getNextEntry()); try (var book = new XSSFWorkbook(new ByteArrayInputStream(zip.readAllBytes()))) { assertHistoricalSpecs(book, 2, 4); }
+        }
+        var report = staff.request("GET", "/api/admin/orders/export?from=2026-10-16&to=2026-10-17", null); assertEquals(200, report.statusCode(), text(report));
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(report.body()))) { assertHistoricalSpecs(book, 2, 10); }
+        assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
+        assertEquals(12345L, jdbc.queryForObject("SELECT total_amount_cents FROM cake_order WHERE id=?::uuid", Long.class, id));
+        var toCake = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 1, "itemId", drinkId, "changes", Map.of("productType", "CAKE")));
+        assertEquals(200, toCake.statusCode(), text(toCake));
+        assertEquals(2300L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, drinkId));
+        var toDrink = staff.request("PATCH", "/api/orders/" + id, Map.of("expectedVersion", 2, "itemId", cakeId, "changes", Map.of("productType", "DRINK")));
+        assertEquals(200, toDrink.statusCode(), text(toDrink));
+        assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
+        var added = staff.request("POST", "/api/orders/" + id + "/items", Map.of("expectedVersion", 3, "item", Map.of("name", "追加蛋糕", "productType", "CAKE", "quantity", 1, "unitPriceCents", 999, "memberPriceCents", 500)));
+        assertEquals(201, added.statusCode(), text(added));
+        assertNull(jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE name='追加蛋糕'", Long.class));
+    }
+    private static void assertHistoricalSpecs(XSSFWorkbook book, int typeColumn, int specificationColumn) {
+        boolean cake = false, other = false;
+        for (var row : book.getSheet("商品明细")) {
+            if (row.getRowNum() == 0) continue;
+            String specification = row.getCell(specificationColumn).getStringCellValue();
+            if ("蛋糕".equals(row.getCell(typeColumn).getStringCellValue())) {
+                cake = true; assertTrue(specification.contains("原商品单价：120.00 元（仅供参考）"));
+            } else if ("其他".equals(row.getCell(typeColumn).getStringCellValue())) {
+                other = true; assertTrue(specification.contains("果汁\n少冰"));
+                assertTrue(specification.contains("原商品单价：23.00 元（仅供参考）"));
+                assertTrue(specification.contains("原会员单价：0.00 元（仅供参考）"));
+            }
+        }
+        assertTrue(cake); assertTrue(other);
+    }
+
+    @Test void stableItemIdentifiersAndImageRetriesKeepOwnershipAndFiveImagesPerItem() throws Exception {
+        var staff = staff(); var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
+        String first = UUID.randomUUID().toString(), second = UUID.randomUUID().toString();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(0)).put("itemId", first);
+        ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(1)).put("itemId", second);
+        UUID creationId = UUID.randomUUID();
+        var request = staff.builder("/api/orders", false).header("Content-Type", "application/json").header("Idempotency-Key", creationId.toString())
+                .POST(HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(input))).build();
+        var created = data(staff.client.send(request, HttpResponse.BodyHandlers.ofByteArray()));
+        String id = created.path("orderId").asText();
+        assertEquals(id, data(staff.client.send(request, HttpResponse.BodyHandlers.ofByteArray())).path("orderId").asText());
+        assertEquals(Set.of(first, second), Set.of(created.at("/items/0/itemId").asText(), created.at("/items/1/itemId").asText()));
+        assertEquals(409, staff.request("POST", "/api/orders", input).statusCode());
+        ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(1)).put("itemId", first);
+        assertEquals(400, staff.request("POST", "/api/orders", input).statusCode());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+        byte[] png = picture("png"); UUID uploadId = UUID.randomUUID();
+        assertEquals(400, staff.upload(id, null, png, "missing.png", UUID.randomUUID()).statusCode());
+        String imageId;
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var a = executor.submit(() -> staff.upload(id, first, png, "same.png", uploadId));
+            var b = executor.submit(() -> staff.upload(id, first, png, "same.png", uploadId));
+            var one = a.get(); var two = b.get();
+            assertEquals(201, one.statusCode(), text(one)); assertEquals(201, two.statusCode(), text(two));
+            imageId = data(one).path("imageId").asText(); assertEquals(imageId, data(two).path("imageId").asText());
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_image_upload", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='IMAGE_ADDED'", Integer.class));
+        assertEquals(409, staff.upload(id, second, png, "same.png", uploadId).statusCode());
+        assertEquals(409, staff.upload(id, first, png, "different.png", uploadId).statusCode());
+        assertEquals(409, staff.upload(id, first, picture("jpeg"), "same.png", uploadId).statusCode());
+        for (int i = 0; i < 4; i++) assertEquals(201, staff.upload(id, first, png, "first.png").statusCode());
+        for (int i = 0; i < 5; i++) assertEquals(201, staff.upload(id, second, png, "second.png").statusCode());
+        assertEquals(10, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
+        assertEquals(imageId, data(staff.upload(id, first, png, "same.png", uploadId)).path("imageId").asText());
+        assertEquals(409, staff.upload(id, second, png, "sixth.png").statusCode());
+        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+        assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + imageId, null).statusCode());
+        assertEquals(409, staff.upload(id, first, png, "same.png", uploadId).statusCode());
+        assertEquals(201, staff.upload(id, first, png, "replacement.png").statusCode());
+    }
+
     @Test void uploadsMetadataContentAndSingleExportHaveAuthenticatedImmutableHistory() throws Exception {
         var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
         var png = picture("png"); var jpeg = picture("jpeg");
         var upload = staff.upload(id, null, png, "../fake.exe"); assertEquals(201, upload.statusCode(), text(upload));
         var image = data(upload); String imageId = image.path("imageId").asText();
-        assertEquals("image/png", image.path("contentType").asText()); assertEquals("fake.exe", image.path("filename").asText());
+        assertEquals("image/png", image.path("contentType").asText()); assertEquals("fake.exe.png", image.path("filename").asText());
         assertEquals(staff.accountId, image.path("uploadedBy").asText()); assertEquals("前台员工", image.path("uploaderNameSnapshot").asText());
         assertEquals(201, staff.upload(id, item, jpeg, "cake.jpg").statusCode());
         assertArrayEquals(png, jdbc.queryForObject("SELECT content FROM cake_order_image WHERE id=?::uuid", byte[].class, imageId));
@@ -113,8 +218,8 @@ class OrderExportIT {
         assertEquals(200, exported.statusCode(), text(exported)); assertEquals("no-store", header(exported, "Cache-Control"));
         assertTrue(header(exported, "Content-Type").contains("spreadsheetml")); assertTrue(header(exported, "Content-Disposition").startsWith("attachment;"));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(exported.body()))) {
-            assertEquals(2, book.getAllPictures().size()); assertEquals(3, book.getSheet("商品").getPhysicalNumberOfRows());
-            assertEquals(3, book.getSheet("备注").getPhysicalNumberOfRows());
+            assertEquals(2, book.getAllPictures().size()); assertEquals(3, book.getSheet("商品明细").getPhysicalNumberOfRows());
+            assertEquals(3, book.getSheet("工作备注").getPhysicalNumberOfRows());
         }
         assertEquals(before, data(staff.request("GET", "/api/orders/" + id, null))); assertTrue(changes.events.isEmpty());
         var history = data(staff.request("GET", "/api/orders/" + id + "/activities?type=ORDER_EXPORTED", null));
@@ -126,14 +231,14 @@ class OrderExportIT {
         assertEquals(400, staff.upload(id, null, new byte[0], "x.png").statusCode());
         assertEquals(415, staff.upload(id, null, "not an image".getBytes(StandardCharsets.UTF_8), "x.png").statusCode());
         assertEquals(413, staff.upload(id, null, new byte[5 * 1024 * 1024 + 1], "x.png").statusCode());
-        var png = picture("png"); for (int i = 0; i < 7; i++) assertEquals(201, staff.upload(id, null, png, "x.png").statusCode());
+        var png = picture("png"); for (int i = 0; i < 4; i++) assertEquals(201, staff.upload(id, null, png, "x.png").statusCode());
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var start = new CountDownLatch(1);
             var a = executor.submit(() -> { start.await(); return staff.upload(id, null, png, "a.png"); });
             var b = executor.submit(() -> { start.await(); return staff.upload(id, null, png, "b.png"); });
             start.countDown(); assertEquals(Set.of(201, 409), Set.of(a.get().statusCode(), b.get().statusCode()));
         }
-        assertEquals(8, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
+        assertEquals(5, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
         assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
     }
     @Test void removedItemImageIsRetainedButExcludedFromFutureExports() throws Exception {
@@ -146,7 +251,7 @@ class OrderExportIT {
         assertEquals(200, staff.request("GET", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
         var response = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, response.statusCode(), text(response));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
-            assertTrue(book.getAllPictures().isEmpty()); assertEquals(2, book.getSheet("商品").getPhysicalNumberOfRows());
+            assertTrue(book.getAllPictures().isEmpty()); assertEquals(2, book.getSheet("商品明细").getPhysicalNumberOfRows());
         }
     }
     @Test void imageRemovalIsScopedIdempotentReleasesQuotaAndPreservesSnapshots() throws Exception {
@@ -154,10 +259,10 @@ class OrderExportIT {
         String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
         var png = picture("png"); var image = data(staff.upload(id, item, png, "cake.png"));
         String imageId = image.path("imageId").asText(), path = "/api/orders/" + id + "/images/" + imageId;
-        for (int i = 0; i < 7; i++) assertEquals(201, staff.upload(id, null, png, "other.png").statusCode());
+        for (int i = 0; i < 4; i++) assertEquals(201, staff.upload(id, null, png, "other.png").statusCode());
         assertEquals(409, staff.upload(id, null, png, "full.png").statusCode());
         var added = data(staff.request("GET", "/api/orders/" + id + "/activities?type=IMAGE_ADDED", null));
-        assertEquals(8, added.path("total").asInt());
+        assertEquals(5, added.path("total").asInt());
         String another = data(staff.request("POST", "/api/orders", create("2026-10-16"))).path("orderId").asText();
         assertEquals(404, staff.request("DELETE", "/api/orders/" + another + "/images/" + imageId, null).statusCode());
         assertEquals(401, new Client().request("DELETE", path, null).statusCode());
@@ -167,7 +272,7 @@ class OrderExportIT {
         assertEquals(1, changes.events.size());
         assertEquals(new OrderChanged(UUID.fromString(id), UUID.fromString(item), OrderChanged.Type.IMAGE_REMOVED, 0, order.path("orderNo").asText()), changes.events.peek());
         assertEquals(404, staff.request("GET", path, null).statusCode());
-        assertEquals(7, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
+        assertEquals(4, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
         assertTrue(jdbc.queryForObject("SELECT is_removed FROM cake_order_image WHERE id=?::uuid", Boolean.class, imageId));
         assertArrayEquals(png, images.content(UUID.fromString(id), UUID.fromString(imageId)).orElseThrow());
         var removed = data(staff.request("GET", "/api/orders/" + id + "/activities?type=IMAGE_REMOVED", null));
@@ -177,10 +282,10 @@ class OrderExportIT {
         assertEquals(item, log.path("itemId").asText()); assertEquals(staff.accountId, log.path("actorId").asText());
         assertFalse(log.path("createdAt").asText().isEmpty());
         var exported = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
-        try (var book = new XSSFWorkbook(new ByteArrayInputStream(exported.body()))) { assertEquals(7, book.getAllPictures().size()); }
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(exported.body()))) { assertEquals(4, book.getAllPictures().size()); }
         assertEquals(201, staff.upload(id, null, png, "replacement.png").statusCode());
         assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
-        assertEquals(9, jdbc.queryForObject("SELECT count(*) FROM cake_order_image WHERE order_id=?::uuid", Integer.class, id));
+        assertEquals(6, jdbc.queryForObject("SELECT count(*) FROM cake_order_image WHERE order_id=?::uuid", Integer.class, id));
     }
     @Test void imageDataAndActivityRollBackTogether() throws Exception {
         var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
@@ -204,7 +309,7 @@ class OrderExportIT {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
             return invocation.callRealMethod();
-        }).when(files).generate(any(), anyString(), eq(false));
+        }).when(files).generate(any(), anyString(), eq(false), any());
         var response = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         assertEquals(200, response.statusCode(), text(response));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) { assertEquals(1, book.getAllPictures().size()); }
@@ -223,7 +328,7 @@ class OrderExportIT {
         assertEquals(200, all.statusCode(), text(all));
         assertEquals(List.of(filename(a), filename(b), filename(c)), entries(all));
         assertEquals(0, exportCount());
-        var filtered = new LinkedHashMap<String, Object>(range()); filtered.put("status", "WAITING_PRODUCTION"); filtered.put("paymentStatus", "UNPAID"); filtered.put("fulfillmentType", "DELIVERY");
+        var filtered = new LinkedHashMap<String, Object>(range()); filtered.put("status", "CAKE_BASE"); filtered.put("paymentStatus", "UNPAID"); filtered.put("fulfillmentType", "DELIVERY");
         assertEquals(List.of(filename(a)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
         filtered = new LinkedHashMap<>(range()); filtered.put("paymentStatus", "PAID"); assertEquals(List.of(filename(b)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
         filtered = new LinkedHashMap<>(range()); filtered.put("status", "CANCELLED"); assertEquals(List.of(filename(c)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
@@ -247,12 +352,16 @@ class OrderExportIT {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             jdbc.update("UPDATE cake_order SET version=version+1, payment_status='PAID', updated_at=now() WHERE id=?::uuid", id);
             return invocation.callRealMethod();
-        }).when(files).generate(any(), anyString(), eq(false));
+        }).when(files).generate(any(), anyString(), eq(false), any());
         doAnswer(invocation -> { assertTrue(TransactionSynchronizationManager.isActualTransactionActive()); return invocation.callRealMethod(); })
                 .when(activities).append(argThat(activity -> activity.type().equals("ORDER_EXPORTED")));
         var result = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, result.statusCode(), text(result));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(result.body()))) {
-            assertEquals("UNPAID", book.getSheet("订单").getRow(5).getCell(1).getStringCellValue());
+            boolean found = false;
+            for (var row : book.getSheet("订单信息")) if (row.getCell(0).getStringCellValue().equals("付款状态")) {
+                assertEquals("未付款", row.getCell(1).getStringCellValue()); found = true;
+            }
+            assertTrue(found);
         }
         assertEquals("PAID", data(staff.request("GET", "/api/orders/" + id, null)).path("paymentStatus").asText());
         assertEquals(0, exportCount());
@@ -298,7 +407,7 @@ class OrderExportIT {
         var details = staff.request("POST", "/api/orders/exports/zip", range());
         assertEquals(413, details.statusCode()); assertEquals("EXPORT_CONTENT_TOO_LARGE", body(details).path("code").asText());
         assertEquals(0, exportCount()); assertEquals(before, temporaryFiles());
-        verify(files, never()).generate(any(), anyString(), anyBoolean());
+        verify(files, never()).generate(any(), anyString(), anyBoolean(), any());
     }
     @Test void exportIsUnaffectedByDeferredActivityWriteFailure() throws Exception {
         var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));
@@ -375,20 +484,23 @@ class OrderExportIT {
     }
     @Test void deferredProductionCommitFailureRollsBackOrderItemsHistoryAndNotification() throws Exception {
         var staff = staff(); var original = data(staff.request("POST", "/api/orders", create("2026-10-16")));
-        String id = original.path("orderId").asText(); changes.events.clear();
+        String id = original.path("orderId").asText();
+        var manager = new Client(); manager.login("0001", PASSWORD);
+        changes.events.clear();
         jdbc.execute("CREATE FUNCTION reject_production_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN"
                 + " IF NEW.type='ORDER_PRODUCTION_CHANGED' THEN RAISE EXCEPTION 'test deferred commit failure' USING ERRCODE='23514'; END IF; RETURN NULL; END; $$");
         jdbc.execute("CREATE CONSTRAINT TRIGGER reject_production_commit AFTER INSERT ON cake_order_activity DEFERRABLE INITIALLY DEFERRED"
                 + " FOR EACH ROW EXECUTE FUNCTION reject_production_commit()");
         try {
-            var response = staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "START_PRODUCTION"));
+            var response = manager.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE"));
             assertEquals(503, response.statusCode(), text(response));
+            assertEquals("SERVICE_UNAVAILABLE", json.readTree(response.body()).path("code").asText());
             assertEquals(original, data(staff.request("GET", "/api/orders/" + id, null)));
             assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Integer.class, id));
             assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE order_id=?::uuid AND production_status<>'NOT_STARTED'", Integer.class, id));
             assertTrue(changes.events.isEmpty());
         } finally { jdbc.execute("DROP FUNCTION reject_production_commit() CASCADE"); }
-        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "START_PRODUCTION")).statusCode());
+        assertEquals(200, manager.request("POST", "/api/orders/" + id + "/production-actions", Map.of("expectedVersion", 0, "action", "COMPLETE_BASE")).statusCode());
         assertEquals(1, changes.events.size());
     }
     @ParameterizedTest @ValueSource(booleans = {false, true})
@@ -485,6 +597,63 @@ class OrderExportIT {
             assertEquals(1 + notes, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Integer.class));
         } finally { root.detachAppender(logs); logs.stop(); logger.setLevel(previous); reset(streams, activities); }
     }
+    @Test void rolledBackSnapshotTransactionReleasesEveryCapturedImage() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        staff.upload(id, null, picture("png"), "rollback.png");
+        var before = temporaryFiles();
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
+        transaction.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        assertThrows(IllegalStateException.class, () -> transaction.executeWithoutResult(status -> {
+            snapshots.single(UUID.fromString(id));
+            throw new IllegalStateException("synthetic snapshot rollback");
+        }));
+        assertEquals(before, temporaryFiles());
+    }
+    @Test void imageMetadataAndBytesStayInOneSnapshotDuringHistoricalRecompression() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String id = order.path("orderId").asText(); byte[] png = picture("png"), jpeg = picture("jpeg");
+        String image = data(staff.upload(id, null, png, "snapshot.png")).path("imageId").asText();
+        var readStarted = new CountDownLatch(1); var resume = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            readStarted.countDown();
+            if (!resume.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("image read did not resume");
+            return invocation.callRealMethod();
+        }).when(images).content(UUID.fromString(id), UUID.fromString(image));
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var exported = executor.submit(() -> staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null));
+            try {
+                assertTrue(readStarted.await(10, TimeUnit.SECONDS));
+                jdbc.update("UPDATE cake_order_image SET content=?,content_type='image/jpeg',filename='snapshot.jpg',size=? WHERE id=?::uuid", jpeg, jpeg.length, image);
+            } finally { resume.countDown(); }
+            var result = exported.get(15, TimeUnit.SECONDS); assertEquals(200, result.statusCode(), text(result));
+            try (var book = new XSSFWorkbook(new ByteArrayInputStream(result.body()))) {
+                assertEquals(1, book.getAllPictures().size()); assertArrayEquals(png, book.getAllPictures().getFirst().getData());
+                assertEquals("image/png", book.getAllPictures().getFirst().getMimeType());
+            }
+        } finally { reset(images); }
+        assertEquals("image/jpeg", header(staff.request("GET", "/api/orders/" + id + "/images/" + image, null), "Content-Type"));
+    }
+    @Test void historicalProcessingIncludesRemovedImagesIsResumableAndLeavesBusinessHistoryUntouched() throws Exception {
+        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        String image = data(staff.upload(id, null, picture("png"), "historical.png")).path("imageId").asText();
+        staff.request("DELETE", "/api/orders/" + id + "/images/" + image, null);
+        jdbc.update("UPDATE cake_order_image SET processing_version=0 WHERE id=?::uuid", image);
+        var before = data(staff.request("GET", "/api/orders/" + id, null));
+        long activitiesBefore = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
+        var uploadedAt = jdbc.queryForObject("SELECT uploaded_at FROM cake_order_image WHERE id=?::uuid", java.sql.Timestamp.class, image);
+        var service = new org.xaspire.WuhouCake.order.application.service.OrderImageMaintenanceService(
+                new org.xaspire.WuhouCake.order.infrastructure.persistence.repository.PostgresOrderImageMaintenance(maintenance), validator);
+        var result = service.recompress(); assertEquals(1, result.processed()); assertEquals(0, result.failed());
+        assertEquals(0, service.recompress().processed());
+        assertEquals(before, data(staff.request("GET", "/api/orders/" + id, null)));
+        assertEquals(activitiesBefore, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
+        assertEquals(uploadedAt, jdbc.queryForObject("SELECT uploaded_at FROM cake_order_image WHERE id=?::uuid", java.sql.Timestamp.class, image));
+        assertEquals(Boolean.TRUE, jdbc.queryForObject("SELECT is_removed FROM cake_order_image WHERE id=?::uuid", Boolean.class, image));
+        byte[] invalid = "synthetic corrupt image".getBytes(StandardCharsets.UTF_8);
+        jdbc.update("UPDATE cake_order_image SET processing_version=0,content=?,size=? WHERE id=?::uuid", invalid, invalid.length, image);
+        assertEquals(1, service.recompress().failed());
+        assertArrayEquals(invalid, jdbc.queryForObject("SELECT content FROM cake_order_image WHERE id=?::uuid", byte[].class, image));
+    }
     private static String nextStreamFrame(BufferedReader reader) throws Exception {
         var next = CompletableFuture.supplyAsync(() -> {
             try { return streamFrame(reader); } catch (IOException failure) { return null; }
@@ -511,7 +680,7 @@ class OrderExportIT {
         }
         return result;
     }
-    private static String filename(JsonNode order) { return "订单-" + order.path("orderNo").asText() + ".xlsx"; }
+    private static String filename(JsonNode order) { return order.path("orderNo").asText() + ".xlsx"; }
     private static Map<String, Object> range() { return Map.of("from", "2026-10-01", "to", "2026-11-01"); }
     private static Map<String, Object> create(String date) {
         return Map.of("customer", Map.of("customerName", "客户", "phone", "13800000000"), "totalAmountCents", 12345,
@@ -568,13 +737,18 @@ class OrderExportIT {
             return client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
         }
         HttpResponse<byte[]> upload(String orderId, String itemId, byte[] bytes, String filename) throws Exception {
+            if (itemId == null) itemId = data(request("GET", "/api/orders/" + orderId, null)).at("/items/0/itemId").asText(UUID.randomUUID().toString());
+            return upload(orderId, itemId, bytes, filename, null);
+        }
+        HttpResponse<byte[]> upload(String orderId, String itemId, byte[] bytes, String filename, UUID requestId) throws Exception {
             String boundary = "WuhouBoundary" + UUID.randomUUID(); var output = new ByteArrayOutputStream();
             if (itemId != null) output.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"itemId\"\r\n\r\n" + itemId + "\r\n").getBytes(StandardCharsets.UTF_8));
             output.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + filename
                     + "\"\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
             output.write(bytes); output.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-            return client.send(builder("/api/orders/" + orderId + "/images", false).header("Content-Type", "multipart/form-data; boundary=" + boundary)
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(output.toByteArray())).build(), HttpResponse.BodyHandlers.ofByteArray());
+            var request = builder("/api/orders/" + orderId + "/images", false).header("Content-Type", "multipart/form-data; boundary=" + boundary);
+            if (requestId != null) request.header("Idempotency-Key", requestId.toString());
+            return client.send(request.POST(HttpRequest.BodyPublishers.ofByteArray(output.toByteArray())).build(), HttpResponse.BodyHandlers.ofByteArray());
         }
         HttpRequest.Builder builder(String path, boolean auth) {
             var result = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).timeout(Duration.ofSeconds(30));

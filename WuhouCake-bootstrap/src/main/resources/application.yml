@@ -1,8 +1,10 @@
 spring:
   servlet:
     multipart:
+      resolve-lazily: true
+      file-size-threshold: 0
       max-file-size: 5MB
-      max-request-size: 6MB
+      max-request-size: 65MB
   jackson:
     deserialization:
       fail-on-unknown-properties: true
@@ -14,6 +16,7 @@ spring:
   datasource:
     hikari:
       maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: 1
       connection-timeout: 5000
   flyway:
     enabled: true
@@ -55,6 +58,8 @@ springdoc:
     enabled: false
 
 wuhoucake:
+  images:
+    worker-url: ${IMAGE_WORKER_URL:}
   customer-entry:
     public-origin: ${CUSTOMER_ENTRY_PUBLIC_ORIGIN:http://localhost:5173}
     per-minute: ${CUSTOMER_ENTRY_PER_MINUTE:10}

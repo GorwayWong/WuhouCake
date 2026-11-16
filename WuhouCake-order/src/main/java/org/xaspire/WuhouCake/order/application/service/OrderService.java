@@ -52,16 +52,26 @@ public class OrderService {
         FulfillmentType type;
         try { type = FulfillmentType.valueOf(fulfillment.type()); }
         catch (IllegalArgumentException | NullPointerException failure) { throw invalid(); }
-        var plan = new FulfillmentPlan(type, fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt());
+        var pickupAt = fulfillment.plannedHandoffAt() != null ? fulfillment.plannedHandoffAt() : fulfillment.requestedReceiveAt();
+        var plan = new FulfillmentPlan(type, fulfillment.address(), pickupAt == null ? fulfillment.requestedReceiveDate() : receiveDate(pickupAt),
+                pickupAt, fulfillment.plannedFinishAt(), pickupAt);
+        requireFinishLeadTime(plan.pickupAt(), plan.plannedFinishAt());
+        var itemIds = new HashSet<UUID>();
         var items = command.items().stream().map(item -> {
             if (item == null) throw invalid();
-            return OrderItem.create(ids.nextId(), item.name(), item.productType(), item.quantity(), item.unitPriceCents(), item.memberPriceCents(), item.attributes(), now);
+            var itemId = item.itemId() == null ? ids.nextId() : item.itemId();
+            if (!itemIds.add(itemId)) throw invalid();
+            return createItem(item, itemId, now, submissionId != null, "ITEM_SUM".equals(command.pricingMode()));
         }).toList();
-        var employee = selectEmployee(command.creditedEmployeeId() == null ? actor.accountId() : command.creditedEmployeeId());
-        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee);
+        var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
+        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod(), command.pricingMode());
         orders.create(order);
         var creation = new LinkedHashMap<String, Object>();
+        creation.put("pricingMode", order.pricingMode());
         creation.put("status", order.status()); creation.put("paymentStatus", order.paymentStatus());
+        creation.put("originalAmountCents", order.originalAmountCents()); creation.put("memberAmountCents", order.memberAmountCents());
+        creation.put("totalAmountCents", order.totalAmountCents()); creation.put("paymentMethod", order.paymentMethod());
+        creation.put("paidAt", order.paidAt() == null ? null : order.paidAt().toString());
         creation.put("creditedEmployeeId", employee.accountId().toString()); creation.put("creditedEmployeeName", employee.nickname());
         if (submissionId != null) { creation.put("source", "CUSTOMER_SUBMITTED"); creation.put("submissionId", submissionId.toString()); }
         activities.append(OrderActivity.append(order.id(), null, "CREATED", submissionId == null ? "创建订单" : "确认客户填单 · 来源：用户填写", creation, actor, now));
@@ -69,7 +79,7 @@ public class OrderService {
         return detail(order, List.of());
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
-    public OrderViews.Detail detail(UUID id) { return detail(requireOrder(id), activities.recentItemNotes(id)); }
+    public OrderViews.Detail detail(UUID id) { return detail(readOrder(id), activities.recentItemNotes(id)); }
 
     @Transactional
     public OrderViews.Detail revise(UUID id, OrderCommands.Revise command, Operator operator) {
@@ -107,14 +117,32 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now(); var input = command.item();
         if (input == null) throw invalid();
-        var item = OrderItem.create(ids.nextId(), input.name(), input.productType(), input.quantity(), input.unitPriceCents(),
-                input.memberPriceCents(), input.attributes(), now);
+        var item = createItem(input, input.itemId() == null ? ids.nextId() : input.itemId(), now, false, "ITEM_SUM".equals(order.pricingMode()));
+        var previousItems = order.activeItems();
         var changed = order.addItem(item, now);
-        orders.addItem(order, expected, item.itemId());
+        orders.addItem(order, expected, item.itemId(), changedProductionItems(previousItems, order));
         activities.append(OrderActivity.append(id, item.itemId(), "ITEM_ADDED", "追加商品", changed, actor, now));
         changed(order, item.itemId(), OrderChanged.Type.ITEM_ADDED);
         return detail(order, activities.recentItemNotes(id));
     }
+    private OrderItem createItem(OrderCommands.Item input, UUID itemId, Instant now, boolean customerSubmission, boolean itemSum) {
+        var legacy = org.xaspire.WuhouCake.order.domain.model.valobj.LegacyDraftQuote.extract(input.attributes());
+        var item = OrderItem.create(itemId, input.name(), input.productType(), input.quantity(), null, null, legacy.attributes(), now);
+        if (itemSum) return item.retainHistoricalPrices(
+                money(input.referenceUnitPriceCents() != null ? input.referenceUnitPriceCents() : input.unitPriceCents()),
+                money(input.referenceMemberPriceCents() != null ? input.referenceMemberPriceCents() : input.memberPriceCents()));
+        if (customerSubmission) return item.retainHistoricalPrices(money(input.unitPriceCents()), money(input.memberPriceCents()));
+        boolean quoted = input.referenceUnitPriceCents() != null || input.referenceMemberPriceCents() != null;
+        if (!quoted && legacy.unitPriceCents() == null && legacy.memberPriceCents() == null) return item;
+        if (!identity.me().access().allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_AMOUNT_READ)) {
+            if (quoted) throw new OrderFailure("FORBIDDEN");
+            return item;
+        }
+        return item.retainHistoricalPrices(
+                input.referenceUnitPriceCents() == null ? legacy.unitPriceCents() : money(input.referenceUnitPriceCents()),
+                input.referenceMemberPriceCents() == null ? legacy.memberPriceCents() : money(input.referenceMemberPriceCents()));
+    }
+
     @Transactional
     public OrderViews.Detail reviseInformation(UUID id, OrderCommands.Information command, Operator operator) {
         var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
@@ -142,7 +170,7 @@ public class OrderService {
         var order = requireOrder(id);
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now();
-        var changed = order.changePaymentStatus(command.paymentStatus(), now);
+        var changed = order.changePaymentStatus(command.paymentStatus(), command.paymentMethod(), now);
         if (changed.isEmpty()) orders.verifyVersion(id, expected);
         else {
             orders.changePaymentStatus(order, expected);
@@ -158,13 +186,27 @@ public class OrderService {
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var previousItems = order.activeItems(); var now = now();
         var changed = order.applyProductionAction(command.action(), now);
-        var changedItemIds = previousItems.stream()
-                .filter(item -> !Objects.equals(item.productionStatus(), order.requireActiveItem(item.itemId()).productionStatus()))
-                .map(OrderItem::itemId).toList();
-        orders.changeProduction(order, expected, changedItemIds);
+        orders.changeProduction(order, expected, changedProductionItems(previousItems, order));
         activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "修改整单制作进度", changed, actor, now));
         changed(order, null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
         return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail restartCancelled(UUID id, OrderCommands.Restart command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var previousItems = order.activeItems(); var now = now();
+        var changed = order.restartCancelled(now);
+        orders.changeProduction(order, expected, changedProductionItems(previousItems, order));
+        activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "恢复已取消订单至出胚", changed, actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    private static List<UUID> changedProductionItems(List<OrderItem> previousItems, Order order) {
+        return previousItems.stream()
+                .filter(item -> !Objects.equals(item.productionStatus(), order.requireActiveItem(item.itemId()).productionStatus()))
+                .map(OrderItem::itemId).toList();
     }
     @Transactional
     public OrderViews.Detail fulfillmentAction(UUID id, OrderCommands.FulfillmentAction command, Operator operator) {
@@ -175,6 +217,21 @@ public class OrderService {
         orders.changeStatus(order, expected);
         activities.append(OrderActivity.append(id, null, "ORDER_FULFILLMENT_CHANGED", "修改整单交接状态", changed, actor, now));
         changed(order, null, OrderChanged.Type.ORDER_FULFILLMENT_CHANGED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
+    public OrderViews.Detail completeSimpleItem(UUID id, UUID itemId, OrderCommands.SimpleItemCompletion command, Operator operator) {
+        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
+        var order = requireOrder(id);
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (command.completed() == null) throw invalid();
+        var now = now(); var details = order.completeSimpleItem(itemId, command.completed(), now);
+        if (details.isEmpty()) orders.verifyVersion(id, expected);
+        else {
+            orders.changeProduction(order, expected, List.of(itemId));
+            activities.append(OrderActivity.append(id, itemId, "ORDER_PRODUCTION_CHANGED", "更新商品制作确认", details, actor, now));
+            changed(order, itemId, OrderChanged.Type.ORDER_PRODUCTION_CHANGED);
+        }
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
@@ -189,22 +246,65 @@ public class OrderService {
         return detail(order, activities.recentItemNotes(id));
     }
     @Transactional
+    public OrderViews.Detail delete(UUID id, OrderCommands.Delete command, Operator operator) {
+        if (!identity.me().access().allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_DELETE))
+            throw new OrderFailure("ORDER_DELETED_FORBIDDEN");
+        long expected = nonNegativeInteger(command.expectedVersion());
+        var actor = actor(operator);
+        var order = orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        if (order.deletion() != null) {
+            if (order.deletion().expired(now())) throw new OrderFailure("ORDER_NOT_FOUND");
+            return detail(order, activities.recentItemNotes(id));
+        }
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now(); order.delete(command.reason(), actor, now);
+        orders.delete(order, expected);
+        activities.append(OrderActivity.append(id, null, "ORDER_DELETED", order.deletion().reason(), Map.of(), actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_DELETED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+    @Transactional
     public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator) {
-        var actor = actor(operator); var order = requireOrder(id);
+        return note(id, command, operator, null);
+    }
+    @Transactional
+    public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator, UUID requestId) {
+        var actor = actor(operator);
+        orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        var order = requireOrder(id);
+        var activity = OrderActivity.append(id, command.itemId(), "NOTE", command.content(), Map.of(), actor, now());
+        if (requestId != null) {
+            var existing = activities.findNote(id, actor.accountId(), requestId);
+            if (existing != null) {
+                if (!Objects.equals(existing.itemId(), activity.itemId()) || !existing.content().equals(activity.content()))
+                    throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
+                return activity(existing);
+            }
+        }
         if (command.itemId() != null) order.requireActiveItem(command.itemId());
-        var note = activities.append(OrderActivity.append(id, command.itemId(), "NOTE", command.content(), Map.of(), actor, now()));
+        var note = requestId == null ? activities.append(activity) : activities.appendNote(activity, requestId);
         changed(order, command.itemId(), OrderChanged.Type.NOTE);
         return activity(note);
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Page<OrderViews.Activity> activities(UUID id, UUID itemId, String type, int page, int size) {
         if (page < 1 || size < 1 || size > 100 || (type != null && !OrderActivity.TYPES.contains(type))) throw invalid();
-        var order = requireOrder(id);
+        var order = readOrder(id);
         if (itemId != null) order.requireItem(itemId);
         return new Page<>(activities.search(id, itemId, type, size, (long) (page - 1) * size).stream().map(OrderService::activity).toList(),
                 activities.count(id, itemId, type), page, size);
     }
-    private Order requireOrder(UUID id) { return orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND")); }
+    private Order requireOrder(UUID id) {
+        var order = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        if (order.deletion() != null && order.deletion().expired(now())) throw new OrderFailure("ORDER_NOT_FOUND");
+        order.requireWritable();
+        return order;
+    }
+    private Order readOrder(UUID id) {
+        var order = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        OrderReadAccess.requireReadable(order, clock, identity);
+        return order;
+    }
     private void changed(Order order, UUID itemId, OrderChanged.Type type) {
         events.publishEvent(new OrderChanged(order.id(), itemId, type, order.version(), order.orderNo()));
     }
@@ -230,6 +330,8 @@ public class OrderService {
                 new OrderCommands.Fulfillment(fulfillment.type().name(), fulfillment.address(), fulfillment.requestedReceiveDate(), fulfillment.plannedHandoffAt(), fulfillment.plannedFinishAt(), fulfillment.requestedReceiveAt()),
                 order.totalAmountCents(), order.createdBy(), order.createdAt(), order.confirmedAt(), order.updatedAt(), items,
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
-                        order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()));
+                        order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()), order.paidAt(),
+                order.deletion() == null ? null : new OrderViews.Deletion(order.deletion().deletedAt(), order.deletion().deletedBy(),
+                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()), order.orderingMethod(), order.originalAmountCents(), order.memberAmountCents(), order.paymentMethod(), order.pricingMode());
     }
 }

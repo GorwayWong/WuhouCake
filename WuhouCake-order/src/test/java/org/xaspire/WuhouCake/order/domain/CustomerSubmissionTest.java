@@ -5,6 +5,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CustomerSubmissionTest {
@@ -17,7 +18,7 @@ class CustomerSubmissionTest {
         assertEquals("8", cake.attributes().get("size")); assertEquals("原味", cake.attributes().get("base"));
         assertEquals("芒果，奥利奥", cake.attributes().get("filling")); assertEquals("动物奶油", cake.attributes().get("flavor"));
         var donut = new CustomerSubmission.Product("甜甜圈", "DONUT", 6, Map.of("filling", "巧克力"));
-        assertEquals(Map.of("filling", "巧克力"), donut.attributes());
+        assertEquals(Map.of("specification", "夹馅：巧克力"), donut.attributes());
         assertThrows(UnsupportedOperationException.class, () -> cake.attributes().put("size", "10"));
     }
     @Test void invalidCustomerFieldsCannotIntroduceInternalData() {
@@ -29,6 +30,19 @@ class CustomerSubmissionTest {
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Content("13800000000", null, "DELIVERY", "", Instant.now(), List.of(cake(Map.of("size", "8")))));
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Content("13800000000", null, "PICKUP", null, Instant.now(), List.of()));
     }
+    @Test void blankCakeSpecificationsUseTheSharedDefaultsInSubmissionAndReview() {
+        for (String key : CakeSpecifications.DEFAULTS.keySet()) {
+            for (String blank : Arrays.asList(null, "", " \t\n")) {
+                var attributes = new HashMap<String, String>(); attributes.put("size", "8"); attributes.put(key, blank);
+                var product = cake(attributes);
+                CakeSpecifications.DEFAULTS.forEach((field, value) -> assertEquals(value, product.attributes().get(field)));
+                var content = new CustomerSubmission.Content("13800000000", null, "PICKUP", null, Instant.EPOCH, List.of(product));
+                assertEquals(product.attributes(), new CustomerSubmission.Review(content, null, null, null, null).content().items().getFirst().attributes());
+            }
+        }
+        assertEquals("原味奶油", new CustomerSubmission.Product("蛋糕", " cake ", 1, Map.of("size", "8")).attributes().get("flavor"));
+        assertEquals("巧克力奶油", cake(Map.of("size", "8", "flavor", "巧克力奶油")).attributes().get("flavor"));
+    }
     @Test void receivingDateIsBeijingDateAndPhoneIsNotMemberIdentity() {
         var content = content("13800000000");
         assertEquals("2026-11-02", content.requestedDate().toString()); assertNotEquals(content.phone(), content.memberPhone());
@@ -39,11 +53,27 @@ class CustomerSubmissionTest {
         assertThrows(OrderFailure.class, () -> content("abc"));
         assertThrows(OrderFailure.class, () -> content("138abc00000000"));
     }
-    @Test void reviewRequiresExplicitPriceAttributionAndInternalHandoffForConfirmation() {
+    @Test void reviewRequiresExplicitPriceAndAttributionButAllowsMissingHandoff() {
         var review = new CustomerSubmission.Review(content("13800000000"), null, null, null, null);
         assertEquals(1, review.prices().size()); assertThrows(OrderFailure.class, review::requireConfirmation);
         assertDoesNotThrow(() -> new CustomerSubmission.Review(review.content(), null, 0L, UUID.randomUUID(), Instant.now()).requireConfirmation());
+        assertDoesNotThrow(() -> new CustomerSubmission.Review(review.content(), null, 0L, UUID.randomUUID(), null).requireConfirmation());
+        assertThrows(OrderFailure.class, () -> new CustomerSubmission.Review(review.content(), null, null, UUID.randomUUID(), null).requireConfirmation());
+        assertThrows(OrderFailure.class, () -> new CustomerSubmission.Review(review.content(), null, 0L, null, null).requireConfirmation());
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Review(review.content(), List.of(), 100L, UUID.randomUUID(), Instant.now()));
+    }
+    @Test void simpleTypesAcceptNoSizeAndReportSpecificConfirmationErrors() {
+        for (var type : List.of("BREAD", "DONUT", "CUPCAKE", "DRINK")) {
+            var product = new CustomerSubmission.Product("商品", type, 2, Map.of("specification", "小份"));
+            assertFalse(product.attributes().containsKey("size"));
+        }
+        assertEquals("SUBMISSION_PRODUCT_TYPE_INVALID", assertThrows(OrderFailure.class,
+                () -> new CustomerSubmission.Product("商品", "UNKNOWN", 1, Map.of())).code());
+        assertEquals("SUBMISSION_CAKE_SIZE_REQUIRED", assertThrows(OrderFailure.class, () -> cake(Map.of())).code());
+        assertEquals("SUBMISSION_TOTAL_REQUIRED", assertThrows(OrderFailure.class,
+                () -> new CustomerSubmission.Review(content("13800000000"), null, null, UUID.randomUUID(), null).requireConfirmation()).code());
+        assertEquals("SUBMISSION_EMPLOYEE_REQUIRED", assertThrows(OrderFailure.class,
+                () -> new CustomerSubmission.Review(content("13800000000"), null, 100L, null, null).requireConfirmation()).code());
     }
     @Test void futureCustomerFieldDiffExcludesInternalEmployeePriceAndStateFields() {
         var before = content("13800000000"); var after = content("13800000002");

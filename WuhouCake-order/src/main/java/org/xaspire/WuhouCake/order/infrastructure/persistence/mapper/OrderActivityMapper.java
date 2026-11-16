@@ -6,16 +6,19 @@ import org.apache.ibatis.annotations.*;
 
 public interface OrderActivityMapper {
     record Row(long id, String orderId, String itemId, String type, String content, String details,
-            String actorId, String actorNameSnapshot, Instant createdAt) { }
-    String COLUMNS = "id, order_id::text, item_id::text, type, content, details::text, actor_id::text, actor_name_snapshot, created_at";
+            String actorId, String actorNameSnapshot, Instant createdAt, String noteRequestId) { }
+    String COLUMNS = "id, order_id::text, item_id::text, type, content, details::text, actor_id::text, actor_name_snapshot, created_at, note_request_id::text";
     String FILTER = " FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid)"
             + "<if test='itemId != null'> AND item_id=CAST(#{itemId} AS uuid)</if>"
             + "<if test='type != null'> AND type=#{type}</if>";
 
-    @Select(value = "INSERT INTO cake_order_activity (order_id, item_id, type, content, details, actor_id, actor_name_snapshot, created_at)"
+    @Select(value = "INSERT INTO cake_order_activity (order_id, item_id, type, content, details, actor_id, actor_name_snapshot, created_at, note_request_id)"
             + " VALUES (CAST(#{orderId} AS uuid), CAST(#{itemId} AS uuid), #{type}, #{content}, CAST(#{details} AS jsonb),"
-            + " CAST(#{actorId} AS uuid), #{actorNameSnapshot}, #{createdAt}) RETURNING id", affectData = true)
+            + " CAST(#{actorId} AS uuid), #{actorNameSnapshot}, #{createdAt}, CAST(#{noteRequestId} AS uuid)) RETURNING id", affectData = true)
     long append(Row row);
+    @Select("SELECT " + COLUMNS + " FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid)"
+            + " AND actor_id=CAST(#{actorId} AS uuid) AND note_request_id=CAST(#{requestId} AS uuid)")
+    Row findNote(@Param("orderId") String orderId, @Param("actorId") String actorId, @Param("requestId") String requestId);
     @Select("SELECT " + COLUMNS + " FROM (SELECT *, row_number() OVER (PARTITION BY item_id ORDER BY created_at DESC, id DESC) AS note_rank"
             + " FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid) AND item_id IS NOT NULL AND type='NOTE') AS notes"
             + " WHERE note_rank <= 3 ORDER BY created_at DESC, id DESC")

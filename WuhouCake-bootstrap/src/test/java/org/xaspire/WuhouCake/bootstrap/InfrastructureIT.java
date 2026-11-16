@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -31,14 +32,19 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.flyway.locations=classpath:db/integration-migration",
-        "spring.flyway.default-schema=integration_probe",
-        "spring.flyway.schemas=integration_probe",
         "spring.flyway.table=integration_flyway_schema_history"
 })
 @ActiveProfiles("integration")
 @Import(TestPersistenceConfiguration.class)
 class InfrastructureIT {
-    @DynamicPropertySource static void keys(DynamicPropertyRegistry registry) { JwtTestKeys.properties(registry); }
+    private static final String SCHEMA = "infrastructure_it_" + UUID.randomUUID().toString().replace("-", "");
+
+    @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
+        JwtTestKeys.properties(registry);
+        registry.add("spring.flyway.default-schema", () -> SCHEMA);
+        registry.add("spring.flyway.schemas", () -> SCHEMA);
+        registry.add("spring.datasource.hikari.schema", () -> SCHEMA);
+    }
     @Autowired TestRestTemplate http;
     @Autowired @Qualifier("requestMappingHandlerMapping") RequestMappingHandlerMapping mappings;
     @Autowired ProbeMapper mapper;
@@ -50,6 +56,10 @@ class InfrastructureIT {
     @Autowired RedisLock locks;
     @Autowired JsonCodec json;
 
+    @AfterAll static void removeTestSchema(@Autowired JdbcTemplate jdbc) {
+        jdbc.execute("DROP SCHEMA IF EXISTS " + SCHEMA + " CASCADE");
+    }
+
     @Test
     void bootstrapStartsWithTechnicalMigrationAndNoSampleRoutes() {
         var health = http.getForEntity("/actuator/health", Map.class);
@@ -57,8 +67,8 @@ class InfrastructureIT {
         assertEquals("UP", health.getBody().get("status"));
         assertNotNull(flyway.info().current());
         assertEquals(1, jdbc.queryForObject(
-                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'integration_probe' "
-                        + "AND table_name = 'integration_flyway_schema_history'", Integer.class));
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = ? "
+                        + "AND table_name = 'integration_flyway_schema_history'", Integer.class, SCHEMA));
         assertTrue(mappings.getHandlerMethods().keySet().stream()
                 .flatMap(mapping -> mapping.getPatternValues().stream())
                 .noneMatch(path -> path.startsWith("/api/samples")));

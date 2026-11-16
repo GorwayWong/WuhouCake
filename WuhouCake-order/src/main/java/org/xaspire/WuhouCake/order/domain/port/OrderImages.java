@@ -8,6 +8,10 @@ public interface OrderImages {
     boolean lockOrder(UUID orderId);
     boolean activeItem(UUID orderId, UUID itemId);
     int count(UUID orderId);
+    int countItem(UUID orderId, UUID itemId);
+    record Upload(UUID imageId, String fingerprint) { }
+    Optional<Upload> findUpload(UUID orderId, UUID requestId);
+    void recordUpload(UUID orderId, UUID requestId, UUID imageId, String fingerprint);
     void insert(OrderImage image, byte[] content);
     List<OrderImage> list(UUID orderId);
     Optional<OrderImage> find(UUID orderId, UUID imageId);

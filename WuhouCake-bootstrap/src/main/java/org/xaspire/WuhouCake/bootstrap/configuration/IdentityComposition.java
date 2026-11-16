@@ -18,6 +18,7 @@ import org.xaspire.WuhouCake.audit.infrastructure.persistence.mapper.OperationMa
 import org.xaspire.WuhouCake.audit.infrastructure.persistence.repository.PostgresOperations;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 import org.xaspire.WuhouCake.identity.application.service.IdentityService;
+import org.xaspire.WuhouCake.identity.application.service.EmployeeAccessPolicy;
 import org.xaspire.WuhouCake.identity.domain.model.valobj.IdentityFailure;
 import org.xaspire.WuhouCake.identity.domain.port.IdentityPorts.*;
 import org.xaspire.WuhouCake.identity.domain.repository.Accounts;
@@ -31,7 +32,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import org.xaspire.WuhouCake.identity.domain.model.valobj.AccountValues.Actor;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(IdentityProperties.class)
+@EnableConfigurationProperties({IdentityProperties.class, EmployeeAccessProperties.class})
 @MapperScan({"org.xaspire.WuhouCake.identity.infrastructure.persistence.mapper", "org.xaspire.WuhouCake.audit.infrastructure.persistence.mapper"})
 public class IdentityComposition {
     @Bean Accounts accounts(AccountMapper mapper) { return new PostgresAccounts(mapper); }
@@ -61,8 +62,9 @@ public class IdentityComposition {
         };
     }
     @Bean AuditService auditService(Operations operations, AuditAccess access, IdGenerator ids) { return new AuditService(operations, access, ids); }
+    @Bean EmployeeAccessPolicy employeeAccessPolicy(EmployeeAccessProperties properties) { return new EmployeeAccessPolicy(properties.jobPermissions()); }
     @Bean IdentityService identityService(Accounts accounts, Credentials credentials, Sessions sessions, Attempts attempts,
-            AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock, IdentityProperties properties, ApplicationEventPublisher events) {
-        return new IdentityService(accounts, credentials, sessions, attempts, tokens, actors, audit, ids, clock, properties.accessLifetime(), properties.sessionLifetime(), events);
+            AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock, IdentityProperties properties, ApplicationEventPublisher events, EmployeeAccessPolicy accessPolicy) {
+        return new IdentityService(accounts, credentials, sessions, attempts, tokens, actors, audit, ids, clock, properties.accessLifetime(), properties.sessionLifetime(), events, accessPolicy);
     }
 }

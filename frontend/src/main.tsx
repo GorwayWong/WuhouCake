@@ -4,13 +4,22 @@ import { I18nProvider } from 'react-aria-components';
 import { App } from './App';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { PublicOrderEntry } from './PublicOrderEntry';
-import { ApiError, refresh } from './api';
+import { ApiError, refresh, session } from './api';
 import './styles.css';
 
 const client = new QueryClient({ defaultOptions: { queries: {
   staleTime: 15000, refetchOnWindowFocus: 'always', refetchOnReconnect: 'always',
-  retry: (count, error) => !(error instanceof ApiError && error.status < 500) && count < 2,
+  retry: (count, error) => !(error instanceof ApiError && error.status < 500 && !(error.status === 408 && error.code === 'READ_TIMEOUT')) && count < 2,
 }, mutations: { retry: false } } });
+for (const prefix of ['calendar', 'workbench', 'management-orders', 'order']) {
+  client.setQueryDefaults([prefix], { refetchInterval: 30_000, refetchIntervalInBackground: false });
+}
+let hadSession = false;
+session.subscribe(() => {
+  const hasSession = Boolean(session.snapshot().token);
+  if (hadSession && !hasSession) client.clear();
+  hadSession = hasSession;
+});
 function StaffApp() {
   useEffect(() => { void refresh().catch(() => {}); }, []);
   return <App />;

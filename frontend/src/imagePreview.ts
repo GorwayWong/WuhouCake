@@ -17,3 +17,18 @@ export function loadImagePreview(orderId: string, imageId: string, ready: (url: 
   }).catch(error => { if (!request.signal.aborted) failed(error); });
   return () => { request.abort(); if (url) URL.revokeObjectURL(url); };
 }
+
+/** Bearer-protected images must defer the fetch itself, before assigning the Blob URL. */
+export function whenImageVisible(element: Element | null, load: () => () => void): () => void {
+  if (!element || typeof IntersectionObserver === 'undefined') return load();
+  let active = true;
+  let stop: (() => void) | undefined;
+  const observer = new IntersectionObserver(entries => {
+    if (!active || !entries.some(entry => entry.isIntersecting)) return;
+    active = false;
+    observer.disconnect();
+    stop = load();
+  }, { rootMargin: '120px' });
+  observer.observe(element);
+  return () => { active = false; observer.disconnect(); stop?.(); };
+}

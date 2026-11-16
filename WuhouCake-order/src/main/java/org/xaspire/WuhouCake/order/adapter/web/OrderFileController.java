@@ -1,6 +1,7 @@
 package org.xaspire.WuhouCake.order.adapter.web;
 
 import jakarta.servlet.http.HttpServletResponse;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -24,11 +25,20 @@ public class OrderFileController {
     @PostMapping(value = "/{orderId}/images", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderFileViews.Image> upload(@PathVariable UUID orderId, @RequestParam MultipartFile file,
-            @RequestParam(required = false) UUID itemId, Authentication authentication) throws IOException {
-        try (var input = file.getInputStream()) {
-            return ApiResponse.success(images.upload(orderId, itemId, input.readNBytes(OrderImageService.MAX_IMAGE_BYTES + 1),
-                    file.getOriginalFilename(), operator(authentication)));
+            @RequestParam UUID itemId, @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId, Authentication authentication) throws IOException {
+        return ApiResponse.success(images.upload(orderId, itemId, readUpload(file), file.getOriginalFilename(),
+                operator(authentication), requestId));
+    }
+
+    static byte[] readUpload(MultipartFile file) throws IOException {
+        long size = file.getSize();
+        OrderImageService.requireUploadSize(size);
+        byte[] content = new byte[Math.toIntExact(size)];
+        try (var input = new DataInputStream(file.getInputStream())) {
+            input.readFully(content);
+            if (input.read() != -1) throw new IOException("Multipart image length changed");
         }
+        return content;
     }
     @GetMapping("/{orderId}/images")
     public ApiResponse<List<OrderFileViews.Image>> list(@PathVariable UUID orderId) { return ApiResponse.success(images.list(orderId)); }
@@ -46,20 +56,32 @@ public class OrderFileController {
     }
     @PostMapping("/{orderId}/exports/xlsx")
     public void single(@PathVariable UUID orderId, Authentication authentication, HttpServletResponse response) throws IOException {
-        download(exports.single(orderId, operator(authentication)), response);
+        download(exports.single(orderId, operator(authentication)), response, exports);
     }
     @PostMapping("/exports/zip")
     public void batch(@RequestBody OrderExportRequest request, Authentication authentication, HttpServletResponse response) throws IOException {
-        download(exports.batch(request, operator(authentication)), response);
+        download(exports.batch(request, operator(authentication)), response, exports);
     }
-    private void download(OrderExportService.Download file, HttpServletResponse response) throws IOException {
+    static void download(OrderExportService.Download file, HttpServletResponse response, OrderExportService exports) throws IOException {
         Throwable downloadFailure = null;
         try {
             response.setContentType(file.contentType()); response.setContentLengthLong(file.size());
             response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
-            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(file.filename(), StandardCharsets.UTF_8).build().toString());
+            String fallback = file.filename().replaceAll("[^A-Za-z0-9._-]", "_");
+            String encoded = java.net.URLEncoder.encode(file.filename(), StandardCharsets.UTF_8).replace("+", "%20");
+            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fallback + "\"; filename*=UTF-8''" + encoded);
             response.setHeader("X-Content-Type-Options", "nosniff");
-            Files.copy(Path.of(file.path()), response.getOutputStream());
+            long deadline = System.nanoTime() + java.time.Duration.ofSeconds(30).toNanos();
+            try (var input = Files.newInputStream(Path.of(file.path()))) {
+                var output = response.getOutputStream();
+                byte[] buffer = new byte[32 * 1024];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    if (deadline - System.nanoTime() <= 0 || Thread.currentThread().isInterrupted())
+                        throw new IOException("Order export transfer timed out");
+                    output.write(buffer, 0, count);
+                }
+            }
         } catch (IOException | RuntimeException | Error failure) {
             downloadFailure = failure; throw failure;
         } finally {

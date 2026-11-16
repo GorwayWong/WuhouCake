@@ -5,18 +5,19 @@ import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.JsonSnapshot;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
+import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 public record OrderItem(UUID itemId, String name, String productType, int quantity,
         Long unitPriceCents, Long memberPriceCents, Map<String, Object> attributes,
         String productionStatus, String currentStageCode, boolean removed, Instant createdAt, Instant updatedAt) {
-    private static final Set<String> FIELDS = Set.of("name", "productType", "quantity", "unitPriceCents", "memberPriceCents", "attributes");
+    private static final Set<String> FIELDS = Set.of("name", "productType", "quantity", "attributes", "referenceUnitPriceCents", "referenceMemberPriceCents");
 
     public OrderItem {
         Objects.requireNonNull(itemId);
         name = requiredText(name, 128);
-        productType = requiredText(productType, 32).toUpperCase(Locale.ROOT);
+        productType = ProductCategories.normalize(requiredText(productType, 32));
         quantity = OrderValues.quantity(quantity);
         unitPriceCents = money(unitPriceCents);
         memberPriceCents = money(memberPriceCents);
@@ -24,8 +25,12 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
     }
     public static OrderItem create(UUID id, String name, String type, Number quantity, Number price, Number memberPrice,
             Map<String, Object> attributes, Instant now) {
-        return new OrderItem(id, name, type == null ? "CAKE" : type, OrderValues.quantity(quantity), money(price), money(memberPrice),
+        String category = ProductCategories.requireKnown(type == null ? "CAKE" : type);
+        return new OrderItem(id, name, category, OrderValues.quantity(quantity), null, null,
                 CakeSpecifications.forWrite(type == null ? "CAKE" : type, attributes == null ? Map.of() : attributes), "NOT_STARTED", null, false, now, now);
+    }
+    public OrderItem retainHistoricalPrices(Long original, Long member) {
+        return new OrderItem(itemId, name, productType, quantity, original, member, attributes, productionStatus, currentStageCode, removed, createdAt, updatedAt);
     }
     public OrderItem revise(Map<String, Object> changes, Instant now) {
         if (changes == null || changes.isEmpty() || changes.keySet().stream().anyMatch(key -> key == null || !FIELDS.contains(key))) throw invalid();
@@ -35,14 +40,14 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
                 if (value == null) merged.remove(key); else merged.put(key, value);
             });
         }
-        String type = changes.containsKey("productType") ? requiredText(changes.get("productType"), 32) : productType;
+        String type = changes.containsKey("productType") ? ProductCategories.requireKnown(requiredText(changes.get("productType"), 32)) : productType;
         boolean sizeChanged = changes.containsKey("attributes") && JsonSnapshot.object(changes.get("attributes")).containsKey("size");
         return new OrderItem(itemId,
                 changes.containsKey("name") ? requiredText(changes.get("name"), 128) : name,
-                changes.containsKey("productType") ? requiredText(changes.get("productType"), 32) : productType,
+                type,
                 changes.containsKey("quantity") ? OrderValues.quantity(changes.get("quantity")) : quantity,
-                changes.containsKey("unitPriceCents") ? money(changes.get("unitPriceCents")) : unitPriceCents,
-                changes.containsKey("memberPriceCents") ? money(changes.get("memberPriceCents")) : memberPriceCents,
+                changes.containsKey("referenceUnitPriceCents") ? money(changes.get("referenceUnitPriceCents")) : unitPriceCents,
+                changes.containsKey("referenceMemberPriceCents") ? money(changes.get("referenceMemberPriceCents")) : memberPriceCents,
                 sizeChanged || !type.equalsIgnoreCase(productType) ? CakeSpecifications.forWrite(type, merged) : CakeSpecifications.effective(type, merged),
                 productionStatus, currentStageCode, removed, createdAt, now);
     }
@@ -53,7 +58,7 @@ public record OrderItem(UUID itemId, String name, String productType, int quanti
         return JsonSnapshot.object(values);
     }
     public OrderItem changeProductionStatus(String status, Instant now) {
-        if (status == null || !Set.of("IN_PROGRESS", "COMPLETED").contains(status)) throw invalid();
+        if (status == null || !Set.of("NOT_STARTED", "IN_PROGRESS", "COMPLETED").contains(status)) throw invalid();
         if (status.equals(productionStatus)) return this;
         return new OrderItem(itemId, name, productType, quantity, unitPriceCents, memberPriceCents, attributes,
                 status, currentStageCode, removed, createdAt, now);

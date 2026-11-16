@@ -18,24 +18,27 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
         mapper.saveEntry(new CustomerSubmissionMapper.EntryRow(UUID.randomUUID().toString(), ownerId.toString(), ownerName, token, enabled));
         return entryForOwner(ownerId);
     }
-    @Override public CustomerSubmission submit(Entry entry, UUID requestId, String fingerprint, CustomerSubmission.Content content, Instant now) {
+    @Override public CustomerSubmission submit(Entry entry, UUID requestId, String fingerprint, String legacyFingerprint, CustomerSubmission.Content content, Instant now) {
         var id = UUID.randomUUID();
         boolean inserted = mapper.insert(id.toString(), entry.id().toString(), entry.ownerId().toString(), entry.ownerName(), requestId.toString(),
                 fingerprint, json.write(content), content.phone(), content.requestedDate(), now) == 1;
         var claim = mapper.claim(entry.id().toString(), requestId.toString());
-        if (!claim.fingerprint().equals(fingerprint)) throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
+        if (!claim.fingerprint().equals(fingerprint) && (inserted || !claim.fingerprint().equals(legacyFingerprint)))
+            throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
         if (inserted) append(id, "SUBMITTED", null, "客户（手机号未验证）", Map.of("source", "CUSTOMER_SUBMITTED", "after", CustomerSubmission.customerFields(content)), now);
-        return find(UUID.fromString(claim.id()), false);
+        var result = find(UUID.fromString(claim.id()), false);
+        if (result == null) throw new OrderFailure("SUBMISSION_NOT_FOUND");
+        return result;
     }
     @Override public CustomerSubmission find(UUID id, boolean lock) { return submission(lock ? mapper.lock(id.toString()) : mapper.find(id.toString())); }
     @Override public CustomerSubmission findByOrder(UUID id) { return submission(mapper.byOrder(id.toString())); }
-    @Override public List<CustomerSubmission> search(UUID owner, String status, int limit, long offset) {
-        return mapper.search(string(owner), status, limit, offset).stream().map(this::submission).toList();
+    @Override public List<CustomerSubmission> search(UUID owner, String status, String keyword, int limit, long offset) {
+        return mapper.search(string(owner), status, keyword, limit, offset).stream().map(this::submission).toList();
     }
-    @Override public long count(UUID owner, String status) { return mapper.count(string(owner), status); }
+    @Override public long count(UUID owner, String status, String keyword) { return mapper.count(string(owner), status, keyword); }
     @Override public List<Duplicate> duplicates(CustomerSubmission submission) {
         var content = submission.reviewed() == null ? submission.original() : submission.reviewed().content();
-        return mapper.duplicates(submission.id().toString(), content.phone().replaceAll("[ ()-]", ""), content.requestedDate()).stream()
+        return mapper.duplicates(submission.id().toString(), content.phone().replaceAll("[ ()-]", ""), (submission.reviewed() != null && submission.reviewed().plannedHandoffAt() != null ? submission.reviewed().plannedHandoffAt().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate() : content.requestedDate())).stream()
                 .map(row -> new Duplicate(row.kind(), uuid(row.id()), row.version(), row.status(), row.orderNo(), row.phone(),
                         row.requestedReceiveDate(), row.requestedReceiveAt(), List.of(json.read(row.items(), DuplicateItem[].class)),
                         row.totalAmountCents(), row.handledBy(), row.createdAt(), !"CANCELLED".equals(row.status()))).toList();

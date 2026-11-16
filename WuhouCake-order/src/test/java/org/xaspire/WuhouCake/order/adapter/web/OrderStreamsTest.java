@@ -42,6 +42,22 @@ class OrderStreamsTest {
     private static List<Object> data(SseEmitter.SseEventBuilder event) { return event.build().stream().map(value -> value.getData()).toList(); }
     private static String text(SseEmitter.SseEventBuilder event) { return data(event).stream().filter(String.class::isInstance).map(String.class::cast).reduce("", String::concat); }
 
+    @Test void limitsEachAccountAndTheWholeServerAndRecoversOnCompletion() {
+        var first = emitter();
+        var completion = ArgumentCaptor.forClass(Runnable.class);
+        var streams = streams(Runnable::run);
+        var account = UUID.randomUUID();
+        for (int i = 1; i < 24; i++) emitter();
+        for (int i = 0; i < 3; i++) streams.subscribe(account, 0, NOW.plusSeconds(60), () -> true);
+        assertThrows(RejectedExecutionException.class,
+                () -> streams.subscribe(account, 0, NOW.plusSeconds(60), () -> true));
+        for (int i = 3; i < 24; i++) subscribe(NOW.plusSeconds(60));
+        assertThrows(RejectedExecutionException.class, () -> subscribe(NOW.plusSeconds(60)));
+        verify(first).onCompletion(completion.capture());
+        completion.getValue().run();
+        assertSame(emitter(), streams.subscribe(account, 0, NOW.plusSeconds(60), () -> true));
+    }
+
     @Test void readyPrecedesChangesAndLifetimeIsBoundedByJwtAndFiveMinutes() throws Exception {
         var shortLived = emitter(); var longLived = emitter(); var streams = streams(Runnable::run);
         assertSame(shortLived, subscribe(NOW.plusSeconds(9))); assertEquals(9000L, shortLived.getTimeout());
@@ -128,7 +144,7 @@ class OrderStreamsTest {
                 assertTrue(ready.await(3, TimeUnit.SECONDS));
                 var change = workers.submit(() -> { changing.countDown(); streams.changed(event(1)); });
                 assertTrue(changing.await(3, TimeUnit.SECONDS));
-                assertThrows(TimeoutException.class, () -> change.get(50, TimeUnit.MILLISECONDS));
+                change.get(3, TimeUnit.SECONDS);
                 proceed.countDown(); subscription.get(3, TimeUnit.SECONDS); change.get(3, TimeUnit.SECONDS);
                 var sent = ArgumentCaptor.forClass(SseEmitter.SseEventBuilder.class); verify(emitter, times(2)).send(sent.capture());
                 assertTrue(text(sent.getAllValues().getFirst()).contains("event:ready"));
@@ -212,8 +228,11 @@ class OrderStreamsTest {
             try {
                 streams.changed(event(1)); assertTrue(sending.await(3, TimeUnit.SECONDS));
                 workers.submit(() -> { for (int i = 0; i < 65; i++) streams.changed(event(i)); }).get(3, TimeUnit.SECONDS);
-                verify(emitter).complete(); verify(expiry).cancel(false);
+                verify(emitter, never()).complete();
+                verify(expiry).cancel(false);
+                assertEquals(1, streams.overflowCount());
             } finally { release.countDown(); }
+            verify(emitter, timeout(3000)).complete();
         }
     }
 }

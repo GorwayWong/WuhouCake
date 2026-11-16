@@ -24,24 +24,38 @@ public class ApiErrors {
     @ExceptionHandler(OrderFailure.class)
     ResponseEntity<ApiResponse<Void>> order(OrderFailure failure) {
         int status = switch (failure.code()) {
-            case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE" -> 404;
-            case "SUBMISSION_FORBIDDEN" -> 403;
-            case "IMAGE_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
+            case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE", "PACKAGE_NOT_FOUND" -> 404;
+            case "FORBIDDEN", "SUBMISSION_FORBIDDEN", "PACKAGE_FORBIDDEN", "ORDER_DELETED_FORBIDDEN" -> 403;
+            case "IMAGE_TOO_LARGE", "IMAGE_BATCH_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
+            case "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE", "EXPORT_TIMEOUT" -> 503;
             case "UNSUPPORTED_IMAGE_FORMAT" -> 415;
-            case "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
-                    "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED", "DUPLICATE_REVIEW_REQUIRED", "SUBMISSION_NOT_PENDING" -> 409;
+            case "ORDER_QUOTE_INCOMPLETE", "ORDER_PAID_AMOUNT_LOCKED", "SUBMISSION_ITEM_ID_CONFLICT", "ITEM_ID_CONFLICT", "IMAGE_UPLOAD_REMOVED", "ORDER_DELETED", "PACKAGE_NAME_CONFLICT", "PACKAGE_CREATION_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
+                    "INVALID_FULFILLMENT_TRANSITION", "ORDER_NOT_CANCELLABLE", "ORDER_IMAGE_LIMIT_EXCEEDED", "DUPLICATE_REVIEW_REQUIRED", "SUBMISSION_NOT_PENDING", "OTHER_ITEMS_INCOMPLETE" -> 409;
             default -> 400;
         };
         String message = switch (failure.code()) {
+            case "ORDER_FINISH_TOO_LATE" -> "出品时间须比取货时间至少提前 1 小时";
+            case "ORDER_QUOTE_INCOMPLETE" -> "商品报价未完整，请补齐单价后再登记付款";
+            case "ORDER_PAID_AMOUNT_LOCKED" -> "已登记付款，请先撤销付款登记再改价";
+            case "ORDER_DELETED" -> "订单已删除，仅可在保留期内查询，不可修改或恢复";
+            case "ORDER_DELETED_FORBIDDEN" -> "当前岗位不能访问已删除订单";
+            case "EXPORT_TIMEOUT" -> "导出超时，请缩小导出范围后重试";
             case "EXPORT_LIMIT_EXCEEDED" -> "导出超过日期、订单或图片数量上限，请缩小筛选范围";
             case "EXPORT_FILE_TOO_LARGE" -> "导出文件过大，请缩小筛选范围或减少图片";
             case "EXPORT_CONTENT_TOO_LARGE" -> "导出正文或记录数过大，请缩小范围；单张订单请精简备注或规格";
             case "EXPORT_EMPTY" -> "筛选范围内没有订单";
-            case "ORDER_IMAGE_LIMIT_EXCEEDED" -> "每张订单最多保留 8 张图片";
+            case "ORDER_IMAGE_LIMIT_EXCEEDED" -> "每个商品最多保留 5 张图片";
+            case "IMAGE_ITEM_REQUIRED" -> "请选择图片对应的商品";
+            case "ITEM_ID_CONFLICT" -> "商品标识已被使用，请重新打开录单草稿";
+            case "IMAGE_UPLOAD_REMOVED" -> "该图片已被移除，请核对后重新选择图片";
             case "IMAGE_DIMENSIONS_EXCEEDED" -> "图片边长或总像素超过上限";
             case "UNSUPPORTED_IMAGE_FORMAT" -> "仅支持 JPEG 和 PNG 图片";
             case "INVALID_IMAGE" -> "图片为空或内容损坏";
             case "IMAGE_TOO_LARGE" -> "单张图片不得超过 5 MiB";
+            case "IMAGE_BATCH_TOO_LARGE" -> "本次图片数量或总大小超过上限，请减少图片后重试";
+            case "IMAGE_PROCESSING_BUSY" -> "图片正在处理中，请稍后重试";
+            case "IMAGE_PROCESSING_TIMEOUT" -> "图片处理超时，请换用较小图片后重试";
+            case "IMAGE_PROCESSING_UNAVAILABLE" -> "图片处理暂不可用，请稍后重试";
             default -> failure.code();
         };
         return response(status, failure.code(), message);
@@ -64,8 +78,14 @@ public class ApiErrors {
     ResponseEntity<ApiResponse<Void>> validation(Exception failure) { return response(400, "VALIDATION_FAILED"); }
     @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
     ResponseEntity<ApiResponse<Void>> uploadSize(Exception failure) { return response(413, "IMAGE_TOO_LARGE"); }
-    @ExceptionHandler(DataAccessException.class)
-    ResponseEntity<ApiResponse<Void>> unavailable(DataAccessException failure) { return response(503, "SERVICE_UNAVAILABLE"); }
+    @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
+    ResponseEntity<ApiResponse<Void>> forbidden(org.springframework.security.access.AccessDeniedException failure) { return response(403, "FORBIDDEN"); }
+    @ExceptionHandler({DataAccessException.class, org.springframework.transaction.CannotCreateTransactionException.class,
+            org.springframework.transaction.TransactionTimedOutException.class})
+    ResponseEntity<ApiResponse<Void>> unavailable(Exception failure) { return response(503, "SERVICE_UNAVAILABLE"); }
+
+    @ExceptionHandler(org.springframework.web.multipart.MultipartException.class)
+    ResponseEntity<ApiResponse<Void>> multipart(Exception failure) { return response(400, "VALIDATION_FAILED"); }
     @ExceptionHandler(NoResourceFoundException.class)
     ResponseEntity<ApiResponse<Void>> missing(NoResourceFoundException failure) { return response(404, "NOT_FOUND"); }
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

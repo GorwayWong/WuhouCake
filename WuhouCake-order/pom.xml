@@ -13,6 +13,11 @@
     <description>Multi-item order core</description>
     <dependencies>
         <dependency>
+            <groupId>net.coobird</groupId>
+            <artifactId>thumbnailator</artifactId>
+            <version>0.4.21</version>
+        </dependency>
+        <dependency>
             <groupId>org.xaspire</groupId>
             <artifactId>WuhouCake-audit</artifactId>
             <version>${project.version}</version>

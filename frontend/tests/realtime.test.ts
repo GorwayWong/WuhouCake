@@ -1,6 +1,7 @@
+import { testJwt } from './testJwt.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { isCancelledError, QueryClient, QueryObserver } from '@tanstack/react-query';
 import { collectUpdate, connectOrders, receiveEvent } from '../src/realtime.ts';
 import type { OrderUpdate } from '../src/realtime.ts';
 import { api, session, forgetSession, ApiError } from '../src/api.ts';
@@ -9,6 +10,193 @@ const waitFor = async (condition: () => boolean) => {
   for (let i = 0; i < 200 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(condition(), 'condition was not reached');
 };
+test('ready 取消订单首读，迟到快照不能吞掉刷新', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const keys = [['calendar', 'old-date'], ['workbench', 'new-date'], ['management-orders'], ['order', 'a', 'detail']];
+  const reads = keys.map(() => 0), signals: AbortSignal[] = [], releases: (() => void)[] = [];
+  const stops = keys.map((queryKey, index) => new QueryObserver(client, { queryKey, queryFn: ({ signal }) => {
+    if (++reads[index] === 1) { signals[index] = signal; return new Promise<number>(resolve => { releases[index] = () => resolve(7); }); }
+    return Promise.resolve(8);
+  } }).subscribe(() => {}));
+  try {
+    receiveEvent(client, { event: 'ready', data: '{}' });
+    await waitFor(() => keys.every(key => client.getQueryData(key) === 8));
+    assert.ok(signals.every(signal => signal.aborted));
+    releases.forEach(release => release()); await new Promise(resolve => setTimeout(resolve, 0));
+    assert.ok(keys.every(key => client.getQueryData(key) === 8));
+  } finally { releases.forEach(release => release()); stops.forEach(stop => stop()); client.clear(); }
+});
+test('删除通知取消旧读取后保留删除标记，即使补读失败也不能恢复可写订单', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const id = '00000000-0000-4000-8000-000000000001', key = ['order', id, 'detail'];
+  client.setQueryData(key, { orderId: id, version: 7 });
+  let reads = 0, release: () => void = () => {};
+  const stop = new QueryObserver(client, { queryKey: key, queryFn: ({ signal }) => {
+    void signal;
+    if (++reads === 1) return new Promise(resolve => { release = () => resolve({ orderId: id, version: 7 }); });
+    return Promise.reject(new ApiError(403, 'ORDER_DELETED_FORBIDDEN'));
+  } }).subscribe(() => {});
+  try {
+    receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: id, version: 7, changeType: 'NOTE' }) });
+    receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: id, version: 8, changeType: 'ORDER_DELETED' }) });
+    await waitFor(() => reads === 2 && client.isFetching() === 0);
+    release(); await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(client.getQueryData<{ deleted?: boolean }>(key)?.deleted, true);
+  } finally { release(); stop(); client.clear(); }
+});
+test('无人查看的在途读取结束后保留失效标记，不额外请求', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const key = ['workbench', 'day'];
+  const data = Promise.withResolvers<number>();
+  let reads = 0;
+  try {
+    const pending = client.fetchQuery({ queryKey: key, queryFn: () => { reads++; return data.promise; } });
+    receiveEvent(client, { event: 'order.changed', data: '{"orderId":"a","version":2,"changeType":"NOTE"}' });
+    data.resolve(1);
+    await pending;
+    await waitFor(() => client.getQueryState(key)?.isInvalidated === true && client.isFetching() === 0);
+    assert.equal(reads, 1);
+  } finally { data.resolve(1); client.clear(); }
+});
+test('旧版本通知不覆盖新动作与时间，同版本备注仍可替换提示', () => {
+  const newer: OrderUpdate = { orderId: 'a', version: 8, changeType: 'ORDER_CANCELLED', receivedAt: 100 };
+  const older = { ...newer, version: 7, changeType: 'ORDER_INFORMATION_CHANGED', receivedAt: 200 };
+  assert.deepEqual(collectUpdate([newer], older), [newer]);
+  const note = { ...newer, changeType: 'NOTE', receivedAt: 300 };
+  assert.deepEqual(collectUpdate([newer], note), [note]);
+});
+test('连续通知不取消首读，每轮合并一次补读并刷新跨日订单与同版本备注', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  let snapshot = { date: 'old', version: 1, note: '' };
+  const keys = [['calendar', 'old'], ['calendar', 'new'], ['order', 'a', 'detail']];
+  const pending: { signal: AbortSignal; resolve: () => void; reject: () => void }[] = [];
+  const stops = keys.map(queryKey => new QueryObserver(client, { queryKey, queryFn: ({ signal }) => {
+    const value = structuredClone(snapshot);
+    return new Promise((resolve, reject) => { pending.push({
+      signal, resolve: () => resolve(queryKey[0] === 'calendar' ? (value.date === queryKey[1] ? [value] : []) : value),
+      reject: () => reject(new Error('读取失败')),
+    }); });
+  } }).subscribe(() => {}));
+  try {
+    for (let i = 0; i < 5; i++) {
+      snapshot = { date: 'new', version: 2, note: `note-${i}` };
+      receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: 'a', version: 2, changeType: i ? 'NOTE' : 'ORDER_INFORMATION_CHANGED' }) });
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(pending.length, 3);
+    assert.ok(pending.every(request => !request.signal.aborted));
+    pending.slice(0, 3).forEach(request => request.resolve());
+    await waitFor(() => pending.length === 6);
+    assert.deepEqual(client.getQueryData(keys[2]), { date: 'old', version: 1, note: '' });
+    snapshot = { ...snapshot, note: '最后一条备注' };
+    for (let i = 0; i < 5; i++)
+      receiveEvent(client, { event: 'order.changed', data: '{"orderId":"a","version":2,"changeType":"NOTE"}' });
+    assert.ok(pending.every(request => !request.signal.aborted));
+    pending.slice(3, 6).forEach(request => request.reject());
+    await waitFor(() => pending.length === 9);
+    pending.slice(6).forEach(request => request.resolve());
+    await waitFor(() => client.isFetching() === 0);
+    assert.deepEqual(client.getQueryData(keys[0]), []);
+    assert.deepEqual(client.getQueryData(keys[1]), [snapshot]);
+    assert.deepEqual(client.getQueryData(keys[2]), snapshot);
+    assert.equal(pending.length, 9);
+  } finally { pending.forEach(request => request.resolve()); stops.forEach(stop => stop()); client.clear(); }
+});
+test('离页或清空会话后不补读旧查询，重建的同名查询不受影响', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const key = ['workbench', 'day'];
+  let reads = 0, release = () => {};
+  const stop = new QueryObserver(client, { queryKey: key, queryFn: () => {
+    reads++;
+    return new Promise<number>(resolve => { release = () => resolve(1); });
+  } }).subscribe(() => {});
+  const event = { event: 'order.changed', data: '{"orderId":"a","version":2,"changeType":"NOTE"}' };
+  try {
+    receiveEvent(client, event);
+    stop(); release();
+    await waitFor(() => client.getQueryState(key)?.isInvalidated === true && client.isFetching() === 0);
+    assert.equal(reads, 1);
+    const newStop = new QueryObserver(client, { queryKey: key, queryFn: () => {
+      reads++;
+      return new Promise<number>(resolve => { release = () => resolve(2); });
+    } }).subscribe(() => {});
+    try {
+      receiveEvent(client, event);
+      newStop(); client.clear();
+      await client.fetchQuery({ queryKey: key, queryFn: async () => 3 });
+      release(); await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(client.getQueryState(key)?.isInvalidated, false);
+      assert.equal(client.getQueryData(key), 3);
+    } finally { newStop(); }
+  } finally { release(); stop(); client.clear(); }
+});
+test('多个组件共用一次订单补读，禁用查询不发请求', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  let reads = 0, disabledReads = 0;
+  const options = { queryKey: ['order', 'a', 'detail'], queryFn: async () => ++reads };
+  const stops = [new QueryObserver(client, options), new QueryObserver(client, options),
+    new QueryObserver(client, { queryKey: ['order', 'a', 'images'], enabled: false, queryFn: async () => ++disabledReads })]
+    .map(observer => observer.subscribe(() => {}));
+  try {
+    await waitFor(() => client.isFetching() === 0);
+    assert.equal(reads, 1);
+    receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: 'a', version: 2, changeType: 'NOTE' }) });
+    await waitFor(() => reads === 2 && client.isFetching() === 0);
+    assert.equal(disabledReads, 0);
+  } finally { stops.forEach(stop => stop()); client.clear(); }
+});
+test('套餐通知刷新所有搜索分页，不触碰订单数据或产生订单通知', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+  const reads = [0, 0, 0]; let notifications = 0;
+  const keys = [['order-packages', 'keyword=蛋糕&page=1'], ['order-packages', 'page=2'], ['order', 'saved-order', 'detail']];
+  const stops = keys.map((queryKey, index) => new QueryObserver(client, { queryKey, queryFn: async () => ++reads[index] }).subscribe(() => {}));
+  try {
+    await waitFor(() => reads.every(value => value === 1) && client.isFetching() === 0);
+    receiveEvent(client, { event: 'package.changed', data: JSON.stringify({ packageId: '00000000-0000-4000-8000-000000000001', version: 2, deleted: true }) }, () => notifications++);
+    await waitFor(() => reads[0] === 2 && reads[1] === 2 && client.isFetching() === 0);
+    assert.equal(reads[2], 1); assert.equal(notifications, 0);
+    receiveEvent(client, { event: 'order.changed', data: JSON.stringify({ orderId: 'saved-order', changeType: 'NOTE', version: 1 }) });
+    await waitFor(() => reads[2] === 2 && client.isFetching() === 0);
+    assert.equal(reads[0], 2); assert.equal(reads[1], 2);
+  } finally { stops.forEach(stop => stop()); client.clear(); }
+});
+test('ready 补读套餐列表，缓存尚未过期也核对断线期间的变化', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } }); let reads = 0;
+  const stop = new QueryObserver(client, { queryKey: ['order-packages', 'page=1'], queryFn: async () => ++reads }).subscribe(() => {});
+  try {
+    await waitFor(() => reads === 1 && client.isFetching() === 0);
+    receiveEvent(client, { event: 'ready', data: '{}' });
+    await waitFor(() => reads === 2 && client.isFetching() === 0);
+  } finally { stop(); client.clear(); }
+});
+test('套餐通知取消首次在途列表，迟到的旧响应不能覆盖新列表', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const key = ['order-packages', 'page=1']; let reads = 0, firstSignal: AbortSignal | undefined, release: (value: string) => void = () => {};
+  const stop = new QueryObserver(client, { queryKey: key, queryFn: ({ signal }) => {
+    if (++reads === 1) { firstSignal = signal; return new Promise<string>(resolve => { release = resolve; }); }
+    return Promise.resolve('新版套餐');
+  } }).subscribe(() => {});
+  try {
+    await waitFor(() => reads === 1);
+    receiveEvent(client, { event: 'package.changed', data: '{}' });
+    await waitFor(() => client.getQueryData(key) === '新版套餐');
+    assert.equal(firstSignal?.aborted, true); release('旧名称');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(client.getQueryData(key), '新版套餐');
+  } finally { stop(); client.clear(); }
+});
+test('变更通知取消目标套餐的在途带入读取，其他套餐读取保持有效', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const id = '00000000-0000-4000-8000-000000000001'; let signalA: AbortSignal | undefined, signalB: AbortSignal | undefined;
+  let resolveA: (value: string) => void = () => {}, resolveB: (value: string) => void = () => {};
+  const a = client.fetchQuery({ queryKey: ['order-packages', 'detail', id], queryFn: ({ signal }) => { signalA = signal; return new Promise<string>(resolve => { resolveA = resolve; }); } }).then(value => value, failure => { assert.ok(isCancelledError(failure)); return 'cancelled'; });
+  const b = client.fetchQuery({ queryKey: ['order-packages', 'detail', 'other'], queryFn: ({ signal }) => { signalB = signal; return new Promise<string>(resolve => { resolveB = resolve; }); } });
+  try {
+    receiveEvent(client, { event: 'package.changed', data: JSON.stringify({ packageId: id, version: 3, deleted: true }) });
+    assert.equal(await a, 'cancelled'); assert.equal(signalA?.aborted, true); assert.equal(signalB?.aborted, false);
+    resolveA('迟到的已删除套餐'); resolveB('其他套餐'); assert.equal(await b, '其他套餐');
+  } finally { resolveA('cleanup'); resolveB('cleanup'); client.clear(); }
+});
 test('站内更新保留同版本备注，合并同一订单、限制数量，坏事件只同步不产生可点击通知', () => {
   const client = new QueryClient(); let updates: OrderUpdate[] = [];
   const notify = (change: OrderUpdate) => { updates = collectUpdate(updates, change); };
@@ -55,10 +243,10 @@ test('并发 401 只刷新一次；SSE 分块 UTF-8、断线重连与清理不�
   globalThis.fetch = async (input, init) => {
     const path = String(input);
     if (path === '/api/auth/csrf') return envelope({ headerName: 'X-XSRF-TOKEN' });
-    if (path === '/api/auth/login') return envelope({ accessToken: 'old', expiresIn: 900, passwordChangeRequired: false });
+    if (path === '/api/auth/login') return envelope({ accessToken: testJwt('old'), expiresIn: 900, passwordChangeRequired: false });
     if (path === '/api/auth/logout') return envelope(null);
-    if (path === '/api/auth/refresh') { refreshes++; await new Promise(resolve => setTimeout(resolve, 20)); return envelope({ accessToken: 'new', expiresIn: 900, passwordChangeRequired: false }); }
-    if (path === '/api/me') return new Headers(init?.headers).get('Authorization') === 'Bearer old' ? Response.json({ success: false, code: 'AUTHENTICATION_FAILED' }, { status: 401 }) : envelope({ nickname: '员工' });
+    if (path === '/api/auth/refresh') { refreshes++; await new Promise(resolve => setTimeout(resolve, 20)); return envelope({ accessToken: testJwt('new'), expiresIn: 900, passwordChangeRequired: false }); }
+    if (path === '/api/me') return new Headers(init?.headers).get('Authorization') === `Bearer ${testJwt('old')}` ? Response.json({ success: false, code: 'AUTHENTICATION_FAILED' }, { status: 401 }) : envelope({ nickname: '员工' });
     if (path === '/api/orders/conflict') { writes++; return Response.json({ success: false, code: 'CONCURRENT_MODIFICATION' }, { status: 409 }); }
     if (path === '/api/orders/stream') {
       connections++; live++; maxLive = Math.max(maxLive, live);

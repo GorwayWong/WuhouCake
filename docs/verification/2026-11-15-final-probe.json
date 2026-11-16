@@ -1,0 +1,17 @@
+{
+  "fixture_count": 7,
+  "fixture_bytes": 31248421,
+  "failures": [],
+  "worker_unavailable": {
+    "status": 503,
+    "code": "IMAGE_PROCESSING_TIMEOUT",
+    "seconds": 12.445
+  },
+  "elapsed_seconds": 121.84,
+  "completed_batches": 7,
+  "busy_rejections": 14,
+  "reconciled_connections": 0,
+  "read_count": 336,
+  "read_p95_seconds": 0.05659150000428781,
+  "read_max_seconds": 0.5142173340427689
+}

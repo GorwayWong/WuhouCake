@@ -5,7 +5,12 @@ import java.util.UUID;
 
 public final class AccountValues {
     private AccountValues() { }
-    public enum JobRole { MANAGER, FRONT_DESK, PASTRY_CHEF }
+    public enum JobRole {
+        STORE_MANAGER, PASTRY_SUPERVISOR, FRONT_DESK_SUPERVISOR, DECORATOR, BAKER, FRONT_DESK_CLERK,
+        /** 存量岗位在逐人确认前保留原值，历史审计也使用这些标识。 */
+        MANAGER, FRONT_DESK, PASTRY_CHEF;
+        public boolean legacy() { return this == MANAGER || this == FRONT_DESK || this == PASTRY_CHEF; }
+    }
     public enum SystemRole { STAFF, SUPER_ADMIN }
     public enum Status { ACTIVE, ARCHIVED }
     public record Actor(UUID accountId, long credentialVersion, String requestId) { }

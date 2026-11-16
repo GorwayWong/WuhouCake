@@ -1,0 +1,89 @@
+import { orderStatusNames, productionStatuses } from './orderStates.ts';
+import { calendarRange, shiftDate, shiftMonth, time, workbenchDate } from './dates.ts';
+import type { Note, PendingOrder } from './types.ts';
+
+export interface CalendarView { date: string; mode: 'week' | 'month'; month: string; expanded: boolean }
+export interface CreatedOrderFocus { accountId: string; orderId: string; orderNo: string; date: string; located: boolean }
+export function defaultCalendarView(date: string): CalendarView {
+  return { date, mode: 'week', month: date.slice(0, 7), expanded: false };
+}
+export function readCalendarView(hash: string): CalendarView | null {
+  if (!/^#\/\?/.test(hash)) return null;
+  const params = new URLSearchParams(hash.slice(3));
+  const date = workbenchDate(`#/?date=${params.get('date') || ''}`);
+  if (!date) return null;
+  const view = defaultCalendarView(date);
+  if (params.get('view') !== 'month') return view;
+  const month = params.get('month') || date.slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(month) || !workbenchDate(`#/?date=${month}-01`)) return null;
+  const range = calendarRange(`${month}-01`, 'month');
+  return { date, mode: 'month', month, expanded: params.get('expanded') === '1' && range.dates.includes(date) };
+}
+export function calendarHref(view: CalendarView): string {
+  const params = new URLSearchParams({ date: view.date });
+  if (view.mode === 'month') {
+    params.set('view', 'month'); params.set('month', view.month);
+    if (view.expanded) params.set('expanded', '1');
+  }
+  return `#/?${params}`;
+}
+export function selectCalendarDate(view: CalendarView, date: string): CalendarView {
+  return { ...view, date, expanded: view.mode === 'month' && !(view.expanded && view.date === date) };
+}
+export function jumpCalendarDate(view: CalendarView, date: string): CalendarView {
+  return { ...view, date, month: date.slice(0, 7), expanded: view.mode === 'month' };
+}
+export function shiftCalendarPeriod(view: CalendarView, delta: number): CalendarView {
+  const date = view.mode === 'week' ? shiftDate(view.date, delta * 7)
+    : shiftMonth(`${view.month}-${view.date.slice(8)}`, delta);
+  return { ...view, date, month: date.slice(0, 7), expanded: false };
+}
+export function toggleCalendarMode(view: CalendarView): CalendarView {
+  return { ...view, mode: view.mode === 'week' ? 'month' : 'week', month: view.date.slice(0, 7), expanded: false };
+}
+export function isUnfinishedOrder(order: { status: string; deletion?: unknown; deleted?: boolean }): boolean {
+  return !order.deletion && !order.deleted && (productionStatuses.includes(order.status) || order.status === 'WAITING_DELIVERY');
+}
+export function timelinePartitions(orders: PendingOrder[], status: string) {
+  const visible = orders.filter(order => !order.deletion && !order.deleted);
+  return [
+    { id: 'pending', label: '待处理', orders: visible.filter(isUnfinishedOrder), expanded: true },
+    { id: 'completed', label: orderStatusNames.COMPLETED, orders: visible.filter(order => order.status === 'COMPLETED'), expanded: Boolean(status) },
+    { id: 'unknown', label: '状态待更新', orders: visible.filter(order => !Object.hasOwn(orderStatusNames, order.status)), expanded: true },
+    { id: 'cancelled', label: orderStatusNames.CANCELLED, orders: visible.filter(order => order.status === 'CANCELLED'), expanded: Boolean(status) },
+  ].filter(group => group.orders.length);
+}
+export function overdueOrderCount(date: string, orders: { status: string; deletion?: unknown; deleted?: boolean }[], storeToday: string): number {
+  return date < storeToday ? orders.filter(isUnfinishedOrder).length : 0;
+}
+export function compareCalendarOrders(a: { plannedHandoffAt: string | null; orderNo: string }, b: { plannedHandoffAt: string | null; orderNo: string }): number {
+  const first = a.plannedHandoffAt ? Date.parse(a.plannedHandoffAt) : Infinity;
+  const second = b.plannedHandoffAt ? Date.parse(b.plannedHandoffAt) : Infinity;
+  return first - second || a.orderNo.localeCompare(b.orderNo);
+}
+export function groupOrdersByTime(orders: PendingOrder[], precision: 'half-hour' | 'minute' = 'half-hour'): { key: string; time: string; date: string | null; endTime: string | null; endsNextDay: boolean; orders: PendingOrder[] }[] {
+  const interval = precision === 'minute' ? 60_000 : 1_800_000;
+  const groups = new Map<number | null, PendingOrder[]>();
+  for (const order of [...orders].sort(compareCalendarOrders)) {
+    const slot = order.plannedHandoffAt ? Math.floor(Date.parse(order.plannedHandoffAt) / interval) * interval : null;
+    const group = groups.get(slot) || [];
+    group.push(order); groups.set(slot, group);
+  }
+  const dateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
+  return Array.from(groups, ([slot, orders]) => {
+    if (slot === null) return { key: String(slot), time: '时间待定', date: null, endTime: null, endsNextDay: false, orders };
+    const start = new Date(slot);
+    const end = new Date(slot + 1_800_000);
+    const date = dateFormat.format(start);
+    return { key: String(slot), time: time(start.toISOString()), date, endTime: precision === 'minute' ? null : time(end.toISOString()), endsNextDay: precision !== 'minute' && dateFormat.format(end) !== date, orders };
+  });
+}
+export function latestOrderNote(order: Pick<PendingOrder, 'items' | 'latestNote'>): Note | undefined {
+  if (order.latestNote !== undefined) return order.latestNote || undefined;
+  let latest: Note | undefined;
+  for (const item of order.items) for (const note of item.recentNotes) {
+    if (!latest || Date.parse(note.createdAt) > Date.parse(latest.createdAt)
+      || (Date.parse(note.createdAt) === Date.parse(latest.createdAt) && note.id > latest.id)) latest = note;
+  }
+  return latest;
+}

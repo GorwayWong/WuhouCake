@@ -10,12 +10,123 @@ import org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer;
 import org.xaspire.WuhouCake.order.api.dto.OrderQueryViews;
 import org.xaspire.WuhouCake.order.domain.port.OrderQueries;
 
+import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.PRODUCTION_STATUSES;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
 
 public class OrderQueryService {
     private static final ZoneId STORE_ZONE = ZoneId.of("Asia/Shanghai");
     private final OrderQueries queries;
-    public OrderQueryService(OrderQueries queries) { this.queries = queries; }
+    private final Clock clock;
+
+    public OrderQueryService(OrderQueries queries, Clock clock) {
+        this.queries = queries;
+        this.clock = clock;
+    }
+
+    private static final int PRODUCTION_PAGE_SIZE = 20;
+
+    @Transactional(readOnly = true)
+    public OrderQueryViews.ProductionSummary productionSummary(LocalDate from, LocalDate to, String stage) {
+        if (!productionDate(from) || !productionDate(to) || !from.isBefore(to) || ChronoUnit.DAYS.between(from, to) > 42) throw invalid();
+        var counts = new HashMap<LocalDate, Long>();
+        for (var row : queries.productionCounts(storeDayStart(from), storeDayStart(to), productionStages(stage))) {
+            counts.put(row.date(), row.orderCount());
+        }
+        var days = from.datesUntil(to).map(date -> new OrderQueryViews.ProductionDay(date, counts.getOrDefault(date, 0L))).toList();
+        return new OrderQueryViews.ProductionSummary(days.stream().mapToLong(OrderQueryViews.ProductionDay::orderCount).sum(),
+                counts.getOrDefault(null, 0L), days);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.ProductionOrders productionOrders(LocalDate date, boolean unscheduled, String stage, int page) {
+        if (page < 1 || (unscheduled ? date != null : !productionDate(date))) throw invalid();
+        var stages = productionStages(stage);
+        Instant from = unscheduled ? null : storeDayStart(date);
+        Instant to = unscheduled ? null : storeDayStart(date.plusDays(1));
+        long total = queries.productionOrderCount(from, to, stages);
+        int current = (int) Math.min(page, total == 0 ? 1 : 1 + (total - 1) / PRODUCTION_PAGE_SIZE);
+        var orders = total == 0 ? List.<OrderQueryViews.ProductionOrder>of()
+                : queries.productionOrders(from, to, stages, PRODUCTION_PAGE_SIZE, (current - 1L) * PRODUCTION_PAGE_SIZE).stream()
+                        .map(row -> new OrderQueryViews.ProductionOrder(row.orderId(), row.orderNo(), row.itemName(),
+                                row.status(), row.plannedFinishAt(), row.pickupAt(), row.pickupDate())).toList();
+        return new OrderQueryViews.ProductionOrders(current, total, orders);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.ProductionReminders productionReminders() {
+        var now = clock.instant();
+        var date = now.atZone(STORE_ZONE).toLocalDate();
+        return new OrderQueryViews.ProductionReminders(date,
+                queries.countScheduledProduction(now, storeDayStart(date.plusDays(1)), PRODUCTION_STATUSES),
+                queries.countScheduledProduction(null, now, PRODUCTION_STATUSES));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.ProductionReminderOrders productionReminderOrders(String group, int page) {
+        if (page < 1 || !Set.of("today", "overdue").contains(group)) throw invalid();
+        var now = clock.instant();
+        var date = now.atZone(STORE_ZONE).toLocalDate();
+        boolean overdue = "overdue".equals(group);
+        var from = overdue ? null : now;
+        var to = overdue ? now : storeDayStart(date.plusDays(1));
+        long total = queries.countScheduledProduction(from, to, PRODUCTION_STATUSES);
+        int current = (int) Math.min(page, total == 0 ? 1 : 1 + (total - 1) / PRODUCTION_PAGE_SIZE);
+        var rows = total == 0 ? List.<OrderQueries.PendingOrder>of()
+                : queries.scheduledProduction(from, to, PRODUCTION_STATUSES, PRODUCTION_PAGE_SIZE, (current - 1L) * PRODUCTION_PAGE_SIZE);
+        return new OrderQueryViews.ProductionReminderOrders(date, current, total, pendingViews(rows));
+    }
+
+    private static Set<String> productionStages(String stage) {
+        if (stage == null) return PRODUCTION_STATUSES;
+        if (!PRODUCTION_STATUSES.contains(stage)) throw invalid();
+        return Set.of(stage);
+    }
+
+    private static boolean productionDate(LocalDate date) {
+        return date != null && date.getYear() >= 1 && date.getYear() <= 9999;
+    }
+
+    private static Instant storeDayStart(LocalDate date) {
+        return date.atStartOfDay(STORE_ZONE).toInstant();
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.PaymentOrders paymentOrders(LocalDate date, String kind, int page) {
+        if (date == null || kind == null || !Set.of("RECEIPT", "SHIPPING_PAID", "SHIPPING_UNPAID").contains(kind) || page < 1) throw invalid();
+        Instant from, to;
+        try {
+            from = date.atStartOfDay(STORE_ZONE).toInstant();
+            to = date.plusDays(1).atStartOfDay(STORE_ZONE).toInstant();
+        } catch (DateTimeException failure) { throw invalid(); }
+        long total = queries.paymentOrderCount(date, kind, from, to);
+        int current = (int) Math.min(page, Math.max(1, (total + 9) / 10));
+        var rows = queries.paymentOrders(date, kind, from, to, (current - 1L) * 10).stream()
+                .map(row -> new OrderQueryViews.PaymentOrder(row.orderId(), row.orderNo(), row.createdAt(), row.calendarDate(),
+                        row.paidAt(), row.amountCents(), row.paymentStatus(), row.status(), row.currentStageCode())).toList();
+        return new OrderQueryViews.PaymentOrders(date, kind, current, total, rows);
+    }
+
+    @Transactional(readOnly = true)
+    public OrderQueryViews.ReceiptSummary receiptSummary(LocalDate date) {
+        if (date == null) throw invalid();
+        var result = queries.receiptSummary(date.atStartOfDay(STORE_ZONE).toInstant(), date.plusDays(1).atStartOfDay(STORE_ZONE).toInstant());
+        return new OrderQueryViews.ReceiptSummary(date, result.orderCount(), result.amountCents(), result.missingAmountOrderCount());
+    }
+    @Transactional(readOnly = true)
+    public OrderQueryViews.CakeBaseSummary cakeBases(LocalDate date) {
+        if (date == null) throw invalid();
+        return new OrderQueryViews.CakeBaseSummary(date, queries.cakeBases(date).stream()
+                .map(row -> new OrderQueryViews.CakeBase(row.size(), row.flavor(), row.quantity())).toList());
+    }
+
+    @Transactional(readOnly = true)
+    public OrderQueryViews.PaymentSummary paymentSummary(LocalDate date) {
+        if (date == null) throw invalid();
+        var summary = queries.paymentSummary(date);
+        return new OrderQueryViews.PaymentSummary(date, summary.totalOrderCount(), summary.waitingDeliveryOrderCount(),
+                new OrderQueryViews.PaymentGroup(summary.paidOrderCount(), summary.paidAmountCents(), summary.paidMissingAmountOrderCount()),
+                new OrderQueryViews.PaymentGroup(summary.unpaidOrderCount(), summary.unpaidAmountCents(), summary.unpaidMissingAmountOrderCount()), summary.paidWithoutDateOrderCount());
+    }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public List<OrderQueryViews.CalendarOrder> calendar(LocalDate from, LocalDate to) {
@@ -27,7 +138,7 @@ public class OrderQueryService {
                         Collectors.mapping(item -> new OrderQueryViews.CalendarItem(item.itemId(), item.name(), item.quantity()), Collectors.toList())));
         return orders.stream().map(order -> new OrderQueryViews.CalendarOrder(order.orderId(), order.orderNo(), order.calendarDate(),
                 order.status(), order.currentStageCode(), order.paymentStatus(), order.fulfillmentType(), order.plannedHandoffAt(),
-                items.getOrDefault(order.orderId(), List.of()))).toList();
+                order.customerPhoneLast4(), items.getOrDefault(order.orderId(), List.of()))).toList();
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -44,8 +155,18 @@ public class OrderQueryService {
             to = date.plusDays(1).atStartOfDay(STORE_ZONE).toInstant();
         } catch (DateTimeException failure) { throw invalid(); }
         var metrics = includeMetrics ? queries.metrics(date, from, to) : null;
-        var orders = queries.pending(date);
+        return new OrderQueryViews.Workbench(date, metrics == null ? null
+                : new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()),
+                pendingViews(queries.pending(date)));
+    }
+
+    private List<OrderQueryViews.PendingOrder> pendingViews(List<OrderQueries.PendingOrder> orders) {
         var orderIds = orders.stream().map(OrderQueries.PendingOrder::orderId).toList();
+        var latestNotes = orderIds.isEmpty() ? Map.<UUID, OrderQueryViews.Note>of()
+                : queries.latestNotes(orderIds).stream().collect(Collectors.toMap(OrderQueries.OrderNote::orderId, entry -> {
+                    var note = entry.note();
+                    return new OrderQueryViews.Note(note.id(), note.itemId(), note.actorId(), note.actorNameSnapshot(), note.createdAt(), note.content());
+                }));
         var items = orderIds.isEmpty() ? List.<OrderQueries.Item>of() : queries.items(orderIds);
         var notes = items.isEmpty() ? List.<OrderQueries.Note>of()
                 : queries.recentNotes(orderIds, items.stream().map(OrderQueries.Item::itemId).toList());
@@ -55,11 +176,9 @@ public class OrderQueryService {
         var itemsByOrder = items.stream().collect(Collectors.groupingBy(OrderQueries.Item::orderId,
                 Collectors.mapping(item -> new OrderQueryViews.Item(item.itemId(), item.name(), item.productType(), item.quantity(),
                         item.unitPriceCents(), item.memberPriceCents(), item.attributes(), notesByItem.getOrDefault(item.itemId(), List.of())), Collectors.toList())));
-        var pending = orders.stream().map(order -> new OrderQueryViews.PendingOrder(order.orderId(), order.orderNo(), order.calendarDate(),
+        return orders.stream().map(order -> new OrderQueryViews.PendingOrder(order.orderId(), order.orderNo(), order.calendarDate(),
                 order.status(), order.currentStageCode(), order.paymentStatus(), order.fulfillmentType(), order.plannedHandoffAt(),
                 new Customer(order.customerName(), order.phone(), order.memberPhone(), order.buyerName()), order.address(), order.plannedFinishAt(),
-                itemsByOrder.getOrDefault(order.orderId(), List.of()))).toList();
-        return new OrderQueryViews.Workbench(date, metrics == null ? null
-                : new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()), pending);
+                itemsByOrder.getOrDefault(order.orderId(), List.of()), latestNotes.get(order.orderId()), order.requestedReceiveAt())).toList();
     }
 }

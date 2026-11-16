@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canEditItems, canRemoveItem, itemChangeRequest, itemDraft, itemInput, newItem } from '../src/orderForm.ts';
+import { canEditItems, canRemoveItem, changeItemDraft, itemChangeRequest, itemDraft, itemInput, newItem } from '../src/orderForm.ts';
 import type { Detail } from '../src/types.ts';
 
 const order: Detail = {
-  orderId: 'items-test', orderNo: '0000012', version: 2, status: 'PROCESSING', currentStageCode: 'LAYER_DONE', paymentStatus: 'PAID',
+  orderId: 'items-test', orderNo: '0000012', version: 2, status: 'LAYER', currentStageCode: null, paymentStatus: 'PAID',
   customer: { customerName: '合成客户', phone: '13800001111', memberPhone: null, buyerName: null },
   fulfillment: { type: 'PICKUP', address: null, requestedReceiveDate: '2026-10-14', plannedHandoffAt: '2026-10-14T10:00:00Z', plannedFinishAt: null },
   totalAmountCents: 32000, createdAt: '2026-10-14T01:00:00Z', updatedAt: '2026-10-14T01:00:00Z',
@@ -25,17 +25,17 @@ test('单商品仅提交差异，结构化与未知 JSONB、其他商品、备�
   assert.deepEqual(order, snapshot);
 });
 
-test('规格删除提交 null，报价清空与 0 区分，金额精确转分且无变化不提交', () => {
-  const draft = itemDraft(order.items[0]);
-  draft.unitPrice = '199.290';
-  assert.ok(itemChangeRequest(order, 'first', draft).errors.unitPrice);
+test('其他商品规格可清空，旧价格不可改写，新增不提交商品价格', () => {
+  const pricedOrder = structuredClone(order);
+  Object.assign(pricedOrder.items[0], { productType: 'OTHER', attributes: { specification: '少糖' } });
+  const draft = itemDraft(pricedOrder.items[0]);
   draft.unitPrice = '199.29'; draft.memberPrice = '0';
-  assert.equal(itemChangeRequest(order, 'first', draft).request, null);
-  draft.attributes.requirements = ''; draft.unitPrice = '280.01'; draft.memberPrice = '';
-  assert.deepEqual(itemChangeRequest(order, 'first', draft).request?.changes, { unitPriceCents: 28001, memberPriceCents: null, attributes: { requirements: null } });
-  const added = newItem(); added.name = '追加蛋糕'; added.unitPrice = '199.29'; added.memberPrice = '0';
+  assert.equal(itemChangeRequest(pricedOrder, 'first', draft).request, null);
+  draft.attributes.specification = '';
+  assert.deepEqual(itemChangeRequest(pricedOrder, 'first', draft).request?.changes, { attributes: { specification: null } });
+  const added = newItem(); added.name = '追加饮品'; added.productType = 'OTHER'; added.unitPrice = '199.29'; added.memberPrice = '0';
   const result = itemInput(added);
-  assert.equal(result.item?.unitPriceCents, 19929); assert.equal(result.item?.memberPriceCents, 0);
+  assert.equal(result.item?.unitPriceCents, null); assert.equal(result.item?.memberPriceCents, null);
   assert.equal('itemId' in result.item!, false);
 });
 
@@ -45,10 +45,10 @@ test('数量限制与合法状态，禁止移除最后一件有效商品', () =>
   assert.equal(canRemoveItem(order, 'first'), true);
   assert.equal(canRemoveItem({ ...order, items: [order.items[0]] }, 'first'), false);
   assert.equal(canRemoveItem(order, 'missing'), false);
-  for (const status of ['WAITING_DELIVERY', 'WAITING_PICKUP', 'DELIVERING', 'COMPLETED', 'CANCELLED']) {
+  for (const status of ['COMPLETED', 'CANCELLED']) {
     assert.equal(canEditItems({ status }), false); assert.equal(canRemoveItem({ ...order, status }, 'first'), false);
   }
-  assert.equal(canEditItems({ status: 'WAITING_PRODUCTION' }), true);
+  for (const status of ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING']) assert.equal(canEditItems({ status }), true);
 });
 
 test('409 复核基线保留草稿，仅提交员工改动，不回写同事规格，已移除商品不能保存', () => {
@@ -74,4 +74,30 @@ test('重新制作复核后使用响应版本，只提交原草稿差异并保�
   assert.deepEqual(itemChangeRequest(order, 'first', draft, reopened).request, { expectedVersion: 5, itemId: 'first', changes: { attributes: { size: '10' } } });
   assert.deepEqual(itemChangeRequest(order, 'first', draft, newer).request, { expectedVersion: 6, itemId: 'first', changes: { attributes: { size: '10' } } });
   assert.deepEqual(draft, snapshot);
+});
+
+test('蛋糕改其他必须使用最新属性，重转保留同事新增要求及结构化属性', () => {
+  const latest = structuredClone(order); latest.version++;
+  latest.items[0].attributes.requirements = '不要坚果';
+  latest.items[0].attributes.decoration = { color: '红色' };
+  const old = changeItemDraft(itemDraft(order.items[0]), { productType: 'OTHER' });
+  const blocked = itemChangeRequest(order, 'first', old, latest);
+  assert.equal(blocked.request, null);
+  assert.match(blocked.errors.specification, /重新转换/);
+  const fresh = changeItemDraft(itemDraft(latest.items[0]), { productType: 'OTHER' });
+  const retry = itemChangeRequest(order, 'first', fresh, latest, latest.items[0]).request!;
+  assert.equal(retry.expectedVersion, latest.version);
+  assert.equal(retry.changes.attributes?.requirements, '不要坚果');
+  assert.match(String(retry.changes.attributes?.specification), /红色/);
+  assert.doesNotMatch(String(retry.changes.attributes?.specification), /少糖/);
+  const newer = structuredClone(latest); newer.version++;
+  newer.items[0].attributes.requirements = '不要牛奶';
+  assert.equal(itemChangeRequest(order, 'first', fresh, newer, latest.items[0]).request, null);
+  const convertedByPeer = structuredClone(latest); convertedByPeer.version++;
+  convertedByPeer.items[0].productType = 'OTHER';
+  convertedByPeer.items[0].attributes = { specification: '不要坚果' };
+  const reviewed = changeItemDraft(itemDraft(convertedByPeer.items[0]), { productType: 'OTHER' });
+  const subsequent = structuredClone(convertedByPeer); subsequent.version++;
+  subsequent.items[0].attributes.specification = '不要坚果\n不要牛奶';
+  assert.equal(itemChangeRequest(order, 'first', reviewed, subsequent, convertedByPeer.items[0]).request, null);
 });
