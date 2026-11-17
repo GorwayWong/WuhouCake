@@ -2192,11 +2192,12 @@ button,a{
 .draft-dialog p{line-height:1.7;overflow-wrap:anywhere}
 .draft-dialog .icon-button{flex-shrink:0}
 .draft-dialog .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:20px}
+.draft-dialog .actions>button{min-height:44px}
 .draft-summary{display:grid;gap:12px;margin:20px 0}
 .draft-summary>div{display:grid;grid-template-columns:72px minmax(0,1fr);gap:12px}
 .draft-summary dt{color:var(--muted)}
 .draft-summary dd{margin:0;overflow-wrap:anywhere}
-@media(max-width:480px){.draft-dialog{padding:20px}.draft-dialog .actions>button{flex:1;min-height:44px}}
+@media(max-width:480px){.draft-dialog{padding:20px}.draft-dialog .actions>button{flex:1 0 auto}}
 
 .finish-time-help { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; }
 .finish-time-help .text-button { min-height: 44px; }

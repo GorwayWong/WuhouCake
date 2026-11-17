@@ -1,3 +1,4 @@
+import { cycleOrderDraft, openOrderDraft, pendingOrderDraft, savedOrderDraft, saveOrderDraftAndExit } from './orderBrowserFixture.mjs';
 import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -59,9 +60,10 @@ async function fixture() {
   await page.locator('#customerName').waitFor();
   return { context, page, model, errors };
 }
-async function saved(page, account = 'alice') {
-  return page.evaluate(account => JSON.parse(localStorage.getItem(`wuhou:order-draft:v1:${account}`)), account);
-}
+const saved = savedOrderDraft;
+const pending = pendingOrderDraft;
+const fieldValue = (page, name) => page.locator(`input[name="${name}"]`).inputValue();
+const button = (page, name) => page.getByRole('button', { name, exact: true });
 async function waitFor(check) {
   for (let i = 0; i < 100; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 25)); }
   throw new Error('Timed out waiting for draft state');
@@ -72,39 +74,37 @@ async function complete(page) {
   await page.getByRole('option', { name: '门店自提' }).click();
   await page.locator('[id="items.0.name"]').fill('生日蛋糕');
 }
-test('只粘贴原文也同步保存，刷新和重新进入直接恢复', async () => {
+test('只粘贴原文可显式保存，重开时选择恢复', async () => {
   const { context, page, errors } = await fixture();
   try {
     assert.equal(await saved(page), null);
     await page.getByText('粘贴下单信息', { exact: true }).click();
     await page.locator('#recognition-text').fill('微信原文：王女士生日蛋糕 🎂');
+    assert.equal(await saved(page), null);
+    await saveOrderDraftAndExit(page);
     assert.equal((await saved(page)).editor.text, '微信原文：王女士生日蛋糕 🎂');
-    await page.reload();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await page.reload(); await openOrderDraft(page);
     assert.equal(await page.getByRole('dialog').count(), 0);
     if (process.env.DRAFT_SCREENSHOT) await page.screenshot({ path: process.env.DRAFT_SCREENSHOT });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.getByRole('link', { name: '日历工作台', exact: true }).click();
     await page.getByRole('link', { name: '新建订单', exact: true }).waitFor();
     assert.ok(await saved(page));
-    await page.getByRole('link', { name: '新建订单', exact: true }).click();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await openOrderDraft(page);
     assert.equal(await page.locator('#recognition-text').inputValue(), '微信原文：王女士生日蛋糕 🎂');
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
-test('多商品、未完成金额、当前商品及手工标记跨刷新恢复，离开后重入直接恢复', async () => {
+test('多商品、未完成金额、当前商品及手工标记随已保存草稿恢复', async () => {
   const { context, page } = await fixture();
   try {
     await page.locator('#customerName').fill('王女士');
     await page.locator('[id="items.0.unitPrice"]').fill('199.');
     await page.getByRole('button', { name: '添加商品', exact: true }).click();
     await page.locator('[id="items.1.name"]').fill('第二个蛋糕');
-    const original = await saved(page);
     await page.evaluate(() => window.scrollTo(0, 500));
-    await waitFor(async () => (await saved(page)).editor.scrollY > 0);
-    await page.reload();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await saveOrderDraftAndExit(page); const original = await saved(page);
+    await page.reload(); await openOrderDraft(page);
     assert.equal(await page.locator('#customerName').inputValue(), '王女士');
     assert.equal((await saved(page)).value.items[0].unitPrice, '199.');
     assert.equal(await page.locator('#totalAmount').inputValue(), '');
@@ -114,8 +114,7 @@ test('多商品、未完成金额、当前商品及手工标记跨刷新恢复�
     assert.ok(restored.editor.manualFields.includes('customerName'));
     await page.evaluate(() => { location.hash = '#'; });
     await waitFor(() => page.locator('#customerName').count().then(n => n === 0));
-    await page.evaluate(() => { location.hash = '#/orders/new'; });
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await openOrderDraft(page);
   } finally { await context.close(); }
 });
 test('响应丢失后重载，用原始载荷及相同标识重试，仅产生一单，成功清除草稿', async () => {
@@ -124,14 +123,14 @@ test('响应丢失后重载，用原始载荷及相同标识重试，仅产生�
     await complete(page); model.loseResponse = true;
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
     await page.getByRole('button', { name: '重试提交' }).waitFor();
-    const original = await saved(page);
+    const original = await pending(page);
     assert.ok(original.pending);
     await page.reload();
     await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     assert.equal(await page.locator('#phone').isDisabled(), true);
     assert.equal(model.requests.length, 1);
     await page.getByRole('button', { name: '重试提交' }).click();
-    await waitFor(async () => (await saved(page)) === null);
+    await waitFor(async () => (await pending(page)) === null);
     assert.equal(model.orders.size, 1);
     assert.deepEqual(model.requests.map(request => request.id), [original.requestId, original.requestId]);
     assert.deepEqual(model.requests[1].body, original.pending);
@@ -143,69 +142,87 @@ test('明确拒绝后解锁表单，草稿保持可编辑', async () => {
   try {
     await complete(page); model.reject = true;
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
-    await waitFor(async () => (await saved(page))?.pending === undefined);
+    await page.getByText(/填写内容不符合要求/).waitFor();
+    assert.equal(await pending(page), null);
     await page.locator('#customerName').fill('拒绝后继续修改');
+    await saveOrderDraftAndExit(page);
     assert.equal((await saved(page)).value.customerName, '拒绝后继续修改');
   } finally { await context.close(); }
 });
-test('其他标签页更新后暂停旧页保存，不覆盖新内容', async () => {
+test('跨标签页同时退出保存，旧版本须再次确认才能覆盖', async () => {
   const { context, page } = await fixture();
   try {
-    await page.locator('#customerName').fill('旧内容');
-    const second = await context.newPage();
-    await second.goto(`${base}/#/orders/new`);
-    await second.getByText('已恢复上次填写', { exact: true }).waitFor();
-    await second.locator('#customerName').fill('新标签页更新');
-    await page.getByText('其他标签页已更新或清除了草稿', { exact: false }).waitFor();
-    assert.equal(await page.locator('#customerName').isDisabled(), true);
-    assert.equal((await saved(page)).value.customerName, '新标签页更新');
+    const peer = await context.newPage();
+    await peer.goto(`${base}/#/orders/new`);
+    await page.locator('#customerName').fill('甲草稿');
+    await peer.locator('#customerName').fill('乙草稿');
+    for (const tab of [page, peer]) await tab.getByRole('link', { name: '日历工作台', exact: true }).click();
+    await Promise.all([page, peer].map(tab => button(tab, '保存草稿并退出').click()));
+    await waitFor(async () => await saved(page) !== null);
+    const winner = (await saved(page)).value.customerName === '甲草稿' ? page : peer;
+    const other = winner === page ? peer : page;
+    await winner.getByRole('link', { name: '新建订单', exact: true }).waitFor();
+    await other.getByRole('alert').filter({ hasText: '其他标签页已更新草稿' }).waitFor();
+    assert.equal(await other.locator('#customerName').inputValue(), winner === page ? '乙草稿' : '甲草稿');
+    await button(other, '保存草稿并退出').click();
+    await other.getByRole('link', { name: '新建订单', exact: true }).waitFor();
+    assert.equal((await saved(page)).value.customerName, winner === page ? '乙草稿' : '甲草稿');
   } finally { await context.close(); }
 });
-test('存储不可用时继续保留输入，恢复写权限后可重试，放弃草稿需确认', async () => {
+
+test('草稿写入失败时旧快照保留，恢复浏览器存储后可重试', async () => {
   const { context, page } = await fixture();
   try {
-    await page.evaluate(() => { window.originalSetItem = Storage.prototype.setItem; Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); }; });
-    await page.locator('#customerName').fill('仍在页面的内容');
-    await page.getByText('本机保存失败，请暂勿关闭页面。', { exact: false }).waitFor();
-    assert.equal(await page.locator('#customerName').inputValue(), '仍在页面的内容');
-    await page.evaluate(() => { Storage.prototype.setItem = window.originalSetItem; });
-    await page.getByRole('button', { name: '重试保存' }).click();
-    assert.equal((await saved(page)).value.customerName, '仍在页面的内容');
-    await page.getByRole('button', { name: '另起新单', exact: true }).click();
-    await page.getByRole('button', { name: '返回', exact: true }).click();
-    assert.ok(await saved(page));
-    await page.getByRole('button', { name: '另起新单', exact: true }).click();
-    await page.getByRole('button', { name: '确认放弃', exact: true }).click();
-    assert.equal(await saved(page), null);
-    assert.equal(await page.locator('#customerName').inputValue(), '');
+    await page.locator('#customerName').fill('旧草稿');
+    await cycleOrderDraft(page);
+    await page.locator('#customerName').fill('重试保存的新内容');
+    await page.evaluate(() => {
+      window.originalPut = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...args) {
+        if (this.name === 'drafts') throw new DOMException('quota', 'QuotaExceededError');
+        return window.originalPut.apply(this, args);
+      };
+    });
+    await page.getByRole('link', { name: '退出下单', exact: true }).click();
+    await button(page, '保存草稿并退出').click();
+    await page.getByRole('alert').filter({ hasText: '草稿保存失败' }).waitFor();
+    assert.equal((await saved(page)).value.customerName, '旧草稿');
+    assert.equal(await page.locator('#customerName').inputValue(), '重试保存的新内容');
+    await page.evaluate(() => { IDBObjectStore.prototype.put = window.originalPut; });
+    await button(page, '保存草稿并退出').click();
+    await page.getByRole('link', { name: '新建订单', exact: true }).waitFor();
+    assert.equal((await saved(page)).value.customerName, '重试保存的新内容');
   } finally { await context.close(); }
 });
-test('登录自动过期保留，原员工恢复，主动退出取消保留、确认后清除', async () => {
+
+test('登录过期保留当前页，主动退出可保存到原账号草稿', async () => {
   const { context, page } = await fixture();
   try {
     await page.locator('#customerName').fill('过期前内容');
     await page.evaluate(async () => { (await import('/src/api.ts')).forgetSession(); });
     await page.getByRole('heading', { name: '员工登录' }).waitFor();
-    assert.ok(await saved(page));
+    assert.equal(await saved(page), null);
     await page.locator('[name="employeeNumber"]').fill('alice');
     await page.locator('[name="password"]').fill('test-password');
-    await page.getByRole('button', { name: '登录工作台' }).click();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await button(page, '登录工作台').click();
+    await page.locator('#customerName').waitFor();
     assert.equal(await page.locator('#customerName').inputValue(), '过期前内容');
-    page.once('dialog', dialog => dialog.dismiss());
-    await page.getByRole('button', { name: '退出登录', exact: true }).click();
-    assert.ok(await saved(page));
-    page.once('dialog', dialog => dialog.accept());
-    await page.getByRole('button', { name: '退出登录', exact: true }).click();
+    await button(page, '退出登录').click();
+    await button(page, '继续填写').click();
+    assert.equal(await page.locator('#customerName').inputValue(), '过期前内容');
+    await button(page, '退出登录').click();
+    await button(page, '保存草稿并退出').click();
     await page.getByRole('heading', { name: '员工登录' }).waitFor();
-    assert.equal(await saved(page), null);
+    assert.equal((await saved(page)).value.customerName, '过期前内容');
   } finally { await context.close(); }
 });
+
 test('不同员工及失去录单权限时不展示原账号草稿', async () => {
   const { context, page, model } = await fixture();
   try {
     await page.locator('#customerName').fill('alice 私有草稿');
-    model.account = 'bob'; await page.reload();
+    await saveOrderDraftAndExit(page);
+    model.account = 'bob'; await page.goto(`${base}/#/orders/new`); await page.reload();
     await page.locator('#customerName').waitFor();
     assert.equal(await page.locator('#customerName').inputValue(), '');
     assert.equal(await page.getByRole('dialog').count(), 0);
@@ -220,8 +237,7 @@ test('恢复草稿后登录过期，其他员工登录时不展示原草稿', as
   const { context, page, model } = await fixture();
   try {
     await page.locator('#customerName').fill('Alice-private-customer');
-    await page.reload();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await cycleOrderDraft(page);
     await page.evaluate(async () => { (await import('/src/api.ts')).forgetSession(); });
     await page.getByRole('heading', { name: '员工登录' }).waitFor();
     await page.evaluate(() => {
@@ -269,10 +285,10 @@ test('识别核对标记及手工字段保护跨恢复保留，再次识别不�
       await page.locator('.recognition-section').scrollIntoViewIfNeeded();
       await page.screenshot({ path: process.env.DRAFT_SCREENSHOT.replace(/\.png$/, '-recognition.png') });
     }
+    await saveOrderDraftAndExit(page);
     const original = await saved(page);
     assert.ok(Object.keys(original.editor.feedback).length);
-    await page.reload();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await page.reload(); await openOrderDraft(page);
     assert.equal(await page.locator('#customerName').inputValue(), '手工姓名');
     assert.deepEqual((await saved(page)).editor.feedback, original.editor.feedback);
     await page.getByText('粘贴下单信息', { exact: true }).click();
@@ -281,20 +297,21 @@ test('识别核对标记及手工字段保护跨恢复保留，再次识别不�
     assert.equal(await page.locator('#customerName').inputValue(), '手工姓名');
   } finally { await context.close(); }
 });
-test('切后台及 pagehide 补存最新滚动位置，不触发恢复弹窗或清空输入', async () => {
+test('切后台及 pagehide 不覆盖已保存草稿，保留当前页面输入', async () => {
   const { context, page } = await fixture();
   try {
     await page.locator('#customerName').fill('切后台内容');
-    const id = (await saved(page)).requestId;
+    await cycleOrderDraft(page);
+    await page.locator('#customerName').fill('只在当前页');
+    const previous = await saved(page);
     await page.evaluate(() => {
       window.scrollTo(0, 420);
       Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
       document.dispatchEvent(new Event('visibilitychange'));
       window.dispatchEvent(new PageTransitionEvent('pagehide'));
     });
-    assert.equal((await saved(page)).editor.scrollY, 420);
-    assert.equal((await saved(page)).requestId, id);
-    assert.equal(await page.locator('#customerName').inputValue(), '切后台内容');
+    assert.deepEqual(await saved(page), previous);
+    assert.equal(await page.locator('#customerName').inputValue(), '只在当前页');
     assert.equal(await page.getByRole('dialog').count(), 0);
   } finally { await context.close(); }
 });
@@ -351,7 +368,7 @@ test('取货日期、时刻和出品输入沿用原规则，恢复后同步提�
     await complete(page); model.reject = true;
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
     await waitFor(() => Promise.resolve(model.requests.length === 1));
-    await waitFor(async () => (await saved(page)).pending === undefined);
+    await waitFor(async () => (await pending(page)) === null);
     assert.equal(model.requests[0].body.fulfillment.requestedReceiveAt, null);
     assert.equal(model.requests[0].body.fulfillment.plannedHandoffAt, null);
     const date = await value('requestedReceiveAt');
@@ -362,15 +379,12 @@ test('取货日期、时刻和出品输入沿用原规则，恢复后同步提�
     await page.getByRole('button', { name: '今天', exact: true }).click();
     await selectTime(page, 'plannedFinishAt', 'hour', '08');
     const production = await value('plannedFinishAt');
-    const id = (await saved(page)).requestId;
-    await page.reload();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await cycleOrderDraft(page);
     assert.equal(await value('requestedReceiveAt'), date + 'T09:15');
     assert.equal(await value('plannedFinishAt'), production);
-    assert.equal((await saved(page)).requestId, id);
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
     await waitFor(() => Promise.resolve(model.requests.length === 2));
-    await waitFor(async () => (await saved(page)).pending === undefined);
+    await waitFor(async () => (await pending(page)) === null);
     const fulfillment = model.requests[1].body.fulfillment;
     assert.equal(fulfillment.requestedReceiveAt, fulfillment.plannedHandoffAt);
     assert.equal(fulfillment.requestedReceiveAt, date + 'T09:15:00+08:00');
@@ -400,10 +414,9 @@ test('识别带入的取货和出品时间在顶部显示，草稿恢复保留�
     await page.getByText('粘贴下单信息', { exact: true }).click();
     await page.locator('#recognition-text').fill('11月8日15:30取货，13:00出品');
     await page.getByRole('button', { name: '识别并填入', exact: true }).click();
-    await waitFor(async () => (await saved(page))?.value.requestedReceiveAt === '2026-11-08T15:30');
+    await waitFor(async () => await fieldValue(page, 'requestedReceiveAt') === '2026-11-08T15:30');
     assert.equal(await page.locator('.create-time-grid > label[data-recognition="true"]').count(), 2);
-    await page.reload();
-    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await cycleOrderDraft(page);
     assert.equal(await page.locator('input[name="requestedReceiveAt"]').inputValue(), '2026-11-08T15:30');
     assert.equal(await page.locator('input[name="plannedFinishAt"]').inputValue(), '2026-11-08T13:00');
     assert.equal(await page.locator('.create-time-grid > label[data-recognition="true"]').count(), 2);
@@ -438,15 +451,16 @@ test('移动端字段显示补年与时刻异常，同一原文在手改、撤�
     assert.equal(await page.getByRole('dialog').count(), 0);
     assert.equal(await page.getByText('AI 补充（可选）', { exact: true }).count(), 0);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    assert.equal((await saved(page)).value.requestedReceiveAt, '2027-11-02');
+    assert.equal(await fieldValue(page, 'requestedReceiveAt'), '2027-11-02');
     await page.locator('#phone').fill('13800000012');
     await enter('  ' + original + '  ');
     await parse.click();
     assert.equal(await page.locator('#phone').inputValue(), '13800000012');
     await page.getByRole('button', { name: '撤销本次填入', exact: true }).click();
-    const undone = (await saved(page)).value;
+    const values = () => Promise.all(['phone', 'customerName', 'requestedReceiveAt', 'plannedFinishAt'].map(name => fieldValue(page, name)));
+    const undone = await values();
     await parse.click();
-    assert.deepEqual((await saved(page)).value, undone);
+    assert.deepEqual(await values(), undone);
 
     model.recognitionFailures = 1;
     model.recognitionInvalid = 1;
@@ -454,7 +468,7 @@ test('移动端字段显示补年与时刻异常，同一原文在手改、撤�
     for (let i = 0; i < 2; i++) {
       await parse.click();
       await page.getByText(/识别暂不可用，原文和表单已保留/).waitFor();
-      assert.deepEqual((await saved(page)).value, undone);
+      assert.deepEqual(await values(), undone);
     }
     await parse.click();
     await pickup.getByText('原文未写年份，已按最近日期补为2027年。').waitFor();
@@ -462,8 +476,9 @@ test('移动端字段显示补年与时刻异常，同一原文在手改、撤�
     await parse.click();
     assert.deepEqual(model.recognitionRequests, [original, '另一张合成原文', '另一张合成原文', '另一张合成原文']);
 
-    await page.getByRole('button', { name: '另起新单', exact: true }).click();
-    await page.getByRole('button', { name: '确认放弃', exact: true }).click();
+    await page.getByRole('link', { name: '退出下单', exact: true }).click();
+    await button(page, '不保存并退出').click();
+    await page.getByRole('link', { name: '新建订单', exact: true }).click();
     await enter(original);
     await parse.click();
     await pickup.getByText('原文未写年份，已按最近日期补为2027年。').waitFor();
@@ -489,8 +504,8 @@ test('移动端取货优先，同日仅日期清除自动时刻，撤销恢复�
       plannedHandoffAt: field('2026-11-12T17:00'),
     };
     await paste('收货时间：2026-11-13 18:00\n取货时间：2026-11-12 17:00');
-    await waitFor(async () => (await saved(page))?.value.requestedReceiveAt === '2026-11-12T17:00');
-    assert.equal((await saved(page)).value.plannedFinishAt, '2026-11-12T16:00');
+    await waitFor(async () => await fieldValue(page, 'requestedReceiveAt') === '2026-11-12T17:00');
+    assert.equal(await fieldValue(page, 'plannedFinishAt'), '2026-11-12T16:00');
 
     const dateOnly = '取货日期：2026-11-12';
     model.recognitionFields = {
@@ -499,14 +514,14 @@ test('移动端取货优先，同日仅日期清除自动时刻，撤销恢复�
       plannedHandoffAt: field(null),
     };
     await paste(dateOnly);
-    await waitFor(async () => (await saved(page))?.value.requestedReceiveAt === '2026-11-12');
-    assert.equal((await saved(page)).value.plannedFinishAt, '');
+    await waitFor(async () => await fieldValue(page, 'requestedReceiveAt') === '2026-11-12');
+    assert.equal(await fieldValue(page, 'plannedFinishAt'), '');
     await page.getByRole('button', { name: '撤销本次填入', exact: true }).click();
-    assert.equal((await saved(page)).value.requestedReceiveAt, '2026-11-12T17:00');
-    assert.equal((await saved(page)).value.plannedFinishAt, '2026-11-12T16:00');
+    assert.equal(await fieldValue(page, 'requestedReceiveAt'), '2026-11-12T17:00');
+    assert.equal(await fieldValue(page, 'plannedFinishAt'), '2026-11-12T16:00');
     await paste(dateOnly);
     assert.equal(model.recognitionRequests.length, 2);
-    assert.equal((await saved(page)).value.requestedReceiveAt, '2026-11-12T17:00');
+    assert.equal(await fieldValue(page, 'requestedReceiveAt'), '2026-11-12T17:00');
     assert.equal(await page.getByRole('dialog').count(), 0);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
@@ -520,18 +535,16 @@ test('出品自动随动、手动保留、刷新恢复及恢复自动，移动�
     await selectTime(page, 'requestedReceiveAt', 'hour', '17');
     await selectTime(page, 'requestedReceiveAt', 'minute', '30');
     assert.equal(await value('plannedFinishAt'), date + 'T16:30');
-    assert.equal((await saved(page)).value.finishTimeMode, 'AUTO');
     await selectTime(page, 'plannedFinishAt', 'hour', '14');
     await selectTime(page, 'requestedReceiveAt', 'hour', '18');
     assert.equal(await value('plannedFinishAt'), date + 'T14:30');
+    await cycleOrderDraft(page);
     assert.equal((await saved(page)).value.finishTimeMode, 'MANUAL');
-    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     assert.equal(await value('plannedFinishAt'), date + 'T14:30');
     if (process.env.TIME_SCREENSHOT) await page.screenshot({ path: process.env.TIME_SCREENSHOT });
     const restore = page.getByRole('button', { name: '恢复自动计算', exact: true });
     await restore.click();
     assert.equal(await value('plannedFinishAt'), date + 'T17:30');
-    assert.equal((await saved(page)).value.finishTimeMode, 'AUTO');
     assert.equal(await restore.count(), 0);
     await selectTime(page, 'requestedReceiveAt', 'hour', '19');
     assert.equal(await value('plannedFinishAt'), date + 'T18:30');
@@ -690,47 +703,49 @@ test('客户扫码响应丢失后用原请求重试，员工确认时暂存并�
 });
 
 
-test('另起新单就地确认，删除失败可见且重试闭环，不调用系统确认框', async () => {
-  const { context, page } = await fixture();
+test('放弃待确认记录就地确认，删除失败可见且重试闭环，不调用系统确认框', async () => {
+  const { context, page, model } = await fixture();
   try {
     await page.locator('#customerName').fill('保留客户');
-    const original = await saved(page);
+    await complete(page); model.loseResponse = true;
+    await button(page, '创建订单').click(); await button(page, '重试提交').waitFor();
+    const original = await pending(page);
     await page.reload();
     const modal = page.locator('.draft-toolbar, .draft-discard-confirmation');
     await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     await page.evaluate(() => { window.confirm = () => { throw new Error('unexpected native confirm'); }; });
-    await modal.getByRole('button', { name: '另起新单' }).click();
+    await modal.getByRole('button', { name: '放弃待确认记录' }).click();
     assert.equal(await modal.getByRole('button', { name: '返回', exact: true }).evaluate(el => el === document.activeElement), true);
     await modal.getByRole('button', { name: '返回', exact: true }).click();
-    assert.equal((await saved(page)).requestId, original.requestId);
-    await modal.getByRole('button', { name: '另起新单' }).click();
+    assert.equal((await pending(page)).requestId, original.requestId);
+    await modal.getByRole('button', { name: '放弃待确认记录' }).click();
     await page.evaluate(() => { window.originalRemove = Storage.prototype.removeItem; Storage.prototype.removeItem = () => { throw new DOMException('denied', 'SecurityError'); }; });
     await modal.getByRole('button', { name: '确认放弃', exact: true }).click();
     await modal.getByRole('alert').filter({ hasText: '草稿未能删除' }).waitFor();
-    assert.equal((await saved(page)).requestId, original.requestId);
+    assert.equal((await pending(page)).requestId, original.requestId);
     assert.equal(await page.locator('#customerName').inputValue(), '保留客户');
     await page.evaluate(() => { Storage.prototype.removeItem = window.originalRemove; });
     await modal.getByRole('button', { name: '重试删除' }).click();
-    await page.locator('#customerName').waitFor();
-    assert.equal(await saved(page), null);
+    await waitFor(async () => await pending(page) === null);
     assert.equal(await page.locator('#customerName').inputValue(), '');
     assert.equal(await page.locator('dialog[open]').count(), 0);
   } finally { await context.close(); }
 });
 
 test('恢复确认期间其他标签页更新，禁止删除新版本', async () => {
-  const { context, page } = await fixture();
+  const { context, page, model } = await fixture();
   try {
-    await page.locator('#customerName').fill('原草稿');
+    await complete(page); model.loseResponse = true;
+    await button(page, '创建订单').click(); await button(page, '重试提交').waitFor();
     await page.reload();
     const modal = page.locator('.draft-toolbar, .draft-discard-confirmation');
-    await modal.getByRole('button', { name: '另起新单' }).click();
+    await modal.getByRole('button', { name: '放弃待确认记录' }).click();
     const peer = await context.newPage();
     await peer.goto(base);
-    await peer.evaluate(key => { const value = JSON.parse(localStorage.getItem(key)); value.revision = 'peer-new'; value.value.customerName = '其他标签页'; localStorage.setItem(key, JSON.stringify(value)); }, key);
-    await page.getByText('其他标签页已更新或清除了草稿', { exact: false }).waitFor();
-    assert.equal(await modal.getByRole('button', { name: '确认放弃', exact: true }).isDisabled(), true);
-    assert.equal((await saved(page)).value.customerName, '其他标签页');
+    await peer.evaluate(key => { const value = JSON.parse(localStorage.getItem(key)); value.revision = 'peer-new'; value.requestId = crypto.randomUUID(); value.value.customerName = '其他标签页'; localStorage.setItem(key, JSON.stringify(value)); }, key);
+    await button(page, '确认放弃').click();
+    await modal.getByRole('alert').filter({ hasText: '草稿未能删除' }).waitFor();
+    assert.equal((await pending(page)).value.customerName, '其他标签页');
   } finally { await context.close(); }
 });
 
@@ -738,42 +753,63 @@ test('已创建及结果未知草稿放弃仅清本机，关闭重入不沿用�
   const { context, page, model } = await fixture();
   try {
     await page.locator('#customerName').fill('待核对');
+    await saveOrderDraftAndExit(page);
     const initial = await saved(page);
-    const pending = { customer: { phone: '13800000000', customerName: null, memberPhone: null, buyerName: null }, fulfillment: { type: 'PICKUP', requestedReceiveDate: initial.value.requestedReceiveDate, address: null, plannedHandoffAt: null, plannedFinishAt: null }, totalAmountCents: null, items: [{ name: '蛋糕', productType: 'CAKE', quantity: 1, unitPriceCents: null, memberPriceCents: null, attributes: {} }] };
-    for (const extra of [{ pending }, { createdOrderId: '10000000-0000-4000-8000-000000000001' }]) {
+    const request = { customer: { phone: '13800000000', customerName: null, memberPhone: null, buyerName: null }, fulfillment: { type: 'PICKUP', requestedReceiveDate: initial.value.requestedReceiveDate, address: null, plannedHandoffAt: null, plannedFinishAt: null }, totalAmountCents: null, items: [{ name: '蛋糕', productType: 'CAKE', quantity: 1, unitPriceCents: null, memberPriceCents: null, attributes: {} }] };
+    for (const extra of [{ pending: request }, { createdOrderId: '10000000-0000-4000-8000-000000000001' }]) {
       await page.evaluate(({ key, record }) => localStorage.setItem(key, JSON.stringify(record)), { key, record: { ...initial, ...extra } });
-      await page.reload();
+      await page.goto(`${base}/#/orders/new`); await page.reload();
       const modal = page.locator('.draft-toolbar, .draft-discard-confirmation');
-      await modal.getByRole('button', { name: '另起新单' }).click();
+      await modal.getByRole('button', { name: '放弃待确认记录' }).click();
       await modal.getByText('删除本机草稿不会撤销订单', { exact: false }).waitFor();
       await page.getByRole('link', { name: '日历工作台', exact: true }).click();
       await page.getByRole('link', { name: '新建订单', exact: true }).click();
-      await modal.getByRole('button', { name: '另起新单' }).waitFor();
+      await modal.getByRole('button', { name: '放弃待确认记录' }).waitFor();
       assert.equal(await modal.getByRole('button', { name: '确认放弃', exact: true }).count(), 0);
-      await modal.getByRole('button', { name: '另起新单' }).click();
+      await modal.getByRole('button', { name: '放弃待确认记录' }).click();
       await modal.getByRole('button', { name: '确认放弃', exact: true }).click();
+      await waitFor(async () => await pending(page) === null);
+      await button(page, '重新填写').click();
       await page.locator('#customerName').waitFor();
-      assert.equal(await saved(page), null);
       assert.equal(model.requests.length, 0);
     }
   } finally { await context.close(); }
 });
 
-test('旧草稿图片清理延迟失败，不污染新草稿保存状态', async () => {
-  const { context, page } = await fixture();
+
+
+test('另起新单后退出不保存，仍可恢复原来的订单草稿', async () => {
+  const { context, page, errors } = await fixture();
+  const button = name => page.getByRole('button', { name, exact: true });
+  const calendar = page.getByRole('link', { name: '日历工作台', exact: true });
+  const start = () => page.getByRole('link', { name: '新建订单', exact: true }).click();
+  const name = page.locator('#customerName');
   try {
-    await page.locator('#customerName').fill('旧草稿');
-    await page.evaluate(key => { const record = JSON.parse(localStorage.getItem(key)); record.imageStorageUsed = true; localStorage.setItem(key, JSON.stringify(record)); }, key);
-    await page.reload();
-    await page.evaluate(() => { indexedDB.open = () => { const request = {}; window.failOldCleanup = () => { request.error = new DOMException('denied', 'SecurityError'); request.onerror(); }; return request; }; });
-    const modal = page.locator('.draft-toolbar, .draft-discard-confirmation');
-    await modal.getByRole('button', { name: '另起新单' }).click();
-    await modal.getByRole('button', { name: '确认放弃', exact: true }).click();
-    await page.locator('#customerName').fill('新草稿');
-    await page.evaluate(() => window.failOldCleanup());
-    await page.getByText('旧草稿的本机图片未能清理', { exact: false }).waitFor();
-    assert.equal((await saved(page)).value.customerName, '新草稿');
-    assert.equal(await page.getByRole('button', { name: '重试保存' }).count(), 0);
-    await page.getByText('草稿已保存', { exact: true }).waitFor();
+    await name.fill('应保留的草稿');
+    await calendar.click();
+    const exit = page.getByRole('dialog', { name: '保存草稿？', exact: true });
+    for (const width of [320, 390, 1280]) {
+      await page.setViewportSize({ width, height: 844 });
+      const box = await exit.boundingBox();
+      assert.ok(box && box.x >= 0 && box.x + box.width <= width);
+      for (const choice of await exit.getByRole('button').all()) {
+        const bounds = await choice.boundingBox();
+        assert.ok(bounds.x >= box.x && bounds.x + bounds.width <= box.x + box.width && bounds.height >= 44);
+      }
+      if (process.env.DRAFT_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.DRAFT_SCREENSHOT_DIR}/order-draft-exit-${width}.png` });
+    }
+    await button('保存草稿并退出').click();
+    await start(); await button('重新填写').click();
+    assert.equal(await name.inputValue(), '');
+    await name.fill('放弃的新输入');
+    await page.goBack();
+    await button('继续填写').click();
+    await page.waitForURL('**/#/orders/new');
+    assert.equal(await name.inputValue(), '放弃的新输入');
+    await page.goBack();
+    await button('不保存并退出').click();
+    await start(); await button('继续填写').click();
+    assert.equal(await name.inputValue(), '应保留的草稿');
+    assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

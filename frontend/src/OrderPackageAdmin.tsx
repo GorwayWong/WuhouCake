@@ -1,9 +1,9 @@
 import { whenImageVisible } from './imagePreview';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
 import { ApiError, creationResultUnknown, errorText, fetchPackageImage, readQuery, writeRequest, rejectedBeforeWrite } from './api';
-import { packageDraftTab, readPackageDraft, savePackageDraft, removePackageDraft, packageDraftStorageMessage } from './packageDraftStorage';
+import { packageDraftTab, readPackageDraft, savePackageDraft, removePackageDraft, packageDraftStorageMessage, PackageDraftConflict, packageCreationSlot } from './packageDraftStorage';
 import type { PendingPackage, PackageDraftRecord } from './packageDraftStorage';
 import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals, packagePricingProblem, samePackageContent } from './orderPackages';
 import type { OrderPackage, PackageBody, PackageRow } from './orderPackages';
@@ -14,15 +14,18 @@ import { time } from './dates';
 import { randomUUID } from './uuid';
 import { imageFileError } from './imagePreview';
 import { PackageDialog } from './PackageDialog';
+import { RestoreCreationDraft, SaveCreationDraft } from './CreationDraftDialog';
+import type { DraftLeaveGuard } from './CreationDraftDialog';
 import { editablePackage, mergePackageDraft } from './packageConflict';
 import type { ConflictChoice, PackageConflict } from './packageConflict';
 
 type Body = PackageBody;
 type Pending = PendingPackage;
 
-export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }: {
+export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, onDraftLeaveChange }: {
   accountId: string;
   onDirtyChange: (dirty: boolean) => void; onWritingChange: (writing: boolean) => void;
+  onDraftLeaveChange: (guard: DraftLeaveGuard | null) => void;
 }) {
   const client = useQueryClient();
   const [keyword, setKeyword] = useState(''), [search, setSearch] = useState(''), [page, setPage] = useState(1);
@@ -40,6 +43,10 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
   const baseline = useRef(''), creationKey = useRef(randomUUID());
   const tabId = useRef(''), storageQueue = useRef(Promise.resolve()), storageRevision = useRef<string | null>(null);
   const [restored, setRestored] = useState(false), [storageError, setStorageError] = useState('');
+  const [candidate, setCandidate] = useState<PackageDraftRecord | null>(null);
+  const [exit, setExit] = useState<{ leave: () => void; stay: () => void } | null>(null);
+  const [exitError, setExitError] = useState('');
+  const slotRevision = useRef<string | null>(null), sourceRevision = useRef<string | undefined>(undefined);
   const active = useRef<AbortController | null>(null), form = useRef<HTMLFormElement>(null);
   const dirty = Boolean(pending || editing && JSON.stringify([name, items, original, member]) !== baseline.current);
   function snapshot(operation = pending): PackageDraftRecord {
@@ -62,9 +69,21 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
         if (!alive) return;
         if (saved) {
           storageRevision.current = saved.revision ?? null;
-          setEditing(saved.editing); setName(saved.name); setItems(saved.items); setOriginal(saved.original); setMember(saved.member);
-          baseline.current = saved.baseline; creationKey.current = saved.creationKey; setPending(saved.pending);
-          setMessage(saved.pending ? '已恢复待核对操作，请先确认原请求结果。' : '已恢复本机暂存的套餐，请核对后保存。');
+          if (saved.editing === 'new' && !saved.pending) {
+            // 旧版会把新套餐写入当前标签页。迁移仅在共享槽为空时写入。
+            const changed = JSON.stringify([saved.name, saved.items, saved.original, saved.member]) !== saved.baseline;
+            if (changed && !await readPackageDraft(accountId, packageCreationSlot)) {
+              try { await savePackageDraft({ ...saved, tabId: packageCreationSlot }, null); }
+              catch (failure) { if (!(failure instanceof PackageDraftConflict)) throw failure; }
+            }
+            if (!alive) return;
+            await persist(null);
+            if (!alive) return;
+          } else {
+            setEditing(saved.editing); setName(saved.name); setItems(saved.items); setOriginal(saved.original); setMember(saved.member);
+            baseline.current = saved.baseline; creationKey.current = saved.creationKey; setPending(saved.pending);
+            setMessage(saved.pending ? '已恢复待核对操作，请先确认原请求结果。' : '已恢复本机暂存的套餐，请核对后保存。');
+          }
         }
         setRestored(true);
       } catch { if (alive) setStorageError('本机套餐暂存无法读取，请检查浏览器存储权限后刷新重试。'); }
@@ -72,12 +91,22 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
     return () => { alive = false; };
   }, [accountId]);
   useEffect(() => {
-    if (!restored || busy) return;
-    const record = editing || pending ? snapshot() : null;
+    if (!restored || busy || pending || editing === 'new') return;
+    const record = editing ? snapshot(null) : null;
+    if (!record && storageRevision.current === null) return;
     const timer = setTimeout(() => { void persist(record).then(() => setStorageError('')).catch(error => setStorageError(packageDraftStorageMessage(error, '本机套餐暂存失败，请保留当前页面，检查存储空间后重试保存。'))); }, 400);
     return () => clearTimeout(timer);
   }, [restored, busy, editing, pending, name, items, original, member]);
-  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
+  useLayoutEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
+  useLayoutEffect(() => {
+    if (editing !== 'new' || !dirty || pending) return;
+    onDraftLeaveChange((leave, stay) => {
+      if (active.current) return false;
+      setExit(current => current ?? { leave, stay });
+      return true;
+    });
+    return () => onDraftLeaveChange(null);
+  }, [editing, dirty, pending, onDraftLeaveChange]);
   useEffect(() => {
     if (query.data) { const last = Math.max(1, Math.ceil(query.data.total / query.data.size)); if (page > last) setPage(last); }
   }, [query.data, page]);
@@ -85,27 +114,73 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
   useEffect(() => { if (editing) form.current?.querySelector<HTMLInputElement>('[name="name"]')?.focus(); }, [Boolean(editing)]);
 
   async function start(value: OrderPackage | 'new') {
-    if (busy || pending) return;
-    if (dirty && !window.confirm('套餐尚未保存，确定放弃修改吗？')) return;
+    if (!restored || active.current || pending) return;
     const controller = new AbortController(); active.current = controller; setBusy(true); setError(null); setMessage('');
     try {
-      const current = value === 'new' ? 'new' : await readQuery<OrderPackage>(`/order-packages/${value.id}`, controller.signal);
-      if (controller.signal.aborted) return;
-      const next = current === 'new' ? { name: '', items: [newPackageItem()], original: '', member: '' } : editablePackage(current);
-      baseline.current = JSON.stringify([next.name, next.items, next.original, next.member]);
-      creationKey.current = randomUUID();
-      setEditing(current); setName(next.name); setItems(next.items); setOriginal(next.original); setMember(next.member);
-      setErrors({}); setConflict(false); setLatest(null); setChoices({});
+      if (value === 'new') {
+        const saved = await readPackageDraft(accountId, packageCreationSlot);
+        if (controller.signal.aborted) return;
+        slotRevision.current = saved?.revision ?? null;
+        if (saved) setCandidate(saved);
+        else openForm('new');
+      } else {
+        const current = await readQuery<OrderPackage>(`/order-packages/${value.id}`, controller.signal);
+        if (!controller.signal.aborted) openForm(current);
+      }
     } catch (failure) { if (!controller.signal.aborted) setError(failure); }
     finally { if (active.current === controller) { active.current = null; setBusy(false); } }
   }
-  function close() {
-    if (busy || pending || dirty && !window.confirm('套餐尚未保存，确定放弃修改吗？')) return;
+  function openForm(value: OrderPackage | 'new', saved?: PackageDraftRecord) {
+    const next = saved ?? (value === 'new' ? { name: '', items: [newPackageItem()], original: '', member: '' } : editablePackage(value));
+    baseline.current = JSON.stringify([next.name, next.items, next.original, next.member]);
+    creationKey.current = saved?.creationKey ?? randomUUID();
+    sourceRevision.current = saved?.revision;
+    setCandidate(null); setEditing(value); setName(next.name); setItems(next.items); setOriginal(next.original); setMember(next.member);
+    setErrors({}); setConflict(false); setLatest(null); setChoices({});
+  }
+  function closeForm() {
     setEditing(null); setItems([]); setSpecEditor(null); setError(null); setErrors({}); setConflict(false); setLatest(null);
   }
+  function close() {
+    if (active.current || pending) return;
+    if (editing === 'new' && dirty) { setExit({ leave: closeForm, stay: () => {} }); return; }
+    if (!dirty || window.confirm('套餐尚未保存，确定放弃修改吗？')) closeForm();
+  }
+  function finishExit(save: boolean) {
+    if (!exit || active.current) return;
+    const leave = () => { setExit(null); setExitError(''); exit.leave(); };
+    if (!save) { leave(); return; }
+    const controller = new AbortController(); active.current = controller;
+    setBusy(true); onWritingChange(true); setExitError('');
+    void savePackageDraft({ ...snapshot(null), tabId: packageCreationSlot, creationKey: randomUUID() }, slotRevision.current)
+      .then(() => {
+        if (!controller.signal.aborted) { setMessage('草稿已保存。'); leave(); }
+      })
+      .catch(async failure => {
+        if (controller.signal.aborted) return;
+        if (failure instanceof PackageDraftConflict) {
+          try {
+            const saved = await readPackageDraft(accountId, packageCreationSlot);
+            if (controller.signal.aborted) return;
+            slotRevision.current = saved?.revision ?? null;
+            setExitError('其他标签页已更新草稿。再次保存将使用当前内容。');
+            return;
+          } catch { if (controller.signal.aborted) return; }
+        }
+        setExitError('草稿保存失败。请保留当前页面，检查浏览器存储空间后重试。');
+      })
+      .finally(() => {
+        if (active.current === controller) { active.current = null; setBusy(false); onWritingChange(false); }
+      });
+  }
   async function success(operation: Pending) {
-    try { await persist(null); }
-    catch (failure) {
+    try {
+      if (operation.draftRevision) {
+        try { await removePackageDraft(accountId, packageCreationSlot, operation.draftRevision); }
+        catch (failure) { if (!(failure instanceof PackageDraftConflict)) throw failure; }
+      }
+      await persist(null);
+    } catch (failure) {
       setStorageError(packageDraftStorageMessage(failure, '服务端结果已确认，但本机恢复记录未能清理，请重试确认。'));
       setPending(operation); setError(null); return;
     }
@@ -139,8 +214,12 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
       if (!sent) { setStorageError(packageDraftStorageMessage(failure, '本机暂存失败，尚未发送保存请求。请保留当前页面，检查存储空间后重试。')); return; }
       if (creationResultUnknown(failure) || pending?.key === operation.key && rejectedBeforeWrite(failure)) { setError(failure); setPending(operation); }
       else {
-        try { await persist(snapshot(null)); }
-        catch (storageFailure) { setStorageError(packageDraftStorageMessage(storageFailure, '请求未保存，但本机恢复记录未能更新。请保留当前页面并重试。')); }
+        try { await persist(editing === 'new' ? null : snapshot(null)); }
+        catch (storageFailure) {
+          setStorageError(packageDraftStorageMessage(storageFailure, '请求未保存，但本机恢复记录未能更新。请重试确认原操作。'));
+          setError(failure); setPending(operation);
+          return;
+        }
         setError(failure);
         setPending(null);
         if (failure instanceof ApiError && failure.code === 'PACKAGE_NAME_CONFLICT') setErrors({ name: '套餐名称已存在，请使用可区分的名称。' });
@@ -208,6 +287,9 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
   const fieldError = (field: string) => errors[field] && <span className="field-error" id={`package-${field}-error`}>{errors[field]}</span>;
   const updateItem = (index: number, change: Partial<PackageRow>) => { setItems(current => current.map((item, i) => i === index ? { ...item, ...change } : item)); setErrors({}); };
   return <div className="management-page package-management">
+    {candidate && <RestoreCreationDraft restore={() => openForm('new', candidate)} startFresh={() => openForm('new')} cancel={() => setCandidate(null)} />}
+    {exit && <SaveCreationDraft hasSaved={slotRevision.current !== null} busy={busy} error={exitError}
+      stay={() => { setExit(null); setExitError(''); exit.stay(); }} discard={() => finishExit(false)} save={() => finishExit(true)} />}
     <div className="page-heading"><div><h1>{editing ? editing === 'new' ? '新建套餐' : '编辑套餐' : '套餐管理'}</h1>{!editing && <p className="muted">维护常用商品组合，供员工下单时快速填写。</p>}</div>{!editing && <button className="primary" disabled={disabled} onClick={() => void start('new')}><Plus />新建套餐</button>}</div>
     {message && <div className="notice" role="status">{message}</div>}
     {storageError && <p className="notice error" role="alert">{storageError}</p>}
@@ -220,7 +302,7 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
         const result = packageRequest(name, items, original, member); setErrors(result.errors);
         if (!result.body) { focusFormField(form.current, Object.keys(result.errors)[0]); return; }
         void write({ method: editing === 'new' ? 'POST' : 'PUT', path: editing === 'new' ? '/order-packages' : `/order-packages/${editing.id}`,
-          body: { ...result.body, ...(editing === 'new' ? {} : { expectedVersion: editing.version }) }, files: items.flatMap(item => item.file && item.imageId ? [{ id: item.imageId, file: item.file }] : []), key: creationKey.current, target: editing === 'new' ? undefined : editing });
+          body: { ...result.body, ...(editing === 'new' ? {} : { expectedVersion: editing.version }) }, files: items.flatMap(item => item.file && item.imageId ? [{ id: item.imageId, file: item.file }] : []), key: creationKey.current, target: editing === 'new' ? undefined : editing, draftRevision: editing === 'new' ? sourceRevision.current : undefined });
       }}>
         <fieldset className="create-fields" disabled={disabled || conflict}>
           <section className="panel create-group"><label className="package-name">套餐名称 *<input {...inputProps('name')} value={name} maxLength={80} placeholder="例如：下午茶套餐" onChange={event => { setName(event.target.value); setErrors({}); }} required />{fieldError('name')}</label></section>

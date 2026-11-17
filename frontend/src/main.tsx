@@ -20,22 +20,24 @@ session.subscribe(() => {
   if (hadSession && !hasSession) client.clear();
   hadSession = hasSession;
 });
-function StaffApp() {
+function StaffApp({ onPublicNavigation }: { onPublicNavigation: (hash: string) => void }) {
   useEffect(() => { void refresh().catch(() => {}); }, []);
-  return <App />;
+  return <App onPublicNavigation={onPublicNavigation} />;
 }
 function Site() {
   const [hash, setHash] = useState(window.location.hash);
   const current = useRef(hash), guard = useRef<(() => boolean) | null>(null);
   const setGuard = useCallback((next: (() => boolean) | null) => { guard.current = next; }, []);
+  const showRoute = useCallback((next: string) => { current.current = next; setHash(next); }, []);
   useEffect(() => {
     const change = () => {
+      if (!current.current.startsWith('#/fill/')) return;
       const next = window.location.hash;
       if (next !== current.current && guard.current && !guard.current()) { window.history.replaceState(window.history.state, '', current.current); return; }
-      current.current = next; setHash(next);
+      showRoute(next);
     };
     window.addEventListener('hashchange', change); return () => window.removeEventListener('hashchange', change);
-  }, []);
-  return hash.startsWith('#/fill/') ? <PublicOrderEntry key={hash} token={hash.slice('#/fill/'.length)} onLeaveGuard={setGuard} /> : <StaffApp />;
+  }, [showRoute]);
+  return hash.startsWith('#/fill/') ? <PublicOrderEntry key={hash} token={hash.slice('#/fill/'.length)} onLeaveGuard={setGuard} /> : <StaffApp onPublicNavigation={showRoute} />;
 }
 createRoot(document.getElementById('root')!).render(<I18nProvider locale="zh-CN"><QueryClientProvider client={client}><Site /></QueryClientProvider></I18nProvider>);

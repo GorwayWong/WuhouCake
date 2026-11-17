@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
+import { createOrderFixture, orderId, cycleOrderDraft } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 let browser;
@@ -22,7 +22,7 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     await page.locator('#orderingMethod-custom').fill('微信');
     await page.getByRole('button', { name: '添加商品', exact: true }).click();
     await page.locator('[id="items.1.name"]').fill('蛋糕B');
-    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await cycleOrderDraft(page);
     assert.equal(await page.locator('#orderingMethod-custom').inputValue(), '微信');
     assert.match(await page.locator('#orderingMethod').innerText(), /其他/);
     await page.getByRole('button', { name: '创建订单', exact: true }).click();

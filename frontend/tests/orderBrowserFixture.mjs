@@ -24,6 +24,50 @@ export function workbenchCards(request, rows, { nextCursor = null, counts = rows
       waitingDeliveryOrderCount: counted.filter(row => row.status === 'WAITING_DELIVERY' && row.fulfillmentType === 'DELIVERY').length } };
 }
 
+export const pendingOrderDraft = (page, account = 'alice') => page.evaluate(
+  account => JSON.parse(localStorage.getItem(`wuhou:order-draft:v1:${account}`)), account);
+
+export const savedOrderDraft = (page, account = 'alice') => page.evaluate(async account => {
+  const { readCreationDraft } = await import('/src/creationDraftStorage.ts');
+  return (await readCreationDraft(`order:${account}`))?.value.record ?? null;
+}, account);
+
+export async function saveOrderDraftAndExit(page) {
+  await page.getByRole('link', { name: '退出下单', exact: true }).click();
+  await page.getByRole('button', { name: '保存草稿并退出', exact: true }).click();
+  await page.getByRole('link', { name: '新建订单', exact: true }).waitFor();
+}
+
+export async function resumeOrderDraft(page) {
+  await page.getByRole('button', { name: '继续填写', exact: true }).click();
+  await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+}
+
+export async function cycleOrderDraft(page) {
+  await saveOrderDraftAndExit(page);
+  await page.getByRole('link', { name: '新建订单', exact: true }).click();
+  await resumeOrderDraft(page);
+}
+
+export async function seedLegacyOrderDraft(page) {
+  await saveOrderDraftAndExit(page);
+  await page.evaluate(async () => {
+    const key = 'order:alice';
+    const { readCreationDraft, removeCreationDraft } = await import('/src/creationDraftStorage.ts');
+    const saved = await readCreationDraft(key);
+    localStorage.setItem('wuhou:order-draft:v1:alice', JSON.stringify(saved.value.record));
+    await removeCreationDraft(key, saved.revision);
+  });
+}
+
+export async function openOrderDraft(page) {
+  await page.getByRole('link', { name: '新建订单', exact: true }).click();
+  await resumeOrderDraft(page);
+}
+
+export const visibleOrderFields = page => page.locator('.create-page form').evaluate(form =>
+  Array.from(form.querySelectorAll('input[name], textarea[name]'), input => [input.name, input.value]));
+
 export async function createOrderFixture(browser, base) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
   context.setDefaultTimeout(10000);
@@ -80,7 +124,7 @@ export async function createOrderFixture(browser, base) {
   await page.goto(`${base}/#/orders/new`); await page.locator('#phone').waitFor();
   png = Buffer.from(await page.evaluate(() => { const canvas = document.createElement('canvas'); canvas.width = 10; canvas.height = 10; canvas.getContext('2d').fillRect(0, 0, 10, 10); return canvas.toDataURL().split(',')[1]; }), 'base64');
   const select = names => page.locator('input[type=file]').setInputFiles(names.map(name => ({ name, mimeType: 'image/png', buffer: png })));
-  const saved = () => page.evaluate(account => JSON.parse(localStorage.getItem(`wuhou:order-draft:v1:${account}`)), model.account);
+  const saved = async () => await pendingOrderDraft(page, model.account) ?? await savedOrderDraft(page, model.account);
   const queue = () => page.evaluate(async ([account, id]) => (await import('/src/draftImages.ts')).imageQueue(account, id).then(rows => rows.map(({ file, ...row }) => row)), [model.account, orderId]);
   const complete = async () => { await page.locator('#phone').fill('13800000000'); await page.getByRole('button', { name: /交接方式/ }).click(); await page.getByRole('option', { name: '门店自提' }).click(); await page.locator('[id="items.0.name"]').fill('蛋糕A'); };
   return { context, page, model, errors, png, select, saved, queue, complete };

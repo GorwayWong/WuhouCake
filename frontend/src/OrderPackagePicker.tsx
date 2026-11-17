@@ -6,7 +6,7 @@ import { Select } from './Select';
 import { isEmptyPackageDraft, packageImagePath, packageSummary, previewPackage, samePackageContent } from './orderPackages';
 import type { OrderPackage } from './orderPackages';
 import type { OrderDraft } from './orderForm';
-import { saveDraftImageBatch, removeDraftImage, localImageError } from './draftImages';
+import { saveWorkingDraftImageBatch, removeDraftImage, localImageError } from './draftImages';
 import type { ImageScope } from './draftImages';
 import { money } from './ui';
 import { effectiveOrderAmount } from './orderPayment';
@@ -51,8 +51,8 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       return { itemId, file: new File([blob], `${item.name}.${blob.type === 'image/png' ? 'png' : 'jpg'}`, { type: blob.type }) };
     }));
     if (controller.signal.aborted || latest.current.getDraft() !== before) throw new Error('草稿已有变化，请核对更新后的预览。');
-    let images: Awaited<ReturnType<typeof saveDraftImageBatch>>;
-    try { images = await saveDraftImageBatch(imageScope, entries); }
+    let images: Awaited<ReturnType<typeof saveWorkingDraftImageBatch>>;
+    try { images = await saveWorkingDraftImageBatch(imageScope, entries); }
     catch (failure) { throw new Error(localImageError(failure)); }
     const byItem = new Map(entries.map((entry, index) => [entry.itemId, images[index]]));
     const next = { ...plan.next, items: plan.next.items.map(item => byItem.has(item.key) ? { ...item, images: [byItem.get(item.key)!] } : item) };

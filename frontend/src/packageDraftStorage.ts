@@ -1,7 +1,7 @@
 import type { OrderPackage, PackageBody, PackageRow } from './orderPackages.ts';
 import { randomUUID } from './uuid.ts';
 
-export type PendingPackage = { method: 'POST' | 'PUT' | 'DELETE'; path: string; body?: PackageBody; key: string; target?: OrderPackage; files?: { id: string; file: File }[] };
+export type PendingPackage = { method: 'POST' | 'PUT' | 'DELETE'; path: string; body?: PackageBody; key: string; target?: OrderPackage; draftRevision?: string; files?: { id: string; file: File }[] };
 export interface PackageDraftRecord {
   accountId: string; tabId: string; editing: OrderPackage | 'new' | null;
   name: string; items: PackageRow[]; original: string; member: string;
@@ -14,8 +14,9 @@ type StoredDraft = Omit<PackageDraftRecord, 'items' | 'pending'> & {
   pending: (Omit<PendingPackage, 'files'> & { files?: { id: string; file: StoredFile }[] }) | null;
 };
 let database: Promise<IDBDatabase> | undefined;
-class DraftConflict extends Error { }
-export const packageDraftStorageMessage = (error: unknown, fallback: string) => error instanceof DraftConflict ? error.message : fallback;
+export class PackageDraftConflict extends Error { }
+export const packageCreationSlot = 'new-package';
+export const packageDraftStorageMessage = (error: unknown, fallback: string) => error instanceof PackageDraftConflict ? error.message : fallback;
 function open() {
   if (!database) database = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open('wuhou-package-drafts', 1);
@@ -67,7 +68,7 @@ async function write(accountId: string, tabId: string, revision: string | null, 
     try {
       const store = tx.objectStore('drafts'), request = store.get([accountId, tabId]);
       request.onsuccess = () => {
-        if ((request.result?.revision ?? null) !== revision) { tx.abort(); reject(new DraftConflict('套餐暂存已在其他标签页更新，请保留当前输入并回到原标签页处理。')); return; }
+        if ((request.result?.revision ?? null) !== revision) { tx.abort(); reject(new PackageDraftConflict('套餐暂存已在其他标签页更新，请保留当前输入并回到原标签页处理。')); return; }
         try { if (value) store.put(value); else store.delete([accountId, tabId]); }
         catch (error) { tx.abort(); reject(error); }
       };

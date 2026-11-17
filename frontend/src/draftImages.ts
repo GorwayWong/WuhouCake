@@ -15,6 +15,7 @@ export function localImageError(error: unknown): string {
   if (error instanceof DOMException && error.name === 'QuotaExceededError') return '本机存储空间不足，图片尚未保存。请释放空间后重试。';
   return '本机图片无法保存或读取，请检查浏览器存储权限后重试。';
 }
+const workingFiles = new Map<string, StoredImage>();
 const key = (scope: ImageScope, itemId: string, id: string) => JSON.stringify([scope.accountId, scope.requestId, itemId, id]);
 let database: Promise<IDBDatabase> | undefined;
 function open() {
@@ -47,10 +48,16 @@ async function read<T>(store: string, action: (store: IDBObjectStore) => IDBRequ
     request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
   });
 }
-export async function saveDraftImages(scope: ImageScope, itemId: string, files: File[], orderId?: string): Promise<DraftImage[]> {
+export function saveDraftImages(scope: ImageScope, itemId: string, files: File[], orderId?: string) {
   return saveDraftImageBatch(scope, files.map(file => ({ itemId, file })), orderId);
 }
-export async function saveDraftImageBatch(scope: ImageScope, entries: { itemId: string; file: File }[], orderId?: string): Promise<DraftImage[]> {
+export function saveWorkingDraftImages(scope: ImageScope, itemId: string, files: File[]) {
+  return saveDraftImageBatch(scope, files.map(file => ({ itemId, file })), undefined, true);
+}
+export function saveWorkingDraftImageBatch(scope: ImageScope, entries: { itemId: string; file: File }[]) {
+  return saveDraftImageBatch(scope, entries, undefined, true);
+}
+async function saveDraftImageBatch(scope: ImageScope, entries: { itemId: string; file: File }[], orderId?: string, working = false): Promise<DraftImage[]> {
   const records: StoredImage[] = [];
   for (const { itemId, file } of entries) {
     const problem = imageFileError(file); if (problem) throw new LocalImageError(`${file.name}：${problem}`);
@@ -61,22 +68,52 @@ export async function saveDraftImageBatch(scope: ImageScope, entries: { itemId: 
     const id = randomUUID();
     records.push({ id, name: file.name, type: file.type, size: file.size, key: key(scope, itemId, id), ...scope, itemId, file, orderId });
   }
-  if (records.length) await write(['files'], tx => { for (const record of records) tx.objectStore('files').add(record); });
+  if (working) for (const record of records) workingFiles.set(record.key, record);
+  else if (records.length) await write(['files'], tx => { for (const record of records) tx.objectStore('files').add(record); });
   return records.map(({ id, name, type, size }) => ({ id, name, type, size }));
 }
-export function readDraftImage(scope: ImageScope, itemId: string, id: string) {
-  return read<StoredImage | undefined>('files', store => store.get(key(scope, itemId, id)));
+export async function readDraftImage(scope: ImageScope, itemId: string, id: string) {
+  const imageKey = key(scope, itemId, id);
+  return workingFiles.get(imageKey) ?? await read<StoredImage | undefined>('files', store => store.get(imageKey));
 }
 export async function removeDraftImage(scope: ImageScope, itemId: string, id: string) {
+  workingFiles.delete(key(scope, itemId, id));
   await write(['files'], tx => {
     const store = tx.objectStore('files'), request = store.get(key(scope, itemId, id));
     request.onsuccess = () => { if (request.result && !request.result.orderId) store.delete(request.result.key); };
   });
 }
 export async function removeDraftImages(scope: ImageScope) {
+  for (const [id, image] of workingFiles) {
+    if (image.accountId === scope.accountId && image.requestId === scope.requestId) workingFiles.delete(id);
+  }
   await write(['files'], tx => {
     const store = tx.objectStore('files'), request = store.index('draft').getAll([scope.accountId, scope.requestId]);
     request.onsuccess = () => { for (const row of request.result as StoredImage[]) if (!row.orderId) store.delete(row.key); };
+  });
+}
+export async function snapshotDraftImages(record: OrderDraftRecord) {
+  const rows: StoredImage[] = [];
+  for (const item of record.value.items) for (const image of item.images ?? []) {
+    const row = await readDraftImage(record, item.key, image.id);
+    if (!row) throw new LocalImageError(`商品「${item.name || '未命名商品'}」的图片「${image.name}」在本机缺失，请重新选择。`);
+    rows.push(row);
+  }
+  return rows;
+}
+export function restoreWorkingDraftImages(scope: ImageScope, images: StoredImage[]) {
+  for (const image of images) {
+    if (!image || !(image.file instanceof Blob) || typeof image.itemId !== 'string' || typeof image.id !== 'string') continue;
+    const { itemId, id, name, type, size, file } = image;
+    const imageKey = key(scope, itemId, id);
+    workingFiles.set(imageKey, { ...scope, itemId, id, name, type, size, file, key: imageKey });
+  }
+}
+export async function persistDraftImages(record: OrderDraftRecord) {
+  const images = await snapshotDraftImages(record);
+  if (images.length) await write(['files'], tx => {
+    const store = tx.objectStore('files');
+    for (const image of images) store.put(image);
   });
 }
 export async function requireDraftImages(record: ImageScope & Pick<OrderDraftRecord, 'value'>) {

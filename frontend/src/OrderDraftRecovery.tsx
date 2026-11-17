@@ -5,7 +5,7 @@ import { X } from '@phosphor-icons/react';
 import type { DraftCandidate } from './useOrderDraft';
 
 export function OrderDraftRecovery({ candidate, accept, discard, dismiss, blocked }: {
-  candidate: DraftCandidate; accept: () => void; discard: () => boolean; dismiss: () => void; blocked: boolean;
+  candidate: DraftCandidate; accept: () => void; discard: () => boolean | Promise<boolean>; dismiss: () => void; blocked: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {

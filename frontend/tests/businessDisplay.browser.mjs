@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
+import { createOrderFixture, orderId, seedLegacyOrderDraft, openOrderDraft } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 let browser;
@@ -18,8 +18,9 @@ test('跨年日期控件保留完整值与日历年份，夹馅多行保存不�
     assert.equal(await filling.getAttribute('rows'), '2');
     await filling.fill('第一层草莓、芒果和脆片\n第二层蓝莓加奶酪');
     await page.locator('[id="items.0.flavor"]').fill('巧克力奶油');
+    await seedLegacyOrderDraft(page);
     await page.evaluate(() => { const key = 'wuhou:order-draft:v1:alice'; const r = JSON.parse(localStorage.getItem(key)); r.value.requestedReceiveDate = '2027-01-01'; r.value.requestedReceiveAt = '2027-01-01T10:00'; r.value.plannedFinishAt = '2027-01-01T09:00'; r.value.finishTimeMode = 'MANUAL'; localStorage.setItem(key, JSON.stringify(r)); });
-    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await openOrderDraft(page);
     const pickup = page.locator('.date-time-field[data-field-name="requestedReceiveAt"]');
     assert.equal(await pickup.locator('.date-month-day').innerText(), '2027/01/01');
     assert.match(await pickup.locator('.date-month-day').getAttribute('aria-label'), /2027-01-01/);

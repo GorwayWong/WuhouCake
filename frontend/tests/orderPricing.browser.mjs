@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
+import { createOrderFixture, orderId, cycleOrderDraft, seedLegacyOrderDraft, openOrderDraft } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 let browser;
@@ -10,8 +10,9 @@ after(async () => { await browser?.close(); });
 async function until(check) { for (let i = 0; i < 150; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 30)); } throw new Error('Timed out'); }
 
 async function restoreLegacy(page) {
+  await seedLegacyOrderDraft(page);
   await page.evaluate(() => { const key = 'wuhou:order-draft:v1:alice'; const record = JSON.parse(localStorage.getItem(key)); delete record.value.pricingMode; delete record.initial.pricingMode; localStorage.setItem(key, JSON.stringify(record)); });
-  await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+  await openOrderDraft(page);
 }
 
 test('整单双报价和支付方式跨草稿恢复，响应丢失仍使用相同载荷与幂等标识', async () => {
@@ -20,8 +21,7 @@ test('整单双报价和支付方式跨草稿恢复，响应丢失仍使用相�
     model.permissions.push('ORDER_PAYMENT_UPDATE'); await page.reload(); await complete(); await restoreLegacy(page);
     await page.locator('#totalAmount').fill('158.01'); await page.locator('#memberAmount').fill('128.02');
     await page.locator('#paymentMethod').click(); await page.getByRole('option', { name: '现金', exact: true }).click();
-    await until(async () => (await saved()).value.paymentMethod === 'CASH');
-    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await cycleOrderDraft(page);
     assert.equal(await page.locator('#totalAmount').inputValue(), '158.01');
     assert.equal(await page.locator('#memberAmount').inputValue(), '128.02');
     assert.match(await page.locator('#paymentMethod').innerText(), /现金/);
@@ -38,7 +38,7 @@ test('整单双报价和支付方式跨草稿恢复，响应丢失仍使用相�
     const pending = (await saved()).pending;
     assert.equal(pending.originalAmountCents, 15801); assert.equal(pending.memberAmountCents, 12802);
     assert.equal(pending.totalAmountCents, 12802); assert.equal(pending.paymentMethod, 'CASH');
-    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await page.reload(); await page.getByRole('button', { name: '重试提交' }).waitFor();
     assert.equal(await page.locator('#memberAmount').isDisabled(), true);
     await page.getByRole('button', { name: '重试提交', exact: true }).click();
     await until(() => model.createCalls.length === 2);

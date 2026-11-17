@@ -1,4 +1,3 @@
-import { removeDraftImages } from './draftImages';
 import { VersionNotice } from './VersionNotice';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -26,7 +25,6 @@ import type { ManagementView } from './management';
 import type { ReactNode } from 'react';
 import { OrderCreate } from './OrderCreate';
 import type { OrderDraft } from './orderForm';
-import { hasDraftContent } from './orderDraftStorage';
 import type { DraftEditor, OrderDraftRecord } from './orderDraftStorage';
 import { useOrderDraft } from './useOrderDraft';
 import { OrderDraftDiscard } from './OrderDraftDiscard';
@@ -34,6 +32,8 @@ import { OrderDraftRecovery } from './OrderDraftRecovery';
 import { AdminOrders } from './AdminOrders';
 import { EmployeeAdmin } from './EmployeeAdmin';
 import { OrderPackageAdmin } from './OrderPackageAdmin';
+import { RestoreCreationDraft, SaveCreationDraft } from './CreationDraftDialog';
+import type { DraftLeaveGuard } from './CreationDraftDialog';
 import { newPasswordError } from './passwordForm';
 import { CustomerSubmissions, CustomerSubmissionDetail, canHandleSubmissions } from './CustomerSubmissions';
 
@@ -83,12 +83,13 @@ function Login({ changePassword = false, onAccount, onLogout }: { changePassword
     <p className="login-help">账号问题请联系门店管理员。</p>
   </form></section></main>;
 }
-function Workspace({ refreshBlocked, token, hash, calendarView, onCalendarChange, draft, onAccount, onDraftChange, onSubmit, creating, createError, submitted, notice, dismissNotice, onLogout, onEditDirtyChange, writing, onWritingChange, createdOrder, onCreatedOrderLocated, draftControls, onEditorChange, draftBlocked, draftAccountId }: {
+function Workspace({ refreshBlocked, token, hash, calendarView, onCalendarChange, draft, onAccount, onDraftChange, onSubmit, creating, createError, submitted, notice, dismissNotice, onLogout, onEditDirtyChange, writing, onWritingChange, createdOrder, onCreatedOrderLocated, draftControls, onEditorChange, draftBlocked, draftAccountId, onDraftLeaveChange }: {
   token: string; hash: string; draft: OrderDraftRecord | null; onAccount: (accountId: string, date?: string, canEnter?: boolean) => void;
   calendarView: CalendarView; onCalendarChange: (view: CalendarView) => void;
   draftAccountId: string; draftBlocked: boolean; draftControls: ReactNode; onEditorChange: (editor: Partial<DraftEditor>) => void;
   onDraftChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean, requireSaved?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void;
   creating: boolean; createError: unknown; submitted?: CreateOrderRequest; notice: string; dismissNotice: () => void; onLogout: () => Promise<boolean>;
+  onDraftLeaveChange: (guard: DraftLeaveGuard | null) => void;
   refreshBlocked: boolean; onEditDirtyChange: (dirty: boolean) => void;
   writing: boolean; onWritingChange: (pending: boolean) => void;
   createdOrder: CreatedOrderFocus | null; onCreatedOrderLocated: (orderId: string) => void;
@@ -131,9 +132,9 @@ function Workspace({ refreshBlocked, token, hash, calendarView, onCalendarChange
     : null;
   return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><OrderUpdates currentOrderId={id} updates={updates} clear={() => setUpdates([])} dismiss={id => setUpdates(current => current.filter(update => update.orderId !== id))} /><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating || writing} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><nav className="app-nav" aria-label="工作区导航"><a href={calendarHref(calendarView)} aria-current={['calendar', 'create', 'order', 'history', 'payment-orders'].includes(route.kind) ? 'page' : undefined}>日历工作台</a>{access.productionView && <a href="#/production-query" aria-current={route.kind === 'production-query' ? 'page' : undefined}>待制作查询</a>}{access.management && <a href="#/admin/orders" aria-current={route.kind === 'orders' ? 'page' : undefined}>订单查询与统计</a>}{canManagePackages && <a href="#/admin/order-packages" aria-current={route.kind === 'packages' ? 'page' : undefined}>套餐管理</a>}{canHandleSubmissions(me.data) && <a href="#/customer-submissions" aria-current={['submissions', 'submission'].includes(route.kind) ? 'page' : undefined}>客户填单{Boolean(pendingSubmissions.data?.count) && <span className="pending-count" aria-label={`${pendingSubmissions.data!.count} 份待处理填单`} title="全部待处理填单">{pendingSubmissions.data!.count > 99 ? '99+' : pendingSubmissions.data!.count}</span>}</a>}{me.data?.systemRole === 'SUPER_ADMIN' && <a href="#/admin/employees" aria-current={route.kind === 'employees' ? 'page' : undefined}>员工管理</a>}</nav><main className={`workspace${hash === '#/orders/new' ? ' workspace-create' : ''}`}><VersionNotice connection={connection} blocked={refreshBlocked || creating || writing} refresh={() => { if (!refreshBlocked && !creating && !writing) window.location.reload(); }} /><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{!live && showConnectionWarning && <div className="notice" role="status">暂时无法接收新订单动态，当前显示的订单可能不是最新的。</div>}{hash === '#/orders/new' && access.entry && draftAccountId === me.data?.accountId && draftControls}{hash === '#/orders/new' ? !access.entry ? <p className="notice">当前岗位不显示接单信息。</p> : draft && draft.accountId === me.data?.accountId ? <OrderCreate key={draft.requestId} draft={draft.value} initialDraft={draft.initial} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} editor={draft.editor} onEditorChange={onEditorChange} blocked={draftBlocked} imageScope={{ accountId: draft.accountId, requestId: draft.requestId }} canRecordPayment={hasPermissions(me.data, 'ORDER_PAYMENT_UPDATE')} canUploadImages={hasPermissions(me.data, 'ORDER_READ', 'ORDER_IMAGE_UPLOAD')} onImageWritingChange={onWritingChange} createdOrderId={draft.createdOrderId} /> : <Loading /> : route.kind === 'submission' && id ? <CustomerSubmissionDetail key={id} id={id} account={me.data} onDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : route.kind === 'submissions' && me.data ? <CustomerSubmissions key={me.data.accountId} account={me.data} onWritingChange={onWritingChange} /> : route.kind === 'history' && id ? !access.history && route.type !== 'NOTE' ? <p className="notice">当前岗位不显示完整操作记录。</p> : <OrderHistory account={me.data} key={id + (route.type || 'all')} id={id} initialType={route.type} returnToCalendar={route.returnToCalendar} /> : id ? <OrderDetail account={me.data} key={`${me.data?.accountId ?? ''}:${id}`} id={id} returnToCalendar={route.returnToCalendar} returnToOrders={queryOrderId === id} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : productionQuery ? access.productionView
     ? <ProductionQuery key={JSON.stringify([productionQuery.from, productionQuery.through, productionQuery.stage])} route={productionQuery} />
-    : <p className="notice">当前岗位不显示待制作查询。</p> : route.kind === 'payment-orders' ? !access.amounts ? <p className="notice">当前岗位不显示付款明细。</p> : <PaymentOrders route={readPaymentList(hash)!} /> : route.kind === 'orders' ? !access.management ? <p className="notice">当前岗位不显示订单财务查询。</p> : me.data ? <AdminOrders initialView={managementView.current} onViewChange={saveManagementView} onOpenOrder={setQueryOrderId} onWritingChange={onWritingChange} /> : <Loading /> : route.kind === 'packages' ? !me.data ? <Loading /> : canManagePackages ? <OrderPackageAdmin key={me.data.accountId} accountId={me.data.accountId} onWritingChange={onWritingChange} onDirtyChange={onEditDirtyChange} /> : <p className="notice">仅店长可以管理套餐。</p> : route.kind === 'employees' && me.data ? <EmployeeAdmin accountId={me.data.accountId} onWritingChange={onWritingChange} onDirtyChange={onEditDirtyChange} /> : me.data ? <Calendar account={me.data} key={me.data.accountId} view={calendarView} onViewChange={onCalendarChange} filters={filters} onFiltersChange={setFilters} createdOrder={createdOrder?.accountId === me.data.accountId && createdOrder.date === selected ? createdOrder : undefined} onCreatedOrderLocated={onCreatedOrderLocated} /> : <Loading />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span></footer></>;
+    : <p className="notice">当前岗位不显示待制作查询。</p> : route.kind === 'payment-orders' ? !access.amounts ? <p className="notice">当前岗位不显示付款明细。</p> : <PaymentOrders route={readPaymentList(hash)!} /> : route.kind === 'orders' ? !access.management ? <p className="notice">当前岗位不显示订单财务查询。</p> : me.data ? <AdminOrders initialView={managementView.current} onViewChange={saveManagementView} onOpenOrder={setQueryOrderId} onWritingChange={onWritingChange} /> : <Loading /> : route.kind === 'packages' ? !me.data ? <Loading /> : canManagePackages ? <OrderPackageAdmin key={me.data.accountId} accountId={me.data.accountId} onWritingChange={onWritingChange} onDirtyChange={onEditDirtyChange} onDraftLeaveChange={onDraftLeaveChange} /> : <p className="notice">仅店长可以管理套餐。</p> : route.kind === 'employees' && me.data ? <EmployeeAdmin accountId={me.data.accountId} onWritingChange={onWritingChange} onDirtyChange={onEditDirtyChange} /> : me.data ? <Calendar account={me.data} key={me.data.accountId} view={calendarView} onViewChange={onCalendarChange} filters={filters} onFiltersChange={setFilters} createdOrder={createdOrder?.accountId === me.data.accountId && createdOrder.date === selected ? createdOrder : undefined} onCreatedOrderLocated={onCreatedOrderLocated} /> : <Loading />}</main><footer className="app-footer"><CalendarBlank size={18} /><span>午逅 Story</span></footer></>;
 }
-export function App() {
+export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string) => void }) {
   const state = useSyncExternalStore(session.subscribe, session.snapshot);
   const client = useQueryClient();
   const [hash, setHash] = useState(window.location.hash);
@@ -144,10 +145,16 @@ export function App() {
   const hashRef = useRef(hash);
   const historyPosition = useRef<number>(typeof window.history.state?.wuhouRoutePosition === 'number' ? window.history.state.wuhouRoutePosition : 0);
   const drafts = useOrderDraft();
-  const { draft, draftRef, candidate, status: draftStatus, open: openDraft, leave: leaveDraft, change: changeDraft, changeEditor, clear: clearDraft, prepare: prepareDraft, rejected: rejectDraft } = drafts;
-  const draftStatusRef = useRef(draftStatus); draftStatusRef.current = draftStatus;
+  const { draft, draftRef, candidate, saved, error: draftError, busy: draftBusy, open: openDraft, leave: leaveDraft,
+    suspend: suspendDraft, change: changeDraft, changeEditor, clear: clearDraft, prepare: prepareDraft, rejected: rejectDraft,
+    save: saveDraft, needsSave: draftNeedsSave } = drafts;
   const accountRef = useRef('');
-  useEffect(() => { if (!state.token) leaveDraft(); }, [state.token, leaveDraft]);
+  const [orderExit, setOrderExit] = useState<{ leave: () => void; stay: () => void } | null>(null);
+  const [orderExitError, setOrderExitError] = useState('');
+  const exitSaving = useRef(false);
+  useEffect(() => {
+    if (!state.token) { suspendDraft(); setOrderExit(null); setOrderExitError(''); }
+  }, [state.token, suspendDraft]);
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
   const [notice, setNotice] = useState('');
@@ -160,6 +167,8 @@ export function App() {
   }, [hash, calendarView.date, state.token, createdOrder]);
   const [editDirty, setEditDirty] = useState(false);
   const editDirtyRef = useRef(false);
+  const draftLeave = useRef<DraftLeaveGuard | null>(null);
+  const onDraftLeaveChange = useCallback((guard: DraftLeaveGuard | null) => { draftLeave.current = guard; }, []);
   const onEditDirtyChange = useCallback((dirty: boolean) => { editDirtyRef.current = dirty; setEditDirty(dirty); }, []);
   const [writing, setWriting] = useState(false);
   const writingRef = useRef(false);
@@ -175,23 +184,26 @@ export function App() {
       const transferred = withImages ? await transferredOrder(record) : undefined;
       const existingId = record.createdOrderId || transferred;
       const order = existingId ? await api<Detail>(`/orders/${existingId}`)
-        : await api<Detail>('/orders', { method: 'POST', body: request, headers: { 'Idempotency-Key': record.requestId } });
+        : await api<Detail>('/orders', { method: 'POST', body: request, headers: { 'Idempotency-Key': record.idempotencyKey || record.requestId } });
       if (withImages) {
-        if (!drafts.created(order.orderId)) throw new Error('订单已创建，本机保存未完成，草稿已保留。');
+        if (!await drafts.created(order.orderId)) throw new Error('订单已创建，本机保存未完成，草稿已保留。');
         if (transferred !== order.orderId) await promoteDraftImages(record, order);
       }
       return order;
     },
-    onSuccess: order => {
+    onSuccess: async order => {
       if (session.snapshot().token) {
         synchronize(client, order.orderId);
         client.setQueryData(['order', order.orderId, 'detail'], order);
       }
+      const record = draftRef.current;
+      if (!record || record.accountId !== accountRef.current) return;
       const date = order.fulfillment.requestedReceiveDate;
-      setCreatedOrder({ accountId: draftRef.current!.accountId, orderId: order.orderId, orderNo: order.orderNo, date, located: false });
-      const record = draftRef.current!;
+      setCreatedOrder({ accountId: record.accountId, orderId: order.orderId, orderNo: order.orderNo, date, located: false });
       const withImages = record.value.items.some(item => item.images?.length);
-      const cleared = clearDraft(); leaveDraft();
+      const cleared = await clearDraft();
+      if (record.accountId !== accountRef.current || !session.snapshot().token) return;
+      leaveDraft();
       if (cleared && withImages) void forgetImageTransfer(record).catch(() => {});
       setSelected(date);
       setNotice(cleared ? '' : '订单已创建，但本机草稿未能清除。再次恢复时请先核对原订单。');
@@ -199,19 +211,25 @@ export function App() {
       window.history.replaceState(window.history.state, '', next);
       hashRef.current = next; setHash(next); window.scrollTo(0, 0);
     },
-    onError: error => {
+    onError: async error => {
       // Session loss can discard a successful response. Keep the original request for an idempotent retry.
       if (error instanceof ApiError && error.status === 401) return;
-      if (!draftRef.current?.createdOrderId && !creationResultUnknown(error)) rejectDraft();
+      if (!draftRef.current?.createdOrderId && !creationResultUnknown(error)) await rejectDraft();
     },
     onSettled: () => { creatingRef.current = false; setCreating(false); },
   });
-  const allowLeave = useCallback((discarding = false) => {
+  const allowLeave = useCallback(() => {
     if (creatingRef.current) { setNotice('订单正在创建，请稍候再离开。'); return false; }
-    if (writingRef.current) { setNotice('操作尚未完成，请稍候再离开。'); return false; }
-    if (hashRef.current === '#/orders/new') return discarding || !hasDraftContent(draftRef.current) || !['error', 'conflict'].includes(draftStatusRef.current) || window.confirm('本机草稿保存未完成，关闭或刷新页面可能丢失输入。仍要离开吗？');
+    if (writingRef.current || exitSaving.current) { setNotice('操作尚未完成，请稍候再离开。'); return false; }
     return !editDirtyRef.current || window.confirm('未保存的内容将丢失，确定离开吗？');
   }, []);
+  const promptDraftExit = useCallback<DraftLeaveGuard>((leave, stay) => {
+    if (hashRef.current === '#/orders/new' && draftNeedsSave()) {
+      setOrderExit(current => current ?? { leave, stay });
+      return true;
+    }
+    return draftLeave.current?.(leave, stay) ?? false;
+  }, [draftNeedsSave]);
   const onAccount = useCallback((accountId: string, date?: string, canEnter = false) => {
     setCreatedOrder(current => current && current.accountId !== accountId ? null : current);
     if (accountRef.current && accountRef.current !== accountId) {
@@ -222,27 +240,26 @@ export function App() {
   }, [openDraft, creation.reset, setSelected]);
   useEffect(() => {
     window.history.replaceState({ ...window.history.state, wuhouRoutePosition: historyPosition.current }, '');
-    const listener = () => {
-      const next = window.location.hash;
+    const restoreRoute = () => {
       const position: unknown = window.history.state?.wuhouRoutePosition;
+      if (window.location.hash === hashRef.current) return;
+      // 回到原历史项，保留被取消后退的工作台入口。
+      if (typeof position === 'number' && position !== historyPosition.current) window.history.go(historyPosition.current - position);
+      else {
+        window.history.replaceState({ ...window.history.state, wuhouRoutePosition: historyPosition.current + 1 }, '');
+        window.history.back();
+      }
+    };
+    const acceptRoute = () => {
+      const next = window.location.hash;
       if (next === hashRef.current) return;
-      if ((hashRef.current === '#/orders/new' && draftRef.current) || editDirtyRef.current || writingRef.current) {
-        if (!allowLeave()) {
-          // 回到原历史项，保留被取消后退的工作台入口。
-          if (typeof position === 'number' && position !== historyPosition.current) window.history.go(historyPosition.current - position);
-          else {
-            window.history.replaceState({ ...window.history.state, wuhouRoutePosition: historyPosition.current + 1 }, '');
-            window.history.back();
-          }
-          return;
-        }
-        if (hashRef.current === '#/orders/new') {
-          if (draftRef.current && !candidate) changeEditor({ scrollY: window.scrollY });
-          leaveDraft(); creation.reset();
-        }
+      const position: unknown = window.history.state?.wuhouRoutePosition;
+      if (hashRef.current === '#/orders/new') {
+        leaveDraft(); setOrderExit(null); setOrderExitError(''); creation.reset();
       }
       historyPosition.current = typeof position === 'number' && position !== historyPosition.current ? position : historyPosition.current + 1;
       window.history.replaceState({ ...window.history.state, wuhouRoutePosition: historyPosition.current }, '');
+      if (next.startsWith('#/fill/')) { onPublicNavigation(next); return; }
       const source = workspaceRoute(next).returnToCalendar || '';
       const view = readCalendarView(next) || readCalendarView(source) || readCalendarView(readPaymentList(source)?.from || '');
       if (view) setCalendarView(view);
@@ -250,26 +267,29 @@ export function App() {
       hashRef.current = next; setHash(next);
       if (!calendarNavigation) window.scrollTo(0, 0);
     };
+    const listener = () => {
+      if (window.location.hash === hashRef.current) return;
+      if (!creatingRef.current && !writingRef.current && !exitSaving.current && promptDraftExit(acceptRoute, restoreRoute)) return;
+      if (allowLeave()) acceptRoute();
+      else restoreRoute();
+    };
     window.addEventListener('hashchange', listener);
     return () => window.removeEventListener('hashchange', listener);
-  }, [allowLeave, leaveDraft, changeEditor, creation.reset, candidate, draftRef]);
-  const dirty = hasDraftContent(draft) || Boolean(candidate);
+  }, [allowLeave, promptDraftExit, leaveDraft, creation.reset, onPublicNavigation]);
+  const dirty = draftNeedsSave();
   useEffect(() => {
-    if (!(dirty && draftStatus !== 'saved') && !editDirty && !creating && !writing) return;
+    if (!dirty && !editDirty && !creating && !writing && !draftBusy) return;
     const listener = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
     window.addEventListener('beforeunload', listener);
     return () => window.removeEventListener('beforeunload', listener);
-  }, [dirty, draftStatus, editDirty, creating, writing]);
-  const discardWarning = (pending: boolean) => pending ? '订单可能已经创建，请先核对工作台。删除本机草稿不会撤销订单。' : '';
+  }, [dirty, editDirty, creating, writing, draftBusy]);
   const logout = async () => {
-    if (!allowLeave(true)) return false;
-    const retained = drafts.retained();
-    const current = retained?.record;
-    if ((current || retained?.invalid) && !window.confirm(`退出登录将清除未提交草稿，确定退出吗？${discardWarning(Boolean(current?.pending))}`)) return false;
-    if (!clearDraft(true)) { setNotice('草稿暂未清除，请刷新后重试退出。'); return false; }
-    try { await session.logout(); }
-    catch (error) { if (current && !drafts.restore(current)) setNotice('退出失败，草稿和图片仍保留在当前页面，但草稿未能重新保存到本机，请勿关闭页面。'); throw error; }
-    if (current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(() => setNotice('已退出登录，草稿图片未能清除。'));
+    if (creatingRef.current || writingRef.current || exitSaving.current) return allowLeave();
+    const canLeave = await new Promise<boolean>(resolve => {
+      if (!promptDraftExit(() => resolve(true), () => resolve(false))) resolve(allowLeave());
+    });
+    if (!canLeave) return false;
+    await session.logout();
     leaveDraft();
     const view = defaultCalendarView(today());
     setCalendarView(view);
@@ -279,27 +299,44 @@ export function App() {
     creation.reset(); setNotice('');
     return true;
   };
-  const discard = () => {
-    if (!drafts.discard()) return false;
+  const discard = async () => {
+    if (!await drafts.discard()) return false;
     creation.reset();
     return true;
   };
   const draftControls = <>
-    {drafts.cleanupWarning && <p className="notice" role="status">{drafts.cleanupWarning}</p>}
-    {draftStatus === 'conflict' ? <div className="notice error" role="alert">其他标签页已更新或清除了草稿，当前页面已暂停保存。请重新载入。<button className="text-button" onClick={() => window.location.reload()}>重新载入</button></div>
-      : draftStatus === 'error' ? <div className="notice error" role="alert">本机保存失败，请暂勿关闭页面。<button className="text-button" onClick={drafts.retry}>重试保存</button></div>
-      : null}
-    {draft && <OrderDraftDiscard compact key={draft.requestId} label="另起新单" blocked={creating || writing || draftStatus === 'conflict'} conflict={draftStatus === 'conflict'} warning={Boolean(draft.pending || draft.createdOrderId)} discard={discard}>{draftStatus === 'saved' && <p className="draft-save-status" role="status">{drafts.restored ? '已恢复上次填写' : '草稿已保存'}</p>}</OrderDraftDiscard>}
-    {candidate && <OrderDraftRecovery candidate={candidate} blocked={draftStatus === 'conflict'} accept={drafts.accept} discard={discard} dismiss={() => { drafts.close(); window.location.hash = calendarHref(calendarView); }} />}
+    <div className="draft-toolbar"><a className="text-button back-link" href={calendarHref(calendarView)}>退出下单</a></div>
+    {draftError && !orderExit && !saved && <p className="notice error" role="alert">{draftError}</p>}
+    {drafts.restored && <p className="draft-save-status" role="status">已恢复上次填写</p>}
+    {draft && (draft.pending || draft.createdOrderId) && <OrderDraftDiscard compact key={draft.requestId} label="放弃待确认记录"
+      blocked={creating || writing} conflict={false} warning discard={discard} />}
+    {candidate && <OrderDraftRecovery candidate={candidate} blocked={false} accept={drafts.acceptLegacy} discard={discard}
+      dismiss={() => { window.location.hash = calendarHref(calendarView); }} />}
+    {saved && <RestoreCreationDraft busy={draftBusy} error={draftError} restore={() => void drafts.accept()} startFresh={drafts.start}
+      cancel={() => { window.location.hash = calendarHref(calendarView); }} />}
+    {orderExit && <SaveCreationDraft hasSaved={drafts.hasSaved} busy={draftBusy} error={orderExitError && draftError}
+      stay={() => { setOrderExit(null); setOrderExitError(''); orderExit.stay(); }}
+      discard={() => { setOrderExit(null); setOrderExitError(''); orderExit.leave(); }}
+      save={async () => {
+        if (exitSaving.current) return;
+        exitSaving.current = true; setOrderExitError('');
+        const stored = await saveDraft();
+        exitSaving.current = false;
+        if (!session.snapshot().token) return;
+        if (!stored) { setOrderExitError('failed'); return; }
+        setOrderExit(null); setNotice('草稿已保存。'); orderExit.leave();
+      }} />}
   </>;
   if (state.loading) return <Loading />;
   if (!state.token || state.token.passwordChangeRequired) return <>{notice && <p className="notice" role="status">{notice}</p>}{dirty && <div className="draft-session-notice notice" role="status">登录已失效，未提交草稿已保留。请用原账号重新登录。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={state.error instanceof ApiError && state.error.code === 'SESSION_CHANGED' ? undefined : () => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
-  return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && ['error', 'conflict'].includes(draftStatus)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftStatus === 'conflict'} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={creation.error || (!creating && draft?.pending ? pendingCreationError : null)} submitted={draft?.pending || creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftChange={(value, editor, retainRemovedImages, requireSaved) => {
-    const saved = changeDraft(value, editor, retainRemovedImages, requireSaved);
+  return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && (dirty || draftBusy)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftBusy || Boolean(orderExit)} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={creation.error || (!creating && draft?.pending ? pendingCreationError : null)} submitted={draft?.pending || creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftLeaveChange={onDraftLeaveChange} onDraftChange={(value, editor, retainRemovedImages) => {
+    const saved = changeDraft(value, editor, retainRemovedImages);
     if (!draftRef.current?.pending) creation.reset();
     return saved;
-  }} onSubmit={request => {
-    if (creatingRef.current || !prepareDraft(request)) return;
-    creatingRef.current = true; setCreating(true); setNotice(''); creation.mutate(draftRef.current!.pending!);
+  }} onSubmit={async request => {
+    if (creatingRef.current || exitSaving.current) return;
+    creatingRef.current = true; setCreating(true); setNotice('');
+    if (await prepareDraft(request) && draftRef.current?.pending) creation.mutate(draftRef.current.pending);
+    else { creatingRef.current = false; setCreating(false); }
   }} onLogout={logout} />;
 }

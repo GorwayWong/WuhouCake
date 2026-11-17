@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Images, Trash } from '@phosphor-icons/react';
-import { localImageError, readDraftImage, removeDraftImage, saveDraftImages } from './draftImages';
+import { localImageError, readDraftImage, removeDraftImage, saveWorkingDraftImages } from './draftImages';
 import type { DraftImage, ImageScope } from './draftImages';
 import { imagesPerItem } from './draftImageMetadata';
 
@@ -32,16 +32,19 @@ export function DraftItemImages({ scope, itemId, images, disabled, allowed, onCh
     if (images.length + files.length > imagesPerItem) { setError(`每个商品最多 5 张图片，还可添加 ${Math.max(0, imagesPerItem - images.length)} 张。`); return; }
     working.current = true; setBusy(true); onBusyChange(true); setError('');
     try {
-      const saved = await saveDraftImages(scope, itemId, files);
+      const saved = await saveWorkingDraftImages(scope, itemId, files);
       if (!alive.current) { await Promise.all(saved.map(image => removeDraftImage(scope, itemId, image.id))); return; }
-      if (!onChange([...images, ...saved])) setError('图片文件已存入本机，但草稿保存未完成，请处理草稿保存提示后重试。');
+      if (!onChange([...images, ...saved])) {
+        await Promise.all(saved.map(image => removeDraftImage(scope, itemId, image.id)));
+        setError('当前表单无法添加图片，请稍后重试。');
+      }
     } catch (failure) { if (alive.current) setError(localImageError(failure)); }
     finally { working.current = false; if (alive.current) { setBusy(false); onBusyChange(false); if (input.current) input.current.value = ''; } }
   }
   return <div className="draft-item-images">
     {images.length > 0 && <ul className="image-grid">{images.map(image => <DraftImageTile key={image.id} scope={scope} itemId={itemId} image={image} disabled={disabled || busy} remove={() => { onChange(images.filter(row => row.id !== image.id)); }} />)}</ul>}
     <div className="actions">{before}{allowed && <><button type="button" className="secondary" disabled={disabled || busy || images.length >= imagesPerItem} onClick={() => input.current?.click()}><Images />{busy ? '正在保存图片…' : '添加图片'}</button><span className="form-help" aria-live="polite">已选 {images.length} / 5 张</span><input className="sr-only" tabIndex={-1} aria-label="选择当前商品图片" ref={input} type="file" multiple accept="image/jpeg,image/png,.jpg,.jpeg,.png" disabled={disabled || busy} onChange={event => void select(Array.from(event.target.files || []))} /></>}</div>
-    {allowed && <p className="form-help">当前商品的参考图片 · JPG / PNG，每张不超过 5 MiB，随草稿保存在本机。</p>}
+    {allowed && <p className="form-help">当前商品的参考图片 · JPG / PNG，每张不超过 5 MiB，保存草稿时一同保留。</p>}
     {error && <p className="field-error" role="alert">{error}</p>}
   </div>;
 }

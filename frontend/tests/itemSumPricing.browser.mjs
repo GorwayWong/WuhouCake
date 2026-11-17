@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
+import { createOrderFixture, orderId, cycleOrderDraft, seedLegacyOrderDraft, openOrderDraft, saveOrderDraftAndExit, visibleOrderFields } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 let browser;
@@ -24,8 +24,7 @@ test('新下单单价自动合计、零价付款、恢复及桌面手机布局',
     await page.locator('[id="items.0.memberPrice"]').fill('0');
     assert.equal(await page.locator('#memberAmount').inputValue(), '0.00');
     await page.locator('#paymentMethod').click(); await page.getByRole('option', { name: '现金', exact: true }).click();
-    await until(async () => (await saved()).value.paymentMethod === 'CASH');
-    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await cycleOrderDraft(page);
     assert.equal(await page.locator('#totalAmount').inputValue(), '30.03');
     assert.equal(await page.locator('#memberAmount').inputValue(), '0.00');
     for (const width of [320, 390, 1280]) {
@@ -47,9 +46,9 @@ test('新下单单价自动合计、零价付款、恢复及桌面手机布局',
 test('旧草稿恢复保持手填金额，不静默切换', async () => {
   const { context, page, complete, saved } = await createOrderFixture(browser, base);
   try {
-    await complete(); await until(async () => Boolean((await saved())?.revision));
+    await complete(); await seedLegacyOrderDraft(page);
     await page.evaluate(() => { const key = 'wuhou:order-draft:v1:alice', record = JSON.parse(localStorage.getItem(key)); delete record.initial.pricingMode; delete record.value.pricingMode; record.value.totalAmount = '88.88'; record.value.memberAmount = '80'; localStorage.setItem(key, JSON.stringify(record)); });
-    await page.reload(); await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    await openOrderDraft(page);
     assert.equal(await page.locator('#totalAmount').getAttribute('readonly'), null);
     assert.equal(await page.locator('#totalAmount').inputValue(), '88.88');
     await page.locator('#totalAmount').fill('99');
@@ -67,10 +66,10 @@ test('套餐报价不一致阻止带入，修正后复制报价与备注并按�
     await page.locator('.package-picker select').selectOption('p');
     await page.getByRole('button', { name: '带入商品', exact: true }).click();
     await page.getByText(/请先在套餐管理核对报价并保存/).waitFor();
-    assert.equal((await saved())?.value.items[0].name || '', '');
+    assert.equal(await page.locator('[id="items.0.name"]').inputValue(), '');
     value.originalAmountCents = 2000;
     await page.getByRole('button', { name: '带入商品', exact: true }).click();
-    await until(async () => (await saved())?.value.items[0].name === '点心');
+    await until(async () => await page.locator('[id="items.0.name"]').inputValue() === '点心');
     assert.equal(await page.locator('#totalAmount').inputValue(), '20.00');
     assert.equal(await page.locator('[id="items.0.unitPrice"]').inputValue(), '10.00');
     assert.equal(await page.locator('[id="items.0.requirements"]').inputValue(), '少糖\n独立包装');
@@ -85,7 +84,7 @@ for (const change of ['updated', 'deleted', 'timeout', 'cancelled', 'offline', '
   try {
     await complete();
     await page.locator('[id="items.0.unitPrice"]').fill('100');
-    const before = (await saved()).value;
+    const before = await visibleOrderFields(page);
     const id = crypto.randomUUID(), itemId = crypto.randomUUID();
     let value = { id, name: '茶歇套餐', version: 1, originalAmountCents: 1000, memberAmountCents: null,
       items: [{ itemId, imageId: crypto.randomUUID(), name: '原款点心', productType: 'OTHER', quantity: 1,
@@ -110,7 +109,9 @@ for (const change of ['updated', 'deleted', 'timeout', 'cancelled', 'offline', '
         await route.fulfill({ contentType: 'text/event-stream',
           body: `event: package.changed\ndata: ${JSON.stringify({ packageId: id })}\n\n` }).catch(() => {});
       });
+      await saveOrderDraftAndExit(page);
       await page.reload();
+      await openOrderDraft(page);
     }
     await page.getByRole('button', { name: '导入套餐', exact: true }).click();
     await page.locator('.package-picker select').selectOption(id);
@@ -155,12 +156,13 @@ for (const change of ['updated', 'deleted', 'timeout', 'cancelled', 'offline', '
         assert.equal(detailReads, 2);
       }
     }
-    assert.deepEqual((await saved()).value, before);
+    assert.deepEqual(await visibleOrderFields(page), before);
     assert.deepEqual(images, []);
     if (change !== 'deleted' && change !== 'redacted') {
       await confirm.click();
       await dialog.waitFor({ state: 'detached' });
       assert.equal(detailReads, 3);
+      await cycleOrderDraft(page);
       assert.equal((await saved()).value.items.at(-1).name, value.items[0].name);
       assert.equal(await page.locator('#totalAmount').inputValue(), change === 'updated' ? '125.00' : '110.00');
       assert.equal(images.length, 1);
@@ -175,7 +177,7 @@ test('汇总订单详情隐藏手填金额入口，编辑商品单价后采用�
   try {
     await complete(); await page.locator('[id="items.0.unitPrice"]').fill('10');
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
-    await until(() => model.order !== null);
+    await page.waitForURL('**/#/?date=*');
     await page.goto(base + '/#/orders/' + orderId);
     await page.locator('.payment-panel').waitFor();
     assert.equal(await page.getByRole('button', { name: '修改金额', exact: true }).count(), 0);

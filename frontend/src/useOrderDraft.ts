@@ -1,153 +1,249 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { DraftConflict, OrderDraftSlot, draftStorageKey, freshOrderDraft, hasDraftContent } from './orderDraftStorage';
+import { useCallback, useRef, useState } from 'react';
+import { DraftConflict, OrderDraftSlot, decodeOrderDraft, freshOrderDraft, hasDraftContent } from './orderDraftStorage';
 import type { DraftEditor, OrderDraftRecord } from './orderDraftStorage';
 import type { OrderDraft } from './orderForm';
 import type { CreateOrderRequest } from './types';
-import { removeDraftImage, removeDraftImages } from './draftImages';
+import { localImageError, removeDraftImage, removeDraftImages, restoreWorkingDraftImages, snapshotDraftImages, persistDraftImages } from './draftImages';
+import type { StoredImage } from './draftImages';
+import { CreationDraftConflict, readCreationDraft, removeCreationDraft, saveCreationDraft } from './creationDraftStorage';
+import type { SavedCreationDraft } from './creationDraftStorage';
+import { randomUUID } from './uuid';
 
-type SaveStatus = 'idle' | 'saved' | 'error' | 'conflict';
+type SavedOrder = SavedCreationDraft<{ record: OrderDraftRecord; images: StoredImage[] }>;
 export interface DraftCandidate { record: OrderDraftRecord | null; invalid: boolean }
+const key = (accountId: string) => `order:${accountId}`;
+const content = (record: OrderDraftRecord) => JSON.stringify([record.value, record.editor.text]);
+const conflictMessage = '其他标签页已更新草稿。再次保存将使用当前内容。';
+const storageMessage = '草稿保存失败。请保留当前页面，检查浏览器存储空间后重试。';
+
+function serializeSubmission<T>(accountId: string, operation: () => T) {
+  return navigator.locks ? navigator.locks.request(`wuhou:order-submit:${accountId}`, operation) : Promise.resolve().then(operation);
+}
+
 export function useOrderDraft() {
-  const [restored, setRestored] = useState(false);
   const [draft, setDraft] = useState<OrderDraftRecord | null>(null);
-  const draftRef = useRef(draft);
+  const draftRef = useRef<OrderDraftRecord | null>(null);
   const [candidate, setCandidate] = useState<DraftCandidate | null>(null);
-  const candidateRef = useRef(candidate);
-  const [cleanupWarning, setCleanupWarning] = useState('');
-  const [status, setStatus] = useState<SaveStatus>('idle');
-  const statusRef = useRef<SaveStatus>('idle');
+  const [saved, setSaved] = useState<SavedOrder | null>(null);
+  const [error, setError] = useState('');
+  const [restored, setRestored] = useState(false);
+  const [busy, setBusy] = useState(false);
   const slot = useRef<OrderDraftSlot | null>(null);
   const entered = useRef(false);
+  const generation = useRef(0);
+  const active = useRef(false);
   const date = useRef('');
+  const keyRevision = useRef<string | null>(null);
+  const baseline = useRef('');
   const accountId = useRef('');
   const setLocal = useCallback((record: OrderDraftRecord | null) => { draftRef.current = record; setDraft(record); }, []);
-  const showCandidate = useCallback((value: DraftCandidate | null) => { candidateRef.current = value; setCandidate(value); }, []);
-  const saveStatus = useCallback((value: SaveStatus) => { statusRef.current = value; setStatus(value); }, []);
-  const failed = useCallback((error: unknown) => { saveStatus(error instanceof DraftConflict ? 'conflict' : 'error'); }, [saveStatus]);
-  const persist = useCallback((record: OrderDraftRecord, requireSaved = false): boolean => {
-    if (statusRef.current === 'conflict' || !slot.current) return false;
-    try {
-      if (hasDraftContent(record)) { setLocal(slot.current.write(record)); saveStatus('saved'); }
-      else { slot.current.remove(); setLocal({ ...record, updatedAt: '', revision: '' }); saveStatus('idle'); }
-      return true;
-    } catch (error) { if (!requireSaved) setLocal(record); failed(error); return false; }
-  }, [setLocal, saveStatus, failed]);
+  const deleteWorkingImages = useCallback((record: OrderDraftRecord) => {
+    if (record.imageStorageUsed || record.value.items.some(item => item.images?.length)) {
+      void removeDraftImages(record).catch(() => {
+        if (accountId.current === record.accountId) setError('本机临时图片未能清理，可能仍占用浏览器存储空间。');
+      });
+    }
+  }, []);
+  const leave = useCallback(() => {
+    generation.current++;
+    entered.current = false;
+    setSaved(null); setCandidate(null); setRestored(false);
+    const current = draftRef.current;
+    setLocal(null);
+    if (current && !current.pending && !current.createdOrderId) deleteWorkingImages(current);
+  }, [setLocal, deleteWorkingImages]);
+  const suspend = useCallback(() => { entered.current = false; generation.current++; setSaved(null); setCandidate(null); }, []);
+  const start = useCallback(() => {
+    const value = freshOrderDraft(accountId.current, date.current);
+    baseline.current = content(value);
+    setSaved(null); setCandidate(null); setRestored(false); setLocal(value);
+  }, [setLocal]);
+
   const open = useCallback((id: string, canEnter: boolean, selectedDate?: string) => {
     if (accountId.current !== id || canEnter !== Boolean(slot.current)) {
+      leave();
       accountId.current = id; slot.current = canEnter ? new OrderDraftSlot(id) : null;
-      setCleanupWarning('');
-      entered.current = false; setLocal(null); showCandidate(null); saveStatus('idle');
+      setError('');
     }
     if (!canEnter || selectedDate === undefined || entered.current) return;
-    entered.current = true; date.current = selectedDate; setRestored(false);
-    if (statusRef.current === 'conflict') return;
+    entered.current = true; date.current = selectedDate;
+    const run = ++generation.current;
+    if (draftRef.current) return; // 同账号登录恢复时保留当前页的输入。
+    const pendingSlot = slot.current!;
+    let legacy: DraftCandidate | undefined;
     try {
-      // An unsaved in-memory snapshot remains useful after session expiry or a storage failure.
-      const memory = draftRef.current;
-      if (memory) slot.current!.check();
-      const stored = slot.current!.read();
-      if (stored.invalid) { showCandidate(stored); setLocal(null); return; }
-      const record = hasDraftContent(memory) ? memory : stored.record;
-      if (record && hasDraftContent(record)) {
-        showCandidate(null); setLocal(record); setRestored(true);
-        if (statusRef.current !== 'error') saveStatus('saved');
-        return;
+      legacy = pendingSlot.read();
+      if (legacy.invalid) { setCandidate(legacy); return; }
+      if (legacy.record?.pending || legacy.record?.createdOrderId) {
+        setLocal(legacy.record); setRestored(true); return;
       }
-      setLocal(freshOrderDraft(id, selectedDate)); saveStatus('idle');
-    } catch (error) {
-      if (hasDraftContent(draftRef.current)) { showCandidate({ record: draftRef.current, invalid: false }); setLocal(null); }
-      else setLocal(freshOrderDraft(id, selectedDate));
-      failed(error);
+    } catch {
+      setError('本机提交恢复记录无法读取，提交前请检查浏览器存储权限。');
     }
-  }, [setLocal, showCandidate, saveStatus, failed]);
+    void (async () => {
+      try {
+        let found = await readCreationDraft<SavedOrder['value']>(key(id));
+        if (generation.current !== run) return;
+        const record = legacy?.record;
+        if (record && hasDraftContent(record) && !found) {
+          // 旧版本的本机自动草稿迁移到同账号的新建槽。
+          const images = await snapshotDraftImages(record);
+          if (generation.current !== run) return;
+          try { await saveCreationDraft(key(id), null, { record, images }); }
+          catch (failure) { if (!(failure instanceof CreationDraftConflict)) throw failure; }
+          found = await readCreationDraft<SavedOrder['value']>(key(id));
+          if (found?.value.record.requestId === record.requestId) {
+            try { await serializeSubmission(id, () => pendingSlot.remove()); deleteWorkingImages(record); }
+            catch { /* 新草稿已经保存，旧记录留待下次核对。 */ }
+          }
+        }
+        if (generation.current !== run) return;
+        keyRevision.current = found?.revision ?? null;
+        if (found) setSaved(found);
+        else start();
+      } catch {
+        if (generation.current !== run) return;
+        if (legacy?.record) setCandidate(legacy);
+        else start();
+        setError('本机草稿无法读取，请检查浏览器存储权限。');
+      }
+    })();
+  }, [leave, start, setLocal, deleteWorkingImages]);
+
   const accept = useCallback(() => {
-    const record = candidateRef.current?.record;
-    if (!record || record.accountId !== slot.current?.accountId) return;
-    setLocal(record); showCandidate(null);
-    if (statusRef.current !== 'error' && statusRef.current !== 'conflict') saveStatus(record.updatedAt ? 'saved' : 'idle');
-  }, [setLocal, showCandidate, saveStatus]);
-  const clear = useCallback((retainImages = false) => {
-    if (statusRef.current === 'conflict') return false;
+    if (active.current || !saved) return;
+    const { record, images } = saved.value || {};
+    const validated = decodeOrderDraft(JSON.stringify(record), accountId.current);
+    if (!validated || !Array.isArray(images)) { setError('草稿内容无法读取，可重新填写。'); return; }
+    const copy = { ...validated, requestId: randomUUID(), idempotencyKey: validated.idempotencyKey || validated.requestId, savedRevision: saved.revision };
+    restoreWorkingDraftImages(copy, images);
+    baseline.current = content(copy);
+    setLocal(copy); setSaved(null); setRestored(true); setError('');
+  }, [saved, setLocal]);
+  const acceptLegacy = useCallback(() => {
+    const record = candidate?.record;
+    if (!record) return;
+    // 旧图片缺失时仍可恢复原表单，移除缺失图片后手动保存。
+    setLocal(record); setCandidate(null); setRestored(true);
+  }, [candidate, setLocal]);
+
+  const needsSave = useCallback(() => {
+    const record = draftRef.current;
+    return Boolean(record && !record.pending && !record.createdOrderId && content(record) !== baseline.current);
+  }, []);
+  const save = useCallback(async () => {
+    const current = draftRef.current;
+    if (active.current || !current || current.pending || current.createdOrderId) return false;
+    const run = generation.current, revision = keyRevision.current;
+    active.current = true; setBusy(true); setError('');
     try {
-      const current = draftRef.current || candidateRef.current?.record;
-      slot.current?.remove(); setRestored(false); setLocal(null); showCandidate(null); saveStatus('idle');
-      const owner = slot.current;
-      if (!retainImages && current && (current.imageStorageUsed || current.value.items.some(item => item.images?.length))) void removeDraftImages(current).catch(() => {
-        if (slot.current === owner) setCleanupWarning('旧草稿的本机图片未能清理，可能仍占用存储空间；不会影响新草稿保存。');
-      });
-      return true;
-    }
-    catch (error) { if (error instanceof DraftConflict) failed(error); return false; }
-  }, [setLocal, showCandidate, saveStatus, failed]);
-  const discard = useCallback(() => {
-    if (!clear()) return false;
-    setLocal(freshOrderDraft(accountId.current, date.current)); return true;
-  }, [clear, setLocal]);
-  const close = useCallback(() => {
-    // Keep the last snapshot in memory as well when browser storage is unavailable.
-    if (candidateRef.current?.record) setLocal(candidateRef.current.record);
-    showCandidate(null); entered.current = false;
-  }, [showCandidate, setLocal]);
-  const leave = useCallback(() => { entered.current = false; }, []);
-  const change = useCallback((value: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages = false, requireSaved = false) => {
+      const images = await snapshotDraftImages(current);
+      if (run !== generation.current) return false;
+      const record = { ...current, revision: randomUUID(), updatedAt: new Date().toISOString(), idempotencyKey: randomUUID(), savedRevision: undefined,
+        editor: { ...current.editor, scrollY: window.scrollY } };
+      await saveCreationDraft(key(current.accountId), revision, { record, images });
+      return run === generation.current;
+    } catch (failure) {
+      if (run !== generation.current) return false;
+      if (failure instanceof CreationDraftConflict) {
+        try {
+          const latest = await readCreationDraft(key(current.accountId));
+          if (run !== generation.current) return false;
+          keyRevision.current = latest?.revision ?? null;
+          setError(conflictMessage);
+          return false;
+        } catch { /* 输入仍保留在页面。 */ }
+      }
+      setError(failure instanceof DOMException ? storageMessage : localImageError(failure));
+      return false;
+    } finally { active.current = false; setBusy(false); }
+  }, []);
+
+  const change = useCallback((value: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages = false) => {
     const before = draftRef.current;
-    if (!before) return false;
-    const saved = persist({ ...before, value, imageStorageUsed: before.imageStorageUsed || value.items.some(item => item.images?.length), editor: { ...before.editor, ...editor } }, requireSaved);
-    if (saved && !retainRemovedImages) for (const item of before.value.items) for (const image of item.images || []) {
-      if (!value.items.some(next => next.key === item.key && next.images?.some(candidate => candidate.id === image.id)))
-        void removeDraftImage(before, item.key, image.id).catch(error => { if (accountId.current === before.accountId) failed(error); });
+    if (!before || active.current || before.pending || before.createdOrderId) return false;
+    setLocal({ ...before, value, imageStorageUsed: before.imageStorageUsed || value.items.some(item => item.images?.length), editor: { ...before.editor, ...editor } });
+    if (!retainRemovedImages) for (const item of before.value.items) for (const image of item.images ?? []) {
+      if (!value.items.some(next => next.key === item.key && next.images?.some(nextImage => nextImage.id === image.id))) {
+        void removeDraftImage(before, item.key, image.id).catch(() => {});
+      }
     }
-    return saved;
-  }, [persist, failed]);
-  const created = useCallback((orderId: string) => {
-    if (!draftRef.current) return false;
-    return persist({ ...draftRef.current, createdOrderId: orderId });
-  }, [persist]);
+    return true;
+  }, [setLocal]);
   const changeEditor = useCallback((editor: Partial<DraftEditor>) => {
     if (draftRef.current) change(draftRef.current.value, editor);
   }, [change]);
-  const prepare = useCallback((request: CreateOrderRequest) => {
-    const record = draftRef.current;
-    if (!record) return false;
-    const saved = persist({ ...record, pending: record.pending || request });
-    if (!saved) setLocal(record);
-    return saved;
-  }, [persist, setLocal]);
-  const rejected = useCallback(() => {
-    if (draftRef.current) persist({ ...draftRef.current, pending: undefined });
+
+  const persist = useCallback(async (record: OrderDraftRecord) => {
+    const storage = slot.current;
+    try {
+      if (!storage || storage.accountId !== record.accountId) return false;
+      const next = await serializeSubmission(record.accountId, () => {
+        const previous = storage.read();
+        if (previous.invalid || (previous.record?.pending || previous.record?.createdOrderId) && previous.record.requestId !== record.requestId) throw new DraftConflict();
+        return storage.write(record);
+      });
+      if (storage !== slot.current) return false;
+      setLocal(next); setError('');
+      return true;
+    } catch (failure) {
+      setError(failure instanceof DraftConflict ? '此账号另有订单结果待确认，请回到原标签页核对。' : '本机提交记录保存失败，请检查浏览器存储后重试。');
+      return false;
+    }
+  }, [setLocal]);
+  const prepare = useCallback(async (request: CreateOrderRequest) => {
+    const current = draftRef.current;
+    if (!current) return false;
+    if (!current.pending && !current.createdOrderId) {
+      try { await persistDraftImages(current); }
+      catch (failure) { setError(localImageError(failure)); return false; }
+      if (draftRef.current !== current) return false;
+    }
+    return persist({ ...current, pending: current.pending ?? request });
   }, [persist]);
-  const retry = useCallback(() => { if (draftRef.current) persist(draftRef.current); }, [persist]);
-  const retained = useCallback((): DraftCandidate | null => {
-    if (candidateRef.current) return candidateRef.current;
-    if (hasDraftContent(draftRef.current)) return { record: draftRef.current, invalid: false };
-    if (!slot.current) return null;
-    try { return slot.current.read(); }
-    catch (error) { failed(error); return { record: null, invalid: true }; }
-  }, [failed]);
-  const restore = useCallback((record: OrderDraftRecord) => persist(record), [persist]);
-  useEffect(() => {
-    const flush = () => {
-      if (entered.current && !candidateRef.current && draftRef.current) {
-        const record = draftRef.current;
-        persist({ ...record, editor: { ...record.editor, scrollY: window.scrollY } });
-      }
-    };
-    const hidden = () => { if (document.visibilityState === 'hidden') flush(); };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const scroll = () => { if (timer === undefined) timer = setTimeout(() => { timer = undefined; flush(); }, 250); };
-    const storage = (event: StorageEvent) => {
-      if (slot.current && (event.key === null || event.key === draftStorageKey(slot.current.accountId))) {
-        try { slot.current.check(); } catch (error) { failed(error); }
-      }
-    };
-    document.addEventListener('visibilitychange', hidden);
-    window.addEventListener('pagehide', flush);
-    window.addEventListener('scroll', scroll, { passive: true });
-    window.addEventListener('storage', storage);
-    return () => {
-      clearTimeout(timer); document.removeEventListener('visibilitychange', hidden);
-      window.removeEventListener('pagehide', flush); window.removeEventListener('scroll', scroll); window.removeEventListener('storage', storage);
-    };
-  }, [persist, failed]);
-  return { restored, draft, draftRef, candidate, status, cleanupWarning, open, accept, discard, clear, close, leave, change, changeEditor, prepare, created, rejected, retry, retained, restore };
+  const created = useCallback(async (orderId: string) => {
+    const current = draftRef.current;
+    return current ? persist({ ...current, createdOrderId: orderId }) : false;
+  }, [persist]);
+  const removePending = useCallback(async (current: OrderDraftRecord | null, discard = false) => {
+    const storage = slot.current;
+    if (!storage) return false;
+    try {
+      await serializeSubmission(storage.accountId, () => {
+        const stored = storage.read();
+        if (stored.invalid && !(discard && !current) || stored.record &&
+          (current?.requestId !== stored.record.requestId || discard && current.revision !== stored.record.revision)) throw new DraftConflict();
+        storage.remove();
+      });
+      return true;
+    } catch { setError('本机提交记录未能清理，请核对原订单后重试。'); return false; }
+  }, []);
+  const rejected = useCallback(async () => {
+    const current = draftRef.current;
+    if (current && await removePending(current) && draftRef.current === current) setLocal({ ...current, pending: undefined });
+  }, [setLocal, removePending]);
+  const clear = useCallback(async () => {
+    const current = draftRef.current;
+    if (!current) return false;
+    try {
+      if (current.savedRevision) await removeCreationDraft(key(current.accountId), current.savedRevision);
+    } catch { setError('订单已创建，本机草稿清理失败，请重试确认。'); return false; }
+    if (!await removePending(current)) return false;
+    if (draftRef.current === current) setLocal(null);
+    deleteWorkingImages(current);
+    return true;
+  }, [setLocal, deleteWorkingImages, removePending]);
+  const discard = useCallback(async () => {
+    const current = draftRef.current || candidate?.record || null;
+    const owner = slot.current;
+    if (!await removePending(current, true) || slot.current !== owner) return false;
+    if (current) deleteWorkingImages(current);
+    setLocal(null);
+    entered.current = false;
+    open(accountId.current, true, date.current);
+    return true;
+  }, [candidate, deleteWorkingImages, removePending, open, setLocal]);
+
+  return { restored, draft, draftRef, candidate, saved, error, busy, open, leave, suspend, start, accept, acceptLegacy,
+    save, needsSave, change, changeEditor, prepare, created, clear, rejected, discard, hasSaved: keyRevision.current !== null };
 }

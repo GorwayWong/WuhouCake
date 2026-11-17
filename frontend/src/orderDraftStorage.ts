@@ -15,6 +15,8 @@ export interface OrderDraftRecord {
   initial: OrderDraft; value: OrderDraft; editor: DraftEditor; pending?: CreateOrderRequest;
   createdOrderId?: string;
   imageStorageUsed?: boolean;
+  savedRevision?: string;
+  idempotencyKey?: string;
 }
 export const draftStorageKey = (accountId: string) => `wuhou:order-draft:v1:${accountId}`;
 export function freshOrderDraft(accountId: string, date: string): OrderDraftRecord {
@@ -82,6 +84,8 @@ export function decodeOrderDraft(raw: string, accountId: string): OrderDraftReco
         && [null, 'RULE', 'MODEL', 'DEFAULT'].includes(mark.source as string | null) && typeof mark.needsReview === 'boolean')
       || value.pending !== undefined && !request(value.pending)
       || value.createdOrderId !== undefined && (typeof value.createdOrderId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.createdOrderId))
+      || value.savedRevision !== undefined && typeof value.savedRevision !== 'string'
+      || value.idempotencyKey !== undefined && (typeof value.idempotencyKey !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.idempotencyKey))
       || value.imageStorageUsed !== undefined && typeof value.imageStorageUsed !== 'boolean') return null;
     const record = value as unknown as OrderDraftRecord;
     const restore = (draft: OrderDraft): OrderDraft => {
