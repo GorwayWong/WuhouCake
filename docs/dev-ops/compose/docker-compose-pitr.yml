@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: ${PITR_POSTGRES_IMAGE:-wuhou-postgres-pitr:17}
+    build:
+      context: .
+      dockerfile: postgres-pitr.Dockerfile
+      args:
+        POSTGRES_IMAGE: ${PITR_POSTGRES_BASE:-postgres:17-bookworm}
+        PGBACKREST_VERSION: ${PITR_PGBACKREST_VERSION:-2.60.0-1.pgdg12+1}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-64MB}
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-24}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-2MB}
+      - -c
+      - temp_file_limit=${POSTGRES_TEMP_FILE_LIMIT:-64MB}
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=120s
+      - -c
+      - archive_command=pgbackrest --stanza=wuhou archive-push %p
+    volumes:
+      - type: bind
+        source: ${PITR_REPO_DIR:?set the pgBackRest repository directory on its dedicated mount}
+        target: /var/lib/pgbackrest
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./pgbackrest-ip.conf
+        target: /etc/pgbackrest/pgbackrest.conf
+        read_only: true
+        bind:
+          create_host_path: false

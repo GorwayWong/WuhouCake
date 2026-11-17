@@ -1,5 +1,6 @@
 package org.xaspire.WuhouCake.order.application.service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -17,23 +18,28 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 import org.xaspire.WuhouCake.order.domain.repository.*;
 import org.xaspire.WuhouCake.shared.id.IdGenerator;
+import org.xaspire.WuhouCake.shared.json.JsonCodec;
 import org.xaspire.WuhouCake.shared.response.Page;
 
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 public class OrderService {
+    private static final int MAX_ADDRESS_LENGTH = 2_000;
+    private static final int MAX_ITEM_SPEC_BYTES = 128 * 1024;
+    private static final int MAX_ORDER_SPEC_BYTES = 1024 * 1024;
     private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity;
     private final Orders orders;
     private final OrderActivities activities;
     private final IdGenerator ids;
     private final Clock clock;
+    private final JsonCodec json;
     private final ApplicationEventPublisher events;
 
     public OrderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events,
-            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity) {
+            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity, JsonCodec json) {
         this.orders = orders; this.activities = activities; this.ids = ids; this.clock = clock;
         this.events = events;
-        this.identity = identity;
+        this.identity = identity; this.json = json;
     }
     @Transactional
     public OrderViews.Detail create(OrderCommands.Create command, Operator operator) {
@@ -56,6 +62,7 @@ public class OrderService {
         var pickupAt = fulfillment.plannedHandoffAt() != null ? fulfillment.plannedHandoffAt() : fulfillment.requestedReceiveAt();
         var plan = new FulfillmentPlan(type, fulfillment.address(), pickupAt == null ? fulfillment.requestedReceiveDate() : receiveDate(pickupAt),
                 pickupAt, fulfillment.plannedFinishAt(), pickupAt);
+        checkAddress(plan.address(), null);
         requireFinishLeadTime(plan.pickupAt(), plan.plannedFinishAt());
         var itemIds = new HashSet<UUID>();
         var items = command.items().stream().map(item -> {
@@ -64,6 +71,7 @@ public class OrderService {
             if (!itemIds.add(itemId)) throw invalid();
             return createItem(item, itemId, now, submissionId != null, "ITEM_SUM".equals(command.pricingMode()));
         }).toList();
+        checkOrderSpecSize(items);
         var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
         var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod(), command.pricingMode());
         orders.create(order);
@@ -88,7 +96,16 @@ public class OrderService {
         var order = requireOrder(id);
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now();
+        var previous = order.requireActiveItem(command.itemId()).attributes();
         var changed = order.reviseItem(command.itemId(), command.changes(), now);
+        var updated = order.requireActiveItem(command.itemId()).attributes();
+        if (!previous.equals(updated)) {
+            int bytes = specificationBytes(updated);
+            if (bytes > specificationBytes(previous)) {
+                checkItemSpecSize(bytes);
+                checkOrderSpecSize(order.activeItems());
+            }
+        }
         if (changed.isEmpty()) orders.verifyVersion(id, expected);
         else {
             orders.reviseItem(order, expected, command.itemId());
@@ -113,22 +130,45 @@ public class OrderService {
     }
     @Transactional
     public OrderViews.Detail addItem(UUID id, OrderCommands.AddItem command, Operator operator) {
-        var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
-        var order = requireOrder(id);
-        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
-        var now = now(); var input = command.item();
+        return addItem(id, command, operator, null);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public OrderViews.Detail addItem(UUID id, OrderCommands.AddItem command, Operator operator, UUID requestId) {
+        var actor = actor(operator);
+        long expected = nonNegativeInteger(command.expectedVersion());
+        var input = command.item();
         if (input == null) throw invalid();
+
+        var order = requestId == null ? requireOrder(id) : orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        String fingerprint = null;
+        if (requestId != null) {
+            OrderReadAccess.requireReadable(order, identity);
+            fingerprint = OrderCreationService.fingerprint(input, json);
+            var previous = activities.itemAdditionFingerprint(id, actor.accountId(), requestId);
+            if (previous != null) {
+                if (!previous.equals(fingerprint)) throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
+                return detail(order, activities.recentItemNotes(id));
+            }
+            order.requireWritable();
+        }
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var now = now();
         var item = createItem(input, input.itemId() == null ? ids.nextId() : input.itemId(), now, false, "ITEM_SUM".equals(order.pricingMode()));
         var previousItems = order.activeItems();
         var changed = order.addItem(item, now);
+        checkOrderSpecSize(order.activeItems());
         orders.addItem(order, expected, item.itemId(), changedProductionItems(previousItems, order));
-        activities.append(OrderActivity.append(id, item.itemId(), "ITEM_ADDED", "追加商品", changed, actor, now));
+        var activity = OrderActivity.append(id, item.itemId(), "ITEM_ADDED", "追加商品", changed, actor, now);
+        if (requestId == null) activities.append(activity);
+        else activities.appendItemAddition(activity, requestId, fingerprint);
         changed(order, item.itemId(), OrderChanged.Type.ITEM_ADDED);
         return detail(order, activities.recentItemNotes(id));
     }
     private OrderItem createItem(OrderCommands.Item input, UUID itemId, Instant now, boolean customerSubmission, boolean itemSum) {
         var legacy = org.xaspire.WuhouCake.order.domain.model.valobj.LegacyDraftQuote.extract(input.attributes());
         var item = OrderItem.create(itemId, input.name(), input.productType(), input.quantity(), null, null, legacy.attributes(), now);
+        checkItemSpecSize(specificationBytes(item.attributes()));
         if (itemSum) return item.retainHistoricalPrices(
                 money(input.referenceUnitPriceCents() != null ? input.referenceUnitPriceCents() : input.unitPriceCents()),
                 money(input.referenceMemberPriceCents() != null ? input.referenceMemberPriceCents() : input.memberPriceCents()));
@@ -156,7 +196,9 @@ public class OrderService {
             catch (RuntimeException failure) { throw invalid(); }
             if (employee == null || !employee.accountId().equals(selected)) employee = selectEmployee(selected);
         }
+        var previousAddress = order.fulfillment().address();
         var now = now(); var changed = order.reviseInformation(command.changes(), now, employee);
+        checkAddress(order.fulfillment().address(), previousAddress);
         if (changed.isEmpty()) orders.verifyVersion(id, expected);
         else {
             orders.reviseInformation(order, expected);
@@ -165,6 +207,28 @@ public class OrderService {
         }
         return detail(order, activities.recentItemNotes(id));
     }
+    private static void checkAddress(String address, String previous) {
+        if (address != null && address.length() > MAX_ADDRESS_LENGTH && !address.equals(previous)
+                && (previous == null || address.length() >= previous.length()))
+            throw new OrderFailure("ORDER_ADDRESS_TOO_LONG");
+    }
+
+    private int specificationBytes(Map<String, Object> attributes) {
+        return json.write(attributes).getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static void checkItemSpecSize(int bytes) {
+        if (bytes > MAX_ITEM_SPEC_BYTES) throw new OrderFailure("ORDER_ITEM_SPEC_TOO_LARGE");
+    }
+
+    private void checkOrderSpecSize(List<OrderItem> items) {
+        long bytes = 0;
+        for (var item : items) {
+            bytes += specificationBytes(item.attributes());
+            if (bytes > MAX_ORDER_SPEC_BYTES) throw new OrderFailure("ORDER_SPEC_TOO_LARGE");
+        }
+    }
+
     @Transactional
     public OrderViews.Detail changePaymentStatus(UUID id, OrderCommands.PaymentStatus command, Operator operator) {
         var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
@@ -254,7 +318,6 @@ public class OrderService {
         var actor = actor(operator);
         var order = orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
         if (order.deletion() != null) {
-            if (order.deletion().expired(now())) throw new OrderFailure("ORDER_NOT_FOUND");
             return detail(order, activities.recentItemNotes(id));
         }
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
@@ -264,6 +327,26 @@ public class OrderService {
         changed(order, null, OrderChanged.Type.ORDER_DELETED);
         return detail(order, activities.recentItemNotes(id));
     }
+    @Transactional
+    public OrderViews.Detail restore(UUID id, OrderCommands.Restore command, Operator operator) {
+        var access = identity.me().access();
+        if (!access.allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_DELETE)
+                || !access.allows(org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_DELETED_READ))
+            throw new OrderFailure("ORDER_DELETED_FORBIDDEN");
+        long expected = nonNegativeInteger(command.expectedVersion());
+        var actor = actor(operator);
+        var order = orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        var deletion = order.deletion();
+        var now = now();
+        order.restore(now);
+        orders.restore(order, expected);
+        activities.append(OrderActivity.append(id, null, "ORDER_RESTORED", "恢复订单",
+                Map.of("deletedAt", deletion.deletedAt().toString(), "reason", deletion.reason()), actor, now));
+        changed(order, null, OrderChanged.Type.ORDER_RESTORED);
+        return detail(order, activities.recentItemNotes(id));
+    }
+
     @Transactional
     public OrderViews.Activity note(UUID id, OrderCommands.Note command, Operator operator) {
         return note(id, command, operator, null);
@@ -297,13 +380,12 @@ public class OrderService {
     }
     private Order requireOrder(UUID id) {
         var order = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
-        if (order.deletion() != null && order.deletion().expired(now())) throw new OrderFailure("ORDER_NOT_FOUND");
         order.requireWritable();
         return order;
     }
     private Order readOrder(UUID id) {
         var order = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
-        OrderReadAccess.requireReadable(order, clock, identity);
+        OrderReadAccess.requireReadable(order, identity);
         return order;
     }
     private void changed(Order order, UUID itemId, OrderChanged.Type type) {
@@ -333,6 +415,6 @@ public class OrderService {
                 order.creditedEmployee() == null ? null : new OrderViews.Employee(order.creditedEmployee().accountId(),
                         order.creditedEmployee().employeeNumber(), order.creditedEmployee().nickname()), order.paidAt(),
                 order.deletion() == null ? null : new OrderViews.Deletion(order.deletion().deletedAt(), order.deletion().deletedBy(),
-                        order.deletion().employeeName(), order.deletion().reason(), order.deletion().expiresAt()), order.orderingMethod(), order.originalAmountCents(), order.memberAmountCents(), order.paymentMethod(), order.pricingMode());
+                        order.deletion().employeeName(), order.deletion().reason(), null), order.orderingMethod(), order.originalAmountCents(), order.memberAmountCents(), order.paymentMethod(), order.pricingMode());
     }
 }

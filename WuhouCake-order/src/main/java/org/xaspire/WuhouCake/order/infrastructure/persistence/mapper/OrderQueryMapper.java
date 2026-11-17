@@ -7,6 +7,8 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Set;
 import org.apache.ibatis.annotations.*;
+import org.xaspire.WuhouCake.order.domain.port.OrderQueries.CardFilter;
+import org.xaspire.WuhouCake.order.domain.port.OrderQueries.CardPosition;
 
 public interface OrderQueryMapper {
     record ProductionDayRow(LocalDate date, long orderCount) { }
@@ -113,6 +115,70 @@ public interface OrderQueryMapper {
     @Select("SELECT " + PENDING_COLUMNS + " FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date}"
             + ORDER_SORT)
     List<PendingRow> pending(LocalDate date);
+
+    record WorkbenchBudgetRow(long orders, long bytes) { }
+    record CardCountsRow(long pending, long completed, long cancelled, long unknown,
+            long totalOrderCount, long waitingDeliveryOrderCount) { }
+    record CardRow(String orderId, String orderNo, String status, String paymentStatus, String fulfillmentType,
+            Instant pickupAt, Instant plannedFinishAt, long itemCount, long quantity, String firstItemId, String firstItemName,
+            String firstProductType, String firstAttributes, String latestNote) { }
+
+    @Select("WITH selected AS MATERIALIZED (SELECT id FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date} LIMIT 101),"
+            + " live_items AS (SELECT i.id,i.order_id,octet_length(i.attributes::text)+octet_length(i.name)+256 AS bytes"
+            + " FROM cake_order_item i JOIN selected s ON s.id=i.order_id WHERE NOT i.is_removed)"
+            + " SELECT count(*) AS orders,CASE WHEN count(*)>100 THEN 0 ELSE"
+            + " (SELECT COALESCE(sum(octet_length(row_to_json(o)::text)+256),0) FROM cake_order o JOIN selected s2 ON s2.id=o.id)"
+            + " + (SELECT COALESCE(sum(bytes),0) FROM live_items)"
+            + " + (SELECT COALESCE(sum(n.bytes),0) FROM live_items i CROSS JOIN LATERAL"
+            + " (SELECT octet_length(content)+256 AS bytes FROM cake_order_activity"
+            + " WHERE type='NOTE' AND order_id=i.order_id AND item_id=i.id ORDER BY created_at DESC,id DESC LIMIT 3) n)"
+            + " + (SELECT COALESCE(sum(n.bytes),0) FROM selected s2 CROSS JOIN LATERAL"
+            + " (SELECT octet_length(a.content)+256 AS bytes FROM cake_order_activity a"
+            + " LEFT JOIN cake_order_item i ON i.id=a.item_id AND i.order_id=a.order_id"
+            + " WHERE a.type='NOTE' AND a.order_id=s2.id AND (a.item_id IS NULL OR NOT i.is_removed)"
+            + " ORDER BY a.created_at DESC,a.id DESC LIMIT 1) n) END AS bytes FROM selected")
+    WorkbenchBudgetRow workbenchBudget(LocalDate date);
+
+    String CARD_MATCH = " COALESCE(o.status=#{filter.status},true) AND COALESCE(o.payment_status=#{filter.paymentStatus},true)";
+    String CARD_DAY = " FROM cake_order o WHERE o.deleted_at IS NULL AND " + ORDER_PICKUP_DATE + "=#{filter.date}";
+    String PENDING_STATUSES = "('CAKE_BASE','LAYER','FROSTING','DECORATING','WAITING_DELIVERY')";
+    @Select("WITH daily AS (SELECT o.status,o.fulfillment_type,(" + CARD_MATCH + ") AS matches" + CARD_DAY + ")"
+            + " SELECT count(*) FILTER (WHERE matches AND status IN " + PENDING_STATUSES + ") AS pending,"
+            + " count(*) FILTER (WHERE matches AND status='COMPLETED') AS completed,"
+            + " count(*) FILTER (WHERE matches AND status='CANCELLED') AS cancelled,"
+            + " count(*) FILTER (WHERE matches AND status NOT IN " + PENDING_STATUSES + " AND status NOT IN ('COMPLETED','CANCELLED')) AS unknown,"
+            + " count(*) FILTER (WHERE status<>'CANCELLED') AS total_order_count,"
+            + " count(*) FILTER (WHERE status='WAITING_DELIVERY' AND fulfillment_type='DELIVERY') AS waiting_delivery_order_count FROM daily")
+    CardCountsRow cardCounts(@Param("filter") CardFilter filter);
+
+    String CARD_PICKUP_SORT = "COALESCE(" + ORDER_PICKUP_AT + ",'infinity'::timestamptz)";
+    @Select("<script>WITH selected AS MATERIALIZED (SELECT o.id,o.order_no,o.status,o.payment_status,o.fulfillment_type,"
+            + ORDER_PICKUP_AT + " AS pickup_at,o.planned_finish_at" + CARD_DAY + " AND " + CARD_MATCH
+            + "<if test='onlyOrder != null'> AND o.id=CAST(#{onlyOrder} AS uuid)</if>"
+            + "<if test='after != null'> AND (" + CARD_PICKUP_SORT + ",o.order_no,o.id)"
+            + " &gt; (COALESCE(CAST(#{after.pickupAt} AS timestamptz),'infinity'::timestamptz),#{after.orderNo},CAST(#{after.orderId} AS uuid))</if>"
+            + " ORDER BY " + CARD_PICKUP_SORT + ",o.order_no,o.id LIMIT #{limit})"
+            + " SELECT o.id::text AS order_id,o.order_no,o.status,o.payment_status,o.fulfillment_type,o.pickup_at,o.planned_finish_at,"
+            + " counts.item_count,counts.quantity,first_item.id::text AS first_item_id,first_item.name AS first_item_name,"
+            + " first_item.product_type AS first_product_type,COALESCE(preview.attributes,'{}'::jsonb)::text AS first_attributes,"
+            + " CASE WHEN note.content IS NULL OR octet_length(note.content)&lt;=4096 THEN note.content ELSE '打开订单查看全文' END AS latest_note"
+            + " FROM selected o"
+            + " CROSS JOIN LATERAL (SELECT count(*) AS item_count,COALESCE(sum(quantity),0) AS quantity"
+            + " FROM cake_order_item WHERE order_id=o.id AND NOT is_removed) counts"
+            + " LEFT JOIN LATERAL (SELECT id,name,product_type,attributes FROM cake_order_item"
+            + " WHERE order_id=o.id AND NOT is_removed ORDER BY position NULLS LAST,created_at,id LIMIT 1) first_item ON true"
+            + " LEFT JOIN LATERAL (SELECT jsonb_object_agg(k, CASE WHEN octet_length((first_item.attributes-&gt;k)::text)&lt;=4096"
+            + " THEN first_item.attributes-&gt;k ELSE to_jsonb('打开订单查看全文'::text) END) AS attributes"
+            + " FROM unnest(CASE WHEN upper(btrim(first_item.product_type))='CAKE' THEN ARRAY['size','base','cakeBase']"
+            + " ELSE ARRAY['specification'] END) AS keys(k) WHERE jsonb_exists(first_item.attributes,k)) preview ON true"
+            + " LEFT JOIN LATERAL (SELECT a.content FROM cake_order_activity a"
+            + " LEFT JOIN cake_order_item i ON i.id=a.item_id AND i.order_id=a.order_id"
+            + " WHERE a.order_id=o.id AND a.type='NOTE' AND (a.item_id IS NULL OR NOT i.is_removed)"
+            + " ORDER BY a.created_at DESC,a.id DESC LIMIT 1) note ON true"
+            + " ORDER BY o.pickup_at NULLS LAST,o.order_no,o.id</script>")
+    List<CardRow> cards(@Param("filter") CardFilter filter,
+            @Param("after") CardPosition after,
+            @Param("onlyOrder") String onlyOrder, @Param("limit") int limit);
 
     @Select("<script>SELECT order_id::text, id::text AS item_id, name, quantity FROM cake_order_item"
             + " WHERE NOT is_removed AND order_id IN " + ORDER_IDS + " ORDER BY order_id, position NULLS LAST, created_at, id</script>")

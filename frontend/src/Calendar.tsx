@@ -1,11 +1,11 @@
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, CaretDown, CaretUp, Plus } from '@phosphor-icons/react';
 import { readQuery } from './api';
 import { businessDate, calendarRange, today, weekStart, workbenchDate } from './dates';
-import type { Account, CalendarOrder, Workbench } from './types';
+import type { Account, CalendarOrder, WorkbenchCards } from './types';
 import { ErrorNotice, Loading } from './ui';
-import { allCalendarFilters, calendarStatusOptions, matchesCalendarFilters } from './calendarFilters';
+import { allCalendarFilters, calendarStatusOptions } from './calendarFilters';
 import type { CalendarFilters } from './calendarFilters';
 import { exportOptions } from './exportFiles';
 import { DateInput } from './DateInput';
@@ -46,7 +46,38 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
   const effectiveFilters = visibleCalendarFilters(filters, access.amounts);
   const range = calendarRange(mode === 'month' ? `${view.month}-01` : selected, mode);
   const calendar = useQuery({ queryKey: ['calendar', range.from, range.to], queryFn: ({ signal }) => readQuery<CalendarOrder[]>(`/orders/calendar?from=${range.from}&to=${range.to}`, signal) });
-  const workbench = useQuery({ queryKey: ['workbench', selected], queryFn: ({ signal }) => readQuery<Workbench>(`/orders/workbench?date=${selected}&includeMetrics=false`, signal), enabled: mode === 'week' || view.expanded });
+  const focusOrderId = createdOrder?.date === selected ? createdOrder.orderId : undefined;
+  const workbench = useInfiniteQuery({
+    queryKey: ['workbench', 'cards', selected, effectiveFilters.status, effectiveFilters.paymentStatus, focusOrderId],
+    initialPageParam: null as string | null,
+    queryFn: ({ signal, pageParam }) => {
+      const params = new URLSearchParams({ date: selected });
+      if (effectiveFilters.status) params.set('status', effectiveFilters.status);
+      if (effectiveFilters.paymentStatus) params.set('paymentStatus', effectiveFilters.paymentStatus);
+      if (pageParam) params.set('cursor', pageParam);
+      else if (focusOrderId) params.set('focusOrderId', focusOrderId);
+      return readQuery<WorkbenchCards>(`/orders/workbench/cards?${params}`, signal);
+    },
+    getNextPageParam: page => page.nextCursor,
+    enabled: mode === 'week' || view.expanded,
+  });
+  const firstPage = workbench.data?.pages[0];
+  const more = useRef<HTMLButtonElement>(null);
+  const { hasNextPage, isFetching, isFetchNextPageError, fetchNextPage } = workbench;
+  const loadMore = useCallback(() => {
+    if (hasNextPage && !isFetching) void fetchNextPage({ cancelRefetch: false });
+  }, [hasNextPage, isFetching, fetchNextPage]);
+  useEffect(() => {
+    if (!hasNextPage || isFetching || isFetchNextPageError) return;
+    const onScroll = () => {
+      const button = more.current;
+      if (!button?.getClientRects().length) return;
+      const bounds = button.getBoundingClientRect();
+      if (bounds.top < window.innerHeight + 120 && bounds.bottom > 0) loadMore();
+    };
+    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    return () => window.removeEventListener('scroll', onScroll, true);
+  }, [hasNextPage, isFetching, isFetchNextPageError, loadMore]);
   useReturnScroll(calendarHref(view), Boolean(calendar.data) && (!(mode === 'week' || view.expanded) || Boolean(workbench.data)), false, Boolean(createdOrder));
   const scrolledOrder = useRef<string | null>(null);
   const showCreatedOrder = useCallback((element: HTMLAnchorElement) => {
@@ -56,7 +87,10 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     onCreatedOrderLocated?.(createdOrder.orderId);
   }, [createdOrder, onCreatedOrderLocated]);
   const statuses = calendarStatusOptions();
-  const daily = (workbench.data?.pendingOrders || []).filter(order => !order.deletion && !order.deleted && matchesCalendarFilters(order, effectiveFilters));
+  const dailyById = new Map((workbench.data?.pages ?? []).flatMap(page => page.orders).map(order => [order.orderId, order]));
+  const focused = firstPage?.focusedOrder;
+  if (focused && !dailyById.has(focused.orderId)) dailyById.set(focused.orderId, focused);
+  const daily = [...dailyById.values()];
   const ordersByDay = new Map<string, CalendarOrder[]>();
   for (const order of [...(calendar.data || [])].sort(compareCalendarOrders)) {
     const orders = ordersByDay.get(order.calendarDate) || [];
@@ -117,9 +151,15 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     {(effectiveFilters.status || effectiveFilters.paymentStatus) && <button type="button" className="text-button" onClick={() => changeFilters({ ...allCalendarFilters })}>清除筛选</button>}
   </div>;
   const timeline = <>
-    <ErrorNotice error={workbench.error} retry={() => void workbench.refetch()} />
-    {workbench.error && workbench.data && <p className="notice" role="status">订单刷新失败，以下为上次读取的内容，请重试更新。</p>}
-    {workbench.isPending && !workbench.error ? <Loading /> : workbench.data ? <OrderTimeline key={`${selected}:${mode}:${effectiveFilters.status}:${resetVersion}`} orders={daily} view={view} account={account} status={effectiveFilters.status} createdOrderId={createdOrder?.orderId} onCreatedOrderVisible={showCreatedOrder} /> : null}
+    <ErrorNotice error={isFetchNextPageError ? null : workbench.error} retry={() => void workbench.refetch()} />
+    {workbench.error && !isFetchNextPageError && firstPage && <p className="notice" role="status">订单刷新失败，以下为上次读取的内容，请重试更新。</p>}
+    {workbench.isPending && !workbench.error ? <Loading /> : firstPage && <OrderTimeline key={`${selected}:${mode}:${effectiveFilters.status}:${resetVersion}`} orders={daily} counts={firstPage.groupCounts} view={view} account={account} status={effectiveFilters.status} createdOrderId={createdOrder?.orderId} onCreatedOrderVisible={showCreatedOrder} />}
+    {hasNextPage && <div className="actions">
+      {isFetchNextPageError && <ErrorNotice error={workbench.error} />}
+      <button ref={more} type="button" className="secondary" disabled={isFetching} onClick={loadMore}>
+        {workbench.isFetchingNextPage ? '正在加载…' : isFetchNextPageError ? '重试加载更多' : '加载更多'}
+      </button>
+    </div>}
   </>;
   return <div className="calendar-workbench" ref={workbenchElement} style={{ minHeight: reservedHeight }}>
     {createdOrder && <div className="notice created-order-notice" role="status">订单 #{createdOrder.orderNo} 已创建，{createdOrder.located ? '已定位到' : '正在定位到'}{businessDate(createdOrder.date)}</div>}
@@ -132,19 +172,19 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
       <div className="calendar-scroll" ref={calendarElement}><div className="calendar-weekdays">{weekdays.map(day => <span key={day}>周{day}</span>)}</div><div className="calendar-weeks">{weeks.map(week => <Fragment key={week[0]}>
         <div className="calendar-grid" data-week={week[0]}>{week.map(date => <MonthDayCell key={date} date={date} orders={ordersByDay.get(date) || []} view={view} onSelect={selectDate} />)}</div>
         {mode === 'month' && <section id={`month-orders-${week[0]}`} className="month-expanded" aria-label={`${selected} 当日订单`} hidden={!view.expanded || !week.includes(selected)}>
-          {view.expanded && week.includes(selected) && <><div className="section-heading"><h2>{businessDate(selected)} 订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" onClick={collapseMonthPanel} aria-expanded="true" aria-controls={`month-orders-${week[0]}`}><CaretUp />收起</button></div>{filtersControl}{timeline}</>}
+          {view.expanded && week.includes(selected) && <><div className="section-heading"><h2>{businessDate(selected)} 订单 <span>{firstPage?.total ?? '—'}</span></h2><button type="button" className="text-button" onClick={collapseMonthPanel} aria-expanded="true" aria-controls={`month-orders-${week[0]}`}><CaretUp />收起</button></div>{filtersControl}{timeline}</>}
         </section>}
       </Fragment>)}</div></div>
       <button type="button" className="calendar-toggle" onClick={() => onViewChange(toggleCalendarMode(view))}>{mode === 'week' ? '展开本月日历' : '切换周历工作台'}{mode === 'week' ? <CaretDown /> : <CaretUp />}</button>
     </section>
     {mode === 'month' && !view.expanded && <div className="calendar-filter-bar">{filtersControl}</div>}
     {mode === 'week' && <>
-      <div className="section-heading"><h2>{businessDate(selected)} 订单 <span>{workbench.data ? daily.length : '—'}</span></h2><button type="button" className="text-button" aria-expanded={collapsedWeekDate !== selected} aria-controls="week-day-orders" onClick={() => setCollapsedWeekDate(collapsedWeekDate === selected ? null : selected)}>{collapsedWeekDate === selected ? <CaretDown /> : <CaretUp />}{collapsedWeekDate === selected ? '展开当日订单' : '收起当日订单'}</button></div>
+      <div className="section-heading"><h2>{businessDate(selected)} 订单 <span>{firstPage?.total ?? '—'}</span></h2><button type="button" className="text-button" aria-expanded={collapsedWeekDate !== selected} aria-controls="week-day-orders" onClick={() => setCollapsedWeekDate(collapsedWeekDate === selected ? null : selected)}>{collapsedWeekDate === selected ? <CaretDown /> : <CaretUp />}{collapsedWeekDate === selected ? '展开当日订单' : '收起当日订单'}</button></div>
       <div id="week-day-orders" hidden={collapsedWeekDate === selected}>{filtersControl}{timeline}</div>
     </>}
     {(mode === 'week' || view.expanded) && <details className="panel daily-statistics">
       <summary>当日统计</summary>
-      {!access.productionView && <DayShippingSummary date={selected} canReadAmounts={access.amounts} orders={workbench.data?.pendingOrders} />}
+      {!access.productionView && <DayShippingSummary date={selected} canReadAmounts={access.amounts} operationalCounts={firstPage?.operationalCounts} />}
       <DayPreparationSummary date={selected} />
     </details>}
   </div>;

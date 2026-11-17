@@ -12,6 +12,7 @@ public interface Orders {
     /** 写用例先锁订单行，再校验版本及删除标记。 */
     default Optional<Order> lock(UUID id) { return find(id); }
     default void delete(Order order, long expectedVersion) { throw new UnsupportedOperationException(); }
+    void restore(Order order, long expectedVersion);
     void reviseItem(Order order, long expectedVersion, UUID itemId);
     void reviseInformation(Order order, long expectedVersion);
     void addItem(Order order, long expectedVersion, UUID itemId, List<UUID> changedItemIds);

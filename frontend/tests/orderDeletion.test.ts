@@ -23,3 +23,22 @@ test('删除通知在REST重新读取前锁住旧详情并移出日历及待办�
   assert.equal(draft.name, '尚未保存的蛋糕'); assert.equal(draft.version, 3);
   client.clear();
 });
+
+test('较旧的删除通知不移除已恢复订单或分页工作台卡片', async () => {
+  const client = new QueryClient();
+  const id = '12345678-1234-4234-8234-123456789abc';
+  const event = (changeType: string, version: number) => receiveEvent(client, {
+    event: 'order.changed', data: JSON.stringify({ orderId: id, changeType, version }),
+  });
+  const card = { orderId: id, status: 'LAYER' };
+  const key = ['workbench', 'cards', '2026-10-25'];
+  client.setQueryData(key, { pages: [{ orders: [card], focusedOrder: card }], pageParams: [null] });
+  event('ORDER_RESTORED', 5);
+  event('ORDER_DELETED', 4);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(client.getQueryData(key), { pages: [{ orders: [card], focusedOrder: card }], pageParams: [null] });
+  event('ORDER_DELETED', 6);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(client.getQueryData(key), { pages: [{ orders: [], focusedOrder: null }], pageParams: [null] });
+  client.clear();
+});

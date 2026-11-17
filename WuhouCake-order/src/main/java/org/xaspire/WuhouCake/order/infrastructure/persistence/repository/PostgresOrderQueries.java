@@ -40,6 +40,26 @@ public final class PostgresOrderQueries implements OrderQueries {
     @Override public List<PendingOrder> pending(LocalDate date) {
         return mapper.pending(date).stream().map(PostgresOrderQueries::pendingOrder).toList();
     }
+    @Override public WorkbenchBudget workbenchBudget(LocalDate date) {
+        var row = mapper.workbenchBudget(date);
+        return new WorkbenchBudget(row.orders(), row.bytes());
+    }
+
+    @Override public CardCounts cardCounts(CardFilter filter) {
+        var row = mapper.cardCounts(filter);
+        return new CardCounts(row.pending(), row.completed(), row.cancelled(), row.unknown(),
+                row.totalOrderCount(), row.waitingDeliveryOrderCount());
+    }
+
+    @Override public List<Card> cards(CardFilter filter, CardPosition after, UUID onlyOrder, int limit) {
+        return mapper.cards(filter, after, onlyOrder == null ? null : onlyOrder.toString(), limit).stream().map(row -> new Card(
+                UUID.fromString(row.orderId()), row.orderNo(), row.status(), row.paymentStatus(), row.fulfillmentType(),
+                row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(),
+                row.firstItemId() == null ? null : UUID.fromString(row.firstItemId()), row.firstItemName(), row.firstProductType(),
+                CakeSpecifications.effective(row.firstProductType(), JsonSnapshot.object(json.read(row.firstAttributes(), Map.class))),
+                row.latestNote())).toList();
+    }
+
     @Override public long countScheduledProduction(Instant from, Instant to, Set<String> stages) {
         return mapper.countScheduledProduction(from, to, stages);
     }

@@ -1146,6 +1146,88 @@ class OrderIT {
         }
     }
 
+    @Test void workbenchCardsPageAcrossEqualAndUndatedTimesWithoutLoadingLegacyContent() throws Exception {
+        var staff = staff();
+        String date = "2026-09-30";
+        var ids = new ArrayList<String>();
+        for (int index = 0; index < 52; index++)
+            ids.add(createOn(staff, date, "10:00", "DELIVERY").path("orderId").asText());
+        String firstId = ids.getFirst(), lastId = ids.getLast();
+        jdbc.update("UPDATE cake_order SET planned_handoff_at=NULL,requested_receive_at=NULL,status='COMPLETED' WHERE id=?::uuid", lastId);
+        jdbc.update("UPDATE cake_order SET delivery_address=repeat('x',900000) WHERE id IN "
+                + "(SELECT id FROM cake_order ORDER BY order_no LIMIT 6)");
+        jdbc.update("UPDATE cake_order_item SET attributes=jsonb_build_object('base',repeat('x',900000),'size','6')"
+                + " WHERE order_id=?::uuid AND product_type='CAKE'", firstId);
+        assertEquals(201, staff.request("POST", "/api/orders/" + firstId + "/notes", Map.of("content", "备注")).status);
+
+        var legacy = staff.request("GET", "/api/orders/workbench?date=" + date, null);
+        assertEquals(413, legacy.status);
+        assertEquals("WORKBENCH_RESULT_TOO_LARGE", legacy.body.path("code").asText());
+
+        String path = "/api/orders/workbench/cards?date=" + date;
+        var first = query(staff, path + "&focusOrderId=" + lastId);
+        assertEquals(50, first.path("orders").size());
+        assertEquals(52, first.path("total").asInt());
+        assertEquals(51, first.at("/groupCounts/pending").asInt());
+        assertEquals(1, first.at("/groupCounts/completed").asInt());
+        assertEquals(52, first.at("/operationalCounts/totalOrderCount").asInt());
+        assertEquals(lastId, first.at("/focusedOrder/orderId").asText());
+        assertEquals(firstId, first.at("/orders/0/orderId").asText());
+        assertEquals("打开订单查看全文", first.at("/orders/0/firstItem/attributes/base").asText());
+        assertEquals("备注", first.at("/orders/0/latestNote").asText());
+        assertFalse(first.at("/orders/0").has("address"));
+        var cursor = first.path("nextCursor").asText();
+        var second = query(staff, path + "&cursor=" + cursor);
+        assertEquals(ids.subList(50, 52), orderIds(second.path("orders")));
+        assertTrue(second.path("nextCursor").isNull());
+        assertTrue(second.at("/orders/1/plannedHandoffAt").isNull());
+        assertEquals(400, staff.request("GET", path + "&status=COMPLETED&cursor=" + cursor, null).status);
+        var filtered = query(staff, path + "&status=COMPLETED");
+        assertEquals(List.of(lastId), orderIds(filtered.path("orders")));
+        assertEquals(52, filtered.at("/operationalCounts/totalOrderCount").asInt());
+    }
+
+    @Test void workloadWithMoreThanAQuarterGigabyteOfHistoricalAddressesStillReturnsABoundedPage() throws Exception {
+        var staff = staff();
+        jdbc.execute("""
+                INSERT INTO cake_order (id,order_no,status,customer_phone,fulfillment_type,delivery_address,
+                    requested_receive_date,created_by,created_at,confirmed_at,updated_at)
+                SELECT gen_random_uuid(),'BUDGET-' || lpad(n::text,4,'0'),'CAKE_BASE','13800000000','DELIVERY',
+                    repeat('x',900000),DATE '2026-09-30',gen_random_uuid(),now(),now(),now()
+                FROM generate_series(1,320) AS n
+                """);
+        var page = query(staff, "/api/orders/workbench/cards?date=2026-09-30");
+        assertEquals(50, page.path("orders").size());
+        assertEquals(320, page.path("total").asInt());
+        assertTrue(json.writeValueAsBytes(page).length < 64 * 1024);
+        assertEquals(413, staff.request("GET", "/api/orders/workbench?date=2026-09-30", null).status);
+        assertEquals(200, staff.request("GET", "/api/me", null).status);
+    }
+
+    @Test void contentBudgetRejectsNewWritesAndLetsStaffReduceLegacyFields() throws Exception {
+        var staff = staff();
+        var original = createOn(staff, "2026-09-30", "10:00", "DELIVERY");
+        String id = original.path("orderId").asText(), path = "/api/orders/" + id;
+        var longAddress = staff.request("PATCH", path + "/information",
+                Map.of("expectedVersion", 0, "changes", Map.of("address", "字".repeat(2001))));
+        assertEquals(400, longAddress.status);
+        assertEquals("ORDER_ADDRESS_TOO_LONG", longAddress.body.path("code").asText());
+        var longSpecs = staff.request("POST", path + "/items", Map.of("expectedVersion", 0,
+                "item", Map.of("name", "新增", "quantity", 1, "attributes", Map.of("requirements", "字".repeat(50000)))));
+        assertEquals(400, longSpecs.status);
+        assertEquals("ORDER_ITEM_SPEC_TOO_LARGE", longSpecs.body.path("code").asText());
+        jdbc.update("UPDATE cake_order SET delivery_address=repeat('字',3000) WHERE id=?::uuid", id);
+        String itemId = original.at("/items/0/itemId").asText();
+        jdbc.update("UPDATE cake_order_item SET attributes=jsonb_build_object('requirements',repeat('字',50000)) WHERE id=?::uuid", itemId);
+        assertEquals(200, staff.request("PATCH", path + "/information",
+                Map.of("expectedVersion", 0, "changes", Map.of("address", "字".repeat(2900)))).status);
+        assertEquals(200, staff.request("PATCH", path,
+                Map.of("expectedVersion", 1, "itemId", itemId, "changes", Map.of("name", "更新名称"))).status);
+        assertEquals(200, staff.request("PATCH", path,
+                Map.of("expectedVersion", 2, "itemId", itemId, "changes", Map.of("attributes", Map.of("requirements", "字".repeat(49000))))).status);
+        assertEquals(3, query(staff, path).path("version").asInt());
+    }
+
     @Test void workbenchReturnsIndependentItemNotesAndQueriesHaveNoSideEffects() throws Exception {
         var staff = staff();
         var firstOrder = createOn(staff, "2026-09-30", "10:00", "DELIVERY");
@@ -1168,7 +1250,7 @@ class OrderIT {
         try (var stream = staff.stream()) {
             clearInvocations(queryMapper, orders, activities);
             var workbench = query(staff, "/api/orders/workbench?date=2026-09-30");
-            verify(queryMapper).metrics(any(), any(), any()); verify(queryMapper).pending(any());
+            verify(queryMapper).metrics(any(), any(), any()); verify(queryMapper).workbenchBudget(any()); verify(queryMapper).pending(any());
             verify(queryMapper).items(any()); verify(queryMapper).recentNotes(any(), any()); verify(queryMapper).latestNotes(any());
             verifyNoMoreInteractions(queryMapper); verifyNoInteractions(orders, activities);
             assertEquals("2026-09-30", workbench.path("date").asText());
@@ -1199,6 +1281,7 @@ class OrderIT {
             var withoutMetrics = query(staff, "/api/orders/workbench?date=2026-09-30&includeMetrics=false");
             assertFalse(withoutMetrics.hasNonNull("metrics"));
             assertEquals(workbench.path("pendingOrders"), withoutMetrics.path("pendingOrders"));
+            verify(queryMapper).workbenchBudget(any());
             verify(queryMapper).pending(any()); verify(queryMapper).items(any()); verify(queryMapper).recentNotes(any(), any()); verify(queryMapper).latestNotes(any());
             verifyNoMoreInteractions(queryMapper); verifyNoInteractions(orders, activities);
             clearInvocations(queryMapper);

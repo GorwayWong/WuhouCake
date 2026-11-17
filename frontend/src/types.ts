@@ -26,10 +26,20 @@ export interface CalendarOrder extends OrderStatus {
   plannedHandoffAt: string | null; customerPhoneLast4: string | null; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
 }
 export interface PendingOrder extends Omit<CalendarOrder, 'customerPhoneLast4'> { customer: Customer | null; address: string | null; plannedFinishAt: string | null; requestedReceiveAt?: string | null; items: Item[]; latestNote?: Note | null }
-export interface Workbench { date: string; metrics: { totalOrders: number; createdOnDate: number; deliveryDueOnDate: number } | null; pendingOrders: PendingOrder[] }
+export interface OperationalCounts { totalOrderCount: number; waitingDeliveryOrderCount: number }
+export interface WorkbenchCard extends Omit<OrderStatus, 'currentStageCode'> {
+  orderId: string; orderNo: string; calendarDate: string; fulfillmentType: string;
+  plannedHandoffAt: string | null; plannedFinishAt: string | null; itemCount: number; quantity: number;
+  firstItem: Pick<Item, 'itemId' | 'name' | 'productType' | 'attributes'> | null;
+  latestNote: string | null;
+}
+export interface WorkbenchCards {
+  date: string; orders: WorkbenchCard[]; focusedOrder: WorkbenchCard | null; nextCursor: string | null;
+  total: number; groupCounts: Record<string, number>; operationalCounts: OperationalCounts;
+}
 export interface Detail extends OrderStatus {
   pricingMode?: 'MANUAL' | 'ITEM_SUM';
-  deletion?: { deletedAt: string; deletedBy: string; employeeName: string; reason: string; expiresAt: string } | null;
+  deletion?: { deletedAt: string; deletedBy: string; employeeName: string; reason: string; expiresAt: string | null } | null;
   orderingMethod?: string | null;
   createdBy?: string | null; creditedEmployee?: { accountId: string; employeeNumber: string; nickname: string } | null;
   orderId: string; orderNo: string; version: number; customer: Customer | null; fulfillment: Fulfillment;

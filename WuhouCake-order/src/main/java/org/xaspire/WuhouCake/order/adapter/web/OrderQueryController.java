@@ -2,6 +2,8 @@ package org.xaspire.WuhouCake.order.adapter.web;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.UUID;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_AMOUNT_READ;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.core.Authentication;
@@ -74,6 +76,16 @@ public class OrderQueryController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to, Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
         return ApiResponse.success(OrderViewAccess.calendar(queries.calendar(from, to), account.access()));
+    }
+
+    @GetMapping("/workbench/cards")
+    public ApiResponse<OrderQueryViews.WorkbenchCards> cards(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(required = false) String status, @RequestParam(required = false) String paymentStatus,
+            @RequestParam(required = false) String cursor, @RequestParam(required = false) UUID focusOrderId,
+            Authentication authentication) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        return ApiResponse.success(queries.cards(date, status, paymentStatus, cursor, focusOrderId, account.access().allows(ORDER_AMOUNT_READ)));
     }
 
     @GetMapping("/workbench")

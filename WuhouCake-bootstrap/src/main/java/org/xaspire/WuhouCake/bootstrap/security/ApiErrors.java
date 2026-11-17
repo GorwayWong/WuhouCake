@@ -3,6 +3,9 @@ package org.xaspire.WuhouCake.bootstrap.security;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.DispatcherType;
+import java.sql.SQLException;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 import org.slf4j.*;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.*;
@@ -32,7 +35,7 @@ public class ApiErrors {
         int status = switch (failure.code()) {
             case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE", "PACKAGE_NOT_FOUND" -> 404;
             case "FORBIDDEN", "SUBMISSION_FORBIDDEN", "PACKAGE_FORBIDDEN", "ORDER_DELETED_FORBIDDEN" -> 403;
-            case "IMAGE_TOO_LARGE", "IMAGE_BATCH_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE" -> 413;
+            case "IMAGE_TOO_LARGE", "IMAGE_BATCH_TOO_LARGE", "EXPORT_FILE_TOO_LARGE", "EXPORT_CONTENT_TOO_LARGE", "WORKBENCH_RESULT_TOO_LARGE" -> 413;
             case "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE", "EXPORT_TIMEOUT" -> 503;
             case "UNSUPPORTED_IMAGE_FORMAT" -> 415;
             case "ORDER_QUOTE_INCOMPLETE", "ORDER_PAID_AMOUNT_LOCKED", "SUBMISSION_ITEM_ID_CONFLICT", "ITEM_ID_CONFLICT", "IMAGE_UPLOAD_REMOVED", "ORDER_DELETED", "PACKAGE_NAME_CONFLICT", "PACKAGE_CREATION_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT", "CONCURRENT_MODIFICATION", "EXPORT_IMAGE_CHANGED", "INVALID_PRODUCTION_TRANSITION", "ORDER_NOT_EDITABLE",
@@ -40,10 +43,14 @@ public class ApiErrors {
             default -> 400;
         };
         String message = switch (failure.code()) {
+            case "WORKBENCH_RESULT_TOO_LARGE" -> "当日订单内容较多，请刷新页面分批查看";
+            case "ORDER_ADDRESS_TOO_LONG" -> "地址最多填写 2000 个字符";
+            case "ORDER_ITEM_SPEC_TOO_LARGE" -> "当前商品规格过长，请精简后保存";
+            case "ORDER_SPEC_TOO_LARGE" -> "订单内商品规格总量过大，请精简后保存";
             case "ORDER_FINISH_TOO_LATE" -> "出品时间须比取货时间至少提前 1 小时";
             case "ORDER_QUOTE_INCOMPLETE" -> "商品报价未完整，请补齐单价后再登记付款";
             case "ORDER_PAID_AMOUNT_LOCKED" -> "已登记付款，请先撤销付款登记再改价";
-            case "ORDER_DELETED" -> "订单已删除，仅可在保留期内查询，不可修改或恢复";
+            case "ORDER_DELETED" -> "订单已删除，请先由店长恢复后再修改";
             case "ORDER_DELETED_FORBIDDEN" -> "当前岗位不能访问已删除订单";
             case "EXPORT_IMAGE_CHANGED" -> "导出期间图片已变化，请重新导出";
             case "EXPORT_TIMEOUT" -> "导出超时，请缩小导出范围后重试";
@@ -87,6 +94,10 @@ public class ApiErrors {
     }
     @ExceptionHandler(IdentityFailure.class)
     ResponseEntity<ApiResponse<Void>> domain(IdentityFailure failure) {
+        if ("LOGIN_BUSY".equals(failure.code())) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).cacheControl(CacheControl.noStore())
+                    .header(HttpHeaders.RETRY_AFTER, "1").body(ApiResponse.failure("LOGIN_BUSY", "登录请求较多，请稍后重试"));
+        }
         int status = switch (failure.code()) {
             case "AUTHENTICATION_FAILED" -> 401;
             case "FORBIDDEN", "SELF_ARCHIVE_FORBIDDEN", "PASSWORD_CHANGE_REQUIRED" -> 403;
@@ -107,7 +118,10 @@ public class ApiErrors {
     ResponseEntity<ApiResponse<Void>> forbidden(org.springframework.security.access.AccessDeniedException failure) { return response(403, "FORBIDDEN"); }
     @ExceptionHandler({DataAccessException.class, org.springframework.transaction.CannotCreateTransactionException.class,
             org.springframework.transaction.TransactionTimedOutException.class})
-    ResponseEntity<ApiResponse<Void>> unavailable(Exception failure) { return response(503, "SERVICE_UNAVAILABLE"); }
+    ResponseEntity<ApiResponse<Void>> unavailable(Exception failure, HttpServletRequest request) {
+        logFailure(request, failure);
+        return response(503, "SERVICE_UNAVAILABLE");
+    }
 
     @ExceptionHandler(org.springframework.web.multipart.MultipartException.class)
     ResponseEntity<ApiResponse<Void>> multipart(Exception failure) { return response(400, "VALIDATION_FAILED"); }
@@ -124,11 +138,24 @@ public class ApiErrors {
             LOG.debug("request_disconnected requestId={} failureType={}", request.getAttribute("wuhoucake.requestId"), failure.getClass().getSimpleName());
             return null;
         }
-        LOG.error("request_failed requestId={} failureType={}", request.getAttribute("wuhoucake.requestId"), failure.getClass().getSimpleName());
+        logFailure(request, failure);
         // An already committed response cannot be replaced with a JSON error body.
         if (response.isCommitted()) return null;
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).cacheControl(CacheControl.noStore()).contentType(MediaType.APPLICATION_JSON)
                 .body(ApiResponse.failure("INTERNAL_ERROR", "INTERNAL_ERROR"));
+    }
+    private static void logFailure(HttpServletRequest request, Exception failure) {
+        var causes = new StringBuilder();
+        for (Throwable cause = failure; cause != null && causes.length() < 4096; cause = cause.getCause()) {
+            if (!causes.isEmpty()) causes.append(" <- ");
+            causes.append(cause.getClass().getName());
+            if (cause instanceof SQLException sql && sql.getSQLState() != null && sql.getSQLState().matches("[0-9A-Z]{5}"))
+                causes.append(" SQLSTATE=").append(sql.getSQLState());
+            causes.append(" at ").append(Arrays.stream(cause.getStackTrace()).limit(5)
+                    .map(frame -> frame.getClassName() + "." + frame.getMethodName() + ":" + frame.getLineNumber())
+                    .collect(Collectors.joining(", ")));
+        }
+        LOG.error("request_failed requestId={} causes={}", request.getAttribute("wuhoucake.requestId"), causes);
     }
     private static ResponseEntity<ApiResponse<Void>> response(int status, String code) {
         return response(status, code, code);

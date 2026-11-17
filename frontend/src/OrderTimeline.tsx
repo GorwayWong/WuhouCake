@@ -4,7 +4,7 @@ import { CaretRight, CaretDown, CaretUp } from '@phosphor-icons/react';
 import { businessDate, businessTime } from './dates';
 import { groupOrdersByTime, timelinePartitions, latestOrderNote } from './calendarView';
 import type { CalendarView } from './calendarView';
-import type { Account, PendingOrder } from './types';
+import type { Account, PendingOrder, WorkbenchCard } from './types';
 import { calendarOrderHref } from './routes';
 import { Empty, Payment, Status } from './ui';
 import { orderAccess } from './access';
@@ -12,41 +12,45 @@ import { productionCardFields } from './productionFields';
 import { ProductionThumbnail } from './ProductionView';
 
 export function OrderSummaryCard({ order, view, account, newlyCreated = false, showFinishTime = false, onCreatedOrderVisible }: {
-  order: PendingOrder; view: CalendarView; account: Account; newlyCreated?: boolean; showFinishTime?: boolean;
+  order: PendingOrder | WorkbenchCard; view: CalendarView; account: Account; newlyCreated?: boolean; showFinishTime?: boolean;
   onCreatedOrderVisible?: (element: HTMLAnchorElement) => void;
 }) {
   const access = orderAccess(account);
   const card = useRef<HTMLAnchorElement>(null);
   useLayoutEffect(() => { if (newlyCreated && card.current) onCreatedOrderVisible?.(card.current); }, [newlyCreated, onCreatedOrderVisible]);
-  const note = latestOrderNote(order);
+  const first = 'firstItem' in order ? order.firstItem : order.items[0];
+  const itemCount = 'itemCount' in order ? order.itemCount : order.items.length;
+  const quantity = 'quantity' in order ? order.quantity : order.items.reduce((sum, item) => sum + item.quantity, 0);
+  const note = 'firstItem' in order ? order.latestNote : latestOrderNote(order)?.content;
 
+  const pickup = 'firstItem' in order ? order.plannedHandoffAt : pickupInstant(order);
   return <a ref={card} data-order-id={order.orderId} className={`order-summary-card compact-order-card ${access.productionView ? 'production-card' : ''}${newlyCreated ? ' is-new-order' : ''}`} href={calendarOrderHref(view, order.orderId)}>
     {newlyCreated && <span className="created-order-badge">刚刚创建</span>}
-    <div className="order-summary-title">{access.productionView && <ProductionThumbnail orderId={order.orderId} itemId={order.items[0]?.itemId} />}<div className="order-summary-caption"><h3>{order.items[0]?.name || `订单 #${order.orderNo}`}{!access.productionView && order.items.length > 1 && <span className="order-summary-more"> · 另有 {order.items.length - 1} 项</span>}</h3>{access.productionView && <span>{order.items.length} 项 · {order.items.reduce((sum, item) => sum + item.quantity, 0)} 件{order.items.length > 1 ? ` · 另有 ${order.items.length - 1} 项` : ''}</span>}</div><CaretRight aria-hidden="true" /></div>
+    <div className="order-summary-title">{access.productionView && <ProductionThumbnail orderId={order.orderId} itemId={first?.itemId} />}<div className="order-summary-caption"><h3>{first?.name || `订单 #${order.orderNo}`}{!access.productionView && itemCount > 1 && <span className="order-summary-more"> · 另有 {itemCount - 1} 项</span>}</h3>{access.productionView && <span>{itemCount} 项 · {quantity} 件{itemCount > 1 ? ` · 另有 ${itemCount - 1} 项` : ''}</span>}</div><CaretRight aria-hidden="true" /></div>
     {access.productionView ? <>
-      <dl className="production-card-specifications">{productionCardFields(order.items[0]).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      <dl className="production-card-specifications">{productionCardFields(first ?? undefined).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       <div className="order-summary-meta"><span className="order-summary-number">#{order.orderNo}</span>
         {showFinishTime && <span>出品 {businessTime(order.plannedFinishAt)}</span>}
       </div>
     </> : <dl className="front-card-times">
-      <div><dt>{pickupTimeLabel(order.fulfillmentType)}</dt><dd>{pickupInstant(order) ? businessTime(pickupInstant(order)!) : `${businessDate(order.calendarDate)} · 时刻待定`}</dd></div>
+      <div><dt>{pickupTimeLabel(order.fulfillmentType)}</dt><dd>{pickup ? businessTime(pickup) : `${businessDate(order.calendarDate)} · 时刻待定`}</dd></div>
       <div><dt>出品时间</dt><dd>{order.plannedFinishAt ? businessTime(order.plannedFinishAt) : '待定'}</dd></div>
     </dl>}
-    <div className="badges"><Status order={order} />{access.amounts && <Payment status={order.paymentStatus} />}</div>
-    {note?.content.trim() && <p className="order-summary-note-preview"><span>备注：</span>{note.content}</p>}
+    <div className="badges"><Status order={{ ...order, currentStageCode: null }} />{access.amounts && <Payment status={order.paymentStatus} />}</div>
+    {note?.trim() && <p className="order-summary-note-preview"><span>备注：</span>{note}</p>}
   </a>;
 }
 const rememberedGroups = new Map<string, Record<string, boolean>>();
 export function resetTimelineGroups(accountId: string, date: string) {
   for (const key of rememberedGroups.keys()) if (key.startsWith(`${accountId}:${date}:`)) rememberedGroups.delete(key);
 }
-export function OrderTimeline({ orders, view, account, status = '', createdOrderId, onCreatedOrderVisible }: { orders: PendingOrder[]; view: CalendarView; account: Account; status?: string; createdOrderId?: string; onCreatedOrderVisible?: (element: HTMLAnchorElement) => void }) {
+export function OrderTimeline({ orders, counts, view, account, status = '', createdOrderId, onCreatedOrderVisible }: { orders: WorkbenchCard[]; counts: Record<string, number>; view: CalendarView; account: Account; status?: string; createdOrderId?: string; onCreatedOrderVisible?: (element: HTMLAnchorElement) => void }) {
   const access = orderAccess(account);
   const memoryKey = `${account.accountId}:${view.date}:${view.mode}:${status}`;
   const [opened, setOpened] = useState<Record<string, boolean>>(() => rememberedGroups.get(memoryKey) || {});
   const headings = useRef<Record<string, HTMLButtonElement | null>>({});
   const originalOrders = new Map(orders.map(order => [order.orderId, order]));
-  const timedOrders = orders.map(order => ({ ...order, plannedHandoffAt: access.productionView ? order.plannedFinishAt : pickupInstant(order) }));
+  const timedOrders = orders.map(order => ({ ...order, plannedHandoffAt: access.productionView ? order.plannedFinishAt : order.plannedHandoffAt }));
   const revealedOrder = useRef<string | null>(null);
   useEffect(() => {
     if (!createdOrderId || revealedOrder.current === createdOrderId) return;
@@ -66,12 +70,12 @@ export function OrderTimeline({ orders, view, account, status = '', createdOrder
   };
   return <div className="order-timeline">
     {!access.productionView && <div className="timeline-heading"><strong>{slotLabel}</strong><p>按取货时间每 30 分钟分组，准确时间见订单卡片</p></div>}
-    {timelinePartitions(timedOrders, status).map(partition => {
+    {timelinePartitions(timedOrders, status, counts).map(partition => {
       const expanded = opened[partition.id] ?? partition.expanded;
       const contentId = `timeline-${view.date}-${partition.id}`;
       return <section className="order-partition" key={partition.id}>
         <h3><button type="button" className="timeline-partition-toggle" ref={element => { headings.current[partition.id] = element; }} aria-expanded={expanded} aria-controls={contentId} onClick={() => toggle(partition.id, !expanded)}>
-          <span>{partition.label} <span>{partition.orders.length} 单</span></span><span>{expanded ? <CaretUp /> : <CaretDown />}{expanded ? '收起' : '展开'}</span>
+          <span>{partition.label} <span>{counts[partition.id] ?? partition.orders.length} 单</span></span><span>{expanded ? <CaretUp /> : <CaretDown />}{expanded ? '收起' : '展开'}</span>
         </button></h3>
         <div id={contentId} hidden={!expanded}>{partition.id === 'unknown' && <p className="notice">页面可能已更新，请保存当前内容后刷新；以下订单仍可查看。</p>}{expanded && <>{groupOrdersByTime(partition.orders, access.productionView ? 'minute' : 'half-hour').map(group => <section className={`timeline-group${group.date ? '' : ' is-unscheduled'}`} key={group.key} aria-label={group.date ? `${group.date} ${slotLabel} ${group.time}${access.productionView ? '' : ` 至${group.endsNextDay ? '次日 ' : ' '}${group.endTime}`}` : pendingLabel}>
           <div className="timeline-time">{group.date ? <>

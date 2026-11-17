@@ -26,7 +26,8 @@ async function fixture() {
     if (path === '/api/me') return ok({ accountId: model.account, nickname: model.account, employeeNumber: model.account, jobRoles: ['FRONT_DESK'], access: { permissions: model.permitted ? ['ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ', ...model.extraPermissions] : [], uiCapabilities: [] } });
     if (path === '/api/orders/stream') return route.fulfill({ status: 503 });
     if (path === '/api/orders/calendar') return ok([]);
-    if (path === '/api/orders/workbench') return ok({ date: '2026-11-04', metrics: null, pendingOrders: [] });
+    if (path === '/api/orders/workbench/cards') return ok({ date: '2026-11-04', orders: [], nextCursor: null,
+      total: 0, groupCounts: {}, operationalCounts: { totalOrderCount: 0, waitingDeliveryOrderCount: 0 } });
     if (path === '/api/orders/workbench/payment-summary') return ok({ date: '2026-11-04', totalOrderCount: 0, waitingDeliveryOrderCount: 0, paidWithoutDateOrderCount: 0,
       paid: { orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 }, unpaid: { orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 } });
     if (path === '/api/orders/workbench/receipt-summary') return ok({ date: '2026-11-04', orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 });

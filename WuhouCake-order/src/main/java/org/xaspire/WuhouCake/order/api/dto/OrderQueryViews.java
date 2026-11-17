@@ -32,6 +32,13 @@ public final class OrderQueryViews {
         public CalendarOrder { items = List.copyOf(items); }
     }
     public record CalendarItem(UUID itemId, String name, int quantity) { }
+    public record WorkbenchCards(LocalDate date, List<Card> orders, Card focusedOrder, String nextCursor, long total,
+            Map<String, Long> groupCounts, OperationalCounts operationalCounts) { }
+    public record OperationalCounts(long totalOrderCount, long waitingDeliveryOrderCount) { }
+    public record Card(UUID orderId, String orderNo, LocalDate calendarDate, String status,
+            String paymentStatus, String fulfillmentType, Instant plannedHandoffAt, Instant plannedFinishAt,
+            long itemCount, long quantity, CardItem firstItem, String latestNote) { }
+    public record CardItem(UUID itemId, String name, String productType, Map<String, Object> attributes) { }
     public record Workbench(LocalDate date, Metrics metrics, List<PendingOrder> pendingOrders) {
         public Workbench { pendingOrders = List.copyOf(pendingOrders); }
     }

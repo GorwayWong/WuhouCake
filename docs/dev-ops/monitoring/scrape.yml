@@ -15,3 +15,22 @@ scrape_configs:
       credentials_file: /etc/prometheus/secrets/wuhou-metrics-token
     static_configs:
       - targets: ["metrics-gateway.example.internal:443"]
+
+  - job_name: wuhou-api-probe
+    metrics_path: /probe
+    params:
+      module: [wuhou_api]
+    static_configs:
+      - targets: ["https://shop.example.com/api/auth/csrf"]
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: instance}
+      - {target_label: __address__, replacement: blackbox.example.internal:9115}
+  - job_name: wuhou-ready-probe
+    scheme: https
+    metrics_path: /ready
+    follow_redirects: false
+    authorization:
+      credentials_file: /etc/prometheus/secrets/wuhou-metrics-token
+    static_configs:
+      - targets: ["metrics-gateway.example.internal:443"]

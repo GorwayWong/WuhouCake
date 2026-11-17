@@ -63,6 +63,13 @@ public class IdentityComposition {
     }
     @Bean AuditService auditService(Operations operations, AuditAccess access, IdGenerator ids) { return new AuditService(operations, access, ids); }
     @Bean EmployeeAccessPolicy employeeAccessPolicy(EmployeeAccessProperties properties) { return new EmployeeAccessPolicy(properties.jobPermissions()); }
+    @Bean io.micrometer.core.instrument.binder.MeterBinder loginMetrics(IdentityService identity) {
+        return registry -> {
+            registry.gauge("wuhou.login.active", identity, IdentityService::activeLogins);
+            io.micrometer.core.instrument.FunctionCounter.builder("wuhou.login.rejected", identity, IdentityService::rejectedLogins)
+                    .register(registry);
+        };
+    }
     @Bean IdentityService identityService(Accounts accounts, Credentials credentials, Sessions sessions, Attempts attempts,
             AccessTokens tokens, ActorSource actors, AuditFacade audit, IdGenerator ids, Clock clock, IdentityProperties properties, ApplicationEventPublisher events, EmployeeAccessPolicy accessPolicy) {
         return new IdentityService(accounts, credentials, sessions, attempts, tokens, actors, audit, ids, clock, properties.accessLifetime(), properties.sessionLifetime(), events, accessPolicy);

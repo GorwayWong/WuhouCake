@@ -38,7 +38,7 @@
 
 ## 操作权限
 
-`ORDER_PHONE_READ` 仅允许在订单详情及返回详情的写响应中读取完整联系电话。`ORDER_ORDERING_DETAILS_READ` 允许在订单详情及返回详情的写响应中读取订购人姓名和下单渠道。`ORDER_DELETE` 仅允许店长 `STORE_MANAGER` 带原因删除订单；`ORDER_DELETED_READ` 允许在 30 天保留期内读取、导出已删除订单。删除权限不由取消权限推定。
+`ORDER_PHONE_READ` 仅允许在订单详情及返回详情的写响应中读取完整联系电话。`ORDER_ORDERING_DETAILS_READ` 允许在订单详情及返回详情的写响应中读取订购人姓名和下单渠道。`ORDER_DELETE` 仅允许店长 `STORE_MANAGER` 带原因删除订单；`ORDER_DELETED_READ` 允许读取、导出已删除订单。恢复需要同时具有 `ORDER_DELETE` 和 `ORDER_DELETED_READ`。删除权限不由取消权限推定。
 
 业务 HTTP 接口按请求方法和路径显式授权，未映射的接口或方法返回拒绝。匿名访问受保护接口返回 401；已登录但权限不足返回 403 `FORBIDDEN`。已匹配接口的业务错误继续使用现有错误契约。
 

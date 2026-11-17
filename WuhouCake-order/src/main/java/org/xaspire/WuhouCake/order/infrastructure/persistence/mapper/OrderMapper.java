@@ -84,6 +84,11 @@ public interface OrderMapper {
             + " WHERE id=CAST(#{row.id} AS uuid) AND version=#{expected} AND deleted_at IS NULL")
     int delete(@Param("row") Row row, @Param("expected") long expected);
     @Insert("INSERT INTO cake_order_deletion_audit(order_id,order_no,deleted_at,deleted_by)"
-            + " VALUES(CAST(#{id} AS uuid),#{orderNo},#{deletedAt},CAST(#{deletedBy} AS uuid))")
+            + " VALUES(CAST(#{id} AS uuid),#{orderNo},#{deletedAt},CAST(#{deletedBy} AS uuid))"
+            + " ON CONFLICT(order_id) DO UPDATE SET deleted_at=EXCLUDED.deleted_at,deleted_by=EXCLUDED.deleted_by,purged_at=NULL")
     void auditDeletion(Row row);
+
+    @Update("UPDATE cake_order SET deleted_at=NULL,deleted_by=NULL,deleted_by_name=NULL,deletion_reason=NULL,"
+            + " version=version+1,updated_at=#{updatedAt} WHERE id=CAST(#{id} AS uuid) AND version=#{expected} AND deleted_at IS NOT NULL")
+    int restore(@Param("id") String id, @Param("expected") long expected, @Param("updatedAt") Instant updatedAt);
 }

@@ -50,7 +50,6 @@ class CustomerSubmissionIT {
     @MockitoSpyBean Operations auditOperations;
     @Autowired DataSource dataSource;
     @Autowired PlatformTransactionManager transactions;
-    @Autowired org.xaspire.WuhouCake.order.application.service.OrderRetentionService retention;
     @BeforeEach void clean() {
         reset(store, auditOperations); jdbc.execute("TRUNCATE customer_order_entry,customer_order_submission,customer_submission_activity,cake_order,identity_account,audit_operation CASCADE");
         clearRedis();
@@ -58,23 +57,22 @@ class CustomerSubmissionIT {
     @AfterAll void cleanup() { reset(store, auditOperations); clearRedis(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE"); }
     private void clearRedis() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
-    @Test void deletedCustomerOrderPurgeScrubsTheSubmissionButRetainsItsIdempotentReceipt() throws Exception {
+    @Test void deletedCustomerOrderRetainsTheSubmissionAndItsIdempotentReceipt() throws Exception {
         var staff = admin(); String token = entry(staff); UUID key = UUID.randomUUID();
         var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         String submission = submit(token, input, key).at("/data/submissionId").asText();
         staff.data("PATCH", "/api/customer-submissions/" + submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
         String order = staff.data("POST", "/api/customer-submissions/" + submission + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
-        staff.data("POST", "/api/orders/" + order + "/delete", Map.of("expectedVersion", 0, "reason", "测试清理"));
-        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE id=?::uuid", order);
-        assertEquals(404, staff.request("GET", "/api/customer-submissions/" + submission, null).status);
-        assertEquals(0, staff.data("GET", "/api/customer-submissions?status=CONFIRMED", null).path("total").asInt());
-        assertEquals(1, retention.purgeExpired().purged());
-        assertEquals(0, count("cake_order")); assertEquals(0, count("customer_submission_activity")); assertEquals(1, count("customer_order_entry"));
-        var kept = jdbc.queryForMap("SELECT status,original::text,reviewed,original_phone,requested_date,order_id FROM customer_order_submission WHERE id=?::uuid", submission);
-        assertEquals("PURGED", kept.get("status")); assertEquals("{}", kept.get("original")); assertNull(kept.get("reviewed"));
-        assertEquals("", kept.get("original_phone")); assertNull(kept.get("requested_date")); assertNull(kept.get("order_id"));
-        assertEquals(404, new Client().request("POST", submitPath(token), input, key.toString()).status);
-        assertEquals(1, count("customer_order_submission")); assertEquals(0, count("cake_order"));
+        staff.data("POST", "/api/orders/" + order + "/delete", Map.of("expectedVersion", 0, "reason", "误删"));
+        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '800 days' WHERE id=?::uuid", order);
+        var kept = staff.data("GET", "/api/customer-submissions/" + submission, null);
+        assertEquals(order, kept.at("/submission/orderId").asText());
+        assertEquals("13800000000", kept.at("/submission/original/phone").asText());
+        assertEquals(1, staff.data("GET", "/api/customer-submissions?status=CONFIRMED", null).path("total").asInt());
+        assertEquals(submission, submit(token, input, key).at("/data/submissionId").asText());
+        staff.data("POST", "/api/orders/" + order + "/restore", Map.of("expectedVersion", 1));
+        assertEquals(1, count("cake_order"));
+        assertEquals(1, count("customer_order_submission"));
     }
 
     @Test void searchMatchesPhonesAndReceiptsAcrossStatesWithConsistentPaging() throws Exception {

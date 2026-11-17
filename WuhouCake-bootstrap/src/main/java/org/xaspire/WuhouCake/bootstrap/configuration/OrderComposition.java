@@ -69,8 +69,8 @@ public class OrderComposition {
         return new PoiOrderExportFiles(images, legacyReads, metrics.counter("wuhou.temp.cleanup.failures")::increment);
     }
     @Bean OrderExportSnapshotService orderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images,
-            OrderManagementQueries management, IdentityFacade identity, Clock clock) {
-        return new OrderExportSnapshotService(orders, activities, queries, images, management, identity, clock);
+            OrderManagementQueries management, IdentityFacade identity) {
+        return new OrderExportSnapshotService(orders, activities, queries, images, management, identity);
     }
     @Bean OrderExportService orderExportService(OrderExportSnapshotService snapshots, OrderExportFiles files) {
         return new OrderExportService(snapshots, files);
@@ -82,7 +82,7 @@ public class OrderComposition {
         return new PostgresOrderActivities(mapper, json);
     }
     @Bean OrderService orderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events,
-            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity) {
-        return new OrderService(orders, activities, ids, clock, events, identity);
+            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity, JsonCodec json) {
+        return new OrderService(orders, activities, ids, clock, events, identity, json);
     }
 }

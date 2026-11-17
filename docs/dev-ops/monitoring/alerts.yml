@@ -1,6 +1,21 @@
 groups:
   - name: wuhoucake
     rules:
+      - alert: WuhouAppScrapeUnavailable
+        expr: up{job="wuhou-app"} == 0 or absent(up{job="wuhou-app"})
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "午逅主应用指标抓取失败或目标消失"}
+      - alert: WuhouAppProbeUnavailable
+        expr: |
+          probe_success{job="wuhou-api-probe"} == 0
+          or absent(probe_success{job="wuhou-api-probe"})
+          or up{job="wuhou-ready-probe"} == 0
+          or (up{job="wuhou-ready-probe"} == 1 unless on (job, instance) wuhou_app_ready{job="wuhou-ready-probe"} == 1)
+          or absent(up{job="wuhou-ready-probe"})
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "午逅 API 或应用就绪探测失败或缺失"}
       - alert: WuhouContainerOomKilled
         expr: increase(container_oom_events_total{container_label_com_docker_compose_service=~"app|image-worker|postgres|redis|gateway"}[10m]) > 0
         labels: {severity: critical}

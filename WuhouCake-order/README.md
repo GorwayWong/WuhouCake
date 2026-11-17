@@ -18,7 +18,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 | GET /api/orders/{id} | 详情、有效商品、各商品最近三条备注 |
 | PATCH /api/orders/{id}/information | expectedVersion + changes，更正客户/交接/总额 |
 | PATCH /api/orders/{id} | expectedVersion + itemId + changes，修改商品 |
-| POST /api/orders/{id}/items | expectedVersion + item，追加商品 |
+| POST /api/orders/{id}/items | expectedVersion + item，追加商品。可选 Idempotency-Key UUID |
 | POST /api/orders/{id}/items/{itemId}/remove | expectedVersion，软移除商品 |
 | PATCH /api/orders/{id}/payment-status | expectedVersion + paymentStatus |
 | POST /api/orders/{id}/production-actions | expectedVersion + action |
@@ -101,6 +101,7 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 - 员工手工创建订单固定归属当前认证员工；请求中的 creditedEmployeeId 保留兼容接收，但不用于选择手工订单归属。客户扫码填单确认仍使用核对时显式选择的在职员工。旧单不推定归属。详情 creditedEmployee 含 ID、工号和姓名快照；createdBy 始终是实际创建人。资料 changes 还接受 creditedEmployeeId，改变归属同事务记录前后值和实际操作者。
 - 资料 changes 接受 customerName、phone、memberPhone、buyerName、fulfillmentType、address、requestedReceiveDate、requestedReceiveAt、plannedHandoffAt、plannedFinishAt、totalAmountCents、creditedEmployeeId。商品 changes 接受 name、productType、quantity、unitPriceCents、memberPriceCents、attributes。未提交字段保持，允许清空的字段为 null；attributes 顶层合并、null 删除（蛋糕 base/filling/flavor 回落默认），结构值整体替换。
 - 所有状态都能更正资料和约定金额；商品仅在出胚、夹层、抹面、装饰可增删改，待配送须先退回装饰。至少一件有效商品；软移除保留历史，不能再编辑该商品或为其添加备注。
+- 手工追加支持可选 UUID `Idempotency-Key`，按订单和操作者隔离。首次使用 `expectedVersion`。同键同商品内容重放返回当前可见订单且不再写入，同键异内容返回 `409 IDEMPOTENCY_KEY_CONFLICT`。
 - 追加商品时回到出胚。若此前已进入下一工序，则重置有效商品的备齐勾选。商品名称、类型、数量或规格变更会清除该项备齐勾选。价格修改和移除保留节点。历史 `MANUAL` 订单商品变化不改约定总额；`ITEM_SUM` 订单在同一事务内更新商品与金额。已付款订单若商品修改会改变成交额则整体拒绝；报价不完整时不可登记付款。更正交接方式时，整单状态保持当前节点。
 
 写请求带当前 expectedVersion。有效资料、商品、付款和状态变化同事务推进一次版本并记录活动；无实际变化仍校验版本，但不写版本/时间/活动。409 CONCURRENT_MODIFICATION 后须读取最新状态人工复核，不自动重试。备注、图片不增加订单版本，仍会发 SSE；导出不记新活动、不发 SSE。
@@ -133,7 +134,11 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 
 日历使用 [from,to)；工作台 date 按 Asia/Shanghai。非法、反向、空或超过 42 天的日历范围返回 400。统计字段：totalOrders 是全部订单数，createdOnDate 是门店当天创建数，deliveryDueOnDate 是该取货日尚未完成/取消的配送订单数，均不是商品数量统计。
 
-`GET /api/orders/workbench` 的 `includeMetrics` 默认 `true`，继续返回上述统计；显式传 `false` 时 `metrics` 为 `null`，只读取当天订单、商品及备注，不计算全局统计。日历工作台使用此轻量读取，页面统计使用当天全部有效订单。
+`GET /api/orders/workbench` 的 `includeMetrics` 默认 `true`，继续返回上述统计；显式传 `false` 时 `metrics` 为 `null`，只读取当天订单、商品及备注，不计算全局统计。页面统计使用当天全部有效订单。
+
+工作台使用 `GET /api/orders/workbench/cards`，必填 `date`，可提供 `status`、`paymentStatus`、`cursor`、`focusOrderId`。付款筛选需要金额权限。返回最多 50 张卡片、`nextCursor`、与当日完整范围一致的计数及可选定位卡片。游标仅用于相同日期和筛选。卡片中的超长规格和备注提示查看订单详情。原完整接口单日超过 100 单或约 4 MiB 的读取预算时返回 `413 WORKBENCH_RESULT_TOO_LARGE`。
+
+正式订单新增和修改的地址限制为 2,000 个字符，规范化商品规格最多每件 128 KiB、有效商品合计 1 MiB。历史超限记录可读取、修改其他字段或缩短已有超限字段。
 
 每张工作台订单的 `latestNote` 返回整单及有效商品中最新的一条 NOTE，按 createdAt/id 倒序确定；没有备注时为 null。已移除商品的备注不参与卡片摘要，各商品的 recentNotes 仍只包含该商品最近三条备注。
 
@@ -170,7 +175,7 @@ ZIP 筛选 from/to 是取货日期右开区间，界面结束当天须先加一�
 
 XLSX 含“订单信息、商品明细、工作备注、参考图片”四张表。有效商品规格转换为可读字段，状态和类型使用中文；备注及图片通过商品序号、名称关联，不展示内部 UUID、版本、原始 JSON。包含全部整单备注、各有效商品最近三条备注和有效图片，图片实际嵌入。金额精确转为元文本，未填金额显示“未填写”，零元显示 0.00；时间按北京时间，长文本拆连续行，文本不作为公式执行。ZIP 根目录每单一个安全订单号文件名，使用 UTF-8 和普通 Deflate；每单模板与单独导出一致。
 
-`POST /api/admin/orders/exports/zip` 接收管理查询 JSON 条件，按全部匹配订单生成逐单 ZIP，最多 100 单、256 MiB。管理查询及该导出接受 `deleted=true`：按删除日期筛选保留期内的只读订单，包含原已取消订单。已删除查询的 totals 仅 orderCount 有意义，其余统计字段为零，sizes/employees 为空；汇总表导出拒绝该模式。单单 Excel 和 ZIP 显示删除员工、原因、时间和保留截止。删除接口、到期清理及图片维护命令见[维护说明](../docs/order-maintenance.md)。
+`POST /api/admin/orders/exports/zip` 接收管理查询 JSON 条件，按全部匹配订单生成逐单 ZIP，最多 100 单、256 MiB。管理查询及该导出接受 `deleted=true`：按删除日期筛选已删除订单，包含原已取消订单。已删除查询的 totals 仅 orderCount 有意义，其余统计字段为零，sizes/employees 为空；汇总表导出拒绝该模式。单单 Excel 和 ZIP 显示删除员工、原因和时间。删除、恢复及图片维护命令见[维护说明](../docs/order-maintenance.md)。
 
 短 REPEATABLE_READ 事务固定订单、备注和有效图片 ID，事务外逐单生成文件；后续移除不破坏正在生成的既有快照，后续上传不混入。导出不新增活动、不改变版本/状态/付款，临时文件在正常结束、异常和复制中断时清理。文件名分别为订单-{orderNo}.xlsx、orders-{from:yyyyMMdd}-{to前一天:yyyyMMdd}.zip。
 
@@ -230,7 +235,7 @@ DASHSCOPE_API_KEY 仅通过服务端受限配置注入；普通 .env 文件不�
 
 订单编辑权限允许在待交接状态修改、追加或移除商品。涉及制作内容的修改和商品增删会原子退回装饰并记录状态变更。修改后的商品需要重新备齐，新增商品为未备齐，其他商品保留完成状态。相同值和仅提交商品参考报价字段（`referenceUnitPriceCents`、`referenceMemberPriceCents`）的修改不退回。参考报价字段要求金额权限，`null` 清除对应报价；汇总模式同时重算成交额，历史手填模式不重算。已交付和已取消订单禁止修改商品。
 
-`POST /api/orders/{id}/notes` 接受可选 UUID 请求头 `Idempotency-Key`。同员工、订单和标识使用相同备注对象及正文重试时返回原备注，变更对象或正文返回 `409 IDEMPOTENCY_KEY_CONFLICT`。标识随备注保存，重复请求不发布更新通知。订单删除后写入被拒绝，永久清理会一并删除备注及其标识。旧客户端省略该请求头时沿用原发布行为。
+`POST /api/orders/{id}/notes` 接受可选 UUID 请求头 `Idempotency-Key`。同员工、订单和标识使用相同备注对象及正文重试时返回原备注，变更对象或正文返回 `409 IDEMPOTENCY_KEY_CONFLICT`。标识随备注保存，重复请求不发布更新通知。订单被删除期间拒绝写入，已发布的备注和标识继续保留。旧客户端省略该请求头时沿用原发布行为。
 
 ## 商品汇总计价
 

@@ -47,6 +47,7 @@ class OrderQueryServiceTest {
         var handoffAt = Instant.parse("2026-11-02T09:00:00Z");
         var finishAt = Instant.parse("2026-11-02T08:00:00Z");
         var id = UUID.randomUUID();
+        when(queries.workbenchBudget(date)).thenReturn(new OrderQueries.WorkbenchBudget(0, 0));
         when(queries.pending(date)).thenReturn(List.of(
                 new OrderQueries.PendingOrder(id, "001", date, "CAKE_BASE", null, "UNPAID", "DELIVERY",
                         handoffAt, null, "13800000000", null, null, null, finishAt, receiveAt),
@@ -124,20 +125,22 @@ class OrderQueryServiceTest {
         var from = Instant.parse("2026-09-29T16:00:00Z");
         var to = Instant.parse("2026-09-30T16:00:00Z");
         when(queries.metrics(date, from, to)).thenReturn(new OrderQueries.Metrics(9, 2, 0));
+        when(queries.workbenchBudget(date)).thenReturn(new OrderQueries.WorkbenchBudget(0, 0));
         when(queries.pending(date)).thenReturn(List.of());
         var result = service.workbench(date);
         assertEquals(date, result.date()); assertEquals(9, result.metrics().totalOrders());
         assertEquals(2, result.metrics().createdOnDate()); assertEquals(0, result.metrics().deliveryDueOnDate());
         assertTrue(result.pendingOrders().isEmpty());
-        verify(queries).metrics(date, from, to); verify(queries).pending(date); verifyNoMoreInteractions(queries);
+        verify(queries).metrics(date, from, to); verify(queries).workbenchBudget(date); verify(queries).pending(date); verifyNoMoreInteractions(queries);
     }
 
     @Test void workbenchCanSkipUnusedMetricsWithoutQueryingTheOrderHistory() {
         var date = LocalDate.of(2026, 10, 20);
+        when(queries.workbenchBudget(date)).thenReturn(new OrderQueries.WorkbenchBudget(0, 0));
         when(queries.pending(date)).thenReturn(List.of());
         var result = service.workbench(date, false);
         assertEquals(date, result.date()); assertNull(result.metrics()); assertTrue(result.pendingOrders().isEmpty());
-        verify(queries).pending(date); verifyNoMoreInteractions(queries);
+        verify(queries).workbenchBudget(date); verify(queries).pending(date); verifyNoMoreInteractions(queries);
         assertThrows(OrderFailure.class, () -> service.workbench(null, false));
         verifyNoMoreInteractions(queries);
     }

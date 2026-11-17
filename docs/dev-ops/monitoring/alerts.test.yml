@@ -1,5 +1,6 @@
 rule_files:
   - alerts.yml
+  - pitr-alerts.yml
 
 evaluation_interval: 1m
 tests:
@@ -21,3 +22,101 @@ tests:
       - eval_time: 4m
         alertname: WuhouScratchLowSpace
         exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'up{job="wuhou-app",instance="app"}'
+        values: '1 0 0 0 1 stale _ _'
+      - series: 'probe_success{job="wuhou-api-probe",instance="api"}'
+        values: '1 0 0 0 1 1 1 1'
+      - series: 'up{job="wuhou-ready-probe",instance="ready"}'
+        values: '1 1 1 1 1 stale _ _'
+      - series: 'wuhou_app_ready{job="wuhou-ready-probe",instance="ready"}'
+        values: '1 1 1 1 1 stale _ _'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: WuhouAppScrapeUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-app, instance: app, severity: critical}
+            exp_annotations: {summary: "午逅主应用指标抓取失败或目标消失"}
+      - eval_time: 3m
+        alertname: WuhouAppProbeUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-api-probe, instance: api, severity: critical}
+            exp_annotations: {summary: "午逅 API 或应用就绪探测失败或缺失"}
+      - eval_time: 4m
+        alertname: WuhouAppScrapeUnavailable
+      - eval_time: 4m
+        alertname: WuhouAppProbeUnavailable
+      - eval_time: 7m
+        alertname: WuhouAppScrapeUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-app, severity: critical}
+            exp_annotations: {summary: "午逅主应用指标抓取失败或目标消失"}
+      - eval_time: 7m
+        alertname: WuhouAppProbeUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-ready-probe, severity: critical}
+            exp_annotations: {summary: "午逅 API 或应用就绪探测失败或缺失"}
+
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="wuhou-api-probe",instance="api"}'
+        values: '1+0x12'
+      - series: 'up{job="wuhou-ready-probe",instance="ready"}'
+        values: '1 1 1 1 1 0 0 0 1 1 1 1 1'
+      - series: 'wuhou_app_ready{job="wuhou-ready-probe",instance="ready"}'
+        values: '1 0 0 0 1 stale _ _ 1 stale _ _ 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: WuhouAppProbeUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-ready-probe, instance: ready, severity: critical}
+            exp_annotations: {summary: "午逅 API 或应用就绪探测失败或缺失"}
+      - eval_time: 4m
+        alertname: WuhouAppProbeUnavailable
+      - eval_time: 7m
+        alertname: WuhouAppProbeUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-ready-probe, instance: ready, severity: critical}
+            exp_annotations: {summary: "午逅 API 或应用就绪探测失败或缺失"}
+      - eval_time: 8m
+        alertname: WuhouAppProbeUnavailable
+      - eval_time: 11m
+        alertname: WuhouAppProbeUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-ready-probe, instance: ready, severity: critical}
+            exp_annotations: {summary: "午逅 API 或应用就绪探测失败或缺失"}
+      - eval_time: 12m
+        alertname: WuhouAppProbeUnavailable
+
+  - interval: 1m
+    input_series:
+      - series: 'up{job="wuhou-pitr"}'
+        values: '1 1 1 1 1'
+      - series: wuhou_pitr_archive_failures_total
+        values: '0 0 1 1 1'
+      - series: 'wuhou_pitr_latest_backup_timestamp_seconds{job="wuhou-pitr"}'
+        values: '1 1 1 1 1'
+      - series: 'wuhou_pitr_disk_free_bytes{disk="repository"}'
+        values: '4294967296 1073741824 1073741824 1073741824 4294967296'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: WuhouPitrArchiveFailed
+      - eval_time: 3m
+        alertname: WuhouPitrArchiveFailed
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations: {summary: "午逅 WAL 归档失败、积压或未启用"}
+      - eval_time: 3m
+        alertname: WuhouPitrDiskLowSpace
+        exp_alerts:
+          - exp_labels: {disk: repository, severity: critical}
+            exp_annotations: {summary: "午逅数据库或备份盘余量不足 2 GiB"}
+      - eval_time: 4m
+        alertname: WuhouPitrDiskLowSpace
+      - eval_time: 31h
+        alertname: WuhouPitrMetricsUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-pitr, severity: critical}
+            exp_annotations: {summary: "午逅数据库备份与归档指标不可用"}

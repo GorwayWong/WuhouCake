@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ApiError, creationResultUnknown } from './api';
 import { amountInformationRequest, informationDraft, informationRequest } from './orderForm';
+import type { InformationDraft } from './orderForm';
+import type { EditDraftWriter } from './EditDraftRecovery';
 import type { Detail, InformationRequest } from './types';
 import { businessDate, businessTime } from './dates';
 import { ErrorNotice, money } from './ui';
@@ -28,14 +30,27 @@ export function InformationSummary({ order, includeAmount = false }: { order: De
 function Field({ name, label, error, children, wide = false }: { name: string; label: string; error?: string; children: ReactNode; wide?: boolean }) {
   return <label className={wide ? 'form-wide' : undefined} htmlFor={`edit-${name}`}>{label}{children}{error && <span className="field-error" id={`edit-${name}-error`}>{error}</span>}</label>;
 }
-export function InformationEdit({ initial: opened, latest, busy, error, onSave, onCancel, onDirtyChange, onSaveUnchanged, amountOnly = false, canEditAmount = true, hasStagedImages = false }: {
-  amountOnly?: boolean; canEditAmount?: boolean; hasStagedImages?: boolean; initial: Detail; latest: Detail; busy: boolean; error: unknown; onSave: (request: InformationRequest, keepEditing: boolean) => Promise<Detail | null>; onSaveUnchanged?: (keepEditing?: boolean) => Promise<unknown>; onCancel: () => void; onDirtyChange: (dirty: boolean) => void;
+type InformationBasis = Pick<Detail, 'version' | 'pricingMode' | 'paymentStatus' | 'totalAmountCents' |
+  'originalAmountCents' | 'memberAmountCents'> & Partial<Pick<Detail, 'customer' | 'fulfillment' | 'orderingMethod' | 'creditedEmployee'>>;
+export interface InformationEditDraft {
+  basis: InformationBasis;
+  finishMode: ReturnType<typeof finishMode>;
+  value: Partial<InformationDraft>;
+}
+function informationBasis(order: Detail, amountOnly: boolean): InformationBasis {
+  const { version, customer, fulfillment, orderingMethod, creditedEmployee, pricingMode, paymentStatus,
+    totalAmountCents, originalAmountCents, memberAmountCents } = order;
+  const amount = { version, pricingMode, paymentStatus, totalAmountCents, originalAmountCents, memberAmountCents };
+  return amountOnly ? amount : { ...amount, customer, fulfillment, orderingMethod, creditedEmployee };
+}
+export function InformationEdit({ initial: opened, latest, busy, error, onSave, onCancel, onDirtyChange, onSaveUnchanged, amountOnly = false, canEditAmount = true, hasStagedImages = false, recovered, writer }: {
+  amountOnly?: boolean; canEditAmount?: boolean; hasStagedImages?: boolean; initial: Detail; latest: Detail; busy: boolean; error: unknown; onSave: (request: InformationRequest, keepEditing: boolean) => Promise<Detail | null>; onSaveUnchanged?: (keepEditing?: boolean) => Promise<unknown>; onCancel: () => Promise<boolean>; onDirtyChange: (dirty: boolean) => void; recovered?: InformationEditDraft; writer: EditDraftWriter<InformationEditDraft>;
 }) {
-  const [startingPoint, setStartingPoint] = useState(() => ({ order: opened, finishMode: finishMode(informationDraft(opened)) }));
+  const [startingPoint, setStartingPoint] = useState(() => recovered ? { order: { ...opened, ...recovered.basis }, finishMode: recovered.finishMode } : { order: opened, finishMode: finishMode(informationDraft(opened)) });
   const initial = startingPoint.order;
   canEditAmount = canEditAmount && initial.pricingMode !== 'ITEM_SUM';
   busy = busy || Boolean(latest.deletion || latest.deleted);
-  const [draft, setDraft] = useState(() => informationDraft(initial));
+  const [draft, setDraft] = useState(() => ({ ...informationDraft(initial), ...recovered?.value }));
   const [baseline, setBaseline] = useState<Detail | null>(initial);
   const [conflict, setConflict] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -61,7 +76,14 @@ export function InformationEdit({ initial: opened, latest, busy, error, onSave, 
   const stale = !baseline || latest.version > baseline.version;
   const canReview = latest.version > (baseline?.version ?? attemptedVersion.current);
   const props = (name: string) => ({ id: `edit-${name}`, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': errors[name] ? `edit-${name}-error` : undefined });
-  const change = (next: typeof draft) => { setDraft(next); setErrors({}); };
+  const snapshot = (value: InformationDraft, order = initial, mode = startingPoint.finishMode): InformationEditDraft => ({
+    basis: informationBasis(order, amountOnly), finishMode: mode,
+    value: amountOnly ? { totalAmount: value.totalAmount, memberAmount: value.memberAmount } : value,
+  });
+  const change = (next: typeof draft) => {
+    setDraft(next); setErrors({});
+    void writer.save(snapshot(next));
+  };
   return <form ref={form} className="information-form" noValidate onSubmit={async event => {
     event.preventDefault();
     if (busy || !baseline || stale) return;
@@ -76,7 +98,11 @@ export function InformationEdit({ initial: opened, latest, busy, error, onSave, 
       focusFormField(form.current, Object.keys(result.errors)[0]);
       return;
     }
-    if (!result.request) { try { if (onSaveUnchanged) await onSaveUnchanged(); else onCancel(); } catch { /* 保存错误由父级操作提示展示。 */ } return; }
+    if (!result.request) {
+      try { if (onSaveUnchanged) await onSaveUnchanged(); else if (!await onCancel()) return; await writer.clear(); }
+      catch { /* 保存错误由父级操作提示展示。 */ }
+      return;
+    }
     attemptedVersion.current = result.request.expectedVersion;
     try {
       const saved = await onSave(result.request, saveOtherFields);
@@ -84,9 +110,11 @@ export function InformationEdit({ initial: opened, latest, busy, error, onSave, 
         const next = informationDraft(saved);
         const mode = finishMode(draft);
         setStartingPoint({ order: saved, finishMode: mode }); setBaseline(saved); setConflict(false); setErrors({});
-        setDraft({ ...next, finishTimeMode: mode, totalAmount: originalChanged ? draft.totalAmount : next.totalAmount,
-          memberAmount: memberChanged ? draft.memberAmount : next.memberAmount });
-      }
+        const remaining = { ...next, finishTimeMode: mode, totalAmount: originalChanged ? draft.totalAmount : next.totalAmount,
+          memberAmount: memberChanged ? draft.memberAmount : next.memberAmount };
+        setDraft(remaining);
+        await writer.save(snapshot(remaining, saved, mode));
+      } else if (saved) await writer.clear();
     }
     catch (error) {
       if (error instanceof ApiError && error.code === 'CONCURRENT_MODIFICATION') { setConflict(true); setBaseline(null); }
@@ -108,7 +136,7 @@ export function InformationEdit({ initial: opened, latest, busy, error, onSave, 
       {canEditAmount && amountLocked && <p className="notice" role="status">已登记付款，金额暂不能保存。请先撤销付款登记再改价。{saveOtherFields && !onlyLockedAmount && '本次仅保存其他资料，金额修改不提交。'}</p>}
       <ErrorNotice error={error} />{creationResultUnknown(error) && <p className="notice error" role="alert">{amountOnly ? '金额保存结果待确认，请查看当前金额后再保存。' : '资料保存结果待确认，请查看当前订单后再保存。'}</p>}
     {(conflict || stale) && <div className="information-review"><p className="notice" role="status">{stale ? '订单已更新，输入已保留。核对最新内容后再保存。' : '已核对，请确认修改后保存。'}{!baseline && !canReview && '请先刷新订单。'}</p><h3>最新资料（用于核对）</h3>{amountOnly ? <p>当前订单金额：{money(latest.totalAmountCents)}</p> : <InformationSummary order={latest} includeAmount />}{stale && <button type="button" className="secondary" disabled={!canReview} onClick={() => { setBaseline(latest); setConflict(true); }}>核对后继续编辑</button>}</div>}
-      <div className="actions"><button className="primary" disabled={busy || stale || (onlyLockedAmount && !saveImagesOnly)}>{busy ? '正在保存…' : saveImagesOnly ? '仅保存图片' : saveOtherFields && !onlyLockedAmount ? '仅保存其他资料' : '保存修改'}</button><button className="secondary" type="button" onClick={onCancel}>取消</button></div>
+      <div className="actions"><button className="primary" disabled={busy || stale || (onlyLockedAmount && !saveImagesOnly)}>{busy ? '正在保存…' : saveImagesOnly ? '仅保存图片' : saveOtherFields && !onlyLockedAmount ? '仅保存其他资料' : '保存修改'}</button><button className="secondary" type="button" onClick={async () => { if (await onCancel()) await writer.clear(); }}>取消</button></div>
     </fieldset>
   </form>;
 }

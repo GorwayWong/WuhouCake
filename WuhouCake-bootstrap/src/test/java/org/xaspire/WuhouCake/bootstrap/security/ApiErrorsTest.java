@@ -105,6 +105,17 @@ class ApiErrorsTest {
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
         assertTrue(events(Level.ERROR).isEmpty());
     }
+    @Test void databaseFailuresLogSqlStateAndLocationWithoutSensitiveExceptionMessages() throws Exception {
+        mvc.perform(get("/db-failure").requestAttr("wuhoucake.requestId", requestId))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("SERVICE_UNAVAILABLE"));
+        var logged = events(Level.ERROR);
+        assertEquals(1, logged.size());
+        String message = logged.getFirst().getFormattedMessage();
+        assertTrue(message.contains("SQLSTATE=55P03"));
+        assertTrue(message.contains("databaseFailure"));
+        assertFalse(message.contains("synthetic-secret"));
+        assertNull(logged.getFirst().getThrowableProxy());
+    }
     @Test void countsEachExportTimeoutAndLeavesCommittedDownloadIntact() throws Exception {
         var timeouts = metrics.counter("wuhou.exports.timeouts");
         mvc.perform(get("/export-generation-timeout")).andExpect(status().isServiceUnavailable())
@@ -143,6 +154,10 @@ class ApiErrorsTest {
             return emitter;
         }
         @GetMapping("/forbidden") void forbidden() { throw new org.springframework.security.access.AccessDeniedException("denied"); }
+        @GetMapping("/db-failure") void databaseFailure() {
+            throw new org.springframework.dao.DataAccessResourceFailureException("synthetic-secret",
+                    new java.sql.SQLException("synthetic-secret", "55P03"));
+        }
         @GetMapping("/file-eof") void fileEof() throws IOException { throw new EOFException("synthetic local file EOF"); }
         @GetMapping("/export-generation-timeout") void generationTimeout() { throw new OrderFailure("EXPORT_TIMEOUT"); }
         @GetMapping("/export-transfer-timeout") void transferTimeout(@RequestParam boolean committed, HttpServletResponse response)

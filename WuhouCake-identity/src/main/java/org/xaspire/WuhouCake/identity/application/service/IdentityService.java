@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
@@ -41,6 +42,9 @@ public class IdentityService implements IdentityFacade {
     private final ApplicationEventPublisher events;
     private final EmployeeAccessPolicy accessPolicy;
     private final String dummyHash;
+    private static final int LOGIN_CONCURRENCY = 2;
+    private final Semaphore loginSlots = new Semaphore(LOGIN_CONCURRENCY);
+    private final AtomicLong rejectedLogins = new AtomicLong();
     private final AtomicLong auditFailures = new AtomicLong();
 
     public IdentityService(Accounts accounts, Credentials credentials, Sessions sessions, Attempts attempts,
@@ -62,6 +66,10 @@ public class IdentityService implements IdentityFacade {
     @Override public Login login(String number, String password, String requestId) {
         number = AccountValues.employeeNumber(number);
         if (password == null || password.codePointCount(0, password.length()) > 128) throw new IdentityFailure("VALIDATION_FAILED");
+        if (!loginSlots.tryAcquire()) {
+            rejectedLogins.incrementAndGet();
+            throw new IdentityFailure("LOGIN_BUSY");
+        }
         try (var attempt = attempts.begin(number)) {
             var found = accounts.findByNumber(number);
             boolean matched = credentials.matches(password, found.map(EmployeeAccount::passwordHash).orElse(dummyHash));
@@ -80,8 +88,13 @@ public class IdentityService implements IdentityFacade {
         } catch (IdentityFailure failure) {
             record(new AuditFacade.Command(clock.instant(), "identity.login", "FAILURE", null, number, null, null, requestId));
             throw failure;
+        } finally {
+            loginSlots.release();
         }
     }
+    public int activeLogins() { return LOGIN_CONCURRENCY - loginSlots.availablePermits(); }
+    public long rejectedLogins() { return rejectedLogins.get(); }
+
     @Override public Login refresh(String credential) {
         var session = refreshSession(credential);
         var account = validAccount(session.accountId(), session.credentialVersion());

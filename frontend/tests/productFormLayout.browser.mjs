@@ -15,6 +15,7 @@ async function until(check) {
 }
 async function checkLayout(page, width, grid = page.locator('.product-form-fields').first(), expectedRows = rows) {
   await page.setViewportSize({ width, height: 1000 });
+  await grid.waitFor();
   assert.deepEqual(await grid.locator('[data-product-row]').evaluateAll(elements => elements.map(element => element.dataset.productRow)), expectedRows);
   const bounds = await grid.boundingBox();
   for (const keys of expectedRows) {

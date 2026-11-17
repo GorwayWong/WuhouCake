@@ -39,6 +39,11 @@ public final class PostgresOrders implements Orders {
         if (mapper.delete(row, expectedVersion) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
         mapper.auditDeletion(row);
     }
+    @Override public void restore(Order order, long expectedVersion) {
+        if (mapper.restore(order.id().toString(), expectedVersion, order.updatedAt()) != 1)
+            throw new OrderFailure("CONCURRENT_MODIFICATION");
+    }
+
     @Override public void reviseItem(Order order, long expectedVersion, UUID itemId) {
         if (mapper.updateItems(row(order), expectedVersion) != 1) throw new OrderFailure("CONCURRENT_MODIFICATION");
         if (mapper.updateItem(row(order.id(), order.requireActiveItem(itemId))) != 1) throw new OrderFailure("ORDER_NOT_FOUND");

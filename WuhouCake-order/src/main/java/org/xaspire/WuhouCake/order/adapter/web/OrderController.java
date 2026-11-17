@@ -61,9 +61,9 @@ public class OrderController {
     }
     @PostMapping("/{id}/items") @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<OrderViews.Detail> addItem(@PathVariable UUID id, @Valid @RequestBody OrderCommands.AddItem command,
-            Authentication authentication) {
+            Authentication authentication, @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId) {
         requireAmountAccess(authentication, hasItemPrice(command.item()));
-        return visible(orders.addItem(id, command, operator(authentication)), authentication);
+        return visible(orders.addItem(id, command, operator(authentication), requestId), authentication);
     }
     @PatchMapping("/{id}/information")
     public ApiResponse<OrderViews.Detail> reviseInformation(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Information command,
@@ -113,6 +113,11 @@ public class OrderController {
     public ApiResponse<OrderViews.Detail> delete(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Delete command, Authentication authentication) {
         return visible(orders.delete(id, command, operator(authentication)), authentication);
     }
+    @PostMapping("/{id}/restore")
+    public ApiResponse<OrderViews.Detail> restore(@PathVariable UUID id, @Valid @RequestBody OrderCommands.Restore command, Authentication authentication) {
+        return visible(orders.restore(id, command, operator(authentication)), authentication);
+    }
+
     private static boolean hasItemPrice(OrderCommands.Item item) {
         return item.unitPriceCents() != null || item.memberPriceCents() != null
                 || item.referenceUnitPriceCents() != null || item.referenceMemberPriceCents() != null;

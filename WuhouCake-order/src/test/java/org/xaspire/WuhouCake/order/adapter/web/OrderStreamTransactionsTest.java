@@ -60,7 +60,7 @@ class OrderStreamTransactionsTest {
         context.register(Transactions.class);
         context.registerBean(PlatformTransactionManager.class, () -> manager);
         context.registerBean(OrderStreams.class, () -> streams);
-        context.registerBean(OrderService.class, () -> new OrderService(orders, activities, UUID::randomUUID, clock, context, mock(org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.class)));
+        context.registerBean(OrderService.class, () -> new OrderService(orders, activities, UUID::randomUUID, clock, context, mock(org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.class), new org.xaspire.WuhouCake.shared.json.JsonCodec(new com.fasterxml.jackson.databind.ObjectMapper())));
         context.refresh(); streams.subscribe(subscriber, 0, NOW.plusSeconds(60), () -> true);
         order = Order.create(UUID.randomUUID(), "0000001", new CustomerContact(null, "13800000000", null, null),
                 new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),

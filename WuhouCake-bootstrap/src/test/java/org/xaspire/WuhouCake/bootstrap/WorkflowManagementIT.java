@@ -36,7 +36,6 @@ class WorkflowManagementIT {
     @Autowired JdbcTemplate jdbc;
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
-    @Autowired org.xaspire.WuhouCake.order.application.service.OrderRetentionService retention;
     @MockitoSpyBean org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries management;
     @MockitoSpyBean Operations operations;
     @MockitoSpyBean org.xaspire.WuhouCake.order.domain.repository.OrderActivities orderActivities;
@@ -524,23 +523,85 @@ class WorkflowManagementIT {
         assertEquals(order, a.data("GET", "/api/orders/" + id, null));
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));
     }
-    @Test void expiryHidesRecordsBeforeCleanupAndPurgePreservesOnlyDeletionAndCreationReceipts() throws Exception {
+    @Test void deletedOrdersRemainQueryableAndExportableAfterYears() throws Exception {
+        var order = a.data("POST", "/api/orders", create(a.id));
+        String id = order.path("orderId").asText();
+        admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "历史保留"));
+        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '800 days' WHERE id=?::uuid", id);
+        var today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        var list = admin.data("GET", "/api/admin/orders?deleted=true&from=" + today.minusDays(801) + "&to=" + today.minusDays(799), null);
+        assertEquals(id, list.at("/items/0/orderId").asText());
+        assertEquals(200, admin.raw("GET", "/api/orders/" + id + "/images", null).statusCode());
+        assertEquals(200, admin.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+        assertEquals(0, admin.data("GET", search("&includeCancelled=true"), null).at("/totals/orderCount").asInt());
+    }
+
+    @Test void keyedAdditionReplaysAfterCommitAndUnderConcurrency() throws Exception {
+        var order = a.data("POST", "/api/orders", create(a.id));
+        String path = "/api/orders/" + order.path("orderId").asText() + "/items";
+        String key = UUID.randomUUID().toString();
+        String itemId = UUID.randomUUID().toString();
+        var item = Map.of("itemId", itemId, "name", "追加商品", "productType", "OTHER", "quantity", 1, "attributes", Map.of("specification", "合成数据"));
+        var body = Map.of("expectedVersion", 0, "item", item);
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var first = executor.submit(() -> { start.await(); return a.raw("POST", path, body, key); });
+            var second = executor.submit(() -> { start.await(); return a.raw("POST", path, body, key); });
+            start.countDown();
+            assertEquals(201, first.get(10, java.util.concurrent.TimeUnit.SECONDS).statusCode());
+            assertEquals(201, second.get(10, java.util.concurrent.TimeUnit.SECONDS).statusCode());
+        }
+        var replay = a.raw("POST", path, Map.of("expectedVersion", 1, "item", item), key);
+        assertEquals(201, replay.statusCode());
+        assertEquals(1, json.readTree(replay.body()).at("/data/version").asLong());
+        var changed = new LinkedHashMap<String, Object>(item);
+        changed.put("quantity", 2);
+        var conflict = a.raw("POST", path, Map.of("expectedVersion", 1, "item", changed), key);
+        assertEquals(409, conflict.statusCode());
+        assertEquals("IDEMPOTENCY_KEY_CONFLICT", json.readTree(conflict.body()).path("code").asText());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_item WHERE id=?::uuid", Integer.class, itemId));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ITEM_ADDED'", Integer.class));
+    }
+
+    @Test void keyedAdditionCanRetryAfterItsReceiptTransactionRollsBack() throws Exception {
+        var order = a.data("POST", "/api/orders", create(a.id));
+        String path = "/api/orders/" + order.path("orderId").asText() + "/items";
+        var body = Map.of("expectedVersion", 0, "item", Map.of("itemId", UUID.randomUUID().toString(),
+                "name", "合成商品", "productType", "OTHER", "quantity", 1, "attributes", Map.of()));
+        String key = UUID.randomUUID().toString();
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("synthetic receipt failure")).doCallRealMethod()
+                .when(orderActivities).appendItemAddition(any(), eq(UUID.fromString(key)), anyString());
+        assertEquals(503, a.raw("POST", path, body, key).statusCode());
+        assertEquals(order, a.data("GET", path.substring(0, path.length() - "/items".length()), null));
+        assertEquals(201, a.raw("POST", path, body, key).statusCode());
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ITEM_ADDED'", Integer.class));
+    }
+
+    @Test void managerRestoresTheOriginalOrderExactlyOnceAndCanDeleteItAgain() throws Exception {
         String key = UUID.randomUUID().toString(); var body = create(a.id);
-        var order = json.readTree(a.raw("POST", "/api/orders", body, key).body()).path("data"); String id = order.path("orderId").asText();
-        admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "到期清理"));
-        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE id=?::uuid", id);
-        assertEquals(404, a.raw("GET", "/api/orders/" + id, null).statusCode());
-        assertEquals(404, a.raw("GET", "/api/orders/" + id + "/images", null).statusCode());
-        assertEquals(404, a.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
-        assertEquals(0, a.data("GET", "/api/admin/orders?deleted=true", null).at("/totals/orderCount").asInt());
-        var result = retention.purgeExpired(); assertEquals(1, result.purged()); assertEquals(0, result.failed()); assertEquals(0, result.pending());
-        for (String table : List.of("cake_order", "cake_order_item", "cake_order_activity", "cake_order_image")) assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class));
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit WHERE purged_at IS NOT NULL", Integer.class));
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_creation", Integer.class));
-        assertEquals(404, a.raw("POST", "/api/orders", body, key).statusCode());
-        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
-        assertEquals(0, retention.purgeExpired().purged());
-        assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM identity_account", Integer.class));
+        var order = json.readTree(a.raw("POST", "/api/orders", body, key).body()).path("data");
+        String id = order.path("orderId").asText(), path = "/api/orders/" + id;
+        admin.data("POST", path + "/delete", Map.of("expectedVersion", 0, "reason", "误删"));
+        jdbc.update("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '800 days' WHERE id=?::uuid", id);
+        assertEquals(403, a.raw("POST", path + "/restore", Map.of("expectedVersion", 1)).statusCode());
+        assertEquals(409, admin.raw("POST", path + "/restore", Map.of("expectedVersion", 0)).statusCode());
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var first = executor.submit(() -> { start.await(); return admin.raw("POST", path + "/restore", Map.of("expectedVersion", 1)).statusCode(); });
+            var second = executor.submit(() -> { start.await(); return admin.raw("POST", path + "/restore", Map.of("expectedVersion", 1)).statusCode(); });
+            start.countDown();
+            assertEquals(Set.of(200, 409), Set.of(first.get(10, java.util.concurrent.TimeUnit.SECONDS), second.get(10, java.util.concurrent.TimeUnit.SECONDS)));
+        }
+        var restored = a.data("GET", path, null);
+        assertEquals(2, restored.path("version").asInt());
+        assertTrue(restored.path("deletion").isNull());
+        for (String field : List.of("orderId", "orderNo", "status", "paymentStatus", "items"))
+            assertEquals(order.path(field), restored.path(field));
+        assertEquals(id, json.readTree(a.raw("POST", "/api/orders", body, key).body()).at("/data/orderId").asText());
+        admin.data("POST", path + "/delete", Map.of("expectedVersion", 2, "reason", "再次删除"));
+        assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_DELETED'", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_RESTORED'", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));
     }
     @Test void sixJobsProjectPhoneAndTimesAndOnlyStoreManagersAreAdministrators() throws Exception {
         var command = new LinkedHashMap<>(create(b.id));
@@ -569,20 +630,14 @@ class WorkflowManagementIT {
         var adminProfile = admin.data("GET", "/api/me", null);
         assertEquals(409, admin.raw("PATCH", "/api/admin/employees/" + admin.id, Map.of("expectedVersion", adminProfile.path("version").asLong(), "nickname", "店主", "jobRoles", List.of("FRONT_DESK_CLERK"))).statusCode());
     }
-    @Test void cleanupFailureRollsBackOnlyThatOrderAndIsRetriedWithoutBlockingOthers() throws Exception {
-        String first = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
-        String second = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
-        for (String id : List.of(first, second)) admin.data("POST", "/api/orders/" + id + "/delete", Map.of("expectedVersion", 0, "reason", "清理测试"));
-        jdbc.execute("UPDATE cake_order SET deleted_at=CURRENT_TIMESTAMP-INTERVAL '31 days'");
-        jdbc.execute("CREATE FUNCTION prevent_one_purge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.order_id='" + first + "'::uuid THEN RAISE EXCEPTION 'synthetic purge failure'; END IF; RETURN OLD; END $$");
-        jdbc.execute("CREATE TRIGGER prevent_purge BEFORE DELETE ON cake_order_item FOR EACH ROW EXECUTE FUNCTION prevent_one_purge()");
-        try {
-            var result = retention.purgeExpired(); assertEquals(1, result.purged()); assertEquals(1, result.failed()); assertEquals(1, result.pending());
-            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order WHERE id=?::uuid", Integer.class, first));
-            assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order WHERE id=?::uuid", Integer.class, second));
-            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid AND type='ORDER_DELETED'", Integer.class, first));
-        } finally { jdbc.execute("DROP TRIGGER prevent_purge ON cake_order_item"); jdbc.execute("DROP FUNCTION prevent_one_purge()"); }
-        assertEquals(1, retention.purgeExpired().purged());
+    @Test void restoreActivityFailureRollsBackTheOrderVersionAndDeletion() throws Exception {
+        String id = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
+        String path = "/api/orders/" + id;
+        var deleted = admin.data("POST", path + "/delete", Map.of("expectedVersion", 0, "reason", "合成误删"));
+        doThrow(new org.springframework.dao.DataAccessResourceFailureException("synthetic restore audit failure")).when(orderActivities)
+                .append(argThat(activity -> activity.type().equals("ORDER_RESTORED")));
+        assertEquals(503, admin.raw("POST", path + "/restore", Map.of("expectedVersion", 1)).statusCode());
+        assertEquals(deleted, admin.data("GET", path, null));
     }
     @Test void confirmedLegacyRoleAssignmentsAreAtomicAuditedAndSafeToRepeat() {
         var assignments = Map.of("A001", Set.of("FRONT_DESK_CLERK"), "B001", Set.of("DECORATOR"));

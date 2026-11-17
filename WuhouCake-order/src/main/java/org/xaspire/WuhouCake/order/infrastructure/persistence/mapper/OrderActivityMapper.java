@@ -7,6 +7,14 @@ import org.apache.ibatis.annotations.*;
 public interface OrderActivityMapper {
     record Row(long id, String orderId, String itemId, String type, String content, String details,
             String actorId, String actorNameSnapshot, Instant createdAt, String noteRequestId) { }
+    @Insert("INSERT INTO cake_order_activity (order_id, item_id, type, content, details, actor_id, actor_name_snapshot, created_at, item_add_request_id, item_add_fingerprint)"
+            + " VALUES (CAST(#{row.orderId} AS uuid), CAST(#{row.itemId} AS uuid), #{row.type}, #{row.content}, CAST(#{row.details} AS jsonb),"
+            + " CAST(#{row.actorId} AS uuid), #{row.actorNameSnapshot}, #{row.createdAt}, CAST(#{requestId} AS uuid), #{fingerprint})")
+    void appendItemAddition(@Param("row") Row row, @Param("requestId") String requestId, @Param("fingerprint") String fingerprint);
+    @Select("SELECT item_add_fingerprint FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid)"
+            + " AND actor_id=CAST(#{actorId} AS uuid) AND item_add_request_id=CAST(#{requestId} AS uuid)")
+    String itemAdditionFingerprint(@Param("orderId") String orderId, @Param("actorId") String actorId, @Param("requestId") String requestId);
+
     String COLUMNS = "id, order_id::text, item_id::text, type, content, details::text, actor_id::text, actor_name_snapshot, created_at, note_request_id::text";
     String FILTER = " FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid)"
             + "<if test='itemId != null'> AND item_id=CAST(#{itemId} AS uuid)</if>"

@@ -187,6 +187,11 @@ public final class Order {
         deletion = new OrderDeletion(now, actor.accountId(), actor.nickname(), reason);
         version++; updatedAt = now;
     }
+    public void restore(Instant now) {
+        if (deletion == null || version == Long.MAX_VALUE) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        deletion = null;
+        version++; updatedAt = now;
+    }
     public OrderItem requireItem(UUID itemId) {
         var item = items.get(itemId);
         if (item == null) throw new OrderFailure("ORDER_NOT_FOUND");

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
+import { createOrderFixture, orderId, workbenchCards } from './orderBrowserFixture.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
@@ -34,7 +34,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     const requests = [];
     page.on('request', request => { if (request.url().includes('/api/')) requests.push(request.url()); });
     await context.route('**/api/orders/calendar?**', route => route.fulfill({ json: { success: true, data: rows.filter(row => !row.deleted).map(row => ({ ...row, customerPhoneLast4: null })) } }));
-    await context.route('**/api/orders/workbench?**', route => route.fulfill({ json: { success: true, data: { date, metrics: null, pendingOrders: rows } } }));
+    await context.route('**/api/orders/workbench/cards?**', route => route.fulfill({ json: { success: true, data: workbenchCards(route.request(), rows) } }));
     await context.route('**/api/orders/workbench/cake-bases?**', route => route.fulfill({ json: { success: true, data: { date, items: [{ size: '6', flavor: '原味', quantity: 8 }] } } }));
     const otherImage = crypto.randomUUID(), orderImage = crypto.randomUUID(), firstImage = crypto.randomUUID();
     let images = [{ imageId: otherImage, itemId: secondId }, { imageId: orderImage, itemId: null }, { imageId: firstImage, itemId: firstId }];
@@ -173,19 +173,25 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await open();
       await checkProgress();
       assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '装饰');
-      assert.equal(await page.getByRole('button', { name: '完成装饰' }).isDisabled(), true);
       const steps = await page.locator('.progress-step').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
       assert.equal(new Set(steps).size, width < 600 ? 2 : 1);
       if (width < 600) assert.deepEqual(steps.map(y => y === steps[0]), [true, true, true, true, false, false]);
       const information = page.getByRole('region', { name: '订单信息' });
       await information.getByText('测试订购人', { exact: true }).waitFor();
       await information.getByText('到店', { exact: true }).waitFor();
-      await information.getByText(cake.attributes.requirements, { exact: true }).waitFor();
-      await information.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).waitFor();
-      await information.getByRole('button', { name: '下一个商品' }).click();
-      await information.getByText('每盒六片', { exact: true }).waitFor();
-      await information.getByRole('button', { name: '查看大图：手工饼干.png' }).waitFor();
-      assert.equal(await information.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).count(), 0);
+      const products = page.getByRole('region', { name: '商品资料' });
+      await products.getByText(cake.attributes.requirements, { exact: true }).waitFor();
+      await products.locator('.reference-image').scrollIntoViewIfNeeded();
+      await products.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).waitFor();
+      await page.getByRole('button', { name: '下一个商品' }).click();
+      await products.getByText('每盒六片', { exact: true }).waitFor();
+      await products.locator('.reference-image').scrollIntoViewIfNeeded();
+      await products.getByRole('button', { name: '查看大图：手工饼干.png' }).waitFor();
+      assert.equal(await products.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).count(), 0);
+      await page.getByRole('button', { name: '完成装饰' }).click();
+      const unfinished = page.getByRole('dialog', { name: '还有 1 项商品未完成' });
+      await unfinished.getByRole('button', { name: '第 2 个商品 · 手工饼干' }).waitFor();
+      await unfinished.getByRole('button', { name: '关闭' }).click();
       assert.equal(await page.getByRole('heading', { name: '金额与付款' }).count(), 0);
     }
     model.order.status = 'WAITING_DELIVERY';

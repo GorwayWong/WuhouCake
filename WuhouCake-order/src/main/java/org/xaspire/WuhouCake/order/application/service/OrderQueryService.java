@@ -1,5 +1,6 @@
 package org.xaspire.WuhouCake.order.application.service;
 
+import java.nio.charset.StandardCharsets;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -9,6 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.xaspire.WuhouCake.order.api.command.OrderCommands.Customer;
 import org.xaspire.WuhouCake.order.api.dto.OrderQueryViews;
 import org.xaspire.WuhouCake.order.domain.port.OrderQueries;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.PRODUCTION_STATUSES;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
@@ -154,10 +156,66 @@ public class OrderQueryService {
             from = date.atStartOfDay(STORE_ZONE).toInstant();
             to = date.plusDays(1).atStartOfDay(STORE_ZONE).toInstant();
         } catch (DateTimeException failure) { throw invalid(); }
+        var budget = queries.workbenchBudget(date);
+        if (budget.orders() > 100 || budget.bytes() > 4 * 1024 * 1024) throw new OrderFailure("WORKBENCH_RESULT_TOO_LARGE");
         var metrics = includeMetrics ? queries.metrics(date, from, to) : null;
         return new OrderQueryViews.Workbench(date, metrics == null ? null
                 : new OrderQueryViews.Metrics(metrics.totalOrders(), metrics.createdOnDate(), metrics.deliveryDueOnDate()),
                 pendingViews(queries.pending(date)));
+    }
+
+    private static final int CARD_PAGE_SIZE = 50;
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public OrderQueryViews.WorkbenchCards cards(LocalDate date, String status, String paymentStatus,
+            String cursor, UUID focusOrderId, boolean showPayment) {
+        if (!productionDate(date)
+                || status != null && !org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.ORDER_STATUSES.contains(status)
+                || paymentStatus != null && !Set.of("PAID", "UNPAID").contains(paymentStatus)) throw invalid();
+        if (paymentStatus != null && !showPayment) throw new OrderFailure("FORBIDDEN");
+
+        var filter = new OrderQueries.CardFilter(date, status, paymentStatus);
+        var rows = queries.cards(filter, cardPosition(filter, cursor), null, CARD_PAGE_SIZE + 1);
+        var visible = rows.stream().limit(CARD_PAGE_SIZE).map(row -> card(row, date, showPayment)).toList();
+        var focus = focusOrderId == null || cursor != null || visible.stream().anyMatch(row -> row.orderId().equals(focusOrderId))
+                ? null : queries.cards(filter, null, focusOrderId, 1).stream().findFirst()
+                        .map(row -> card(row, date, showPayment)).orElse(null);
+        var counts = queries.cardCounts(filter);
+        var groups = Map.of("pending", counts.pending(), "completed", counts.completed(),
+                "cancelled", counts.cancelled(), "unknown", counts.unknown());
+        String next = rows.size() > CARD_PAGE_SIZE ? encodePosition(filter, rows.get(CARD_PAGE_SIZE - 1)) : null;
+        return new OrderQueryViews.WorkbenchCards(date, visible, focus, next,
+                counts.pending() + counts.completed() + counts.cancelled() + counts.unknown(), groups,
+                new OrderQueryViews.OperationalCounts(counts.totalOrderCount(), counts.waitingDeliveryOrderCount()));
+    }
+
+    private static OrderQueryViews.Card card(OrderQueries.Card row, LocalDate date, boolean showPayment) {
+        var first = row.firstItemId() == null ? null : new OrderQueryViews.CardItem(row.firstItemId(), row.firstItemName(),
+                row.firstProductType(), row.firstAttributes());
+        return new OrderQueryViews.Card(row.orderId(), row.orderNo(), date, row.status(), showPayment ? row.paymentStatus() : null,
+                row.fulfillmentType(), row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(), first, row.latestNote());
+    }
+
+    private static String encodePosition(OrderQueries.CardFilter filter, OrderQueries.Card row) {
+        var raw = cursorScope(filter) + "\n" + Objects.toString(row.pickupAt(), "") + "\n" + row.orderNo() + "\n" + row.orderId();
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static OrderQueries.CardPosition cardPosition(OrderQueries.CardFilter filter, String cursor) {
+        if (cursor == null) return null;
+        if (cursor.length() > 512) throw invalid();
+        try {
+            var fields = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8).split("\n", -1);
+            if (fields.length != 4 || !fields[0].equals(cursorScope(filter)) || fields[2].isBlank() || fields[2].length() > 32)
+                throw invalid();
+            var pickup = fields[1].isEmpty() ? null : Instant.parse(fields[1]);
+            if (pickup != null && !pickup.atZone(STORE_ZONE).toLocalDate().equals(filter.date())) throw invalid();
+            return new OrderQueries.CardPosition(pickup, fields[2], UUID.fromString(fields[3]));
+        } catch (IllegalArgumentException | DateTimeException failure) { throw invalid(); }
+    }
+
+    private static String cursorScope(OrderQueries.CardFilter filter) {
+        return filter.date() + "|" + Objects.toString(filter.status(), "") + "|" + Objects.toString(filter.paymentStatus(), "");
     }
 
     private List<OrderQueryViews.PendingOrder> pendingViews(List<OrderQueries.PendingOrder> orders) {

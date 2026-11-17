@@ -18,9 +18,6 @@ public interface CustomerSubmissionMapper {
             String handledBy, Instant createdAt) { }
     String CONTENT = "COALESCE(s.reviewed->'content',s.original)";
     String CONTENT_PICKUP_AT = "COALESCE((s.reviewed->>'plannedHandoffAt')::timestamptz,(" + CONTENT + "->>'requestedReceiveAt')::timestamptz)";
-    String RETAINED = " AND (order_id IS NULL OR EXISTS (SELECT 1 FROM cake_order retained_order"
-            + " WHERE retained_order.id=customer_order_submission.order_id"
-            + " AND (retained_order.deleted_at IS NULL OR retained_order.deleted_at>CURRENT_TIMESTAMP-INTERVAL '720 hours')))";
     @Select("SELECT id::text,owner_id::text,owner_name,token,enabled FROM customer_order_entry WHERE owner_id=CAST(#{owner} AS uuid)")
     EntryRow entryForOwner(String owner);
     @Select("SELECT id::text,owner_id::text,owner_name,token,enabled FROM customer_order_entry WHERE token=#{token}")
@@ -38,16 +35,15 @@ public interface CustomerSubmissionMapper {
             @Param("phone") String phone, @Param("date") LocalDate date, @Param("now") Instant now);
     @Select("SELECT id::text,fingerprint FROM customer_order_submission WHERE entry_id=CAST(#{entry} AS uuid) AND request_id=CAST(#{request} AS uuid)")
     Claim claim(@Param("entry") String entry, @Param("request") String request);
-    @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE id=CAST(#{id} AS uuid) AND status<>'PURGED'" + RETAINED) Row find(String id);
+    @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE id=CAST(#{id} AS uuid) AND status<>'PURGED'") Row find(String id);
     @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE id=CAST(#{id} AS uuid) AND status<>'PURGED' FOR UPDATE") Row lock(String id);
-    @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE order_id=CAST(#{id} AS uuid)" + RETAINED) Row byOrder(String id);
+    @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE order_id=CAST(#{id} AS uuid)") Row byOrder(String id);
     String SEARCH_WHERE = " FROM customer_order_submission WHERE status IN ('PENDING','CONFIRMED')"
             + " AND (#{status}='ALL' OR status=#{status})"
             + " AND (CAST(#{owner} AS uuid) IS NULL OR owner_id=CAST(#{owner} AS uuid))"
             + " AND (#{keyword}='' OR id::text=#{keyword} OR (#{keyword} ~ '^[0-9]+$' AND ("
             + " position(#{keyword} in regexp_replace(original_phone,'[^0-9]','','g'))>0"
-            + " OR position(#{keyword} in regexp_replace(COALESCE(reviewed->'content'->>'phone',''),'[^0-9]','','g'))>0)))"
-            + RETAINED;
+            + " OR position(#{keyword} in regexp_replace(COALESCE(reviewed->'content'->>'phone',''),'[^0-9]','','g'))>0)))";
     @Select("SELECT " + COLUMNS + SEARCH_WHERE + " ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}")
     List<Row> search(@Param("owner") String owner, @Param("status") String status, @Param("keyword") String keyword, @Param("limit") int limit, @Param("offset") long offset);
     @Select("SELECT count(*)" + SEARCH_WHERE)

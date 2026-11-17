@@ -19,7 +19,7 @@ public interface OrderManagementMapper {
             + " string_agg(i.name || ' ×' || i.quantity || CASE WHEN i.attributes->>'size' IS NULL THEN '' ELSE '（' || (i.attributes->>'size') || '）' END, '、' ORDER BY i.position NULLS LAST,i.created_at,i.id) AS products"
             + " FROM cake_order_item i WHERE i.order_id=o.id AND NOT i.is_removed"
             + ITEM_MATCH + ") p ON TRUE WHERE "
-            + "<choose><when test='filter.deleted'>o.deleted_at IS NOT NULL AND o.deleted_at &gt; CURRENT_TIMESTAMP - INTERVAL '720 hours' AND o.deleted_at &gt;= (CAST(#{filter.from} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai') AND o.deleted_at &lt; (CAST(#{filter.to} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')</when>"
+            + "<choose><when test='filter.deleted'>o.deleted_at IS NOT NULL AND o.deleted_at &gt;= (CAST(#{filter.from} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai') AND o.deleted_at &lt; (CAST(#{filter.to} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')</when>"
             + "<otherwise>o.deleted_at IS NULL</otherwise></choose> AND "
             + "<choose><when test='filter.deleted or filter.allUnpaid'>1=1</when><when test='filter.dateBasis == \"CREATED\"'>o.created_at &gt;= (CAST(#{filter.from} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai') AND o.created_at &lt; (CAST(#{filter.to} AS date)::timestamp AT TIME ZONE 'Asia/Shanghai')</when>"
             + "<otherwise>" + ORDER_PICKUP_DATE + " &gt;= #{filter.from} AND " + ORDER_PICKUP_DATE + " &lt; #{filter.to}</otherwise></choose>"

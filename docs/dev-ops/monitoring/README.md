@@ -22,3 +22,17 @@ docker compose exec -T image-worker wget -qO- http://127.0.0.1:8091/metrics
 [alerts.yml](alerts.yml) 是外部 Prometheus 规则示例。OOM 规则使用既有 cAdvisor 兼容采集的 `container_oom_events_total` 和 Compose 服务标签，告警后关联 Docker 容器状态的 `.State.OOMKilled` 与 `oom` 事件。若现有容器采集使用其他指标，按实际名称调整该规则。采集规则只使用固定业务类别、框架路径模板和服务标签。
 
 临时存储告警适用于默认目录和可选专用盘。空闲不足 128 MiB 或读取失败时保留原低空间告警。近 5 分钟内准入拒绝计数增加时单独告警。单次导出需预留 768 MiB，外加 64 MiB 空闲保护和活动预留，因此磁盘余量高于 128 MiB 时也可能发生拒绝。实际发出通知需要外部 Prometheus 采集并加载规则，以及 Alertmanager 或现有告警投递服务。可用 `promtool test rules docs/dev-ops/monitoring/alerts.test.yml` 验证规则。
+
+## 主应用探测
+
+把 [blackbox.yml](blackbox.yml) 的公网 API 模块合并至私网 Blackbox Exporter，并移除原 `wuhou_ready` 模块和对应凭据挂载。更新 [scrape.yml](scrape.yml) 中的公网 API、私有采集器和探测器地址。Prometheus 直接通过 HTTPS 和采集凭据抓取私有采集器的 `/ready`。将 [就绪采集脚本](../compose/probe-ip-readiness.sh) 放到 IP 部署目录，由采集器在受认证的 `/ready` 执行。响应使用 Prometheus 文本格式，禁用缓存，并且接口不接受探测地址参数。
+
+```sh
+./probe-ip-readiness.sh
+```
+
+脚本只检查应用容器内固定的 readiness 地址，应用未就绪或无法访问时输出 `wuhou_app_ready 0`。采集器执行失败时返回非 2xx。
+
+将 `WuhouAppScrapeUnavailable` 和 `WuhouAppProbeUnavailable` 路由到现有 Alertmanager 通知通道并启用恢复通知。预发布依次模拟应用停止、数据库停止和网关不可达，每次确认对应探测失败、持续 2 分钟后触发以及恢复后的通知，再进行下一项。缺失也会触发告警，因此安装时先启用探测目标再加载规则。
+
+员工登录的两个并发名额由 `wuhou_login_active` 暴露，`wuhou_login_rejected_total` 记录因满载返回 `LOGIN_BUSY` 的次数。结合登录延迟和 JVM 堆占用检查高峰容量。

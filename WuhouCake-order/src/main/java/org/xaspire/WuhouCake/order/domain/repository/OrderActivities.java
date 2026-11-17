@@ -7,6 +7,8 @@ import org.xaspire.WuhouCake.order.domain.model.entity.OrderActivity;
 public interface OrderActivities {
     OrderActivity append(OrderActivity activity);
     OrderActivity appendNote(OrderActivity activity, UUID requestId);
+    void appendItemAddition(OrderActivity activity, UUID requestId, String fingerprint);
+    String itemAdditionFingerprint(UUID orderId, UUID actorId, UUID requestId);
     OrderActivity findNote(UUID orderId, UUID actorId, UUID requestId);
     List<OrderActivity> recentItemNotes(UUID orderId);
     List<OrderActivity> search(UUID orderId, UUID itemId, String type, int size, long offset);

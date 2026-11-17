@@ -117,7 +117,7 @@ public class OrderImageService {
     }
     private void requireReadable(UUID orderId) {
         var order = orders.find(orderId).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
-        OrderReadAccess.requireReadable(order, clock, identity);
+        OrderReadAccess.requireReadable(order, identity);
     }
     private static OrderFileViews.Image view(OrderImage image) {
         return new OrderFileViews.Image(image.imageId(), image.orderId(), image.itemId(), image.contentType(), image.filename(), image.size(),

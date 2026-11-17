@@ -19,13 +19,13 @@ public class OrderCreationService {
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public UUID create(OrderCommands.Create command, OrderCommands.Operator operator, UUID requestId) {
         if (requestId == null) return orders.create(command, operator).orderId();
-        var existing = creations.claim(operator.accountId(), requestId, fingerprint(command));
+        var existing = creations.claim(operator.accountId(), requestId, fingerprint(command, json));
         if (existing.isPresent()) return existing.get();
         var created = orders.create(command, operator);
         creations.complete(operator.accountId(), requestId, created.orderId());
         return created.orderId();
     }
-    private String fingerprint(OrderCommands.Create command) {
+    static String fingerprint(Object command, JsonCodec json) {
         String canonical = json.write(canonical(json.read(json.write(command), Map.class)));
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8))); }
         catch (NoSuchAlgorithmException failure) { throw new IllegalStateException(failure); }

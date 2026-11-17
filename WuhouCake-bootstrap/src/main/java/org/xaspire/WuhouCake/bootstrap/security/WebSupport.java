@@ -19,6 +19,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import org.xaspire.WuhouCake.shared.response.ApiResponse;
 
 @Configuration(proxyBeanMethods = false)
+@org.springframework.scheduling.annotation.EnableScheduling
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WebSupport {
     @Bean ScratchSpace scratchSpace(@Value("${wuhoucake.scratch.managed:false}") boolean managed,

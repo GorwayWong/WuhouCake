@@ -59,6 +59,7 @@ public final class OrderCommands {
     public record SimpleItemCompletion(@NotNull Number expectedVersion, @NotNull Boolean completed) { }
     public record FulfillmentAction(@NotNull Number expectedVersion, @NotBlank String action) { }
     public record Cancel(@NotNull Number expectedVersion, @NotBlank String reason) { }
+    public record Restore(@NotNull Number expectedVersion) { }
     public record Delete(@NotNull Number expectedVersion, @NotBlank @Size(max = 1000) String reason) { }
     public record Restart(@NotNull Number expectedVersion) { }
     public record Note(UUID itemId, @NotBlank String content) { }

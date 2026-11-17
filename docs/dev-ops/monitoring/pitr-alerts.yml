@@ -1,0 +1,21 @@
+groups:
+  - name: wuhou-pitr
+    rules:
+      - alert: WuhouPitrMetricsUnavailable
+        expr: up{job="wuhou-pitr"} == 0 or absent(up{job="wuhou-pitr"}) or absent(wuhou_pitr_latest_backup_timestamp_seconds{job="wuhou-pitr"})
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "午逅数据库备份与归档指标不可用"}
+      - alert: WuhouPitrArchiveFailed
+        expr: increase(wuhou_pitr_archive_failures_total[5m]) > 0 or wuhou_pitr_wal_pending_age_seconds > 180 or wuhou_pitr_archive_enabled == 0
+        labels: {severity: critical}
+        annotations: {summary: "午逅 WAL 归档失败、积压或未启用"}
+      - alert: WuhouPitrBackupStale
+        expr: time() - wuhou_pitr_latest_backup_timestamp_seconds > 108000
+        labels: {severity: critical}
+        annotations: {summary: "午逅数据库最近一次成功物理备份已超过 30 小时"}
+      - alert: WuhouPitrDiskLowSpace
+        expr: wuhou_pitr_disk_free_bytes < 2147483648
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "午逅数据库或备份盘余量不足 2 GiB"}

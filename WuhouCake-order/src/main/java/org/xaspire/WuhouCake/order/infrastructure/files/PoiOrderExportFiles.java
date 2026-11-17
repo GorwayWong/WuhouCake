@@ -147,7 +147,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             if (order.deletion() != null) {
                 row(info, "删除前状态", label(order.status()));
                 row(info, "删除时间", time(order.deletion().deletedAt())); row(info, "删除员工", order.deletion().employeeName());
-                row(info, "删除原因", order.deletion().reason()); row(info, "保留截止时间", time(order.deletion().expiresAt()));
+                row(info, "删除原因", order.deletion().reason());
             }
             row(info, "付款状态", label(order.paymentStatus()));
             row(info, "支付方式", order.paymentMethod() == null ? (order.paymentStatus().equals("PAID") ? "已付款（方式未记录）" : "未付") : label(order.paymentMethod()));

@@ -1,6 +1,29 @@
 import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
 export const orderId = '10000000-0000-4000-8000-000000000001';
+export function workbenchCards(request, rows, { nextCursor = null, counts = rows, focus = null } = {}) {
+  const params = new URL(request.url()).searchParams;
+  const status = params.get('status'), payment = params.get('paymentStatus');
+  const visible = rows.filter(order => !order.deleted && !order.deletion);
+  const matches = order => (!status || order.status === status) && (!payment || order.paymentStatus === payment);
+  const counted = counts.filter(order => !order.deleted && !order.deletion);
+  const groups = { pending: 0, completed: 0, cancelled: 0, unknown: 0 };
+  const pending = ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING', 'WAITING_DELIVERY'];
+  for (const { status } of counted.filter(matches)) {
+    const group = pending.includes(status) ? 'pending' : status === 'COMPLETED' ? 'completed' : status === 'CANCELLED' ? 'cancelled' : 'unknown';
+    groups[group]++;
+  }
+  const card = ({ orderId, orderNo, calendarDate, status, paymentStatus, fulfillmentType, plannedFinishAt, ...order }) => ({
+    orderId, orderNo, calendarDate, status, paymentStatus, fulfillmentType, plannedFinishAt,
+    plannedHandoffAt: order.plannedHandoffAt ?? order.requestedReceiveAt ?? null,
+    itemCount: order.items.length, quantity: order.items.reduce((sum, item) => sum + item.quantity, 0),
+    firstItem: order.items[0] ?? null, latestNote: order.latestNote?.content ?? null });
+  return { date: params.get('date'), orders: visible.filter(matches).map(card),
+    focusedOrder: focus && matches(focus) ? card(focus) : null, nextCursor, total: counted.filter(matches).length,
+    groupCounts: groups, operationalCounts: { totalOrderCount: counted.filter(row => row.status !== 'CANCELLED').length,
+      waitingDeliveryOrderCount: counted.filter(row => row.status === 'WAITING_DELIVERY' && row.fulfillmentType === 'DELIVERY').length } };
+}
+
 export async function createOrderFixture(browser, base) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
   context.setDefaultTimeout(10000);
@@ -46,7 +69,7 @@ export async function createOrderFixture(browser, base) {
     if (path.endsWith('/activities')) return ok({ items: [], total: 0, page: 1, size: 20 });
     if (path.endsWith('/calendar')) return ok([]);
     if (path.endsWith('/production-reminders')) return ok({ date: '2026-11-12', today: 0, overdue: 0 });
-    if (path.endsWith('/workbench')) return ok({ pendingOrders: [], metrics: null });
+    if (path.endsWith('/workbench/cards')) return ok(workbenchCards(request, []));
     if (path.endsWith('/receipt-summary')) return ok({ orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 });
     if (path.endsWith('/cake-bases')) return ok({ items: [] });
     if (path.endsWith('/payment-summary')) return ok({ totalOrderCount: 0, waitingDeliveryOrderCount: 0, paidWithoutDateOrderCount: 0, paid: { orderCount: 0, amountCents: '0' }, unpaid: { orderCount: 0, amountCents: '0' } });

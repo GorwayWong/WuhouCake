@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
+import { createOrderFixture, orderId, workbenchCards } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 let browser;
@@ -55,7 +55,7 @@ test('未知状态仍显示两张订单卡片，详情只读',async()=>{
  try{
   model.order.status='FUTURE_STAGE';const date=model.order.fulfillment.requestedReceiveDate;
   const rows=[{...model.order,calendarDate:date,plannedHandoffAt:null,plannedFinishAt:null,fulfillmentType:'PICKUP'}, {...model.order,orderId:'30000000-0000-4000-8000-000000000003',calendarDate:date,plannedHandoffAt:null,plannedFinishAt:null,fulfillmentType:'PICKUP'}];
-  await context.route('**/api/orders/workbench?**',r=>r.fulfill({json:{success:true,data:{pendingOrders:rows,metrics:null}}}));
+  await context.route('**/api/orders/workbench/cards?**',r=>r.fulfill({json:{success:true,data:workbenchCards(r.request(), rows)}}));
   await context.route('**/api/orders/calendar?**',r=>r.fulfill({json:{success:true,data:rows}}));
   await page.goto(base+'/#/?date='+date);await page.locator('.order-summary-card').first().waitFor();assert.equal(await page.locator('.order-summary-card').count(),2);
   await page.locator('.order-summary-card').first().click();await page.reload();await page.getByText('页面暂不识别此订单状态',{exact:false}).waitFor();

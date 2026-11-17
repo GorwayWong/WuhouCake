@@ -15,14 +15,13 @@ public class OrderExportSnapshotService {
     private final OrderImages images;
     private final OrderManagementQueries management;
     private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity;
-    private final java.time.Clock clock;
     public OrderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images) {
-        this(orders, activities, queries, images, null, null, java.time.Clock.systemUTC());
+        this(orders, activities, queries, images, null, null);
     }
     public OrderExportSnapshotService(Orders orders, OrderActivities activities, OrderExportQueries queries, OrderImages images,
-            OrderManagementQueries management, org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity, java.time.Clock clock) {
+            OrderManagementQueries management, org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity) {
         this.orders = orders; this.activities = activities; this.queries = queries; this.images = images;
-        this.management = management; this.identity = identity; this.clock = clock;
+        this.management = management; this.identity = identity;
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, timeout = 20)
     public List<Snapshot> single(UUID orderId) { checkContent(List.of(orderId)); return capture(List.of(orderId)); }
@@ -64,7 +63,7 @@ public class OrderExportSnapshotService {
     }
     private Snapshot snapshot(UUID orderId) {
         var order = orders.find(orderId).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
-        OrderReadAccess.requireReadable(order, clock, identity);
+        OrderReadAccess.requireReadable(order, identity);
         var activeIds = new HashSet<UUID>();
         order.activeItems().forEach(item -> activeIds.add(item.itemId()));
         var notes = new ArrayList<>(queries.orderNotes(orderId));

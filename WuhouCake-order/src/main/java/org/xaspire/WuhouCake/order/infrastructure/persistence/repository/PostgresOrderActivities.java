@@ -16,9 +16,17 @@ public final class PostgresOrderActivities implements OrderActivities {
         return appendNote(activity, null);
     }
     @Override public OrderActivity appendNote(OrderActivity activity, UUID requestId) {
-        var row = new OrderActivityMapper.Row(0, activity.orderId().toString(), string(activity.itemId()), activity.type(), activity.content(),
+        return activity.identified(mapper.append(row(activity, requestId)));
+    }
+    @Override public void appendItemAddition(OrderActivity activity, UUID requestId, String fingerprint) {
+        mapper.appendItemAddition(row(activity, null), requestId.toString(), fingerprint);
+    }
+    @Override public String itemAdditionFingerprint(UUID orderId, UUID actorId, UUID requestId) {
+        return mapper.itemAdditionFingerprint(orderId.toString(), actorId.toString(), requestId.toString());
+    }
+    private OrderActivityMapper.Row row(OrderActivity activity, UUID requestId) {
+        return new OrderActivityMapper.Row(0, activity.orderId().toString(), string(activity.itemId()), activity.type(), activity.content(),
                 json.write(activity.details()), activity.actorId().toString(), activity.actorNameSnapshot(), activity.createdAt(), string(requestId));
-        return activity.identified(mapper.append(row));
     }
     @Override public OrderActivity findNote(UUID orderId, UUID actorId, UUID requestId) {
         var row = mapper.findNote(orderId.toString(), actorId.toString(), requestId.toString());

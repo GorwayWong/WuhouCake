@@ -19,6 +19,16 @@ public interface OrderQueries {
             Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
     List<CalendarOrder> calendar(LocalDate from, LocalDate to);
     List<PendingOrder> pending(LocalDate date);
+    WorkbenchBudget workbenchBudget(LocalDate date);
+    CardCounts cardCounts(CardFilter filter);
+    List<Card> cards(CardFilter filter, CardPosition after, UUID onlyOrder, int limit);
+    record WorkbenchBudget(long orders, long bytes) { }
+    record CardFilter(LocalDate date, String status, String paymentStatus) { }
+    record CardPosition(Instant pickupAt, String orderNo, UUID orderId) { }
+    record CardCounts(long pending, long completed, long cancelled, long unknown, long totalOrderCount, long waitingDeliveryOrderCount) { }
+    record Card(UUID orderId, String orderNo, String status, String paymentStatus, String fulfillmentType,
+            Instant pickupAt, Instant plannedFinishAt, long itemCount, long quantity, UUID firstItemId, String firstItemName,
+            String firstProductType, Map<String, Object> firstAttributes, String latestNote) { }
     long countScheduledProduction(Instant from, Instant to, Set<String> stages);
     List<PendingOrder> scheduledProduction(Instant from, Instant to, Set<String> stages, int limit, long offset);
     List<CalendarItem> calendarItems(List<UUID> orderIds);

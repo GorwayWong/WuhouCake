@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId } from './orderBrowserFixture.mjs';
+import { createOrderFixture, orderId, workbenchCards } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 const displayDate = value => value.slice(0, 4) === new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date()).slice(0, 4) ? value.slice(5).replaceAll('-', '/') : value.replaceAll('-', '/');
@@ -17,7 +17,7 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     plannedFinishAt: model.order.fulfillment.plannedFinishAt, fulfillmentType: model.order.fulfillment.type }, ...extra] : [];
   try {
     await context.route('**/api/orders/calendar?**', route => route.fulfill({ json: { success: true, data: pending().map(order => ({ ...order, customerPhoneLast4: '0000' })) } }));
-    await context.route('**/api/orders/workbench?**', route => route.fulfill({ json: { success: true, data: { pendingOrders: pending(), metrics: null } } }));
+    await context.route('**/api/orders/workbench/cards?**', route => route.fulfill({ json: { success: true, data: workbenchCards(route.request(), pending()) } }));
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     await complete(); await page.getByRole('button', { name: '创建订单', exact: true }).click();
     await page.locator('.is-new-order .created-order-badge').waitFor();
@@ -87,6 +87,42 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     assert.equal(await main.locator('.production-card-specifications').count(), 1);
     assert.match(await main.locator('.order-summary-number').innerText(), /TEST-IMAGE/);
     assert.equal(await main.locator('xpath=ancestor::section[contains(@class,"timeline-group")]').getAttribute('aria-label'), prior + ' 出品时间 23:15');
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('高峰日滚动加载，失败可重试且首批卡片和全日数量仍可用', async () => {
+  const { context, page, errors } = await createOrderFixture(browser, base);
+  const date = '2026-11-05';
+  const rows = Array.from({ length: 52 }, (_, i) => ({
+    orderId: crypto.randomUUID(), orderNo: String(i).padStart(4, '0'), calendarDate: date,
+    status: 'CAKE_BASE', paymentStatus: 'UNPAID', fulfillmentType: 'PICKUP',
+    plannedHandoffAt: date + 'T16:00:00+08:00', plannedFinishAt: null,
+    items: [{ itemId: crypto.randomUUID(), name: '订单商品 ' + i, productType: 'CAKE', quantity: 1, attributes: {} }],
+  }));
+  let attempts = 0;
+  try {
+    await context.route('**/api/orders/workbench/cards?**', route => {
+      const cursor = new URL(route.request().url()).searchParams.get('cursor');
+      if (cursor && ++attempts === 1) return route.fulfill({ status: 400, json: { success: false, code: 'VALIDATION_FAILED' } });
+      return route.fulfill({ json: { success: true, data: workbenchCards(route.request(),
+        cursor ? rows.slice(50) : rows.slice(0, 50), { counts: rows, nextCursor: cursor ? null : 'page-2' }) } });
+    });
+    await page.goto(base + '/#/?date=' + date);
+    const more = page.getByRole('button', { name: '加载更多', exact: true });
+    await more.waitFor();
+    assert.equal(await page.locator('.order-summary-card').count(), 50);
+    assert.equal(await page.locator('.calendar-workbench > .section-heading h2 span').innerText(), '52');
+    assert.match(await page.locator('.timeline-partition-toggle').innerText(), /待处理 52 单/);
+    assert.equal(attempts, 0);
+    await more.scrollIntoViewIfNeeded();
+    const retry = page.getByRole('button', { name: '重试加载更多' });
+    await retry.waitFor();
+    assert.equal(await page.locator('.order-summary-card').count(), 50);
+    await retry.click();
+    await page.getByRole('heading', { name: '订单商品 51', exact: true }).waitFor();
+    assert.equal(await page.locator('.order-summary-card').count(), 52);
+    assert.equal(attempts, 2);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

@@ -27,7 +27,7 @@ class OrderServiceTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final IdGenerator ids = mock(IdGenerator.class);
     private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity = mock(org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.class);
-    private final OrderService service = new OrderService(orders, activities, ids, Clock.fixed(NOW.plusSeconds(1), ZoneOffset.UTC), events, identity);
+    private final OrderService service = new OrderService(orders, activities, ids, Clock.fixed(NOW.plusSeconds(1), ZoneOffset.UTC), events, identity, new org.xaspire.WuhouCake.shared.json.JsonCodec(new com.fasterxml.jackson.databind.ObjectMapper()));
     private final OrderCommands.Operator operator = new OrderCommands.Operator(UUID.randomUUID(), "员工");
     @BeforeEach void lockLoadsTheOrder() {
         when(orders.lock(any())).thenAnswer(invocation -> orders.find(invocation.getArgument(0)));

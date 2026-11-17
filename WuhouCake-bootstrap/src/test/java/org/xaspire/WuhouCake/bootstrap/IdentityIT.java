@@ -353,7 +353,7 @@ class IdentityIT {
             try {
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 var rejected = new ArrayList<Future<String>>();
-                for (int i = 0; i < 8; i++) rejected.add(executor.submit(login));
+                rejected.add(executor.submit(login));
                 for (var result : rejected) assertEquals("LOGIN_THROTTLED", result.get(5, TimeUnit.SECONDS));
                 verify(accounts, times(1)).findByNumber("0001");
             } finally { release.countDown(); }
@@ -362,6 +362,46 @@ class IdentityIT {
         assertEquals("5", redis.opsForValue().get(NAMESPACE + ":attempts:0001"));
         assertEquals(0L, redis.opsForZSet().zCard(NAMESPACE + ":attempts:0001:pending"));
     }
+    @Test void anonymousLoginCapacityRejectsOtherEmployeeNumbersBeforeRedisOrHashing() throws Exception {
+        var admin = administrator();
+        var entered = new CountDownLatch(2);
+        var release = new CountDownLatch(1);
+        long rejected = identity.rejectedLogins();
+        doAnswer(call -> {
+            entered.countDown();
+            assertTrue(release.await(10, TimeUnit.SECONDS));
+            return call.callRealMethod();
+        }).when(accounts).findByNumber(argThat(number -> number != null && number.startsWith("HOLD")));
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = executor.submit(() -> assertThrows(IdentityFailure.class, () -> identity.login("HOLD1", "wrong", "one")).code());
+            var second = executor.submit(() -> assertThrows(IdentityFailure.class, () -> identity.login("HOLD2", "wrong", "two")).code());
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(2, identity.activeLogins());
+                var response = new Browser().request("POST", "/api/auth/login", Map.of("employeeNumber", "OVERFLOW", "password", "wrong"));
+                assertEquals(503, response.status);
+                assertEquals("LOGIN_BUSY", response.body.path("code").asText());
+                assertEquals("1", response.headers.firstValue("Retry-After").orElseThrow());
+                var attempts = new ArrayList<Future<String>>();
+                for (int index = 0; index < 21; index++) {
+                    String employee = "OVERFLOW" + index;
+                    attempts.add(executor.submit(() -> assertThrows(IdentityFailure.class,
+                            () -> identity.login(employee, "wrong", employee)).code()));
+                }
+                for (var attempt : attempts) assertEquals("LOGIN_BUSY", attempt.get(5, TimeUnit.SECONDS));
+                verify(accounts, never()).findByNumber(argThat(number -> number != null && number.startsWith("OVERFLOW")));
+                assertTrue(redis.keys(NAMESPACE + ":attempts:OVERFLOW*").isEmpty());
+                assertEquals(200, admin.request("GET", "/api/me", null).status);
+                assertEquals(rejected + 22, identity.rejectedLogins());
+            } finally { release.countDown(); }
+            assertEquals("AUTHENTICATION_FAILED", first.get(10, TimeUnit.SECONDS));
+            assertEquals("AUTHENTICATION_FAILED", second.get(10, TimeUnit.SECONDS));
+        }
+        assertEquals(0, identity.activeLogins());
+        new Browser().login("0001", PASSWORD);
+    }
+
     @Test void successfulAttemptsClearFailuresAndKeepOtherReservations() {
         String key = NAMESPACE + ":attempts:MIXED";
         try (var success = attempts.begin("MIXED"); var delayed = attempts.begin("MIXED"); var failure = attempts.begin("MIXED")) {

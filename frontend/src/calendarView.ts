@@ -44,14 +44,16 @@ export function toggleCalendarMode(view: CalendarView): CalendarView {
 export function isUnfinishedOrder(order: { status: string; deletion?: unknown; deleted?: boolean }): boolean {
   return !order.deletion && !order.deleted && (productionStatuses.includes(order.status) || order.status === 'WAITING_DELIVERY');
 }
-export function timelinePartitions(orders: PendingOrder[], status: string) {
+export function timelinePartitions<T extends Pick<PendingOrder, 'status' | 'deletion' | 'deleted'>>(
+  orders: T[], status: string, counts?: Record<string, number>,
+) {
   const visible = orders.filter(order => !order.deletion && !order.deleted);
   return [
     { id: 'pending', label: '待处理', orders: visible.filter(isUnfinishedOrder), expanded: true },
     { id: 'completed', label: orderStatusNames.COMPLETED, orders: visible.filter(order => order.status === 'COMPLETED'), expanded: Boolean(status) },
     { id: 'unknown', label: '状态待更新', orders: visible.filter(order => !Object.hasOwn(orderStatusNames, order.status)), expanded: true },
     { id: 'cancelled', label: orderStatusNames.CANCELLED, orders: visible.filter(order => order.status === 'CANCELLED'), expanded: Boolean(status) },
-  ].filter(group => group.orders.length);
+  ].filter(group => group.orders.length || counts?.[group.id]);
 }
 export function overdueOrderCount(date: string, orders: { status: string; deletion?: unknown; deleted?: boolean }[], storeToday: string): number {
   return date < storeToday ? orders.filter(isUnfinishedOrder).length : 0;
@@ -61,9 +63,11 @@ export function compareCalendarOrders(a: { plannedHandoffAt: string | null; orde
   const second = b.plannedHandoffAt ? Date.parse(b.plannedHandoffAt) : Infinity;
   return first - second || a.orderNo.localeCompare(b.orderNo);
 }
-export function groupOrdersByTime(orders: PendingOrder[], precision: 'half-hour' | 'minute' = 'half-hour'): { key: string; time: string; date: string | null; endTime: string | null; endsNextDay: boolean; orders: PendingOrder[] }[] {
+export function groupOrdersByTime<T extends Pick<PendingOrder, 'orderNo' | 'plannedHandoffAt'>>(
+  orders: T[], precision: 'half-hour' | 'minute' = 'half-hour',
+) {
   const interval = precision === 'minute' ? 60_000 : 1_800_000;
-  const groups = new Map<number | null, PendingOrder[]>();
+  const groups = new Map<number | null, T[]>();
   for (const order of [...orders].sort(compareCalendarOrders)) {
     const slot = order.plannedHandoffAt ? Math.floor(Date.parse(order.plannedHandoffAt) / interval) * interval : null;
     const group = groups.get(slot) || [];

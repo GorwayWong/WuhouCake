@@ -122,4 +122,6 @@ services:
 
 volumes:
   postgres-data:
+    external: true
+    name: ${DEPLOY_POSTGRES_VOLUME:-wuhou-ip_postgres-data}
   redis-data:
