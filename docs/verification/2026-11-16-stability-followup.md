@@ -1,5 +1,7 @@
 # 2026-11-16 午逅生产稳定性后续验收
 
+本文记录当时的挂载要求。当前部署默认使用本地临时目录，专用盘通过可选覆盖文件启用，见[生产运行说明](../dev-ops/README.md#默认本地临时目录)。
+
 基线为 GitHub `main` 的 `f4e25d6eb2120309cdefc155b00d417229e6a99a`，已包含 `8843875179cd1da46bd24e3c3dfd72cf4c4e8924`。在干净工作区基于该提交创建 `codex/stability-hardening-followup`。验收只使用本地代码、隔离 PostgreSQL/Redis、合成 HTTP 请求和合成证书。
 
 ## 缺陷与回归

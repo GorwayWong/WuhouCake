@@ -64,7 +64,9 @@ export function saveExportFile(file: { blob: Blob; filename: string }) {
   }
 }
 
-export function exportFailureText(error: unknown): string {
+export function exportFailureText(error: unknown, single = false): string {
+  if (single && error instanceof ApiError && error.code === 'EXPORT_TIMEOUT') return '导出超时，请稍后重试。';
+  if (error instanceof ApiError && ['EXPORT_BUSY', 'EXPORT_TIMEOUT'].includes(error.code)) return errorText(error);
   return creationResultUnknown(error) ? '未确认收到完整导出文件。请先核对浏览器下载记录，再决定是否重试。' : errorText(error);
 }
 

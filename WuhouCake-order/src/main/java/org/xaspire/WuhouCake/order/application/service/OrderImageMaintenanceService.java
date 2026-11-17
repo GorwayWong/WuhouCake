@@ -20,7 +20,7 @@ public final class OrderImageMaintenanceService {
                     if (image.isEmpty()) { skipped++; continue; }
                     var source = image.get();
                     var checked = validator.validate(source.content(), source.filename());
-                    if (images.replace(id, checked)) {
+                    if (checked.content().length < source.content().length && images.replace(id, checked)) {
                         processed++; before += source.content().length; stored += checked.content().length;
                     } else skipped++;
                 } catch (RuntimeException failure) {

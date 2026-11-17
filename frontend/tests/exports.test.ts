@@ -51,6 +51,10 @@ test('导出携带 Bearer 并复用 401 刷新，区分单单 XLSX 和筛选 ZIP
       assert.equal(writes.length, before + 1);
     }
     assert.match(exportFailureText(new ApiError(400, 'EXPORT_EMPTY')), /没有订单/);
+    assert.match(exportFailureText(new ApiError(503, 'TEMP_STORAGE_UNAVAILABLE')), /临时空间不足/);
+    assert.match(exportFailureText(new ApiError(503, 'EXPORT_TIMEOUT')), /缩小导出范围/);
+    assert.equal(exportFailureText(new ApiError(503, 'EXPORT_TIMEOUT'), true), '导出超时，请稍后重试。');
+    assert.match(exportFailureText(new ApiError(502, 'INVALID_EXPORT_RESPONSE')), /核对浏览器下载记录/);
     assert.match(exportFailureText(new TypeError('lost')), /核对浏览器下载记录/);
   } finally { forgetSession(); globalThis.fetch = original; }
 });

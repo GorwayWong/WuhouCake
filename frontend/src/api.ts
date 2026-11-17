@@ -7,11 +7,11 @@ export class ApiError extends Error {
   code: string;
   constructor(status: number, code: string) { super(code); this.status = status; this.code = code; }
 }
-export function imagePreparationRejected(error: unknown): boolean {
-  return error instanceof ApiError && ['IMAGE_PROCESSING_BUSY', 'IMAGE_PROCESSING_TIMEOUT', 'IMAGE_PROCESSING_UNAVAILABLE'].includes(error.code);
+export function rejectedBeforeWrite(error: unknown): boolean {
+  return error instanceof ApiError && ['IMAGE_PROCESSING_BUSY', 'IMAGE_PROCESSING_TIMEOUT', 'IMAGE_PROCESSING_UNAVAILABLE', 'TEMP_STORAGE_UNAVAILABLE'].includes(error.code);
 }
 export function creationResultUnknown(error: unknown): boolean {
-  if (imagePreparationRejected(error)) return false;
+  if (rejectedBeforeWrite(error)) return false;
   return Boolean(error) && !(error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408);
 }
 export function errorText(error: unknown): string {

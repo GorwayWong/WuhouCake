@@ -10,7 +10,7 @@ public interface OrderImageMaintenanceMapper {
     @Select("SELECT id::text,filename,content FROM cake_order_image WHERE id=CAST(#{id} AS uuid) AND processing_version=0")
     Row load(String id);
     @Update("UPDATE cake_order_image SET content=#{content},content_type=#{type},filename=#{filename},size=#{size},width=#{width},height=#{height},processing_version=1"
-            + " WHERE id=CAST(#{id} AS uuid) AND processing_version=0")
+            + " WHERE id=CAST(#{id} AS uuid) AND processing_version=0 AND size>#{size}")
     int replace(@Param("id") String id, @Param("content") byte[] content, @Param("type") String type, @Param("filename") String filename,
             @Param("size") long size, @Param("width") int width, @Param("height") int height);
 }

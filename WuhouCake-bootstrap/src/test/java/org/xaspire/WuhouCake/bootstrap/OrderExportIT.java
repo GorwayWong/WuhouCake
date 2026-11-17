@@ -53,9 +53,12 @@ import static org.mockito.Mockito.*;
 class OrderExportIT {
     private static final String SCHEMA = "order_export_it_" + UUID.randomUUID().toString().replace("-", "");
     private static final String NAMESPACE = "wuhoucake:order-export-it:" + UUID.randomUUID();
+    private static Path multipartDirectory;
     private static final String INITIAL = "Initial password for test!", PASSWORD = "Permanent password for test!";
-    @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
+    @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) throws IOException {
         JwtTestKeys.properties(registry);
+        multipartDirectory = Files.createTempDirectory("wuhou-tomcat-multipart-it-");
+        registry.add("spring.servlet.multipart.location", () -> multipartDirectory.toString());
         registry.add("spring.flyway.default-schema", () -> SCHEMA); registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus");
         registry.add("management.metrics.distribution.percentiles-histogram.http.server.requests", () -> "true");
@@ -82,8 +85,9 @@ class OrderExportIT {
         jdbc.execute("TRUNCATE cake_order_image, cake_order_activity, cake_order_item, cake_order, audit_operation, identity_account_role, identity_account CASCADE");
         clearSessions();
     }
-    @AfterAll void removeTestData() {
+    @AfterAll void removeTestData() throws IOException {
         reset(images, activities, files, streams); clearSessions(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE");
+        Files.deleteIfExists(multipartDirectory);
     }
     private void clearSessions() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
@@ -279,6 +283,46 @@ class OrderExportIT {
         assertEquals(413, staff.client.send(chunked, HttpResponse.BodyHandlers.ofByteArray()).statusCode());
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_image", Integer.class));
         assertEquals(201, staff.upload(order.path("orderId").asText(), item, png, "accepted.png").statusCode());
+    }
+
+    @Test void rejectsUnsupportedMultipartBeforeTomcatStagesAnyPart() throws Exception {
+        var anonymous = new Client();
+        try (var watcher = multipartDirectory.getFileSystem().newWatchService()) {
+            multipartDirectory.register(watcher, StandardWatchEventKinds.ENTRY_CREATE);
+            for (String path : List.of("/api/auth/login", "/api/auth/refresh", "/api/auth/logout",
+                    "/api/public/order-entries/" + UUID.randomUUID() + "/submissions")) {
+                var rejected = anonymous.multipart(path, null, new byte[]{1, 2, 3}, "synthetic.bin", null);
+                assertEquals(415, rejected.statusCode(), text(rejected));
+                assertEquals("MULTIPART_NOT_SUPPORTED", body(rejected).path("code").asText());
+            }
+            assertNull(watcher.poll());
+            try (var entries = Files.list(multipartDirectory)) { assertEquals(0, entries.count()); }
+        }
+        var noCsrf = anonymous.client.send(anonymous.builder("/api/auth/login", true)
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{}")).build(),
+                HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(403, noCsrf.statusCode());
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        assertEquals(201, staff.upload(order.path("orderId").asText(), null, picture("png"), "accepted.png").statusCode());
+    }
+
+    @Test void orderImageAcceptsQueryOrBodyItemIdAndRejectsAmbiguity() throws Exception {
+        var staff = staff();
+        var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        String path = "/api/orders/" + order.path("orderId").asText() + "/images";
+        String item = order.at("/items/0/itemId").asText();
+        byte[] png = picture("png");
+        assertEquals(201, staff.multipart(path + "?%69temId=" + item, null, png, "query.png", null).statusCode());
+        assertEquals(201, staff.multipart(path, item, png, "body.png", null).statusCode());
+        assertEquals(201, staff.multipart(path + "?itemId=" + item, item, png, "both.png", null).statusCode());
+        for (String query : List.of("", "?itemId=invalid", "?itemId=" + item + "&itemId=" + item)) {
+            var rejected = staff.multipart(path + query, null, png, "rejected.png", null);
+            assertEquals(400, rejected.statusCode());
+            assertEquals("INVALID_UPLOAD_PARTS", body(rejected).path("code").asText());
+        }
+        assertEquals(400, staff.multipart(path + "?itemId=" + UUID.randomUUID(), item, png, "conflict.png", null).statusCode());
+        assertEquals(3, data(staff.request("GET", path, null)).size());
     }
 
     @Test void fullOrderAllowsIdempotentReplayAndRejectsAnotherActiveImage() throws Exception {
@@ -826,7 +870,10 @@ class OrderExportIT {
         var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText();
         String image = data(staff.upload(id, null, picture("png"), "before.png")).path("imageId").asText();
-        jdbc.update("UPDATE cake_order_image SET processing_version=0 WHERE id=?::uuid", image);
+        byte[] original = picture("png");
+        original = Arrays.copyOf(original, original.length + 4096);
+        jdbc.update("UPDATE cake_order_image SET processing_version=0,content=?,size=? WHERE id=?::uuid",
+                original, original.length, image);
         var before = temporaryFiles();
         var snapshot = snapshots.single(UUID.fromString(id));
         assertEquals(1, snapshot.getFirst().images().size());
@@ -861,7 +908,9 @@ class OrderExportIT {
         var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(); byte[] png = picture("png"), jpeg = picture("jpeg");
         String image = data(staff.upload(id, null, png, "snapshot.png")).path("imageId").asText();
-        jdbc.update("UPDATE cake_order_image SET processing_version=0 WHERE id=?::uuid", image);
+        byte[] original = Arrays.copyOf(png, png.length + 4096);
+        jdbc.update("UPDATE cake_order_image SET processing_version=0,content=?,size=? WHERE id=?::uuid",
+                original, original.length, image);
         var readStarted = new CountDownLatch(1); var resume = new CountDownLatch(1);
         doAnswer(invocation -> {
             assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
@@ -877,7 +926,7 @@ class OrderExportIT {
             } finally { resume.countDown(); }
             var result = exported.get(15, TimeUnit.SECONDS); assertEquals(200, result.statusCode(), text(result));
             try (var book = new XSSFWorkbook(new ByteArrayInputStream(result.body()))) {
-                assertEquals(1, book.getAllPictures().size()); assertArrayEquals(png, book.getAllPictures().getFirst().getData());
+                assertEquals(1, book.getAllPictures().size()); assertArrayEquals(original, book.getAllPictures().getFirst().getData());
                 assertEquals("image/png", book.getAllPictures().getFirst().getMimeType());
             }
         } finally { reset(images); }
@@ -893,7 +942,23 @@ class OrderExportIT {
         var uploadedAt = jdbc.queryForObject("SELECT uploaded_at FROM cake_order_image WHERE id=?::uuid", java.sql.Timestamp.class, image);
         var service = new org.xaspire.WuhouCake.order.application.service.OrderImageMaintenanceService(
                 new org.xaspire.WuhouCake.order.infrastructure.persistence.repository.PostgresOrderImageMaintenance(maintenance), validator);
+        byte[] original = jdbc.queryForObject("SELECT content FROM cake_order_image WHERE id=?::uuid", byte[].class, image);
+        String metadataQuery = "SELECT filename,content_type,size,width,height,processing_version FROM cake_order_image WHERE id=?::uuid";
+        var originalMetadata = jdbc.queryForMap(metadataQuery, image);
+        for (int length : new int[]{original.length, original.length + 1}) {
+            assertEquals(0, maintenance.replace(image, Arrays.copyOf(original, length), "image/jpeg", "replacement.jpg", length, 1, 1));
+            var skip = new org.xaspire.WuhouCake.order.application.service.OrderImageMaintenanceService(
+                    new org.xaspire.WuhouCake.order.infrastructure.persistence.repository.PostgresOrderImageMaintenance(maintenance),
+                    (bytes, filename) -> new OrderImageValidator.Checked("image/jpeg", "replacement.jpg", 1, 1, Arrays.copyOf(bytes, length)));
+            assertEquals(new org.xaspire.WuhouCake.order.application.service.OrderImageMaintenanceService.Result(0, 1, 0, 0, 0), skip.recompress());
+        }
+        assertArrayEquals(original, jdbc.queryForObject("SELECT content FROM cake_order_image WHERE id=?::uuid", byte[].class, image));
+        assertEquals(originalMetadata, jdbc.queryForMap(metadataQuery, image));
+        byte[] padded = Arrays.copyOf(original, original.length + 4096);
+        jdbc.update("UPDATE cake_order_image SET content=?,size=? WHERE id=?::uuid", padded, padded.length, image);
         var result = service.recompress(); assertEquals(1, result.processed()); assertEquals(0, result.failed());
+        assertTrue(result.storedBytes() < result.originalBytes());
+        assertEquals(0, maintenance.replace(image, new byte[]{1}, "image/jpeg", "stale.jpg", 1, 1, 1));
         assertEquals(0, service.recompress().processed());
         assertEquals(before, data(staff.request("GET", "/api/orders/" + id, null)));
         assertEquals(activitiesBefore, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
@@ -995,12 +1060,15 @@ class OrderExportIT {
             return upload(orderId, itemId, bytes, filename, null);
         }
         HttpResponse<byte[]> upload(String orderId, String itemId, byte[] bytes, String filename, UUID requestId) throws Exception {
+            return multipart("/api/orders/" + orderId + "/images", itemId, bytes, filename, requestId);
+        }
+        HttpResponse<byte[]> multipart(String path, String itemId, byte[] bytes, String filename, UUID requestId) throws Exception {
             String boundary = "WuhouBoundary" + UUID.randomUUID(); var output = new ByteArrayOutputStream();
             if (itemId != null) output.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"itemId\"\r\n\r\n" + itemId + "\r\n").getBytes(StandardCharsets.UTF_8));
             output.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + filename
                     + "\"\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
             output.write(bytes); output.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-            var request = builder("/api/orders/" + orderId + "/images", false).header("Content-Type", "multipart/form-data; boundary=" + boundary);
+            var request = builder(path, false).header("Content-Type", "multipart/form-data; boundary=" + boundary);
             if (requestId != null) request.header("Idempotency-Key", requestId.toString());
             return client.send(request.POST(HttpRequest.BodyPublishers.ofByteArray(output.toByteArray())).build(), HttpResponse.BodyHandlers.ofByteArray());
         }

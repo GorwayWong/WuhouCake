@@ -20,6 +20,8 @@ spring:
       password: ${SPRING_DATA_REDIS_PASSWORD}
 
 wuhoucake:
+  scratch:
+    managed: true
   security:
     permit-api-docs: false
 

@@ -14,7 +14,7 @@ FIXTURE = {
     "APP_IMAGE": "synthetic:local", "PUBLIC_IP": "192.0.2.10",
     "CUSTOMER_ENTRY_PUBLIC_ORIGIN": "https://192.0.2.10",
     "APP_UID": "10001", "APP_GID": "10001", "IDENTITY_KEY_DIR": "/synthetic/keys",
-    "APP_TEMP_DIR": "/synthetic/scratch", "RELEASE_DIR": "/synthetic/release",
+    "RELEASE_DIR": "/synthetic/release",
     "JAVA_TOOL_OPTIONS": "-Duser.timezone=Asia/Shanghai -Xmx900m",
     "JDK_JAVA_OPTIONS": "-Xss8m", "_JAVA_OPTIONS": "-Xmx900m",
 }
@@ -30,6 +30,8 @@ def resolve(*files, development=False):
                 if line and not line.startswith("#") and "=" in line:
                     key, value = line.split("=", 1)
                     values[key] = value
+        if "scratch" in files:
+            values["APP_SCRATCH_HOST_DIR"] = "/synthetic/scratch"
         path.write_text("".join(f"{key}={value}\n" for key, value in (FIXTURE | values).items()))
         env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
         command = ["docker", "compose", "--env-file", str(path)]
@@ -41,6 +43,27 @@ def resolve(*files, development=False):
 
 
 class ResourceContract(unittest.TestCase):
+    def test_app_entrypoint_prepares_local_scratch_for_disabled_mount(self):
+        dockerfile = COMPOSE.parents[2] / "WuhouCake-bootstrap/Dockerfile"
+        entrypoint = json.loads(next(line.removeprefix("ENTRYPOINT ") for line in dockerfile.read_text().splitlines()
+                                     if line.startswith("ENTRYPOINT ")))
+        with tempfile.TemporaryDirectory() as work:
+            java = Path(work) / "java"
+            java.write_text('#!/bin/sh\nprintf "%s\\n" "$1"\n')
+            java.chmod(0o700)
+            for index, value in enumerate((None, "false", "FALSE", "off", "0", " no ")):
+                with self.subTest(value=value):
+                    scratch = Path(work) / f"scratch-{index}"
+                    shell, flags, script, arg0 = entrypoint
+                    script = script.replace("/tmp/wuhoucake-app", shlex.quote(str(scratch)))
+                    env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}"}
+                    env.pop("APP_SCRATCH_REQUIRE_MOUNT", None)
+                    if value is not None:
+                        env["APP_SCRATCH_REQUIRE_MOUNT"] = value
+                    result = subprocess.check_output([shell, flags, script, arg0], env=env, text=True)
+                    self.assertEqual(f"-Djava.io.tmpdir={scratch}", result.strip())
+                    self.assertEqual(0o700, scratch.stat().st_mode & 0o777)
+
     def test_production_database_and_cache_budgets_agree(self):
         standard = resolve("environment")
         ip = resolve("ip")
@@ -73,16 +96,20 @@ class ResourceContract(unittest.TestCase):
                 self.assertEqual("127.0.0.1", services[name]["ports"][0]["host_ip"])
             self.assertIn("max_connections=40", services["postgres"]["command"])
 
-    def test_production_app_mounts_dedicated_scratch_and_stays_off_public_interfaces(self):
-        for services in (resolve("app"), resolve("ip")):
-            app = services["app"]
-            target = app["environment"]["APP_TEMP_DIR"]
-            self.assertEqual(target, app["environment"]["SPRING_SERVLET_MULTIPART_LOCATION"])
-            volume = next(volume for volume in app["volumes"] if volume["target"] == target)
+    def test_production_app_has_optional_scratch_mount_and_stays_off_public_interfaces(self):
+        target = "/tmp/wuhoucake-app"
+        for base in ("app", "ip"):
+            with self.subTest(base=base):
+                app = resolve(base)["app"]
+                self.assertNotIn(target, [volume["target"] for volume in app["volumes"]])
+                self.assertNotIn("APP_SCRATCH_REQUIRE_MOUNT", app["environment"])
+                self.assertEqual("127.0.0.1", app["ports"][0]["host_ip"])
+            mounted = resolve(base, "scratch")["app"]
+            self.assertEqual("true", mounted["environment"]["APP_SCRATCH_REQUIRE_MOUNT"])
+            volume = next(volume for volume in mounted["volumes"] if volume["target"] == target)
             self.assertEqual("/synthetic/scratch", volume["source"])
             self.assertEqual("bind", volume["type"])
             self.assertFalse(volume["bind"]["create_host_path"])
-            self.assertEqual("127.0.0.1", app["ports"][0]["host_ip"])
 
     def test_compose_does_not_accept_inherited_jvm_overrides(self):
         for services in (resolve("app"), resolve("ip")):

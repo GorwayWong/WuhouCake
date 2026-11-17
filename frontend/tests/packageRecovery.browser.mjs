@@ -46,7 +46,7 @@ test('七张套餐图片保存响应丢失后刷新，使用原文件和原幂�
     const key = request.headers()['idempotency-key']; calls.push({ key, body, filenames });
     if (!records.has(key)) records.set(key, { ...body, id: crypto.randomUUID(), version: 0, updatedAt: new Date().toISOString() });
     if (calls.length === 1) return route.fulfill({ status: 503, json: { success: false, code: 'SERVICE_UNAVAILABLE' } });
-    if (calls.length === 2) return route.fulfill({ status: 503, json: { success: false, code: 'IMAGE_PROCESSING_BUSY' } });
+    if (calls.length === 2) return route.fulfill({ status: 503, json: { success: false, code: 'TEMP_STORAGE_UNAVAILABLE' } });
     return route.fulfill({ status: 201, json: { success: true, data: records.get(key) } });
   });
   page.on('dialog', dialog => dialog.accept());
@@ -67,7 +67,7 @@ test('七张套餐图片保存响应丢失后刷新，使用原文件和原幂�
     assert.equal(await page.locator('#package-name').inputValue(), '七张手机图套餐');
     assert.equal(await page.locator('input[type=file]').count(), 7);
     await page.getByRole('button', { name: '确认原操作结果' }).click();
-    await page.getByText('图片正在处理中，请稍后重试。', { exact: true }).waitFor();
+    await page.getByText('应用临时空间不足，请稍后重试。', { exact: true }).waitFor();
     await page.getByRole('button', { name: '确认原操作结果' }).waitFor();
     assert.equal(await page.getByRole('button', { name: '确认原操作结果' }).count(), 1);
     await page.getByRole('button', { name: '确认原操作结果' }).click();
@@ -80,12 +80,12 @@ test('七张套餐图片保存响应丢失后刷新，使用原文件和原幂�
   } finally { await context.close(); }
 });
 
-test('图片明确拒绝后立即刷新恢复可编辑草稿，不误报待确认', async () => {
+test('临时空间拒绝后立即刷新恢复可编辑草稿，不误报待确认', async () => {
   const fixture = await createOrderFixture(browser, base);
   const { context, page, model, png } = fixture;
   await context.route('**/api/me', route => route.fulfill({ json: { success: true, data: { accountId: model.account, jobRoles: ['STORE_MANAGER'], access: { permissions: [], uiCapabilities: [] } } } }));
   await context.route('**/api/order-packages**', route => route.fulfill(route.request().method() === 'POST'
-    ? { status: 503, json: { success: false, code: 'IMAGE_PROCESSING_TIMEOUT' } }
+    ? { status: 503, json: { success: false, code: 'TEMP_STORAGE_UNAVAILABLE' } }
     : { json: { success: true, data: { items: [], total: 0, page: 1, size: 20 } } }));
   page.on('dialog', dialog => dialog.accept());
   try {
@@ -95,7 +95,7 @@ test('图片明确拒绝后立即刷新恢复可编辑草稿，不误报待确�
     await page.getByLabel('商品 1 的名称', { exact: true }).fill('商品');
     await page.getByLabel('商品 1 的图片', { exact: true }).setInputFiles({ name: 'phone.png', mimeType: 'image/png', buffer: png });
     await page.getByRole('button', { name: '保存套餐', exact: true }).click();
-    await page.getByText('图片处理超时，请换用较小图片后重试。', { exact: true }).waitFor();
+    await page.getByText('应用临时空间不足，请稍后重试。', { exact: true }).waitFor();
     await page.reload(); await page.locator('#package-name').waitFor();
     assert.equal(await page.locator('#package-name').inputValue(), '保留的套餐');
     assert.equal(await page.getByRole('button', { name: '确认原操作结果' }).count(), 0);

@@ -4,11 +4,17 @@ import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.WriteListener;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.*;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.file.*;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
+import org.apache.catalina.connector.ClientAbortException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.core.Authentication;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
@@ -30,10 +36,44 @@ class OrderFileControllerTest {
         assertFalse(Files.exists(Path.of(file.path()))); verify(exports).delete(file);
     }
     @Test void disconnectedClientStillDeletesFile() throws Exception {
-        var file = prepared(); var disconnected = new IOException("client disconnected");
+        var file = prepared();
+        var disconnected = new ClientAbortException(new SocketException("Connection reset by peer"));
         doAnswer(invocation -> { Files.delete(Path.of(file.path())); return null; }).when(exports).delete(file);
         assertSame(disconnected, assertThrows(IOException.class, () -> controller.single(orderId, operator(), disconnected(disconnected))));
         assertFalse(Files.exists(Path.of(file.path()))); verify(exports).delete(file);
+    }
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void tomcatSocketTimeoutDuringWriteOrFlushIsReportedAndDeletesFile(boolean flush) throws Exception {
+        var file = prepared();
+        var socketTimeout = new ClientAbortException(new SocketTimeoutException("response write timed out"));
+        var response = flush ? mock(HttpServletResponse.class) : disconnected(socketTimeout);
+        if (flush) {
+            when(response.getOutputStream()).thenReturn(new MockHttpServletResponse().getOutputStream());
+            doThrow(socketTimeout).when(response).flushBuffer();
+        }
+        doAnswer(invocation -> { Files.delete(Path.of(file.path())); return null; }).when(exports).delete(file);
+
+        var timeout = assertThrows(OrderFileController.TransferTimeout.class,
+                () -> controller.single(orderId, operator(), response));
+        assertSame(socketTimeout, timeout.getCause());
+        assertFalse(Files.exists(Path.of(file.path())));
+    }
+    @Test void slowFinalWriteTimesOutAndStillDeletesFile() throws Exception {
+        var file = prepared();
+        var time = new AtomicLong();
+        var response = new MockHttpServletResponse() {
+            @Override public ServletOutputStream getOutputStream() {
+                return new ServletOutputStream() {
+                    @Override public boolean isReady() { return true; }
+                    @Override public void setWriteListener(WriteListener listener) { }
+                    @Override public void write(int value) { time.set(java.time.Duration.ofSeconds(30).toNanos()); }
+                };
+            }
+        };
+        doAnswer(invocation -> { Files.delete(Path.of(file.path())); return null; }).when(exports).delete(file);
+        assertThrows(OrderFileController.TransferTimeout.class,
+                () -> OrderFileController.download(file, response, exports, time::get));
+        assertFalse(Files.exists(Path.of(file.path())));
     }
     @Test void cleanupFailureDoesNotHideDownloadFailure() throws Exception {
         var file = prepared(); var disconnected = new IOException("client disconnected");

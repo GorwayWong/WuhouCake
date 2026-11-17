@@ -3,9 +3,13 @@ package org.xaspire.WuhouCake.order.adapter.web;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.function.LongSupplier;
+import org.springframework.core.NestedExceptionUtils;
 import org.springframework.http.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -63,6 +67,10 @@ public class OrderFileController {
         download(exports.batch(request, operator(authentication)), response, exports);
     }
     static void download(OrderExportService.Download file, HttpServletResponse response, OrderExportService exports) throws IOException {
+        download(file, response, exports, System::nanoTime);
+    }
+    static void download(OrderExportService.Download file, HttpServletResponse response, OrderExportService exports,
+            LongSupplier nanoTime) throws IOException {
         Throwable downloadFailure = null;
         try {
             response.setContentType(file.contentType()); response.setContentLengthLong(file.size());
@@ -71,18 +79,26 @@ public class OrderFileController {
             String encoded = java.net.URLEncoder.encode(file.filename(), StandardCharsets.UTF_8).replace("+", "%20");
             response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fallback + "\"; filename*=UTF-8''" + encoded);
             response.setHeader("X-Content-Type-Options", "nosniff");
-            long deadline = System.nanoTime() + java.time.Duration.ofSeconds(30).toNanos();
+            long deadline = nanoTime.getAsLong() + java.time.Duration.ofSeconds(30).toNanos();
             try (var input = Files.newInputStream(Path.of(file.path()))) {
                 var output = response.getOutputStream();
                 byte[] buffer = new byte[32 * 1024];
                 int count;
                 while ((count = input.read(buffer)) != -1) {
-                    if (deadline - System.nanoTime() <= 0 || Thread.currentThread().isInterrupted())
-                        throw new IOException("Order export transfer timed out");
+                    checkTransferDeadline(deadline, nanoTime);
                     output.write(buffer, 0, count);
                 }
+                checkTransferDeadline(deadline, nanoTime);
+                response.flushBuffer();
+                checkTransferDeadline(deadline, nanoTime);
             }
         } catch (IOException | RuntimeException | Error failure) {
+            if (failure instanceof IOException io
+                    && NestedExceptionUtils.getMostSpecificCause(io) instanceof SocketTimeoutException) {
+                var timeout = new TransferTimeout(io);
+                downloadFailure = timeout;
+                throw timeout;
+            }
             downloadFailure = failure; throw failure;
         } finally {
             try { exports.delete(file); }
@@ -91,6 +107,14 @@ public class OrderFileController {
                 downloadFailure.addSuppressed(cleanup);
             }
         }
+    }
+    private static void checkTransferDeadline(long deadline, LongSupplier nanoTime) throws IOException {
+        if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Order export transfer interrupted");
+        if (deadline - nanoTime.getAsLong() <= 0) throw new TransferTimeout();
+    }
+    public static final class TransferTimeout extends IOException {
+        public TransferTimeout() { this(null); }
+        private TransferTimeout(IOException cause) { super("Order export transfer timed out", cause); }
     }
     private static OrderCommands.Operator operator(Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();

@@ -1,6 +1,7 @@
 spring:
   servlet:
     multipart:
+      location: ${java.io.tmpdir}
       resolve-lazily: true
       file-size-threshold: 0
       max-file-size: 5MB

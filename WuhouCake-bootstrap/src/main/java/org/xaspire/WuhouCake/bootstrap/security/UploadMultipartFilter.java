@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import java.io.*;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
@@ -71,6 +72,7 @@ final class UploadMultipartFilter extends OncePerRequestFilter {
 
     private static HttpServletRequest parse(HttpServletRequest request, boolean packageUpload, Map<String, UploadPart> parts)
             throws IOException {
+        UUID queryItem = packageUpload ? null : queryItemId(request.getQueryString());
         long maxBody = packageUpload ? PACKAGE_REQUEST_BYTES : ORDER_REQUEST_BYTES;
         if (request.getContentLengthLong() > maxBody) throw tooLarge("UPLOAD_REQUEST_TOO_LARGE", "上传请求超过大小上限");
         var grammar = new FileUpload();
@@ -134,8 +136,33 @@ final class UploadMultipartFilter extends OncePerRequestFilter {
         }
         // Count the complete decoded HTTP body, including an optional multipart epilogue.
         body.transferTo(OutputStream.nullOutputStream());
-        if (packageUpload ? !parts.containsKey("package") : parts.size() != 2) throw invalid();
-        return new ParsedRequest(request, parts);
+        if (packageUpload) {
+            if (!parts.containsKey("package")) throw invalid();
+            return new ParsedRequest(request, parts, null);
+        }
+        var itemPart = parts.get("itemId");
+        UUID bodyItem = itemPart == null ? null : itemId(new String(itemPart.data(), StandardCharsets.UTF_8));
+        UUID item = bodyItem == null ? queryItem : bodyItem;
+        if (!parts.containsKey("file") || item == null || queryItem != null && !queryItem.equals(item)) throw invalid();
+        return new ParsedRequest(request, parts, item);
+    }
+
+    private static UUID queryItemId(String query) {
+        if (query == null) return null;
+        UUID item = null;
+        for (String parameter : query.split("&")) {
+            String[] pair = parameter.split("=", 2);
+            if (!URLDecoder.decode(pair[0], StandardCharsets.UTF_8).equals("itemId")) continue;
+            if (item != null || pair.length != 2) throw invalid();
+            item = itemId(URLDecoder.decode(pair[1], StandardCharsets.UTF_8));
+        }
+        return item;
+    }
+
+    private static UUID itemId(String value) {
+        UUID id = UUID.fromString(value);
+        if (!id.toString().equalsIgnoreCase(value)) throw invalid();
+        return id;
     }
 
     private static long copyAtMost(InputStream input, OutputStream output, long limit) throws IOException {
@@ -179,11 +206,10 @@ final class UploadMultipartFilter extends OncePerRequestFilter {
     private static final class ParsedRequest extends HttpServletRequestWrapper {
         private final Map<String, UploadPart> parts;
         private final Map<String, String[]> parameters;
-        ParsedRequest(HttpServletRequest request, Map<String, UploadPart> parts) {
+        ParsedRequest(HttpServletRequest request, Map<String, UploadPart> parts, UUID itemId) {
             super(request);
             this.parts = parts;
-            var item = parts.get("itemId");
-            this.parameters = item == null ? Map.of() : Map.of("itemId", new String[]{new String(item.data(), StandardCharsets.UTF_8)});
+            this.parameters = itemId == null ? Map.of() : Map.of("itemId", new String[]{itemId.toString()});
         }
         @Override public Collection<Part> getParts() { return List.copyOf(parts.values()); }
         @Override public Part getPart(String name) { return parts.get(name); }

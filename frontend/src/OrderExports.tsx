@@ -25,7 +25,7 @@ function useExportDownload(onPendingChange: (pending: boolean) => void) {
 }
 
 function ExportFeedback({ error, notice }: { error: unknown; notice: string }) {
-  return <div aria-live="polite">{error ? <p className="notice error" role="alert">{exportFailureText(error)}</p> : notice && <p className="form-help" role="status">{notice}</p>}</div>;
+  return <div aria-live="polite">{error ? <p className="notice error" role="alert">{exportFailureText(error, true)}</p> : notice && <p className="form-help" role="status">{notice}</p>}</div>;
 }
 
 export function SingleOrderExport({ orderId, orderNo, blocked, onPendingChange }: {

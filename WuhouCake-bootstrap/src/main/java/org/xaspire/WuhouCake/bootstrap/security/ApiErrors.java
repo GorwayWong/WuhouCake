@@ -15,6 +15,7 @@ import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.util.DisconnectedClientHelper;
 import org.xaspire.WuhouCake.identity.domain.model.valobj.IdentityFailure;
+import org.xaspire.WuhouCake.order.adapter.web.OrderFileController.TransferTimeout;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.shared.response.ApiResponse;
 
@@ -27,7 +28,7 @@ public class ApiErrors {
     }
     @ExceptionHandler(OrderFailure.class)
     ResponseEntity<ApiResponse<Void>> order(OrderFailure failure) {
-        if (failure.code().equals("EXPORT_TIMEOUT")) exportTimeouts.increment();
+        if (failure.code().equals("EXPORT_TIMEOUT")) countExportTimeout();
         int status = switch (failure.code()) {
             case "ORDER_NOT_FOUND", "IMAGE_NOT_FOUND", "SUBMISSION_NOT_FOUND", "ENTRY_UNAVAILABLE", "PACKAGE_NOT_FOUND" -> 404;
             case "FORBIDDEN", "SUBMISSION_FORBIDDEN", "PACKAGE_FORBIDDEN", "ORDER_DELETED_FORBIDDEN" -> 403;
@@ -68,6 +69,21 @@ public class ApiErrors {
             default -> failure.code();
         };
         return response(status, failure.code(), message);
+    }
+    @ExceptionHandler(TransferTimeout.class)
+    ResponseEntity<ApiResponse<Void>> exportTransferTimeout(HttpServletRequest request, HttpServletResponse response) {
+        countExportTimeout();
+        LOG.warn("export_transfer_timeout requestId={}", request.getAttribute("wuhoucake.requestId"));
+        if (response.isCommitted()) return null;
+        response.reset();
+        var requestId = request.getAttribute("wuhoucake.requestId");
+        if (requestId != null) response.setHeader("X-Request-ID", requestId.toString());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).cacheControl(CacheControl.noStore())
+                .contentType(MediaType.APPLICATION_JSON).body(ApiResponse.failure("EXPORT_TIMEOUT", "导出传输超时，请重试"));
+    }
+    private void countExportTimeout() {
+        try { exportTimeouts.increment(); }
+        catch (RuntimeException failure) { LOG.warn("Could not record export timeout metric", failure); }
     }
     @ExceptionHandler(IdentityFailure.class)
     ResponseEntity<ApiResponse<Void>> domain(IdentityFailure failure) {

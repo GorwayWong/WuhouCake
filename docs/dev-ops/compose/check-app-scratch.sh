@@ -7,7 +7,7 @@ app_gid=${3:-10001}
 
 case "$mount_dir" in
     /*) ;;
-    *) echo "APP_TEMP_DIR must be absolute" >&2; exit 1 ;;
+    *) echo "APP_SCRATCH_HOST_DIR must be absolute" >&2; exit 1 ;;
 esac
 if [ "$mount_dir" = / ] || [ "$(realpath -e "$mount_dir")" != "$mount_dir" ]; then
     echo "Use a canonical scratch path other than /" >&2
@@ -25,14 +25,20 @@ if [ "$(stat -c '%d' "$mount_dir")" = "$(stat -c '%d' "$(dirname "$mount_dir")")
     echo "Scratch shares its parent filesystem" >&2
     exit 1
 fi
+if [ "$(findmnt -n -o FSROOT --mountpoint "$mount_dir")" != / ] ||
+   ! findmnt -n -o OPTIONS --mountpoint "$mount_dir" | grep -Eq '(^|,)rw(,|$)'; then
+    echo "Scratch must expose the writable root of the dedicated filesystem" >&2
+    exit 1
+fi
 if [ "$(stat -c '%u:%g:%a' "$mount_dir")" != "$app_uid:$app_gid:700" ]; then
     echo "Scratch mount must be owned by $app_uid:$app_gid with mode 0700" >&2
     exit 1
 fi
 df -B1 --output=size,avail "$mount_dir" | awk 'NR == 2 {
-    if ($1 < 960 * 1048576 || $1 > 1280 * 1048576 || $2 < 903 * 1048576) exit 1
+    if ($2 < 960 * 1048576) exit 1
     printf "Scratch mount verified: %.0f MiB total, %.0f MiB available\n", $1 / 1048576, $2 / 1048576
-}' || {
-    echo "Expected 960–1280 MiB capacity and at least 903 MiB available before launch" >&2
+    valid = 1
+} END { if (!valid) exit 1 }' || {
+    echo "Scratch requires at least 960 MiB available (896 MiB budget plus 64 MiB reserve)" >&2
     exit 1
 }

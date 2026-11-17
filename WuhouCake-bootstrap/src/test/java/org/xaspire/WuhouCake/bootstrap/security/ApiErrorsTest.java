@@ -4,11 +4,14 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.*;
 import java.lang.reflect.*;
 import java.net.SocketException;
 import java.util.*;
 import java.util.stream.Stream;
+import org.apache.catalina.connector.ClientAbortException;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.*;
@@ -22,6 +25,8 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.xaspire.WuhouCake.order.adapter.web.OrderFileController;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.shared.response.ApiResponse;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -30,6 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class ApiErrorsTest {
     private final Endpoints endpoints = new Endpoints();
+    private final SimpleMeterRegistry metrics = new SimpleMeterRegistry();
     private final ErrorConverter json = new ErrorConverter();
     private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
     private final Logger logger = (Logger) LoggerFactory.getLogger(ApiErrors.class);
@@ -39,7 +45,7 @@ class ApiErrorsTest {
 
     @BeforeEach void setup() {
         previous = logger.getLevel(); logger.setLevel(Level.DEBUG); logs.start(); logger.addAppender(logs);
-        mvc = MockMvcBuilders.standaloneSetup(endpoints).setControllerAdvice(new ApiErrors(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()))
+        mvc = MockMvcBuilders.standaloneSetup(endpoints).setControllerAdvice(new ApiErrors(metrics))
                 .setMessageConverters(new StringHttpMessageConverter(), json).build();
     }
     @AfterEach void close() { logger.detachAppender(logs); logs.stop(); logger.setLevel(previous); }
@@ -99,6 +105,25 @@ class ApiErrorsTest {
                 .andExpect(jsonPath("$.code").value("FORBIDDEN"));
         assertTrue(events(Level.ERROR).isEmpty());
     }
+    @Test void countsEachExportTimeoutAndLeavesCommittedDownloadIntact() throws Exception {
+        var timeouts = metrics.counter("wuhou.exports.timeouts");
+        mvc.perform(get("/export-generation-timeout")).andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("EXPORT_TIMEOUT"));
+        assertEquals(1, timeouts.count());
+
+        mvc.perform(get("/export-transfer-timeout").param("committed", "true")).andExpect(status().isOk())
+                .andExpect(content().string("partial file"));
+        assertEquals(2, timeouts.count());
+
+        mvc.perform(get("/export-transfer-timeout").param("committed", "false")).andExpect(status().isServiceUnavailable())
+                .andExpect(header().doesNotExist(HttpHeaders.CONTENT_DISPOSITION))
+                .andExpect(jsonPath("$.code").value("EXPORT_TIMEOUT"));
+        assertEquals(3, timeouts.count());
+
+        mvc.perform(get("/export-disconnected")).andExpect(status().isOk()).andExpect(content().string("partial file"));
+        mvc.perform(get("/file-eof")).andExpect(status().isInternalServerError());
+        assertEquals(3, timeouts.count());
+    }
     private List<ILoggingEvent> events(Level level) {
         return logs.list.stream().filter(event -> event.getLevel().equals(level) && event.getFormattedMessage().contains(requestId)).toList();
     }
@@ -119,5 +144,19 @@ class ApiErrorsTest {
         }
         @GetMapping("/forbidden") void forbidden() { throw new org.springframework.security.access.AccessDeniedException("denied"); }
         @GetMapping("/file-eof") void fileEof() throws IOException { throw new EOFException("synthetic local file EOF"); }
+        @GetMapping("/export-generation-timeout") void generationTimeout() { throw new OrderFailure("EXPORT_TIMEOUT"); }
+        @GetMapping("/export-transfer-timeout") void transferTimeout(@RequestParam boolean committed, HttpServletResponse response)
+                throws IOException {
+            response.setContentType("application/zip");
+            response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=test.zip");
+            response.getOutputStream().print("partial file");
+            if (committed) response.flushBuffer();
+            throw new OrderFileController.TransferTimeout();
+        }
+        @GetMapping("/export-disconnected") void exportDisconnected(HttpServletResponse response) throws IOException {
+            response.getOutputStream().print("partial file");
+            response.flushBuffer();
+            throw new ClientAbortException(new SocketException("Connection reset by peer"));
+        }
     }
 }

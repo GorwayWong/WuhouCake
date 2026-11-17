@@ -1,0 +1,10 @@
+services:
+  app:
+    environment:
+      APP_SCRATCH_REQUIRE_MOUNT: "true"
+    volumes:
+      - type: bind
+        source: ${APP_SCRATCH_HOST_DIR:?set the dedicated scratch filesystem mount point}
+        target: /tmp/wuhoucake-app
+        bind:
+          create_host_path: false

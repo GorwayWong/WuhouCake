@@ -7,7 +7,6 @@ import java.util.List;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import java.io.IOException;
-import java.util.Locale;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -36,7 +35,7 @@ public final class ImageUploadAdmissionFilter extends OncePerRequestFilter {
 
     static boolean matches(HttpServletRequest request) {
         String contentType = request.getContentType();
-        return contentType != null && contentType.toLowerCase(Locale.ROOT).startsWith("multipart/form-data")
+        return contentType != null && contentType.split(";", 2)[0].strip().equalsIgnoreCase("multipart/form-data")
                 && (isPackage(request) || request.getMethod().equals("POST") && path(request).matches("/api/orders/[^/]+/images"));
     }
 

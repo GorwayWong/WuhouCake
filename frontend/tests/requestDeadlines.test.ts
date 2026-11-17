@@ -13,8 +13,8 @@ beforeEach(t => {
 });
 afterEach(() => { http.forgetSession(); globalThis.fetch = originalFetch; });
 
-test('图片准备阶段明确拒绝时可以编辑重试，网络超时仍须核对原请求', () => {
-  for (const code of ['IMAGE_PROCESSING_BUSY', 'IMAGE_PROCESSING_TIMEOUT', 'IMAGE_PROCESSING_UNAVAILABLE'])
+test('业务执行前明确拒绝时可以编辑重试，网络超时仍须核对原请求', () => {
+  for (const code of ['IMAGE_PROCESSING_BUSY', 'IMAGE_PROCESSING_TIMEOUT', 'IMAGE_PROCESSING_UNAVAILABLE', 'TEMP_STORAGE_UNAVAILABLE'])
     assert.equal(http.creationResultUnknown(new http.ApiError(503, code)), false);
   assert.equal(http.creationResultUnknown(new http.ApiError(408, 'WRITE_TIMEOUT')), true);
   assert.equal(http.creationResultUnknown(new http.ApiError(503, 'HTTP_503')), true);

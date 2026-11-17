@@ -1,0 +1,23 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'wuhou_temp_rejections_total{instance="synthetic"}'
+        values: '0 0 1 1 1'
+      - series: 'wuhou_temp_free_bytes{instance="synthetic"}'
+        values: '629145600+0x4'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: WuhouScratchAdmissionRejected
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: WuhouScratchAdmissionRejected
+        exp_alerts:
+          - exp_labels: {instance: synthetic, severity: warning}
+            exp_annotations: {summary: "午逅应用临时存储准入拒绝"}
+      - eval_time: 4m
+        alertname: WuhouScratchLowSpace
+        exp_alerts: []

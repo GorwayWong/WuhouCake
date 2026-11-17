@@ -15,8 +15,10 @@ docker compose exec -T image-worker wget -qO- http://127.0.0.1:8091/metrics
 | `http_server_requests_seconds_bucket` | 应用端 HTTP 延迟分布。分别用 `histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job="wuhou-app"}[5m])))` 和 0.99 计算 P95/P99 |
 | `wuhou_uploads_active`、`wuhou_uploads_{succeeded,rejected,failed}_total` | 按 order/package 统计通过鉴权的 multipart 请求。rejected 包含入口 BUSY 和 4xx，failed 包含 5xx 及中断。按成功、拒绝、失败三类增量求占比 |
 | `wuhou_image_worker_active`、`wuhou_image_worker_{admitted,rejected,success,failed,timeout}_total` | Worker 并发、准入和解码结果，按已准入次数计算失败和超时比率 |
-| `wuhou_files_{active,rejected_total}`、`wuhou_exports_{requests,timeouts}_total` | 图片下载、导出准入、导出数量与服务端超时 |
+| `wuhou_files_{active,rejected_total}`、`wuhou_exports_{requests,timeouts}_total` | 图片下载和导出准入。导出生成期限或文件传输期限超时各计一次，客户端断开单独处理 |
 | `wuhou_sse_connections`、`wuhou_sse_queue_overflows_total` | 活动 SSE 连接和队列溢出 |
-| `wuhou_temp_{used,free,reserved,capacity}_bytes`、`wuhou_temp_{cleanup_failures,rejections}_total` | 临时盘已用、可用、已预留、预算和失败次数。读取失败时磁盘值为 -1 |
+| `wuhou_temp_{used,free,reserved,capacity}_bytes`、`wuhou_temp_{cleanup_failures,rejections}_total` | 文件系统已用、可用空间，以及应用已预留、预算和失败次数。读取失败时磁盘值为 -1 |
 
 [alerts.yml](alerts.yml) 是外部 Prometheus 规则示例。OOM 规则使用既有 cAdvisor 兼容采集的 `container_oom_events_total` 和 Compose 服务标签，告警后关联 Docker 容器状态的 `.State.OOMKilled` 与 `oom` 事件。若现有容器采集使用其他指标，按实际名称调整该规则。采集规则只使用固定业务类别、框架路径模板和服务标签。
+
+临时存储告警适用于默认目录和可选专用盘。空闲不足 128 MiB 或读取失败时保留原低空间告警。近 5 分钟内准入拒绝计数增加时单独告警。单次导出需预留 768 MiB，外加 64 MiB 空闲保护和活动预留，因此磁盘余量高于 128 MiB 时也可能发生拒绝。实际发出通知需要外部 Prometheus 采集并加载规则，以及 Alertmanager 或现有告警投递服务。可用 `promtool test rules docs/dev-ops/monitoring/alerts.test.yml` 验证规则。

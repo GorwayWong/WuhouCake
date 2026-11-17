@@ -7,8 +7,10 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.*;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -17,10 +19,12 @@ final class ScratchSpace implements AutoCloseable {
     static final long MIB = 1024L * 1024;
     static final long BUDGET = 896 * MIB;
     static final long EXPORT_RESERVATION = 768 * MIB;
+    private static final long FREE_FLOOR = 64 * MIB;
     private static final Logger LOG = LoggerFactory.getLogger(ScratchSpace.class);
     private final Path directory;
     private final long capacity;
     private final long freeFloor;
+    private final LongSupplier usableSpace;
     private final Counter rejections;
     private final Counter cleanupFailures;
     private final FileChannel leaseChannel;
@@ -28,9 +32,15 @@ final class ScratchSpace implements AutoCloseable {
     private long reservedBytes;
 
     ScratchSpace(Path directory, long capacity, long freeFloor, boolean exclusive, MeterRegistry metrics) throws IOException {
+        this(directory, capacity, freeFloor, exclusive, metrics, () -> usableSpace(directory));
+    }
+
+    ScratchSpace(Path directory, long capacity, long freeFloor, boolean exclusive, MeterRegistry metrics,
+                 LongSupplier usableSpace) throws IOException {
         this.directory = directory;
         this.capacity = capacity;
         this.freeFloor = freeFloor;
+        this.usableSpace = usableSpace;
         this.rejections = metrics.counter("wuhou.temp.rejections");
         this.cleanupFailures = metrics.counter("wuhou.temp.cleanup.failures");
         leaseChannel = exclusive ? FileChannel.open(directory.resolve(".instance.lock"),
@@ -43,15 +53,38 @@ final class ScratchSpace implements AutoCloseable {
         metrics.gauge("wuhou.temp.used.bytes", this, ScratchSpace::usedBytes);
     }
 
-    static ScratchSpace open(String configuredDir, MeterRegistry metrics) throws IOException {
-        Path jvm = Path.of(System.getProperty("java.io.tmpdir")).toRealPath();
-        if (configuredDir.isBlank()) return new ScratchSpace(jvm, BUDGET, 0, false, metrics);
-        Path mount = Path.of(configuredDir).toRealPath();
-        var store = Files.getFileStore(mount);
-        if (!mount.equals(jvm) || mount.getParent() == null || store.equals(Files.getFileStore(mount.getParent()))
-                || !(store.type().equals("ext4") || store.type().equals("xfs")) || store.getTotalSpace() < 960 * MIB || store.getTotalSpace() > 1280 * MIB)
-            throw new IOException("APP_TEMP_DIR must be a dedicated 1 GiB disk filesystem and match java.io.tmpdir");
-        return new ScratchSpace(mount, BUDGET, 64 * MIB, true, metrics);
+    static ScratchSpace open(boolean managed, boolean requireMount, String multipartDirectory, MeterRegistry metrics) throws IOException {
+        Path directory = Path.of(System.getProperty("java.io.tmpdir")).toRealPath();
+        boolean exclusive = managed || requireMount;
+        if (exclusive && (!Files.isDirectory(directory) || !Files.isWritable(directory)
+                || !Files.getPosixFilePermissions(directory).equals(PosixFilePermissions.fromString("rwx------"))
+                || !directory.equals(Path.of(multipartDirectory).toRealPath()))) {
+            throw new IOException("Scratch must be a private writable directory (0700) shared by java.io.tmpdir and Multipart");
+        }
+        if (requireMount) {
+            var store = Files.getFileStore(directory);
+            if (!(store.type().equals("ext4") || store.type().equals("xfs")) || !isDedicatedMount(directory, store)) {
+                throw new IOException("APP_SCRATCH_REQUIRE_MOUNT requires the root of a dedicated ext4 or XFS filesystem at " + directory);
+            }
+        }
+        var scratch = new ScratchSpace(directory, BUDGET, FREE_FLOOR, exclusive, metrics);
+        if (requireMount && scratch.freeBytes() < BUDGET + FREE_FLOOR) {
+            try (scratch) {
+                throw new IOException("Dedicated scratch requires at least 960 MiB of readable usable space at " + directory);
+            }
+        }
+        return scratch;
+    }
+
+    private static boolean isDedicatedMount(Path directory, FileStore store) throws IOException {
+        if (directory.getParent() == null || store.equals(Files.getFileStore(directory.getParent()))) return false;
+        // Linux mountinfo distinguishes a filesystem root from a bind mount of one of its subdirectories.
+        String target = directory.toString().replace("\\", "\\134").replace(" ", "\\040")
+                .replace("\t", "\\011").replace("\n", "\\012");
+        try (var mounts = Files.lines(Path.of("/proc/self/mountinfo"))) {
+            return mounts.map(line -> line.split(" ", 6))
+                    .anyMatch(fields -> fields.length == 6 && fields[3].equals("/") && fields[4].equals(target));
+        }
     }
 
     private static FileLock claim(FileChannel channel) throws IOException {
@@ -71,7 +104,9 @@ final class ScratchSpace implements AutoCloseable {
 
     synchronized Reservation reserve(long bytes) {
         if (bytes <= 0) throw new IllegalArgumentException("Reservation must be positive");
-        if (bytes > capacity - reservedBytes || bytes > freeBytes() - freeFloor) {
+        long usable = freeBytes();
+        // Count the whole reservation even if some bytes have already been written.
+        if (bytes > capacity - reservedBytes || usable < freeFloor || usable - freeFloor - reservedBytes < bytes) {
             rejections.increment();
             return null;
         }
@@ -82,8 +117,12 @@ final class ScratchSpace implements AutoCloseable {
     synchronized long reservedBytes() { return reservedBytes; }
 
     private long freeBytes() {
+        return usableSpace.getAsLong();
+    }
+
+    private static long usableSpace(Path directory) {
         try { return Files.getFileStore(directory).getUsableSpace(); }
-        catch (IOException failure) { return -1; }
+        catch (IOException | SecurityException failure) { return -1; }
     }
 
     private long usedBytes() {
@@ -99,7 +138,7 @@ final class ScratchSpace implements AutoCloseable {
     }
 
     private void clean(Instant cutoff) {
-        cleanMatching(directory, cutoff, "wuhoucake-upload-", "wuhoucake-export-");
+        cleanMatching(directory, cutoff, "wuhoucake-upload-", "wuhoucake-export-", "upload_");
         Path poi = directory.resolve("poifiles");
         if (Files.isDirectory(poi, LinkOption.NOFOLLOW_LINKS)) cleanMatching(poi, cutoff, "poi-", "poi-sxssf-");
     }

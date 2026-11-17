@@ -2,7 +2,7 @@ import { whenImageVisible } from './imagePreview';
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
-import { ApiError, creationResultUnknown, errorText, fetchPackageImage, readQuery, writeRequest, imagePreparationRejected } from './api';
+import { ApiError, creationResultUnknown, errorText, fetchPackageImage, readQuery, writeRequest, rejectedBeforeWrite } from './api';
 import { packageDraftTab, readPackageDraft, savePackageDraft, removePackageDraft, packageDraftStorageMessage } from './packageDraftStorage';
 import type { PendingPackage, PackageDraftRecord } from './packageDraftStorage';
 import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals, packagePricingProblem, samePackageContent } from './orderPackages';
@@ -137,7 +137,7 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange }:
     } catch (failure) {
       if (controller.signal.aborted) return;
       if (!sent) { setStorageError(packageDraftStorageMessage(failure, '本机暂存失败，尚未发送保存请求。请保留当前页面，检查存储空间后重试。')); return; }
-      if (creationResultUnknown(failure) || pending?.key === operation.key && imagePreparationRejected(failure)) { setError(failure); setPending(operation); }
+      if (creationResultUnknown(failure) || pending?.key === operation.key && rejectedBeforeWrite(failure)) { setError(failure); setPending(operation); }
       else {
         try { await persist(snapshot(null)); }
         catch (storageFailure) { setStorageError(packageDraftStorageMessage(storageFailure, '请求未保存，但本机恢复记录未能更新。请保留当前页面并重试。')); }

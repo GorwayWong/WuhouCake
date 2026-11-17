@@ -21,10 +21,29 @@ import org.xaspire.WuhouCake.shared.response.ApiResponse;
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class WebSupport {
-    @Bean ScratchSpace scratchSpace(@Value("${APP_TEMP_DIR:}") String directory, MeterRegistry metrics) throws IOException {
-        return ScratchSpace.open(directory, metrics);
+    @Bean ScratchSpace scratchSpace(@Value("${wuhoucake.scratch.managed:false}") boolean managed,
+            @Value("${APP_SCRATCH_REQUIRE_MOUNT:false}") boolean requireMount,
+            @Value("${spring.servlet.multipart.location}") String multipartDirectory, MeterRegistry metrics) throws IOException {
+        return ScratchSpace.open(managed, requireMount, multipartDirectory, metrics);
     }
     @Bean SecurityErrors securityErrors(ObjectMapper mapper) { return new SecurityErrors(mapper); }
+    @Bean FilterRegistrationBean<OncePerRequestFilter> multipartRoutes(SecurityErrors errors) {
+        var registration = new FilterRegistrationBean<OncePerRequestFilter>(new OncePerRequestFilter() {
+            @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                    FilterChain chain) throws ServletException, IOException {
+                String contentType = request.getContentType();
+                if (contentType != null && contentType.stripLeading().regionMatches(true, 0, "multipart/", 0, 10)
+                        && !ImageUploadAdmissionFilter.matches(request)) {
+                    errors.write(response, 415, "MULTIPART_NOT_SUPPORTED");
+                    return;
+                }
+                chain.doFilter(request, response);
+            }
+        });
+        // 在公开提交读取正文和 Spring Security 的 CSRF 参数回退之前执行。
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 1);
+        return registration;
+    }
     @Bean FilterRegistrationBean<ImageUploadAdmissionFilter> imageUploadAdmission(ObjectMapper mapper, MeterRegistry metrics, SecurityProperties security, ScratchSpace scratch) {
         var registration = new FilterRegistrationBean<>(new ImageUploadAdmissionFilter(mapper, metrics, scratch));
         registration.setOrder(security.getFilter().getOrder() + 1); return registration;
