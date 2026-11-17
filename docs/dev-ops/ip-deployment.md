@@ -69,7 +69,9 @@ docker compose restart app
 
 ## 证书与备份
 
-同机 PostgreSQL 时间点恢复的可选配置、切换和演练见 [PITR 手册](pitr-ip.md)。
+生产默认每天做一次 PostgreSQL 逻辑备份，备份文件保存在同一台服务器。独立备份盘和时间点恢复（PITR）均为可选项，默认配置可直接用于应用启动和常规发布。启用 PITR 的配置、切换和演练见 [PITR 手册](pitr-ip.md)。
+
+备份任务异常由运维单独排查和重试，保留最近一次成功的备份。业务数据库正常时，门店继续使用原库营业。
 
 部署账号的 crontab 每 12 小时执行证书续期并重载网关，每天服务器时间 03:35 执行数据库备份。两项任务均使用 `flock` 防止重叠；日志存放于 `maintenance/renew.log`、`maintenance/backup.log`。
 
@@ -80,6 +82,6 @@ cd /home/tago-deploy/wuhou
 docker compose run --rm -T certbot renew --dry-run --no-random-sleep-on-renew
 ```
 
-备份为 `backups/wuhou-<UTC时间>.dump`，保留至少七天。首次备份已通过临时数据库的完整恢复验证，临时数据库在验证后删除。备份目前保存在同一台服务器上；服务器整体丢失时仍需要异地副本。
+备份为 `backups/wuhou-<UTC时间>.dump`，保留至少七天。首次备份已通过临时数据库的完整恢复验证，临时数据库在验证后删除。系统盘损坏可能同时影响原库和存放在该盘的备份。
 
-证书续期 dry-run 已通过。服务器目录 `maintenance/verification.json` 保存首次备份恢复和资源检查结果。不要删除 `letsencrypt/`、`keys/`、`.env` 或数据库卷；这些文件应连同异地数据库备份一起由运维方保管。
+证书续期 dry-run 已通过。服务器目录 `maintenance/verification.json` 保存首次备份恢复和资源检查结果。请由运维方妥善保管 `letsencrypt/`、`keys/`、`.env`、数据库卷和备份文件。
