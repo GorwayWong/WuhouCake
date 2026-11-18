@@ -21,6 +21,7 @@ public interface CustomerSubmissions {
     CustomerSubmission findByOrder(UUID orderId);
     List<CustomerSubmission> search(UUID ownerId, String status, String keyword, int limit, long offset);
     long count(UUID ownerId, String status, String keyword);
+    void lockDuplicateGroup(CustomerSubmission submission);
     List<Duplicate> duplicates(CustomerSubmission submission);
     void update(CustomerSubmission submission, CustomerSubmission.Review review, String status, UUID orderId, Instant now);
     void append(UUID submissionId, String type, UUID actorId, String actorName, Map<String, Object> details, Instant now);

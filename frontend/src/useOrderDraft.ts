@@ -21,6 +21,7 @@ function serializeSubmission<T>(accountId: string, operation: () => T) {
 }
 
 export function useOrderDraft() {
+  const [cleanupFailed, setCleanupFailed] = useState(false);
   const [draft, setDraft] = useState<OrderDraftRecord | null>(null);
   const draftRef = useRef<OrderDraftRecord | null>(null);
   const [candidate, setCandidate] = useState<DraftCandidate | null>(null);
@@ -40,7 +41,7 @@ export function useOrderDraft() {
   const deleteWorkingImages = useCallback((record: OrderDraftRecord) => {
     if (record.imageStorageUsed || record.value.items.some(item => item.images?.length)) {
       void removeDraftImages(record).catch(() => {
-        if (accountId.current === record.accountId) setError('本机临时图片未能清理，可能仍占用浏览器存储空间。');
+        if (accountId.current === record.accountId) setCleanupFailed(true);
       });
     }
   }, []);
@@ -63,7 +64,7 @@ export function useOrderDraft() {
     if (accountId.current !== id || canEnter !== Boolean(slot.current)) {
       leave();
       accountId.current = id; slot.current = canEnter ? new OrderDraftSlot(id) : null;
-      setError('');
+      setError(''); setCleanupFailed(false);
     }
     if (!canEnter || selectedDate === undefined || entered.current) return;
     entered.current = true; date.current = selectedDate;
@@ -244,6 +245,6 @@ export function useOrderDraft() {
     return true;
   }, [candidate, deleteWorkingImages, removePending, open, setLocal]);
 
-  return { restored, draft, draftRef, candidate, saved, error, busy, open, leave, suspend, start, accept, acceptLegacy,
+  return { restored, draft, draftRef, candidate, saved, error, cleanupFailed, busy, open, leave, suspend, start, accept, acceptLegacy,
     save, needsSave, change, changeEditor, prepare, created, clear, rejected, discard, hasSaved: keyRevision.current !== null };
 }

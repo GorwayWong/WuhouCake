@@ -1,5 +1,5 @@
 import { useEmployeeOptions } from './EmployeeSelect';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, DownloadSimple, QrCode } from '@phosphor-icons/react';
 import { api, ApiError, creationResultUnknown, readQuery } from './api';
@@ -8,7 +8,7 @@ import { EmployeeSelect } from './EmployeeSelect';
 import { Select } from './Select';
 import { SubmissionFields } from './SubmissionFields';
 import { draftFromSubmission, submissionRequest, overdueSubmissionDate, searchSubmissionView, submissionListQuery } from './customerSubmission';
-import type { EntryLink, SubmissionContent, SubmissionDetail, SubmissionDuplicate, SubmissionOrigin, SubmissionReview, SubmissionListView } from './customerSubmission';
+import type { EntryLink, SubmissionContent, SubmissionDetail, SubmissionDuplicate, SubmissionOrigin, SubmissionReview, SubmissionListView, SubmissionDraft } from './customerSubmission';
 import { brandedQr } from './brandedQr';
 import { exactYuan } from './money';
 import type { Account, Page } from './types';
@@ -17,6 +17,10 @@ import { synchronize } from './realtime';
 import { focusFormField } from './formFocus';
 import { firstProductFormError } from './productFormLayout';
 import { hasPermissions, orderAccess } from './access';
+import { EditDraftRecovery } from './EditDraftRecovery';
+import type { EditDraftWriter } from './EditDraftRecovery';
+import { mergeSubmissionDraft, submissionDraftText } from './submissionDraftMerge';
+import type { ReviewChoice } from './submissionDraftMerge';
 
 export function canHandleSubmissions(account?: Account): boolean {
   return orderAccess(account).submissions;
@@ -110,22 +114,35 @@ export function CustomerSubmissions({ account, onWritingChange }: { account: Acc
     </section><details className="panel entry-settings"><summary>填单二维码管理</summary><EntryManager account={account} onWritingChange={onWritingChange} /></details>
   </div>;
 }
+interface SavedReviewDraft {
+  version: number;
+  basis: SubmissionDraft;
+  value: SubmissionDraft;
+  stableItems: boolean;
+  employeeChosen: boolean;
+  copiedItems?: string;
+}
+
+const stableItems = (detail: SubmissionDetail) => (detail.submission.reviewed?.content.items ?? detail.submission.original.items)
+  .every(item => Boolean(item.itemId));
+
 type SubmissionRead = { detail: SubmissionDetail; denied?: never } | { denied: ApiError; detail?: never };
 
 export function CustomerSubmissionDetail({ id, account, onDirtyChange, onWritingChange }: { id: string; account?: Account; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
   return <><a className="back-link" href="#/customer-submissions"><ArrowLeft />返回客户填单</a>{!account ? <Loading />
-    : canHandleSubmissions(account) ? <SubmissionDetailQuery key={id} id={id} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />
+    : canHandleSubmissions(account) ? <SubmissionDetailQuery key={`${account.accountId}:${id}`} accountId={account.accountId} id={id} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />
     : <Empty>当前账号不能查看客户填单。</Empty>}</>;
 }
 
-function SubmissionDetailQuery({ id, onDirtyChange, onWritingChange }: { id: string; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
+function SubmissionDetailQuery({ id, accountId, onDirtyChange, onWritingChange }: { id: string; accountId: string; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
   const client = useQueryClient();
+  const [showDraft, setShowDraft] = useState(true);
   const query = useQuery({ queryKey: ['customer-submission', id], gcTime: 0, refetchInterval: 15000,
     queryFn: async ({ signal }): Promise<SubmissionRead> => {
       try { return { detail: await readQuery<SubmissionDetail>(`/customer-submissions/${id}`, signal) }; }
       catch (error) {
         // A rejected read must replace cached sensitive data. Transient failures keep the last usable result.
-        if (error instanceof ApiError && (error.status === 403 || error.status === 404)) return { denied: error };
+        if (error instanceof ApiError && [401, 403, 404].includes(error.status)) return { denied: error };
         throw error;
       }
     },
@@ -136,43 +153,96 @@ function SubmissionDetailQuery({ id, onDirtyChange, onWritingChange }: { id: str
   }, [client, deniedStatus]);
   const detail = query.data?.detail;
   return <><ErrorNotice error={query.data?.denied ?? query.error} retry={() => void query.refetch()} />{detail
-    ? <SubmissionEditor initial={detail} latest={detail} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />
+    ? showDraft ? <EditDraftRecovery<SavedReviewDraft> scope={JSON.stringify(['submission-review', accountId, id])}
+        openStored={detail.submission.status !== 'PENDING'} onClose={() => setShowDraft(false)}>
+        {(draft, writer) => <SubmissionEditor initial={detail} latest={detail} recovered={draft} writer={writer}
+          onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />}
+      </EditDraftRecovery>
+      : <><section className="panel"><h2>客户原始填写</h2><ContentSummary content={detail.submission.original} />
+        <button type="button" className="secondary" onClick={() => setShowDraft(true)}>继续核对</button>
+      </section><SubmissionHistory data={detail} /></>
     : query.isPending && <Loading />}</>;
 }
-function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: { initial: SubmissionDetail; latest: SubmissionDetail; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
-  const client = useQueryClient(); const [baseline, setBaseline] = useState(initial); const [draft, setDraft] = useState(() => draftFromSubmission(initial.submission));
-  const [savedDraft, setSavedDraft] = useState(() => JSON.stringify(draft)); const [errors, setErrors] = useState<Record<string, string>>({});
+function SubmissionEditor({ initial, latest, recovered, writer, onDirtyChange, onWritingChange }: {
+  initial: SubmissionDetail; latest: SubmissionDetail; recovered?: SavedReviewDraft; writer: EditDraftWriter<SavedReviewDraft>;
+  onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void;
+}) {
+  const client = useQueryClient();
+  const [baseline, setBaseline] = useState(initial);
+  const [version, setVersion] = useState(recovered?.version ?? initial.submission.version);
+  const [basis, setBasis] = useState(() => recovered?.basis ?? draftFromSubmission(initial.submission));
+  const [draft, setDraft] = useState(recovered?.value ?? basis);
+  const [basisHasStableItems, setBasisHasStableItems] = useState(recovered?.stableItems ?? stableItems(initial));
+  const [copiedItems, setCopiedItems] = useState(recovered?.copiedItems);
+  const [durable, setDurable] = useState(Boolean(recovered));
+  const latestWrite = useRef(0);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [reviewing, setReviewing] = useState(false);
+  const [selection, setSelection] = useState<{ version: number; choices: Record<string, ReviewChoice | undefined> }>();
   const [error, setError] = useState<unknown>(null); const [message, setMessage] = useState('');
   const [activeAction, setActiveAction] = useState<'save' | 'confirm' | 'delete' | null>(null);
   const busy = activeAction !== null;
   const writing = useRef(false); const form = useRef<HTMLFormElement>(null); const mounted = useRef(true);
   const [acknowledge, setAcknowledge] = useState<string | null>(null);
   useEffect(() => { setAcknowledge(null); }, [latest.duplicateCheckToken]);
-  const dirty = JSON.stringify(draft) !== savedDraft, submission = baseline.submission;
+  const dirty = JSON.stringify(draft) !== JSON.stringify(basis), submission = baseline.submission;
   const employees = useEmployeeOptions(false, submission.status === 'PENDING');
-  const [employeeChosen, setEmployeeChosen] = useState(false);
+  const [employeeChosen, setEmployeeChosen] = useState(recovered?.employeeChosen ?? false);
   const ownerEligible = employees.data?.some(employee => employee.accountId === submission.ownerId && employee.status !== 'ARCHIVED');
   const defaultEmployee = !employeeChosen && ownerEligible ? submission.ownerId : '';
   const effectiveDraft = { ...draft, creditedEmployeeId: draft.creditedEmployeeId || defaultEmployee };
-  const stale = latest.submission.version !== submission.version;
+  const stale = latest.submission.version !== version;
   const detailKey = ['customer-submission', submission.id];
   const currentDetail = () => client.getQueryData<SubmissionRead>(detailKey)?.detail;
   const itemIdConflict = error instanceof ApiError && error.code === 'SUBMISSION_ITEM_ID_CONFLICT';
-  useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false); }, [dirty, onDirtyChange]);
+  const latestBasis = useMemo(() => draftFromSubmission(latest.submission), [latest.submission]);
+  const choices = selection?.version === latest.submission.version ? selection.choices : {};
+  const choose = (id: string, value: ReviewChoice | undefined) =>
+    setSelection({ version: latest.submission.version, choices: { ...choices, [id]: value } });
+  const proposal = reviewing ? mergeSubmissionDraft(basis, draft, latestBasis,
+    basisHasStableItems && stableItems(latest), choices, itemIdConflict) : null;
+  useEffect(() => { onDirtyChange((dirty || Boolean(copiedItems)) && !durable); return () => onDirtyChange(false); },
+    [dirty, copiedItems, durable, onDirtyChange]);
+
+  async function persist(record: SavedReviewDraft) {
+    const write = ++latestWrite.current;
+    setDurable(false);
+    const result = await writer.save(record);
+    if (write === latestWrite.current) setDurable(result === 'saved');
+  }
+
+  function applyReview() {
+    if (busy || !proposal || proposal.conflicts.some(conflict => !choices[conflict.id])) return;
+    const current = currentDetail();
+    if (!current || current.submission.version !== latest.submission.version || current.submission.status !== 'PENDING') return;
+    const selectedEmployee = proposal.value.creditedEmployeeId !== latestBasis.creditedEmployeeId
+      ? employeeChosen : Boolean(latestBasis.creditedEmployeeId);
+    const copy = proposal.copiedItems ?? copiedItems;
+    setBaseline(latest); setVersion(latest.submission.version); setBasis(latestBasis); setBasisHasStableItems(stableItems(latest));
+    setDraft(proposal.value); setEmployeeChosen(selectedEmployee); setCopiedItems(copy);
+    setReviewing(false); setSelection(undefined); setErrors({}); setError(null); setAcknowledge(null);
+    void persist({ version: latest.submission.version, basis: latestBasis, value: proposal.value,
+      stableItems: stableItems(latest), employeeChosen: selectedEmployee, copiedItems: copy });
+  }
+
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; onWritingChange(false); };
   }, [onWritingChange]);
   const accept = (data: SubmissionDetail) => {
     if (!mounted.current || !currentDetail()) return false;
-    const next = draftFromSubmission(data.submission); setBaseline(data); setDraft(next); setSavedDraft(JSON.stringify(next)); setEmployeeChosen(false); setErrors({});
+    const active = currentDetail();
+    if (active && active.submission.version > data.submission.version) data = active;
+    const next = draftFromSubmission(data.submission);
+    setBaseline(data); setVersion(data.submission.version); setBasis(next); setBasisHasStableItems(stableItems(data));
+    setDraft(next); setEmployeeChosen(false); setCopiedItems(undefined); setReviewing(false); setErrors({});
     client.setQueryData<SubmissionRead>(detailKey, { detail: data }); setAcknowledge(null);
     return true;
   };
   const act = async (action: 'save' | 'confirm' | 'delete') => {
-    if (writing.current || !currentDetail()) return;
+    if (writing.current || stale || reviewing || itemIdConflict || currentDetail()?.submission.status !== 'PENDING') return;
     if (action === 'delete' && !window.confirm('将此填单移出待确认列表？原始内容和删除记录仍会保留。')) return;
-    let body: unknown = { expectedVersion: submission.version };
+    let body: unknown = { expectedVersion: version };
     const needsSave = action === 'save' || action === 'confirm' && (dirty || !submission.reviewed || Boolean(defaultEmployee && !submission.reviewed.creditedEmployeeId));
     if (needsSave || action === 'confirm') {
       const result = submissionRequest(effectiveDraft, true);
@@ -182,7 +252,7 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
       }
       setErrors(result.errors);
       if (Object.keys(result.errors).length) { setError(null); focusFormField(form.current, firstProductFormError(result.errors, draft.items)!); return; }
-      body = { expectedVersion: submission.version, review: result.review };
+      body = { expectedVersion: version, review: result.review };
     }
     writing.current = true; setActiveAction(action); onWritingChange(true); setError(null); setMessage('');
     try {
@@ -191,6 +261,7 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
       if (action === 'confirm') {
         const saved = needsSave ? await api<SubmissionDetail>(path, { method: 'PATCH', body }) : null;
         if (saved) {
+          await writer.clear();
           if (!accept(saved)) return;
           await client.invalidateQueries({ queryKey: ['customer-submissions'] });
           if (!mounted.current || !currentDetail()) return;
@@ -200,7 +271,7 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
           }
         }
         data = await api<SubmissionDetail>(path + '/confirm', { method: 'POST', body: {
-          expectedVersion: saved?.submission.version ?? submission.version,
+          expectedVersion: saved?.submission.version ?? version,
           duplicateCheckToken: saved ? null : acknowledge,
         } });
       } else {
@@ -209,12 +280,18 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
       await client.invalidateQueries({ queryKey: ['customer-submissions'] });
       if (!mounted.current || !currentDetail()) return;
       if (action === 'delete') { onDirtyChange(false); window.location.hash = '#/customer-submissions'; }
-      else if (accept(data)) { setMessage(action === 'confirm' ? '已确认并生成正式订单。' : '核对结果已保存。'); if (action === 'confirm') await synchronize(client, data.submission.orderId!); }
+      else {
+        await writer.clear();
+        if (accept(data)) {
+          setMessage(action === 'confirm' ? '已确认并生成正式订单。' : '核对结果已保存。');
+          if (action === 'confirm') await synchronize(client, data.submission.orderId!);
+        }
+      }
     } catch (failure) {
       if (mounted.current) {
         setAcknowledge(null); setError(failure); await client.invalidateQueries({ queryKey: detailKey, exact: true });
         const refreshed = currentDetail();
-        if (mounted.current && refreshed && (action === 'confirm' && refreshed.submission.status === 'CONFIRMED' || action === 'delete' && refreshed.submission.status === 'DELETED')) {
+        if (mounted.current && refreshed && !dirty && !copiedItems && (action === 'confirm' && refreshed.submission.status === 'CONFIRMED' || action === 'delete' && refreshed.submission.status === 'DELETED')) {
           accept(refreshed); setError(null);
         }
       }
@@ -224,24 +301,56 @@ function SubmissionEditor({ initial, latest, onDirtyChange, onWritingChange }: {
   const reviewed = submission.reviewed;
   const duplicates = latest.duplicates;
   const requiresAcknowledgement = duplicates.some(record => record.requiresAcknowledgement);
-  const editable = submission.status === 'PENDING' && latest.submission.status === 'PENDING';
-  return <div className="management-page"><div className="page-heading"><div><h1>{submission.status === 'CONFIRMED' ? '已确认填单' : submission.status === 'DELETED' ? '已删除填单' : '核对客户填单'}</h1><p className="muted">来源：用户填写 · 发码客服 {submission.ownerName} · {time(submission.createdAt, true)}</p></div></div>
-    {(stale || itemIdConflict) && <div className="notice" role="status">{itemIdConflict ? '无法安全关联历史报价。输入已保留，请读取最新结果后核对商品。' : '填单已更新，输入已保留。请核对最新内容。'}<button className="text-button" disabled={busy} onClick={() => { if (!dirty || window.confirm('放弃未保存输入，读取最新核对结果？')) { accept(latest); setError(null); } }}>读取最新结果</button></div>}
+  const editable = latest.submission.status === 'PENDING';
+  const displayed = latest.submission;
+  return <div className="management-page"><div className="page-heading"><div><h1>{displayed.status === 'CONFIRMED' ? '已确认填单' : displayed.status === 'DELETED' ? '已删除填单' : '核对客户填单'}</h1><p className="muted">来源：用户填写 · 发码客服 {submission.ownerName} · {time(submission.createdAt, true)}</p></div></div>
+    {editable && (stale || itemIdConflict) && <div className="notice">
+      <p role="status">{itemIdConflict ? '历史商品和报价需要重新核对，当前输入已保留。' : '同事已更新填单，当前输入已保留。'}</p>
+      {!reviewing && <button type="button" className="secondary" disabled={busy} onClick={() => setReviewing(true)}>核对同事改动</button>}
+      {proposal && <div className="information-review">
+        {proposal.conflicts.length ? proposal.conflicts.map(conflict => <fieldset key={conflict.id}>
+          <legend>{conflict.label}</legend>
+          <label>我的输入<textarea readOnly value={conflict.local || '未填写'} rows={3} /></label>
+          <label>最新内容<textarea readOnly value={conflict.remote || '未填写'} rows={3} /></label>
+          {conflict.copyOnly ? <label><input type="checkbox" checked={choices[conflict.id] === 'remote'}
+            onChange={event => choose(conflict.id, event.target.checked ? 'remote' : undefined)} />
+            用最新商品继续，保留本地商品供复制</label>
+            : <div className="actions">{(['local', 'remote'] as const).map(choice => <label key={choice}>
+              <input type="radio" name={`review-${conflict.id}`} checked={choices[conflict.id] === choice}
+                onChange={() => choose(conflict.id, choice)} />
+              {choice === 'local' ? '采用我的输入' : '采用最新内容'}
+            </label>)}</div>}
+        </fieldset>) : <p>两边修改了不同内容，可以一起保留。</p>}
+        <button type="button" className="secondary" disabled={busy || proposal.conflicts.some(conflict => !choices[conflict.id])}
+          onClick={applyReview}>核对后继续编辑</button>
+      </div>}
+    </div>}
     <section className="panel"><h2>客户原始填写</h2><ContentSummary content={submission.original} /></section>
     {duplicates.length > 0 && editable && <section className="panel submission-warning" aria-label="疑似重复记录"><h2>疑似重复记录（{duplicates.length}）</h2><p>请核对以下同电话、同取货日的记录是否重复。</p><DuplicateRecords records={duplicates} />{requiresAcknowledgement && <label className="check-label"><input type="checkbox" checked={acknowledge === latest.duplicateCheckToken} disabled={busy || stale || dirty || creationResultUnknown(error)} onChange={e => setAcknowledge(e.target.checked ? latest.duplicateCheckToken : null)} />已核实，这是独立订单，继续接单。</label>}</section>}
-    {submission.orderId && <a className="primary" href={`#/orders/${submission.orderId}`}>查看正式订单<ArrowRight /></a>}
+    {displayed.orderId && <a className="primary" href={`#/orders/${displayed.orderId}`}>查看正式订单<ArrowRight /></a>}
     {editable && <form ref={form} noValidate onSubmit={event => { event.preventDefault(); void act('save'); }}><h2>客服核对结果</h2>{reviewed?.plannedHandoffAt && Date.parse(reviewed.plannedHandoffAt) !== Date.parse(reviewed.content.requestedReceiveAt) && <p className="notice">历史时间不同，请核对：原到店取货时间 {businessTime(reviewed.plannedHandoffAt)}；原客户收货时间 {businessTime(reviewed.content.requestedReceiveAt)}。修改取货时间后两项将同步。</p>}<SubmissionFields staff draft={effectiveDraft} onChange={value => {
       const changedEmployee = value.creditedEmployeeId !== effectiveDraft.creditedEmployeeId;
-      if (changedEmployee) setEmployeeChosen(true);
-      setDraft({ ...value, creditedEmployeeId: changedEmployee ? value.creditedEmployeeId : draft.creditedEmployeeId }); setErrors({}); setError(null); setMessage(''); }} errors={errors} busy={busy || stale || creationResultUnknown(error)} />
+      const chosen = employeeChosen || changedEmployee;
+      const next = { ...value, creditedEmployeeId: changedEmployee ? value.creditedEmployeeId : draft.creditedEmployeeId };
+      setEmployeeChosen(chosen); setDraft(next); setErrors({}); setError(null); setMessage('');
+      void persist({ version, basis, value: next, stableItems: basisHasStableItems, employeeChosen: chosen, copiedItems });
+    }} errors={errors} busy={busy || stale || reviewing || itemIdConflict || creationResultUnknown(error)} />
       <ErrorNotice error={error} />{message && <p className="notice success" role="status">{message}</p>}{creationResultUnknown(error) && <p className="notice">结果未确认，输入已保留。请先核对最新结果，再决定是否重试。<button className="text-button" type="button" disabled={busy} onClick={() => void client.invalidateQueries({ queryKey: detailKey, exact: true }, { throwOnError: true }).then(() => {
         const refreshed = currentDetail();
         if (!mounted.current || !refreshed) return;
-        if (refreshed.submission.status !== 'PENDING') accept(refreshed);
+        if (refreshed.submission.status !== 'PENDING' && !dirty && !copiedItems) accept(refreshed);
         setError(null);
       }).catch(() => {})}>核对最新结果</button></p>}
-      <div className="create-submit"><button className="text-button danger" type="button" disabled={busy || stale} onClick={() => void act('delete')}>删除未确认填单</button><div className="actions"><button className="secondary" disabled={busy || stale || creationResultUnknown(error)}>{activeAction === 'save' ? '正在暂存…' : '暂存核对结果'}</button><button type="button" className="primary" disabled={busy || stale || creationResultUnknown(error) || Boolean(!dirty && reviewed && requiresAcknowledgement && acknowledge !== latest.duplicateCheckToken)} onClick={() => void act('confirm')}>{activeAction === 'confirm' ? '正在确认…' : '确认接单'}<ArrowRight /></button></div></div>
+      <div className="create-submit"><button className="text-button danger" type="button" disabled={busy || stale || reviewing || itemIdConflict} onClick={() => void act('delete')}>删除未确认填单</button><div className="actions"><button className="secondary" disabled={busy || stale || reviewing || itemIdConflict || creationResultUnknown(error)}>{activeAction === 'save' ? '正在暂存…' : '暂存核对结果'}</button><button type="button" className="primary" disabled={busy || stale || reviewing || itemIdConflict || creationResultUnknown(error) || Boolean(!dirty && reviewed && requiresAcknowledgement && acknowledge !== latest.duplicateCheckToken)} onClick={() => void act('confirm')}>{activeAction === 'confirm' ? '正在确认…' : '确认接单'}<ArrowRight /></button></div></div>
     </form>}
+    {!editable && dirty && <details className="panel"><summary>查看本机核对草稿</summary>
+      <label>本机核对草稿（可复制）<textarea readOnly value={submissionDraftText(draft)} rows={7} /></label>
+      <button type="button" className="secondary" onClick={async () => {
+        if (!window.confirm('放弃这份本机草稿？')) return;
+        if (await writer.clear()) { setDraft(basis); setCopiedItems(undefined); }
+      }}>放弃草稿</button>
+    </details>}
+    {copiedItems && <label>本机历史商品输入（可复制）<textarea readOnly value={copiedItems} rows={5} /></label>}
     {!editable && Boolean(error) && <ErrorNotice error={error} />}
     <SubmissionHistory data={latest} />
   </div>;

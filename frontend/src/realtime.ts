@@ -2,7 +2,8 @@ import { createParser } from 'eventsource-parser';
 import { isCancelledError } from '@tanstack/react-query';
 import type { InfiniteData, Query, QueryClient, QueryFilters } from '@tanstack/react-query';
 import { authenticatedFetch } from './api.ts';
-import type { CalendarOrder, Detail, WorkbenchCards } from './types.ts';
+import type { OrderDetailRead } from './api.ts';
+import type { CalendarOrder, WorkbenchCards } from './types.ts';
 
 function orderFilters(orderId?: string): QueryFilters[] {
   // 日历范围整体失效：通知不带原日期，迁日必须同时清除旧日期投影。
@@ -45,7 +46,7 @@ export async function synchronize(client: QueryClient, orderId?: string, deleted
   // 首读没有缓存数据时，失效会复用旧请求；先取消，再维护删除状态与补读。
   await Promise.all(filters.map(filter => client.cancelQueries(filter)));
   if (deleted && orderId && (version === undefined || (lifecycleVersions.get(client)?.get(orderId) ?? version) <= version)) {
-    client.setQueryData<Detail>(['order', orderId, 'detail'], current => current ? { ...current, deleted: true } : current);
+    client.setQueryData<OrderDetailRead>(['order', orderId, 'detail'], current => current && !('denied' in current) ? { ...current, deleted: true } : current);
     client.setQueriesData<CalendarOrder[]>({ queryKey: ['calendar'] }, current => Array.isArray(current) ? current.filter(order => order.orderId !== orderId) : current);
     client.setQueriesData<InfiniteData<WorkbenchCards>>({ queryKey: ['workbench', 'cards'] }, current => current && ({
       ...current,
@@ -97,8 +98,9 @@ export function receiveEvent(client: QueryClient, event: { event?: string; data:
     if (lifecycle && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.orderId)
         && Number.isSafeInteger(change.version) && change.version >= 0) {
       const versions = lifecycleVersions.get(client) ?? new Map<string, number>();
-      const current = client.getQueryData<Detail>(['order', change.orderId, 'detail']);
-      if (change.version <= (versions.get(change.orderId) ?? -1) || change.version < (current?.version ?? -1)) return;
+      const current = client.getQueryData<OrderDetailRead>(['order', change.orderId, 'detail']);
+      const currentVersion = current && !('denied' in current) ? current.version : -1;
+      if (change.version <= (versions.get(change.orderId) ?? -1) || change.version < currentVersion) return;
       versions.delete(change.orderId);
       versions.set(change.orderId, change.version);
       if (versions.size > 256) versions.delete(versions.keys().next().value!);
@@ -110,8 +112,8 @@ export function receiveEvent(client: QueryClient, event: { event?: string; data:
     } else void synchronize(client);
     if (/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(change.orderId) && Object.hasOwn(changeLabels, change.changeType)
         && Number.isSafeInteger(change.version) && change.version >= 0) {
-      const detail = client.getQueryData<{ orderNo: string }>(['order', change.orderId, 'detail']);
-      const orderNo = typeof change.orderNo === 'string' && /^[\p{L}\p{N}_-]{1,32}$/u.test(change.orderNo) ? change.orderNo : detail?.orderNo;
+      const detail = client.getQueryData<OrderDetailRead>(['order', change.orderId, 'detail']);
+      const orderNo = typeof change.orderNo === 'string' && /^[\p{L}\p{N}_-]{1,32}$/u.test(change.orderNo) ? change.orderNo : detail && !('denied' in detail) ? detail.orderNo : undefined;
       notify?.({ orderId: change.orderId, changeType: change.changeType, version: change.version, receivedAt: Date.now(), orderNo });
     }
   } catch { synchronize(client); }

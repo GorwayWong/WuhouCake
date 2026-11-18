@@ -158,8 +158,13 @@ export function migrateOrderDraft(draft: OrderDraft): OrderDraft {
 }
 export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
 export function conversionNeedsReview(source: Item, current: Item, draft: ItemDraft, originalType = source.productType): boolean {
+  if (normalizeProductType(source.productType ?? '') !== normalizeProductType(current.productType ?? '')) {
+    const stored = itemDraft(source);
+    return draft.productType !== stored.productType
+      || specificationFields.some(([key]) => draft.attributes[key] !== stored.attributes[key]);
+  }
   if (!isCake(originalType) || normalizeProductType(draft.productType) !== 'OTHER') return false;
-  return source.productType !== current.productType || JSON.stringify(source.attributes) !== JSON.stringify(current.attributes);
+  return JSON.stringify(source.attributes) !== JSON.stringify(current.attributes);
 }
 export function itemChangeRequest(original: Detail, itemId: string, draft: ItemDraft, baseline = original, conversionSource?: Item): { request: ItemChangeRequest | null; errors: Record<string, string> } {
   const before = original.items.find(item => item.itemId === itemId), current = baseline.items.find(item => item.itemId === itemId);

@@ -1,3 +1,4 @@
+import type { OrderDetailRead } from './api';
 import type { ReactNode } from 'react';
 import { useEditImageSession } from './editImageSession';
 import type { EditImageActions } from './OrderImages';
@@ -9,7 +10,7 @@ import { orderHref } from './routes';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, Cake, CheckCircle, Clock, NotePencil, ListBullets, Plus, Stack, Trash, Truck, XCircle } from '@phosphor-icons/react';
-import { api, ApiError, creationResultUnknown, readQuery, writeRequest } from './api';
+import { api, ApiError, creationResultUnknown, readOrderDetail, isReadDenied, readQuery, writeRequest } from './api';
 import { synchronize } from './realtime';
 import { randomUUID } from './uuid';
 import { readPendingNotes, savePendingNote, clearPendingNote } from './pendingNote';
@@ -77,19 +78,29 @@ function useActivities(id: string, type?: string, size = 20) {
 }
 function ActivityFeed({ id, type, items, preview = false }: { id: string; type?: string; items: Detail['items']; preview?: boolean }) {
   const query = useActivities(id, type, preview ? 3 : 20);
+  if (isReadDenied(query.error)) return <ErrorNotice error={query.error} retry={() => void query.refetch()} />;
   return <><ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending ? <Loading /> : <ol className="activity-feed">{uniqueActivities(query.data?.pages || []).map(activity => <li key={activity.id}><span className="activity-dot" /><div><div className="note-meta"><strong>{activity.actorNameSnapshot}</strong><span>{activityNames[activity.type] || activity.type}</span><time dateTime={activity.createdAt}>{time(activity.createdAt, true)}</time></div><span className="scope">{activity.itemId ? items.find(item => item.itemId === activity.itemId)?.name || '历史商品' : '整张订单'}</span>{activityDescription(activity)}</div></li>)}</ol>}{query.data?.pages[0].total === 0 && <p className="muted">暂无记录</p>}{!preview && query.hasNextPage && <button className="secondary" disabled={query.isFetching} onClick={() => void query.fetchNextPage()}>{query.isFetchingNextPage ? '读取中…' : '加载更早记录'}</button>}</>;
+}
+
+function useOrderDetail(id: string) {
+  const { data, error, isPending, refetch } = useQuery({
+    queryKey: ['order', id, 'detail'], queryFn: ({ signal }) => readOrderDetail(id, signal),
+  });
+  return data && 'denied' in data
+    ? { data: undefined, error: data.denied, isPending, refetch }
+    : { data, error, isPending, refetch };
 }
 
 export function OrderHistory({ account, id, initialType, returnToCalendar }: { account?: Account; id: string; initialType?: string; returnToCalendar?: string }) {
   const access = orderAccess(account);
   const [type, setType] = useState(initialType && Object.hasOwn(activityNames, initialType) ? initialType : '');
-  const detail = useQuery({ queryKey: ['order', id, 'detail'], queryFn: ({ signal }) => readQuery<Detail>(`/orders/${id}`, signal) });
+  const detail = useOrderDetail(id);
   return <div className="history-page"><a className="back-link" href={orderHref(id, returnToCalendar)}><ArrowLeft />返回订单详情</a>
     <div className="page-heading"><div><h1>订单记录</h1>{detail.data && <p className="muted">#{detail.data.orderNo}</p>}</div></div>
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
-    <section className="panel">{access.history && <div className="history-toolbar"><label>记录类型<Select label="记录类型" value={type} onChange={setType}><option value="">全部记录</option>{Object.entries(activityNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></label></div>}
+    {!isReadDenied(detail.error) && <section className="panel">{access.history && <div className="history-toolbar"><label>记录类型<Select label="记录类型" value={type} onChange={setType}><option value="">全部记录</option>{Object.entries(activityNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select></label></div>}
       <ActivityFeed id={id} type={access.history ? type || undefined : 'NOTE'} items={detail.data?.items || []} />
-    </section></div>;
+    </section>}</div>;
 }
 
 const progressIcons = [Cake, Stack, Cake, Cake, Truck, CheckCircle];
@@ -128,7 +139,7 @@ function ProductionProductFields({ item, completion }: { item: Detail['items'][n
 export function OrderDetail({ account, id, returnToCalendar, returnToOrders = false, onEditDirtyChange, onWritingChange }: { account?: Account; id: string; returnToOrders?: boolean; returnToCalendar?: string; onEditDirtyChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void }) {
   const client = useQueryClient();
   const access = orderAccess(account);
-  const detail = useQuery({ queryKey: ['order', id, 'detail'], queryFn: ({ signal }) => readQuery<Detail>(`/orders/${id}`, signal) });
+  const detail = useOrderDetail(id);
   const [note, setNote] = useState('');
   const [selectedProductId, setSelectedProductId] = useState('');
   const previousProducts = useRef<{ orderId: string; items: { key: string }[] }>({ orderId: id, items: [] });
@@ -240,7 +251,8 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     onMutate: () => {
       if (!page.current) throw new DOMException('Aborted', 'AbortError');
       setMessage('');
-      return { page: page.current, previous: client.getQueryData<Detail>(['order', id, 'detail']) };
+      const current = client.getQueryData<OrderDetailRead>(['order', id, 'detail']);
+      return { page: page.current, previous: current && !('denied' in current) ? current : undefined };
     },
     onSuccess: async (updated, variables, context) => {
       if (variables.noteRequest) clearPendingNote(noteKey, variables.noteRequest.requestId);
@@ -249,8 +261,10 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       if (updated) {
         await client.cancelQueries({ queryKey: ['order', id, 'detail'], exact: true });
         if (context.page !== page.current) return;
-        client.setQueryData<Detail>(['order', id, 'detail'], current => current && current.version > updated.version ? current
-          : current?.deleted && !updated.deletion && variables.path !== 'restore' ? { ...updated, deleted: true } : updated);
+        client.setQueryData<OrderDetailRead>(['order', id, 'detail'], current => {
+          if (current && ('denied' in current || current.version > updated.version)) return current;
+          return current?.deleted && !updated.deletion && variables.path !== 'restore' ? { ...updated, deleted: true } : updated;
+        });
         if (variables.path.endsWith('/production-status') && (variables.body as { completed: boolean }).completed) {
           const completedId = variables.path.split('/')[1];
           setHighlightedItems(items => items.filter(itemId => itemId !== completedId));
@@ -309,16 +323,16 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
         await synchronize(client, id);
         if (context?.page !== page.current) return;
         if (variables.path === 'restore' && creationResultUnknown(error)) {
-          const latest = client.getQueryState<Detail>(['order', id, 'detail']);
-          if (latest?.status === 'success' && latest.data && !latest.data.deletion && !latest.data.deleted) {
+          const latest = client.getQueryState<OrderDetailRead>(['order', id, 'detail']);
+          if (latest?.status === 'success' && latest.data && !('denied' in latest.data) && !latest.data.deletion && !latest.data.deleted) {
             setMessage('订单已恢复。');
             mutation.reset();
           }
         }
         if (variables.path === 'production-actions' && (variables.body as { action?: string }).action === 'COMPLETE_DECORATION'
           && error instanceof ApiError && ['OTHER_ITEMS_INCOMPLETE', 'CONCURRENT_MODIFICATION'].includes(error.code)) {
-          const refreshed = client.getQueryState<Detail>(['order', id, 'detail']);
-          if (refreshed?.status === 'success' && refreshed.data?.status === 'DECORATING'
+          const refreshed = client.getQueryState<OrderDetailRead>(['order', id, 'detail']);
+          if (refreshed?.status === 'success' && refreshed.data && !('denied' in refreshed.data) && refreshed.data.status === 'DECORATING'
             && !refreshed.data.deleted && !refreshed.data.deletion && showIncompleteItems(refreshed.data)) setHandledGateError(error);
         }
       }
@@ -336,7 +350,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   if (!detail.data) return <>{returnHref && <a className="back-link" href={returnHref}><ArrowLeft />{returnLabel}</a>}<ErrorNotice error={detail.error} retry={() => void detail.refetch()} /></>;
   const order = detail.data;
   const unknownStatus = !Object.hasOwn(statusNames, order.status);
-  const readOnly = unknownStatus || Boolean(order.deletion || order.deleted || detail.error instanceof ApiError && detail.error.code === 'ORDER_DELETED_FORBIDDEN');
+  const readOnly = unknownStatus || Boolean(order.deletion || order.deleted);
   const removedDraft = editing?.kind === 'item' && editing.itemId && !order.items.some(item => item.itemId === editing.itemId) ? editing.order.items.find(item => item.itemId === editing.itemId) : undefined;
   const visibleItems = removedDraft ? [...order.items, removedDraft] : order.items;
   const displayedProductId = editing?.kind === 'item' && editing.itemId ? editing.itemId : selectedProductId;
@@ -372,6 +386,11 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     catch { setMessage('暂存图片未能清理，编辑内容已保留，请重试取消。'); return false; }
     finally { setDiscardingImages(false); }
   };
+  const closeLockedEditor = () => {
+    if (editorDirty && !window.confirm('已暂存的草稿和图片会保留。若本机暂存失败，请先复制输入。确定关闭编辑？')) return;
+    setEditing(null);
+    mutation.reset();
+  };
   const saveUnchanged = async (keepEditing = false) => {
     if (imageActions.current?.hasImages()) await mutation.mutateAsync({ path: 'images-only', body: {}, method: 'GET', keepEditing });
     else if (!keepEditing && !await cancelEdit()) throw new Error('Could not close order editor');
@@ -379,9 +398,8 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const editorBusy = mutation.isPending || imageWriting || discardingImages || readOnly;
   const draftAccess = [access.customer, access.amounts, access.phone, access.ordering] as const;
   const draftScope = editing ? editDraftKey(account.accountId, id, editing.kind, editing.itemId, draftAccess) : '';
-  const canViewLockedDrafts = !editing && !readOnly && hasPermissions(account, 'ORDER_EDIT')
-    && (access.business || access.amounts)
-    && !(detail.error instanceof ApiError && [401, 403, 404].includes(detail.error.status));
+  const canViewLockedDrafts = !editing && (order.deletion ? access.deleted : !readOnly && hasPermissions(account, 'ORDER_EDIT'))
+    && (access.business || access.amounts) && hasPermissions(account, 'ORDER_READ');
   const itemEditor = editing?.kind === 'item' && hasPermissions(account, 'ORDER_EDIT') && access.business ? (
     <EditDraftRecovery<ItemEditDraft> key={draftScope} scope={draftScope} onClose={() => setEditing(null)}>
       {(recovered, writer) => <ItemEdit prices={access.amounts} initial={editing.order} itemId={editing.itemId}
@@ -482,13 +500,13 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     {returnHref && <a className="back-link" href={returnHref} aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />{returnLabel}</a>}
     <div className="page-heading"><h1>订单 #{order.orderNo}</h1><div className="badges"><Status order={order} />{access.amounts && <Payment status={order.paymentStatus} />}</div></div>
     {access.customer && <CustomerOrderOrigin orderId={id} />}
-    {order.deletion && <div className="notice" role="status"><p>已删除 · {time(order.deletion.deletedAt, true)} · {order.deletion.employeeName}</p><p>删除原因：{order.deletion.reason}</p><p>恢复前不参与工作台和经营统计。</p>{access.delete && access.deleted && <button type="button" className="secondary" disabled={busy} onClick={() => {
+    {order.deletion && <div className="notice" role="status"><p>已删除 · {time(order.deletion.deletedAt, true)} · {order.deletion.employeeName}</p><p>删除原因：{order.deletion.reason}</p><p>恢复前不参与工作台和经营统计。</p>{access.delete && access.deleted && <button type="button" className="secondary" disabled={mutation.isPending || imageWriting || discardingImages || exportWriting || Boolean(editing)} onClick={() => {
       const payment = order.paymentStatus === 'PAID' ? '已付款' : order.paymentStatus === 'UNPAID' ? '未付款' : '付款状态不可见';
       const status = statusLabel({ ...order, deletion: null, deleted: false });
       if (window.confirm(`确认恢复订单 #${order.orderNo}？将按「${status}」恢复，付款状态为「${payment}」。`))
         mutation.mutate({ path: 'restore', body: { expectedVersion: order.version } });
-    }}>恢复订单</button>}{editing && <button type="button" className="secondary" onClick={() => { if (window.confirm('关闭未保存的编辑草稿？')) cancelEdit(); }}>关闭编辑草稿</button>}</div>}
-    {readOnly && !order.deletion && <div className="notice" role="status">订单已删除，当前页面只保留原有资料和未保存输入，不可继续操作。{editing && <button type="button" className="secondary" onClick={() => { if (window.confirm('关闭未保存的编辑草稿？')) cancelEdit(); }}>关闭编辑草稿</button>}</div>}
+    }}>恢复订单</button>}{editing && <button type="button" className="secondary" disabled={mutation.isPending || imageWriting || discardingImages} onClick={closeLockedEditor}>关闭编辑草稿</button>}</div>}
+    {readOnly && !order.deletion && <div className="notice" role="status">订单已删除，当前页面只保留原有资料和未保存输入，不可继续操作。{editing && <button type="button" className="secondary" disabled={mutation.isPending || imageWriting || discardingImages} onClick={closeLockedEditor}>关闭编辑草稿</button>}</div>}
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
     {canViewLockedDrafts && <LockedOrderDrafts accountId={account.accountId} order={order} access={draftAccess} canViewItems={access.business} />}
     <div className="feedback" aria-live="polite">{message && (!itemMutation || canEditItems(order)) && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={mutation.error === handledGateError || editing || (mutation.variables?.noteRequest && pendingNotes.some(record => record.requestId === mutation.variables?.noteRequest?.requestId)) ? null : mutation.error} /></div>
@@ -535,8 +553,8 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       </dialog>
     )}
     {frontDeskView && <section className="panel front-order-information" aria-labelledby="front-order-information-title">
-      <div className="section-heading"><h2 id="front-order-information-title">订单信息</h2>{!editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'information', order }); }}><NotePencil />编辑资料</button>}</div>
-      {editing?.kind === 'information' ? informationEditor : (
+      <div className="section-heading"><h2 id="front-order-information-title">订单信息</h2>{!editing && hasPermissions(account, 'ORDER_EDIT') && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'information', order }); }}><NotePencil />编辑资料</button>}</div>
+      {editing?.kind === 'information' && informationEditor ? informationEditor : (
         <dl className="front-order-grid">
           <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
           <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>

@@ -130,8 +130,20 @@ if repository:
             or not os.path.isfile(config_mount.get("source", ""))):
         stop("PostgreSQL 缺少 pgBackRest 配置的只读挂载。")
 
+up = compose + ["up", "-d", "--wait", *services]
 if check_only:
     print("原数据库与 PITR 配置预检通过。")
+elif services:
+    os.execvp("docker", up)
 else:
-    os.execvp("docker", compose + ["up", "-d", "--wait", *services])
+    if subprocess.run(up).returncode:
+        stop("容器启动失败，请核对 Compose 状态和服务日志。")
+    failure = "应用未通过 readiness 检查，请核对 PostgreSQL、Redis 和应用日志。"
+    body = read(compose + ["exec", "-T", "app", "wget", "-T", "10", "-qO-",
+                           "http://127.0.0.1:8080/actuator/health/readiness"], failure)
+    try:
+        if json.loads(body).get("status") != "UP":
+            stop(failure)
+    except (ValueError, AttributeError):
+        stop(failure)
 PYTHON

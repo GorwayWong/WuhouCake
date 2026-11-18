@@ -180,7 +180,7 @@ test('并发改分类保留最新制作要求与重新转换前的草稿', async
     await rebase.click();
     assert.equal(await page.locator('#item-requirements').inputValue(), '不要坚果');
     assert.match(await spec.inputValue(), /红色/);
-    await page.getByText('我的待核对备注', { exact: true }).waitFor();
+    assert.match(await page.getByRole('textbox', { name: '分类核对前的规格' }).inputValue(), /我的待核对备注/);
     await save.click();
     await until(() => patches.length === 2);
     assert.equal(patches[1].expectedVersion, 1);

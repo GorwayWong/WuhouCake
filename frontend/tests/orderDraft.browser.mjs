@@ -600,7 +600,7 @@ test('历史订单编辑只展示取货和出品，保留原始差异，不改�
       plannedHandoffAt: '2026-11-04T16:30:00Z', plannedFinishAt: '2026-11-04T14:00:00Z' },
     totalAmountCents: null, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z', items: [] };
   try {
-    model.extraPermissions = ['ORDER_READ', 'ORDER_BUSINESS_DETAILS_READ', 'ORDER_INFORMATION_UPDATE'];
+    model.extraPermissions = ['ORDER_READ', 'ORDER_BUSINESS_DETAILS_READ', 'ORDER_EDIT'];
     await context.route('**/api/employees/options?*', route => route.fulfill({ json: { success: true, data: [] } }));
     await context.route('**/api/orders/00000000-0000-4000-8000-000000000001**', route => {
       const req = route.request(), path = new URL(req.url()).pathname;

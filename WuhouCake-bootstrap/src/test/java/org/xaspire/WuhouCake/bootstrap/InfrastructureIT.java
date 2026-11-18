@@ -11,12 +11,16 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.xaspire.WuhouCake.bootstrap.integration.JwtTestKeys;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -29,6 +33,8 @@ import org.xaspire.WuhouCake.shared.infrastructure.redis.RedisStrings;
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.reset;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "spring.flyway.locations=classpath:db/integration-migration",
@@ -52,6 +58,7 @@ class InfrastructureIT {
     @Autowired TransactionTemplate transactions;
     @Autowired Flyway flyway;
     @Autowired StringRedisTemplate redis;
+    @MockitoSpyBean RedisConnectionFactory redisFactory;
     @Autowired RedisStrings strings;
     @Autowired RedisLock locks;
     @Autowired JsonCodec json;
@@ -72,6 +79,18 @@ class InfrastructureIT {
         assertTrue(mappings.getHandlerMethods().keySet().stream()
                 .flatMap(mapping -> mapping.getPatternValues().stream())
                 .noneMatch(path -> path.startsWith("/api/samples")));
+    }
+
+    @Test void redisFailureChangesReadinessButDoesNotRestartTheApplication() {
+        assertEquals(HttpStatus.OK, http.getForEntity("/actuator/health/readiness", Map.class).getStatusCode());
+        doThrow(new RedisConnectionFailureException("synthetic Redis outage")).when(redisFactory).getConnection();
+        if (redisFactory instanceof ReactiveRedisConnectionFactory reactive)
+            doThrow(new RedisConnectionFailureException("synthetic Redis outage")).when(reactive).getReactiveConnection();
+        try {
+            assertEquals(HttpStatus.SERVICE_UNAVAILABLE, http.getForEntity("/actuator/health/readiness", Map.class).getStatusCode());
+            assertEquals(HttpStatus.OK, http.getForEntity("/actuator/health/liveness", Map.class).getStatusCode());
+        } finally { reset(redisFactory); }
+        assertEquals(HttpStatus.OK, http.getForEntity("/actuator/health/readiness", Map.class).getStatusCode());
     }
 
     @Test

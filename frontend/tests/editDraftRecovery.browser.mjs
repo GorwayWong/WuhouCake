@@ -316,3 +316,146 @@ test('店长恢复订单后断线，读取原单确认恢复结果', async () =>
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
+
+test('已删除订单刷新后仍能复制资料草稿，失去读取权限后不展示', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    model.permissions.push('ORDER_DELETED_READ');
+    await page.reload();
+    await page.getByRole('button', { name: '编辑资料' }).click();
+    await page.locator('#edit-customerName').fill('删除前仍在编辑');
+    await page.getByText('草稿已保存在本机。').waitFor();
+    model.order = { ...model.order, version: 1, deletion: {
+      deletedAt: '2026-11-17T01:00:00Z', deletedBy: 'manager', employeeName: '店长', reason: '合成删除', expiresAt: null,
+    } };
+    await page.reload();
+    await page.getByText('查看本机草稿', { exact: true }).click();
+    await page.getByRole('button', { name: '订单资料草稿', exact: true }).click();
+    await page.getByRole('textbox', { name: '草稿内容' }).waitFor();
+    assert.match(await page.getByRole('textbox', { name: '草稿内容' }).inputValue(), /删除前仍在编辑/);
+    assert.equal(await page.getByRole('button', { name: '编辑资料' }).isDisabled(), true);
+    await context.route(`**/api/orders/${orderId}`, route => route.fulfill({
+      status: 403, json: { success: false, code: 'ORDER_DELETED_FORBIDDEN' },
+    }));
+    await page.reload();
+    await page.getByText(/当前岗位|权限/).first().waitFor();
+    assert.equal(await page.getByText('查看本机草稿', { exact: true }).count(), 0);
+  } finally { await context.close(); }
+});
+
+test('本机暂存不可用时可继续追加，断线用同键确认', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await context.addInitScript(() => {
+      const open = indexedDB.open.bind(indexedDB);
+      indexedDB.open = (name, version) => {
+        if (name === 'wuhou-order-edits') throw new DOMException('synthetic storage denial', 'QuotaExceededError');
+        return open(name, version);
+      };
+    });
+    const attempts = [];
+    await context.route(`**/api/orders/${orderId}/items`, route => {
+      const request = route.request(), body = request.postDataJSON();
+      attempts.push({ key: request.headers()['idempotency-key'], body });
+      if (attempts.length === 1) {
+        model.order = { ...model.order, version: 1, items: [...model.order.items, { ...body.item, recentNotes: [] }] };
+        return route.abort();
+      }
+      return route.fulfill({ status: 201, json: { success: true, data: model.order } });
+    });
+    await page.reload();
+    await page.getByRole('button', { name: '添加商品', exact: true }).click();
+    await page.locator('#item-name').fill('本页追加');
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByRole('button', { name: '确认追加结果' }).click();
+    await page.getByText(/商品已添加/).waitFor();
+    assert.deepEqual(attempts, [attempts[0], attempts[0]]);
+    assert.equal(model.order.items.filter(item => item.name === '本页追加').length, 1);
+  } finally { await context.close(); }
+});
+
+test('同事改成其他商品后，旧尺寸留作参考，独立名称修改仍可保存', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    const item = { ...model.order.items[0], productType: 'CAKE', attributes: { size: '6' } };
+    model.order = { ...model.order, items: [item] };
+    await page.reload();
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.locator('#item-name').fill('本地改名');
+    await page.locator('#item-size').fill('8');
+    await page.getByText('草稿已保存在本机。').waitFor();
+    model.order = { ...model.order, version: 1, items: [{ ...item, productType: 'OTHER', attributes: { specification: '尺寸：6' } }] };
+    let patch;
+    await context.route(`**/api/orders/${orderId}`, route => {
+      if (route.request().method() === 'PATCH') {
+        patch = route.request().postDataJSON();
+        model.order = { ...model.order, version: 2, items: [{ ...model.order.items[0], ...patch.changes }] };
+      }
+      return route.fulfill({ json: { success: true, data: model.order } });
+    });
+    await page.reload();
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.getByRole('button', { name: '恢复草稿' }).click();
+    const save = page.getByRole('button', { name: '保存', exact: true });
+    assert.equal(await save.isDisabled(), true);
+    await page.getByRole('button', { name: '按最新分类继续', exact: true }).click();
+    assert.match(await page.getByRole('textbox', { name: '分类核对前的规格' }).inputValue(), /尺寸：8/);
+    assert.equal(await page.locator('#item-specification').inputValue(), '尺寸：6');
+    await save.click();
+    await page.getByText(/商品已保存/).waitFor();
+    assert.deepEqual(patch, { expectedVersion: 1, itemId: item.itemId, changes: { name: '本地改名' } });
+    assert.deepEqual(model.order.items[0].attributes, { specification: '尺寸：6' });
+  } finally { await context.close(); }
+});
+
+test('关闭被远端删除锁定的编辑器保留暂存图片，恢复原单后可继续', async () => {
+  const { context, page, model, select } = await fixture();
+  try {
+    model.permissions.push('ORDER_DELETE', 'ORDER_DELETED_READ');
+    await page.reload();
+    await page.clock.install();
+    await page.getByRole('button', { name: '编辑资料' }).click();
+    await page.locator('#edit-customerName').fill('保留带图草稿');
+    await page.getByText('草稿已保存在本机。').waitFor();
+    await select(['locked.png']);
+    await page.getByText('待保存：保存修改后上传').waitFor();
+    model.order = { ...model.order, version: 1, deletion: {
+      deletedAt: '2026-11-17T01:00:00Z', deletedBy: 'manager', employeeName: '店长', reason: '合成删除', expiresAt: null,
+    } };
+    await page.clock.fastForward(30_010);
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: '关闭编辑草稿', exact: true }).click();
+    const staged = await page.evaluate(async ({ accountId, id }) =>
+      (await import('/src/draftImages.ts')).editImageQueue(accountId, id), { accountId: model.account, id: orderId });
+    assert.equal(staged.length, 1);
+    await context.route(`**/api/orders/${orderId}/restore`, route => {
+      model.order = { ...model.order, version: 2, deletion: null };
+      return route.fulfill({ json: { success: true, data: model.order } });
+    });
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: '恢复订单', exact: true }).click();
+    await page.getByRole('button', { name: '继续编辑并恢复图片' }).click();
+    await page.getByRole('button', { name: '恢复草稿' }).click();
+    assert.equal(await page.locator('#edit-customerName').inputValue(), '保留带图草稿');
+    assert.equal(model.uploads.length, 0);
+  } finally { await context.close(); }
+});
+
+test('同页后台刷新被拒时隐藏已缓存的订单资料和编辑器', async () => {
+  const { context, page } = await fixture();
+  try {
+    await page.getByRole('heading', { name: '订单 #EDIT-RECOVERY' }).waitFor();
+    await page.getByRole('button', { name: '编辑资料' }).click();
+    await page.locator('#edit-customerName').fill('仅本机保存');
+    await page.getByText('草稿已保存在本机。').waitFor();
+    await context.route(`**/api/orders/${orderId}`, route => route.fulfill({
+      status: 403, json: { success: false, code: 'ORDER_DELETED_FORBIDDEN' },
+    }));
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await page.getByText(/当前岗位|权限/).first().waitFor();
+    assert.equal(await page.getByRole('heading', { name: '订单 #EDIT-RECOVERY' }).count(), 0);
+    assert.equal(await page.locator('#edit-customerName').count(), 0);
+    assert.equal(await page.getByText('合成用户', { exact: true }).count(), 0);
+  } finally { await context.close(); }
+});

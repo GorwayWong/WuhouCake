@@ -591,6 +591,55 @@ class CustomerSubmissionIT {
         }
         assertEquals(1, count("cake_order"));
     }
+    @Test void separateSubmissionsInOneDuplicateGroupMustReviewAgainAfterConcurrentConfirmation() throws Exception {
+        var staff = admin(); String token = entry(staff);
+        var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        var independent = content("13800000000", "2026-11-03T18:00:00+08:00");
+        String first = submit(token, input, UUID.randomUUID()).at("/data/submissionId").asText();
+        String second = submit(token, input, UUID.randomUUID()).at("/data/submissionId").asText();
+        String third = submit(token, independent, UUID.randomUUID()).at("/data/submissionId").asText();
+        for (String id : List.of(first, second, third)) {
+            var current = new LinkedHashMap<>(review(id.equals(third) ? independent : input, staff.id, 10000));
+            if (id.equals(third)) current.put("plannedHandoffAt", independent.get("requestedReceiveAt"));
+            staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", current));
+        }
+
+        var beforeFirst = staff.data("GET", "/api/customer-submissions/" + first, null);
+        var beforeSecond = staff.data("GET", "/api/customer-submissions/" + second, null);
+        var acquired = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var secondAttempted = new CountDownLatch(1);
+        doAnswer(call -> {
+            call.callRealMethod();
+            acquired.countDown();
+            assertTrue(release.await(10, TimeUnit.SECONDS));
+            return null;
+        }).when(store).lockDuplicateGroup(argThat(value -> value != null && value.id().toString().equals(first)));
+        doAnswer(call -> {
+            secondAttempted.countDown();
+            return call.callRealMethod();
+        }).when(store).lockDuplicateGroup(argThat(value -> value != null && value.id().toString().equals(second)));
+
+        try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            var a = pool.submit(() -> confirmWithToken(staff, first, beforeFirst));
+            Future<Result> b;
+            try {
+                assertTrue(acquired.await(10, TimeUnit.SECONDS));
+                b = pool.submit(() -> confirmWithToken(staff, second, beforeSecond));
+                assertTrue(secondAttempted.await(3, TimeUnit.SECONDS));
+                assertEquals(200, staff.request("POST", "/api/customer-submissions/" + third + "/confirm",
+                        Map.of("expectedVersion", 1)).status);
+            } finally { release.countDown(); }
+            assertEquals(200, a.get(10, TimeUnit.SECONDS).status);
+            var result = b.get(10, TimeUnit.SECONDS);
+            assertEquals(409, result.status);
+            assertEquals("DUPLICATE_REVIEW_REQUIRED", result.body.path("code").asText());
+        }
+        assertEquals(2, count("cake_order"));
+        assertEquals(200, confirmWithToken(staff, second, staff.data("GET", "/api/customer-submissions/" + second, null)).status);
+        assertEquals(3, count("cake_order"));
+    }
+
     @Test void confirmationLogFailureRollsBackOrderAndSubmissionTogether() throws Exception {
         var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00"); String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
         staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(input, staff.id, 10000)));

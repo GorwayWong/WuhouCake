@@ -304,7 +304,9 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
     creation.reset();
     return true;
   };
+  const cleanupNotice = drafts.cleanupFailed && <p className="notice error" role="alert">本机临时图片未能清理，可能仍占用浏览器存储空间。</p>;
   const draftControls = <>
+    {cleanupNotice}
     <div className="draft-toolbar"><a className="text-button back-link" href={calendarHref(calendarView)}>退出下单</a></div>
     {draftError && !orderExit && !saved && <p className="notice error" role="alert">{draftError}</p>}
     {drafts.restored && <p className="draft-save-status" role="status">已恢复上次填写</p>}
@@ -328,7 +330,7 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
       }} />}
   </>;
   if (state.loading) return <Loading />;
-  if (!state.token || state.token.passwordChangeRequired) return <>{notice && <p className="notice" role="status">{notice}</p>}{dirty && <div className="draft-session-notice notice" role="status">登录已失效，未提交草稿已保留。请用原账号重新登录。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={state.error instanceof ApiError && state.error.code === 'SESSION_CHANGED' ? undefined : () => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
+  if (!state.token || state.token.passwordChangeRequired) return <>{cleanupNotice}{notice && <p className="notice" role="status">{notice}</p>}{dirty && <div className="draft-session-notice notice" role="status">登录已失效，未提交草稿已保留。请用原账号重新登录。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={state.error instanceof ApiError && state.error.code === 'SESSION_CHANGED' ? undefined : () => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
   return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && (dirty || draftBusy)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftBusy || Boolean(orderExit)} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={creation.error || (!creating && draft?.pending ? pendingCreationError : null)} submitted={draft?.pending || creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftLeaveChange={onDraftLeaveChange} onDraftChange={(value, editor, retainRemovedImages) => {
     const saved = changeDraft(value, editor, retainRemovedImages);
     if (!draftRef.current?.pending) creation.reset();

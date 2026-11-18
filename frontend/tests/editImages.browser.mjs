@@ -12,7 +12,8 @@ async function fixture() {
  const f=await createOrderFixture(browser,base);
  f.model.permissions.push('ORDER_BUSINESS_DETAILS_READ','ORDER_EDIT'); await f.page.reload();
  await f.complete(); await f.page.getByRole('button',{name:'创建订单',exact:true}).click();
- await until(()=>Boolean(f.model.order));await f.page.goto(base+'/#/orders/'+orderId);
+ await f.page.getByRole('link', { name: '新建订单', exact: true }).waitFor();
+ await f.page.goto(base+'/#/orders/'+orderId);
  await f.page.getByRole('button',{name:'编辑资料',exact:true}).waitFor();return f;
 }
 test('选图暂存，取消不上传；资料失败保留，成功后部分图片失败仅重试图片',async()=>{
@@ -57,8 +58,10 @@ test('未知状态仍显示两张订单卡片，详情只读',async()=>{
   const rows=[{...model.order,calendarDate:date,plannedHandoffAt:null,plannedFinishAt:null,fulfillmentType:'PICKUP'}, {...model.order,orderId:'30000000-0000-4000-8000-000000000003',calendarDate:date,plannedHandoffAt:null,plannedFinishAt:null,fulfillmentType:'PICKUP'}];
   await context.route('**/api/orders/workbench/cards?**',r=>r.fulfill({json:{success:true,data:workbenchCards(r.request(), rows)}}));
   await context.route('**/api/orders/calendar?**',r=>r.fulfill({json:{success:true,data:rows}}));
-  await page.goto(base+'/#/?date='+date);await page.locator('.order-summary-card').first().waitFor();assert.equal(await page.locator('.order-summary-card').count(),2);
-  await page.locator('.order-summary-card').first().click();await page.reload();await page.getByText('页面暂不识别此订单状态',{exact:false}).waitFor();
+  await page.goto(base+'/#/?date='+date);await page.reload();
+  await page.locator('.order-summary-card').first().waitFor();assert.equal(await page.locator('.order-summary-card').count(),2);
+  await page.locator(`.order-summary-card[data-order-id="${orderId}"]`).click();
+  await page.getByText('页面暂不识别此订单状态',{exact:false}).waitFor();
   assert.equal(await page.getByRole('button',{name:'编辑资料',exact:true}).isDisabled(),true);
  }finally{await context.close();}
 });
@@ -115,20 +118,25 @@ test('双标签页及复制标签页不能访问原会话图片，刷新保留�
  } finally {await context.close();}
 });
 
-for (const failure of ['503','network']) test(`退出${failure}保留草稿图片及真实文件`, async () => {
- const {context,page,select,saved}=await createOrderFixture(browser,base);
+for (const failure of ['503', 'network']) test(`退出${failure}保留草稿图片及真实文件`, async () => {
+ const {context, page, select} = await createOrderFixture(browser, base);
  try {
-  await select(['logout.png']);await until(async()=>Boolean((await saved())?.value.items[0].images?.length));
-  const before=await saved();
-  await context.route('**/api/auth/logout',r=>failure==='network'?r.abort('failed'):r.fulfill({status:503,json:{success:false,code:'SERVICE_UNAVAILABLE'}}));
-  page.on('dialog',d=>d.accept());await page.getByRole('button',{name:'退出登录',exact:true}).click();
-  await until(async()=>Boolean((await saved())?.value.items[0].images?.length));
-  const file=await page.evaluate(async record=>{
-   const image=record.value.items[0].images[0];const row=await (await import('/src/draftImages.ts')).readDraftImage(record,record.value.items[0].key,image.id);
-   return row?.file.size;
-  },before);
-  assert.ok(file>0);assert.equal((await saved()).requestId,before.requestId);
- } finally {await context.close();}
+  await select(['logout.png']);
+  await context.route('**/api/auth/logout', route => failure === 'network' ? route.abort('failed')
+    : route.fulfill({status: 503, json: {success: false, code: 'SERVICE_UNAVAILABLE'}}));
+  await page.getByRole('button', {name: '退出登录', exact: true}).click();
+  await page.getByRole('button', {name: '保存草稿并退出', exact: true}).click();
+  await page.getByRole('button', {name: '退出登录', exact: true}).waitFor();
+  await page.getByText('logout.png', {exact: true}).waitFor();
+  const images = await page.evaluate(async () => {
+   const { readCreationDraft } = await import('/src/creationDraftStorage.ts');
+   const { images } = (await readCreationDraft('order:alice')).value;
+   return images.map(({name, file}) => ({name, size: file.size}));
+  });
+  assert.equal(images.length, 1);
+  assert.equal(images[0].name, 'logout.png');
+  assert.ok(images[0].size > 0);
+ } finally { await context.close(); }
 });
 
 test('资料保存后转队列事务失败，保留图片并仅重试图片', async () => {
@@ -151,15 +159,33 @@ test('资料保存后转队列事务失败，保留图片并仅重试图片', as
  } finally {await context.close();}
 });
 test('退出成功但图片清理失败，登录页提示且文件仍保留', async () => {
- const {context,page,select,saved}=await createOrderFixture(browser,base);
+ const {context, page, select, complete, saved} = await createOrderFixture(browser, base);
  try {
-  await select(['cleanup.png']);await until(async()=>Boolean((await saved())?.value.items[0].images?.length));
-  await context.route('**/api/auth/logout',r=>r.fulfill({json:{success:true,data:null}}));
-  await page.evaluate(()=>{window.originalImageTransaction=IDBDatabase.prototype.transaction;IDBDatabase.prototype.transaction=function(stores,mode,...rest){if(mode==='readwrite')throw new DOMException('denied','SecurityError');return window.originalImageTransaction.call(this,stores,mode,...rest);};});
-  page.on('dialog',d=>d.accept());await page.getByRole('button',{name:'退出登录',exact:true}).click();
-  await page.getByText('已退出登录，草稿图片未能清除。',{exact:true}).waitFor();
-  assert.equal(await saved(),null);
-  const sizes=await page.evaluate(async()=>{const db=await new Promise(resolve=>{const r=indexedDB.open('wuhou-order-images',1);r.onsuccess=()=>resolve(r.result);});return new Promise(resolve=>{const r=db.transaction('files').objectStore('files').getAll();r.onsuccess=()=>resolve(r.result.map(row=>row.file.size));});});
-  assert.ok(sizes.some(size=>size>0));
- } finally {await context.close();}
+  await select(['cleanup.png']);
+  await complete();
+  await context.route('**/api/orders', route => route.fulfill({status: 400, json: {success: false, code: 'VALIDATION_FAILED'}}));
+  await page.getByRole('button', {name: '创建订单', exact: true}).click();
+  await page.getByText(/填写内容不符合要求/).waitFor();
+  await until(async () => (await saved()) === null);
+  await context.route('**/api/auth/logout', route => route.fulfill({json: {success: true, data: null}}));
+  await page.evaluate(() => {
+   const transaction = IDBDatabase.prototype.transaction;
+   IDBDatabase.prototype.transaction = function(stores, mode, ...rest) {
+    if (this.name === 'wuhou-order-images' && mode === 'readwrite') throw new DOMException('denied', 'SecurityError');
+    return transaction.call(this, stores, mode, ...rest);
+   };
+  });
+  await page.getByRole('button', {name: '退出登录', exact: true}).click();
+  await page.getByRole('button', {name: '不保存并退出', exact: true}).click();
+  await page.getByText(/本机临时图片未能清理/).waitFor();
+  assert.equal(await saved(), null);
+  const sizes = await page.evaluate(async () => {
+   const db = await new Promise(resolve => { const request = indexedDB.open('wuhou-order-images', 1); request.onsuccess = () => resolve(request.result); });
+   return new Promise(resolve => {
+    const request = db.transaction('files').objectStore('files').getAll();
+    request.onsuccess = () => resolve(request.result.map(row => row.file.size));
+   });
+  });
+  assert.ok(sizes.some(size => size > 0));
+ } finally { await context.close(); }
 });

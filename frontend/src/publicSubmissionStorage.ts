@@ -17,7 +17,7 @@ export function readPendingSubmission(token: string): PendingSubmission | null {
           typeof item.productType === 'string' && Number.isInteger(item.quantity) && item.quantity > 0 &&
           item.attributes && typeof item.attributes === 'object' && !Array.isArray(item.attributes) &&
           Object.values(item.attributes).every(value => typeof value === 'string'))) return null;
-    return pending;
+    return { key: pending.key, content };
   } catch { return null; }
 }
 

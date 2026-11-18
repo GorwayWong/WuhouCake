@@ -1,4 +1,4 @@
-import type { OrderImage, Token } from './types';
+import type { Detail, OrderImage, Token } from './types';
 import type { SubmissionContent } from './customerSubmission.ts';
 import { hasUnsafeMoneyNumber } from './money.ts';
 
@@ -243,6 +243,21 @@ export async function readQuery<T>(path: string, signal: AbortSignal): Promise<T
   if (started !== generation) throw new ApiError(401, 'AUTHENTICATION_FAILED');
   return result;
 }
+export type OrderDetailRead = Detail | { denied: ApiError };
+
+export function isReadDenied(error: unknown): error is ApiError {
+  return error instanceof ApiError && [401, 403, 404].includes(error.status);
+}
+
+export async function readOrderDetail(id: string, signal: AbortSignal): Promise<OrderDetailRead> {
+  try { return await readQuery<Detail>(`/orders/${id}`, signal); }
+  catch (error) {
+    // A denied read replaces the previously cached order instead of exposing stale data.
+    if (isReadDenied(error)) return { denied: error };
+    throw error;
+  }
+}
+
 export async function writeRequest<T>(path: string, options: { method: string; body?: unknown; signal: AbortSignal; headers?: Record<string, string> }): Promise<T> {
   return withRequestDeadline(options.signal, 'WRITE_TIMEOUT', signal => api<T>(path, { ...options, signal }), 60_000);
 }

@@ -48,6 +48,9 @@ public interface CustomerSubmissionMapper {
     List<Row> search(@Param("owner") String owner, @Param("status") String status, @Param("keyword") String keyword, @Param("limit") int limit, @Param("offset") long offset);
     @Select("SELECT count(*)" + SEARCH_WHERE)
     long count(@Param("owner") String owner, @Param("status") String status, @Param("keyword") String keyword);
+    @Select("SELECT 1 FROM pg_advisory_xact_lock(hashtextextended('customer-submission:' || #{phone} || ':' || #{date}, 0))")
+    int lockDuplicateGroup(@Param("phone") String phone, @Param("date") String date);
+
     @Select("SELECT 'SUBMISSION' AS kind,s.id::text,s.version,s.status,NULL::text AS order_no," + CONTENT + "->>'phone' AS phone,"
             + " (" + CONTENT_PICKUP_AT + " AT TIME ZONE 'Asia/Shanghai')::date AS requested_receive_date,"
             + " " + CONTENT_PICKUP_AT + " AS requested_receive_at,"

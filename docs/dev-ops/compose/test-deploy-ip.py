@@ -39,7 +39,17 @@ class DeployPreflight(unittest.TestCase):
                 result, commands = self.run_preflight(failure=failure, args=args)
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual(["compose", "--env-file", ".env", "up", "-d", "--wait"]
-                                 + (["postgres"] if args else []), commands[-1])
+                                 + (["postgres"] if args else []), commands[-1 if args else -2])
+                self.assertEqual(not args, any("exec" in call for call in commands))
+
+    def test_release_requires_dependency_readiness(self):
+        for failure in ("readiness_down", "readiness_missing"):
+            with self.subTest(failure=failure):
+                result, commands = self.run_preflight(failure=failure)
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("未通过 readiness", result.stderr)
+                self.assertIn("up", commands[-2])
+                self.assertIn("exec", commands[-1])
 
     def run_preflight(self, failure="", pitr=False, args=()):
         with tempfile.TemporaryDirectory() as directory:
@@ -111,6 +121,10 @@ elif args[0] == "run":
         sys.exit(1)
     print(fixture["cluster"])
     print("Database system identifier: " + fixture["identifier"])
+elif "exec" in args:
+    if fixture["failure"] == "readiness_missing":
+        sys.exit(1)
+    print(json.dumps({"status": "DOWN" if fixture["failure"] == "readiness_down" else "UP"}))
 elif "up" not in args:
     sys.exit(2)
 """)

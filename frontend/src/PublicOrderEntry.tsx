@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, CheckCircle } from '@phosphor-icons/react';
-import { ApiError, creationResultUnknown, readPublicOrderEntry, submitPublicOrder } from './api';
+import { ApiError, readPublicOrderEntry, submitPublicOrder } from './api';
 import { ErrorNotice, Loading } from './ui';
 import { SubmissionFields } from './SubmissionFields';
 import { draftFromSubmissionContent, newSubmissionDraft, submissionRequest, submissionDirty } from './customerSubmission';
@@ -9,6 +9,23 @@ import { clearPendingSubmission, readPendingSubmission, storePendingSubmission }
 import { focusFormField } from './formFocus';
 import { firstProductFormError } from './productFormLayout';
 import { randomUUID } from './uuid.ts';
+import { EditDraftSlot, pruneExpiredDrafts } from './editDraftStorage';
+import type { DraftWriteResult } from './editDraftStorage';
+import type { PendingSubmission } from './publicSubmissionStorage';
+import type { SubmissionDraft } from './customerSubmission';
+
+const publicDraftPrefix = 'public-submission:';
+const draftLifetime = 24 * 60 * 60 * 1000;
+type SavedPublicDraft = { value: SubmissionDraft; expiresAt?: number; pending?: PendingSubmission };
+
+function submissionRejected(error: unknown) {
+  return error instanceof ApiError && (
+    (error.status === 400 && error.code === 'VALIDATION_FAILED')
+    || (error.status === 404 && error.code === 'ENTRY_UNAVAILABLE')
+    || (error.status === 413 && error.code === 'SUBMISSION_TOO_LARGE')
+    || (error.status === 429 && error.code === 'SUBMISSION_THROTTLED')
+  );
+}
 
 export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLeaveGuard: (guard: (() => boolean) | null) => void }) {
   const client = useQueryClient();
@@ -16,6 +33,15 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   const [pending, setPending] = useState(() => readPendingSubmission(token));
   const [draft, setDraft] = useState(() => pending ? draftFromSubmissionContent(pending.content) : newSubmissionDraft());
   const initial = useRef(draft);
+  const slot = useRef<EditDraftSlot<SavedPublicDraft> | undefined>(undefined);
+  const hasDurableDraft = useRef(false);
+  const legacyOnly = useRef(Boolean(pending));
+  const sessionKey = useRef(pending?.key);
+  const rejectedSessionKey = useRef<string | undefined>(undefined);
+  const latestWrite = useRef(0);
+  const [loaded, setLoaded] = useState(false);
+  const [candidate, setCandidate] = useState<SavedPublicDraft>();
+  const [storage, setStorage] = useState<DraftWriteResult | 'saving' | 'idle'>('idle');
   const [errors, setErrors] = useState<Record<string, string>>({}); const [error, setError] = useState<unknown>(null);
   const entry = useQuery({ queryKey: entryKey, networkMode: 'always', refetchOnReconnect: true, retry: false, queryFn: async ({ signal }) => {
     const value = await readPublicOrderEntry(token, signal);
@@ -24,11 +50,86 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   } });
   const [receipt, setReceipt] = useState<{ submissionNo: string } | null>(null); const [busy, setBusy] = useState(false);
   const [stored, setStored] = useState(Boolean(pending));
+  const [tabOnly, setTabOnly] = useState(Boolean(pending));
   const [cleanupFailed, setCleanupFailed] = useState(false);
+  const [submitNotSent, setSubmitNotSent] = useState(false);
   const writing = useRef<AbortController | null>(null); const form = useRef<HTMLFormElement>(null);
   useEffect(() => () => writing.current?.abort(), []);
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+        // Pruning requires write access. A failed prune must still allow draft recovery.
+        await pruneExpiredDrafts(publicDraftPrefix).catch(() => {});
+        if (!active) return;
+        const key = publicDraftPrefix + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+        const current = new EditDraftSlot<SavedPublicDraft>(key);
+        slot.current = current;
+        const saved = await current.read();
+        if (!active) return;
+        hasDurableDraft.current = saved !== undefined;
+        const legacy = readPendingSubmission(token);
+        if (saved?.pending?.key === legacy?.key && legacy && saved) {
+          legacyOnly.current = false;
+          setDraft(saved.value);
+          setTabOnly(false);
+        } else if (saved?.pending) {
+          setPending(null);
+          setCandidate(saved);
+          legacyOnly.current = false;
+        } else if (!legacy) setCandidate(saved);
+      } catch { if (active) setStorage('unavailable'); }
+      finally { if (active) setLoaded(true); }
+    })();
+    return () => { active = false; };
+  }, [token]);
+
+  async function readSavedDraft() {
+    const saved = await slot.current?.read();
+    hasDurableDraft.current = saved !== undefined;
+    return saved;
+  }
+
+  async function persist(value?: SavedPublicDraft): Promise<DraftWriteResult> {
+    const write = ++latestWrite.current;
+    setStorage('saving');
+    const result = await slot.current?.write(value, value?.expiresAt) ?? 'unavailable';
+    if (result === 'saved') hasDurableDraft.current = value !== undefined;
+    if (result === 'conflict') hasDurableDraft.current = true;
+    if (write === latestWrite.current) setStorage(result);
+    return result;
+  }
+
+  function edit(value: SubmissionDraft) {
+    setDraft(value); setErrors({}); setSubmitNotSent(false);
+    if (!submissionEntryUnavailable) setError(null);
+    void persist({ value, expiresAt: Date.now() + draftLifetime });
+  }
+
+  function clearSession(key: string) {
+    if (sessionKey.current !== key) return true;
+    if (!clearPendingSubmission(token, key)) return false;
+    sessionKey.current = undefined;
+    return true;
+  }
+
+  async function clear(request: PendingSubmission | null) {
+    const durable = legacyOnly.current || !hasDurableDraft.current ? 'saved' : await persist();
+    // A newer tab owns the persisted record when the revision has changed.
+    return durable !== 'unavailable' && (!request || clearSession(request.key));
+  }
+
+  function reset() {
+    const next = newSubmissionDraft();
+    initial.current = next; setDraft(next); setPending(null); setStored(false); setTabOnly(false);
+    setCandidate(undefined); setReceipt(null); setErrors({}); setError(null); setCleanupFailed(false); setStorage('idle');
+    setSubmitNotSent(false);
+    legacyOnly.current = false;
+  }
+
   const dirty = submissionDirty(draft, initial.current);
-  const atRisk = (dirty || Boolean(pending)) && !(pending && stored);
+  const atRisk = pending ? !stored || tabOnly : dirty && storage !== 'saved';
   useEffect(() => {
     onLeaveGuard(() => Boolean(receipt) || !atRisk || window.confirm('填写内容尚未提交确认，离开将丢弃输入。确定离开吗？'));
     return () => onLeaveGuard(null);
@@ -43,18 +144,52 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   const unavailable = (entry.error instanceof ApiError && entry.error.status === 404) || submissionEntryUnavailable;
   const needsEntryCheck = unavailable || !entry.data;
   const checkEntry = () => { void entry.refetch({ cancelRefetch: false }); };
-  const abandon = () => {
+  function restoreLegacyPending() {
+    const legacy = readPendingSubmission(token);
+    if (!legacy) return false;
+    sessionKey.current = legacy.key;
+    legacyOnly.current = true;
+    setPending(legacy);
+    setDraft(draftFromSubmissionContent(legacy.content));
+    setStored(true);
+    setTabOnly(true);
+    return true;
+  }
+
+  const abandon = async () => {
     if (!pending || writing.current || !window.confirm('请先向客服核对。放弃本页重试记录后，已经收到的填单仍会保留。确定放弃吗？')) return;
-    if (stored && !clearPendingSubmission(token, pending.key)) { setCleanupFailed(true); return; }
-    const next = newSubmissionDraft();
-    initial.current = next; setDraft(next); setPending(null); setStored(false); setErrors({}); setError(null); setCleanupFailed(false);
+    if (!await clear(pending)) { setCleanupFailed(true); return; }
+    reset();
+    restoreLegacyPending();
   };
   return <main className="customer-page"><header className="customer-header"><img className="customer-brand" src="/brand.jpg" alt="午逅 Story" />{entry.data && <span>客服：{entry.data.ownerName}</span>}</header>
-    {receipt ? <section className="panel submission-success" role="status"><CheckCircle size={42} /><h1>已提交，待客服确认</h1><p>修改请联系接待客服。</p><p className="submission-number">填单编号：{receipt.submissionNo}</p><button type="button" className="secondary" onClick={() => {
-      if (pending && !clearPendingSubmission(token, pending.key)) return;
-      const next = newSubmissionDraft(); initial.current = next; setDraft(next); setReceipt(null); setError(null); setPending(null); setStored(false); setCleanupFailed(false);
-    }}>再填一单</button>{cleanupFailed && <p className="notice error">暂存记录清理失败，请重试「再填一单」。</p>}</section>
-    : !dirty && !uncertain && !entry.data ? entry.isFetching ? <Loading /> : <section className="panel"><h1>暂时无法填写</h1><ErrorNotice error={entry.error} retry={checkEntry} /></section> : <>
+    {receipt ? <section className="panel submission-success" role="status"><CheckCircle size={42} /><h1>已提交，待客服确认</h1><p>修改请联系接待客服。</p><p className="submission-number">填单编号：{receipt.submissionNo}</p><button type="button" className="secondary" onClick={async () => {
+      if (pending && !await clear(pending)) { setCleanupFailed(true); return; }
+      reset();
+      if (!restoreLegacyPending()) {
+        try { setCandidate(await readSavedDraft()); } catch { setStorage('unavailable'); }
+      }
+    }}>再填一单</button>{cleanupFailed && <p className="notice error" role="alert">暂存记录清理失败，请重试「再填一单」。</p>}</section>
+    : !loaded ? <Loading />
+    : (!entry.data && (!dirty || unavailable || candidate) || Boolean(candidate) && unavailable) ? entry.isFetching ? <Loading /> : <section className="panel"><h1>暂时无法填写</h1><ErrorNotice error={entry.error ?? error} retry={checkEntry} />{(pending || candidate?.pending) && <p>请联系发码客服核对原填单。</p>}</section>
+    : candidate ? <section className="panel notice">
+      <p>{candidate.pending ? '本机有一份待确认的预订。恢复后可以继续确认原提交。' : '本机有一份未提交的预订草稿。'}</p>
+      <div className="actions">
+        <button type="button" className="secondary" disabled={entry.isFetching || storage === 'saving'} onClick={() => {
+          if (!candidate.pending && candidate.expiresAt !== undefined && candidate.expiresAt <= Date.now()) { setCandidate(undefined); return; }
+          legacyOnly.current = false;
+          setDraft(candidate.value); setPending(candidate.pending ?? null); setStored(Boolean(candidate.pending)); setTabOnly(false);
+          setCandidate(undefined); setCleanupFailed(false); setSubmitNotSent(false); setStorage('saved');
+        }}>恢复草稿</button>
+        <button type="button" className="secondary" disabled={storage === 'saving'} onClick={async () => {
+          if (candidate.pending && !window.confirm('原预订可能已经提交，请先向客服核对。确定重新填写吗？')) return;
+          if (!await clear(candidate.pending ?? null)) { setCleanupFailed(true); return; }
+          reset();
+          restoreLegacyPending();
+        }}>重新填写</button>
+      </div>
+      {cleanupFailed && <p role="alert">本机草稿未能清理，请重试。</p>}
+    </section> : <>
       <div className="customer-intro"><h1>填写预订信息</h1></div>
       <form ref={form} noValidate onSubmit={async event => {
         event.preventDefault(); if (writing.current || !entry.data || unavailable) return;
@@ -66,29 +201,64 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
           request = { key: randomUUID(), content: result.content };
         }
         const controller = new AbortController();
-        writing.current = controller; setBusy(true); setError(null);
-        const persisted = (retry && stored) || storePendingSubmission(token, request);
-        setStored(persisted); setPending(request);
+        writing.current = controller; setBusy(true); setError(null); setSubmitNotSent(false); setCleanupFailed(false);
+        let durable: DraftWriteResult = 'unavailable';
         try {
+          if (!retry && rejectedSessionKey.current) {
+            if (!clearSession(rejectedSessionKey.current)) {
+              setCleanupFailed(true); setSubmitNotSent(true); return;
+            }
+            rejectedSessionKey.current = undefined;
+          }
+          durable = legacyOnly.current ? 'unavailable'
+            : await persist({ value: draft, pending: request });
+          if (controller.signal.aborted) return;
+          const sessionOccupied = sessionKey.current !== undefined && sessionKey.current !== request.key;
+          if (!retry && durable !== 'saved' && (hasDurableDraft.current || sessionOccupied)) {
+            setSubmitNotSent(true); return;
+          }
+          const inTab = durable !== 'saved' && !sessionOccupied && storePendingSubmission(token, request);
+          if (inTab) sessionKey.current = request.key;
+          setTabOnly(inTab);
+          setStored(durable === 'saved' || inTab); setPending(request);
           const result = await submitPublicOrder(token, request.key, request.content, controller.signal);
-          const cleared = !persisted || clearPendingSubmission(token, request.key);
+          const cleared = await clear(request);
           if (!controller.signal.aborted) {
             setReceipt(result); setPending(cleared ? null : request); setCleanupFailed(!cleared);
           }
         } catch (failure) {
           if (controller.signal.aborted) return;
-          if (!retry && !creationResultUnknown(failure)) {
-            if (persisted && !clearPendingSubmission(token, request.key)) setCleanupFailed(true);
-            else { setPending(null); setStored(false); }
+          if (!retry && submissionRejected(failure)) {
+            const sessionCleared = clearSession(request.key);
+            rejectedSessionKey.current = sessionCleared ? undefined : request.key;
+            const editable = durable !== 'saved' || await persist({ value: draft, expiresAt: Date.now() + draftLifetime }) !== 'unavailable';
+            if (controller.signal.aborted) return;
+            setPending(null); setStored(false); setTabOnly(false);
+            setCleanupFailed(!editable || !sessionCleared);
           }
           setError(failure);
           if (failure instanceof ApiError && failure.code === 'ENTRY_UNAVAILABLE')
             void client.invalidateQueries({ queryKey: entryKey, exact: true });
         } finally { writing.current = null; if (!controller.signal.aborted) setBusy(false); }
       }}>
-        <SubmissionFields draft={draft} onChange={value => { setDraft(value); setErrors({}); if (!submissionEntryUnavailable) setError(null); }} errors={errors} busy={busy || uncertain} />
+        <SubmissionFields draft={draft} onChange={edit} errors={errors} busy={busy || uncertain} />
         {needsEntryCheck && entry.isFetching ? <p className="notice" role="status">正在检查填写入口…</p>
           : <ErrorNotice error={needsEntryCheck ? entry.error ?? error : error} retry={needsEntryCheck ? checkEntry : undefined} />}
+        {submitNotSent && <p className="notice error" role="alert">本次未发送，填写内容仍在本页。请处理暂存问题后再提交。</p>}
+        {!uncertain && dirty && storage === 'saved' && <p className="form-help" role="status">草稿已保存在本机，24 小时内可重扫本入口恢复。</p>}
+        {!uncertain && dirty && storage === 'unavailable' && <p className="form-help" role="status">浏览器暂存不可用，请保留当前页面。</p>}
+        {storage === 'conflict' && !pending && <div className="notice">
+          <p role="status">另一标签页已更新草稿，当前输入仍在本页。</p>
+          <button type="button" className="secondary" onClick={async () => {
+            if (!window.confirm('请先复制需要保留的输入。读取另一标签页的草稿吗？')) return;
+            try {
+              const current = await readSavedDraft();
+              if (current) setCandidate(current);
+              setStorage('idle');
+            } catch { setStorage('unavailable'); }
+          }}>读取已保存的草稿</button>
+        </div>}
+        {uncertain && tabOnly && <p className="form-help" role="status">重试记录仅保存在当前标签页，请保留此页。</p>}
         {uncertain && !busy && <p className="notice" role="status">原提交结果仍待确认，输入已保留。请先向客服核对，再重试。</p>}
         {(busy || uncertain) && !stored && <p className="notice" role="status">浏览器暂存不可用，本次只能在当前页面重试。</p>}
         {uncertain && unavailable && <p className="notice">填写入口暂不可用。请联系发码客服核对原填单。</p>}

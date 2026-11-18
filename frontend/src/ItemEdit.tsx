@@ -1,13 +1,14 @@
 import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
 import { firstItemFormError } from './productFormLayout';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ApiError, creationResultUnknown } from './api';
-import { canEditItems, changeItemDraft, conversionNeedsReview, itemChangeRequest, itemDraft, itemInput, newItem, textSpecification } from './orderForm';
+import { canEditItems, changeItemDraft, conversionNeedsReview, itemChangeRequest, itemDraft, itemInput, newItem, specificationFields, textSpecification } from './orderForm';
 import type { Detail, Item, ItemAddRequest, ItemChangeRequest } from './types';
 import type { ItemDraft } from './orderForm';
 import type { EditDraftWriter } from './EditDraftRecovery';
 import { randomUUID } from './uuid';
+import { normalizeProductType, productTypeLabel } from './productTypes';
 
 type ItemBasis = Omit<Item, 'recentNotes' | 'productionStatus' | 'currentStageCode'>;
 export interface PendingItemAddition { key: string; request: ItemAddRequest }
@@ -17,6 +18,7 @@ export interface ItemEditDraft {
   conversionSource?: ItemBasis;
   value: ItemDraft;
   pending?: PendingItemAddition;
+  previousSpecification?: string;
 }
 function itemBasis(item?: Item): ItemBasis | undefined {
   if (!item) return undefined;
@@ -39,12 +41,13 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
   recovered?: ItemEditDraft; writer: EditDraftWriter<ItemEditDraft>;
 }) {
   busy = busy || Boolean(latest.deletion || latest.deleted);
-  const [initial] = useState(() => recovered ? {
+  const [initial, setInitial] = useState(() => recovered ? {
     ...opened, version: recovered.version,
     items: recovered.original ? [basisItem(recovered.original)] : [],
   } : opened);
   const original = initial.items.find(item => item.itemId === itemId);
-  const [initialDraft] = useState(() => original ? itemDraft(original) : newItem());
+  const [emptyDraft] = useState(newItem);
+  const initialDraft = useMemo(() => original ? itemDraft(original) : emptyDraft, [original, emptyDraft]);
   const [draft, setDraft] = useState(recovered?.value ?? initialDraft);
   const [baseline, setBaseline] = useState<Detail | null>(initial);
   const [conversionSource, setConversionSource] = useState(recovered?.conversionSource ? basisItem(recovered.conversionSource) : original);
@@ -52,7 +55,8 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
   const [preparing, setPreparing] = useState(false);
   const sending = useRef(false);
   busy = busy || preparing;
-  const [previousSpecification, setPreviousSpecification] = useState<string | null>(null);
+  const [previousSpecification, setPreviousSpecification] = useState(recovered?.previousSpecification ?? '');
+  const [localConflict, setLocalConflict] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const attemptedVersion = useRef(initial.version);
@@ -66,11 +70,15 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
   const stale = !baseline || latest.version > baseline.version;
   const canReview = latest.version > (baseline?.version ?? attemptedVersion.current);
   const current = latest.items.find(item => item.itemId === itemId);
-  const needsConversionReview = Boolean(original && current && conversionSource && conversionNeedsReview(conversionSource, current, draft, original.productType));
+  const categoryChanged = Boolean(original && current && normalizeProductType(original.productType ?? '') !== normalizeProductType(current.productType ?? ''));
+  const needsConversionReview = categoryChanged
+    || Boolean(original && current && conversionSource && conversionNeedsReview(conversionSource, current, draft, original.productType));
   const unavailable = !canEditItems(latest) || Boolean(itemId && !current);
   const unknownAddition = Boolean(pending);
-  const snapshot = (value: ItemDraft, source = conversionSource, addition = pending): ItemEditDraft => ({
-    version: initial.version, original: itemBasis(original), conversionSource: itemBasis(source), value, pending: addition,
+  const snapshot = (value: ItemDraft, source = conversionSource, addition = pending,
+      base = initial, priorSpecification = previousSpecification): ItemEditDraft => ({
+    version: base.version, original: itemBasis(base.items.find(item => item.itemId === itemId)),
+    conversionSource: itemBasis(source), value, pending: addition, previousSpecification: priorSpecification,
   });
   const change = (next: typeof draft) => {
     if (next.attributes.size !== draft.attributes.size && !/^[0-9]{0,9}(?:\.[0-9]{0,2})?$/.test(next.attributes.size)) { setErrors({ size: '尺寸只能填写数字，最多两位小数。' }); return; }
@@ -82,7 +90,11 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
     sending.current = true;
     setPreparing(true);
     try {
-      if (!retry && !await writer.save(snapshot(draft, conversionSource, addition))) return;
+      if (!retry) {
+        const saved = await writer.save(snapshot(draft, conversionSource, addition));
+        if (saved === 'conflict') { setLocalConflict(true); return; }
+        if (saved === 'unavailable' && !window.confirm('无法在本机暂存。可以继续保存，若结果未确认请保留此页面重试。继续保存吗？')) return;
+      }
       setPending(addition);
       attemptedVersion.current = addition.request.expectedVersion;
       await onSave(addition.request, addition.key);
@@ -154,24 +166,38 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
         <h3>同事保存的商品资料</h3>
         {itemId ? current && <Product item={current} prices={prices} itemSum={latest.pricingMode === 'ITEM_SUM'} /> : latest.items.map(item => <Product key={item.itemId} item={item} prices={prices} itemSum={latest.pricingMode === 'ITEM_SUM'} />)}
         {needsConversionReview && current ? <button type="button" className="secondary" disabled={unavailable} onClick={() => {
-          setPreviousSpecification(draft.attributes.specification);
-          const next = changeItemDraft(itemDraft(current), {
-            productType: draft.productType,
+          const previous = specificationFields.flatMap(([key, label]) =>
+            draft.attributes[key] ? [`${label}：${draft.attributes[key]}`] : []).join('\n');
+          const edits = {
             name: draft.name === initialDraft.name ? current.name : draft.name,
             quantity: draft.quantity === initialDraft.quantity ? String(current.quantity) : draft.quantity,
-          });
+            ...(draft.unitPrice !== initialDraft.unitPrice ? { unitPrice: draft.unitPrice } : {}),
+            ...(draft.memberPrice !== initialDraft.memberPrice ? { memberPrice: draft.memberPrice } : {}),
+          };
+          const next = changeItemDraft(itemDraft(current), categoryChanged ? edits : { ...edits, productType: draft.productType });
+          const base = categoryChanged ? latest : initial;
+          if (categoryChanged) setInitial(latest);
+          setPreviousSpecification(previous);
           setDraft(next);
-          void writer.save(snapshot(next, current));
+          void writer.save(snapshot(next, current, pending, base, previous));
           setConversionSource(current);
           setBaseline(latest);
           setConflict(true);
           setErrors({});
-        }}>基于最新商品重新转换</button> : stale && <button type="button" className="secondary" disabled={!canReview || unavailable} onClick={() => { setBaseline(latest); setConflict(true); }}>核对后继续编辑</button>}
-        {previousSpecification !== null && <div><strong>重新转换前的商品说明（供核对）</strong><p className="product-spec-text">{visibleSpecification(previousSpecification) || '未填写'}</p></div>}
+        }}>{categoryChanged ? '按最新分类继续' : '基于最新商品重新转换'}</button> : stale && <button type="button" className="secondary" disabled={!canReview || unavailable} onClick={() => { setBaseline(latest); setConflict(true); }}>核对后继续编辑</button>}
       </div>}
       {latest.status === 'WAITING_DELIVERY' ? <p className="form-help">保存后将通知制作同事重新核对。</p>
         : !itemId && latest.status !== 'CAKE_BASE' && <p className="form-help">追加商品后需重新确认制作进度。</p>}
     </fieldset>
+    {previousSpecification && <label>分类核对前的规格<textarea readOnly value={previousSpecification} rows={4} /></label>}
+    {localConflict && <div className="notice">
+      <label>当前商品输入（可复制）<textarea readOnly rows={5} value={[
+        draft.name, productTypeLabel(draft.productType), `数量：${draft.quantity}`,
+        ...(prices ? [`原价：${draft.unitPrice}`, `会员价：${draft.memberPrice}`] : []),
+        ...specificationFields.flatMap(([key, label]) => draft.attributes[key] ? [`${label}：${draft.attributes[key]}`] : []),
+      ].join('\n')} /></label>
+      <button type="button" className="secondary" onClick={() => void writer.reload()}>重新打开已保存的草稿</button>
+    </div>}
     {unknownAddition && <p className="notice" role="status">{latest.items.some(item => item.itemId === pending?.request.item.itemId)
       ? '原商品已保存在当前订单。'
       : unavailable ? '追加结果待确认。订单重新可编辑后可使用原请求确认。'

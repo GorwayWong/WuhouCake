@@ -109,7 +109,7 @@ public class CustomerSubmissionService {
         submissions.append(id, "REVIEWED", me.accountId(), me.nickname(), details, clock.instant());
         return view(require(id, false), true);
     }
-    @Transactional public SubmissionViews.Detail confirm(UUID id, SubmissionCommands.Confirm command) {
+    @Transactional(isolation = Isolation.READ_COMMITTED) public SubmissionViews.Detail confirm(UUID id, SubmissionCommands.Confirm command) {
         var me = staff(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_CREATE); var submission = require(id, true);
         long expected = nonNegativeInteger(command.expectedVersion());
         // A lost confirmation response can be retried without creating another order.
@@ -119,6 +119,7 @@ public class CustomerSubmissionService {
         }
         submission.requirePending(expected);
         var review = submission.reviewed(); if (review == null) throw new OrderFailure("SUBMISSION_REVIEW_REQUIRED"); review.requireConfirmation();
+        submissions.lockDuplicateGroup(submission);
         var duplicates = submissions.duplicates(submission);
         boolean requiresAcknowledgement = duplicates.stream().anyMatch(CustomerSubmissions.Duplicate::requiresAcknowledgement);
         if ((requiresAcknowledgement || command.duplicateCheckToken() != null)

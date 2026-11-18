@@ -9,7 +9,22 @@ const receipt = suffix => {
   return { submissionId, submissionNo: `F${submissionId}` };
 };
 const storageKey = 'wuhou:public-submission:v1:retry';
-const readPending = page => page.evaluate(key => JSON.parse(sessionStorage.getItem(key)), storageKey);
+const readPending = page => page.evaluate(async sessionKey => {
+  const legacy = JSON.parse(sessionStorage.getItem(sessionKey));
+  if (legacy) return { key: legacy.key, content: legacy.content };
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('retry'));
+  const key = 'public-submission:' + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('wuhou-order-edits', 1);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const request = db.transaction('drafts').objectStore('drafts').get(key);
+      request.onsuccess = () => { db.close(); resolve(request.result?.value.pending ?? null); };
+      request.onerror = () => { db.close(); reject(request.error); };
+    };
+  });
+}, storageKey);
 async function complete(page) {
   await page.locator('#phone').fill('13800000000');
   await page.locator('#address').fill('测试地址');
@@ -23,11 +38,12 @@ async function complete(page) {
 test('客户填单校验失败后可修改，响应丢失后重试始终使用原请求', async () => {
   const browser = await chromium.launch({ headless: true, channel: process.env.DRAFT_BROWSER_CHANNEL || 'chrome' });
   try {
-    const page = await browser.newPage();
+    const context = await browser.newContext();
+    let page = await context.newPage();
     const attempts = [];
     const path = '**/api/public/order-entries/retry';
-    await page.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '测试客服' } } }));
-    await page.route(path + '/submissions', route => {
+    await context.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '测试客服' } } }));
+    await context.route(path + '/submissions', route => {
       const request = route.request();
       attempts.push({ key: request.headers()['idempotency-key'], body: request.postData() });
       if (attempts.length === 1) return route.fulfill({ status: 400, json: { success: false, code: 'VALIDATION_FAILED' } });
@@ -36,29 +52,32 @@ test('客户填单校验失败后可修改，响应丢失后重试始终使用�
       return route.fulfill({ status: 201, json: { success: true, data: receipt(attempts.length === 4 ? 1 : 2) } });
     });
 
-    const phone = page.locator('#phone');
-    const submit = page.getByRole('button', { name: '提交预订', exact: true });
-    const retry = page.getByRole('button', { name: '重试提交', exact: true });
-    const uncertain = page.getByText(/原提交结果仍待确认/);
+    const phone = () => page.locator('#phone');
+    const submit = () => page.getByRole('button', { name: '提交预订', exact: true });
+    const retry = () => page.getByRole('button', { name: '重试提交', exact: true });
+    const uncertain = () => page.getByText(/原提交结果仍待确认/);
     await page.goto(`${base}/#/fill/retry`);
     await complete(page);
-    await submit.click();
+    await submit().click();
     await page.getByText('填写内容不符合要求，请检查后重试。').waitFor();
     assert.equal(await readPending(page), null);
-    await phone.fill('13900000000');
-    await submit.click();
-    await uncertain.waitFor();
-    assert.equal(await phone.isDisabled(), true);
-    await page.reload();
-    await uncertain.waitFor();
-    assert.equal(await phone.inputValue(), '13900000000');
+    await phone().fill('13900000000');
+    await submit().click();
+    await uncertain().waitFor();
+    assert.equal(await phone().isDisabled(), true);
+    await page.close();
+    page = await context.newPage();
+    await page.goto(`${base}/#/fill/retry`);
+    await page.getByRole('button', { name: '恢复草稿' }).click();
+    await uncertain().waitFor();
+    assert.equal(await phone().inputValue(), '13900000000');
     assert.equal(attempts.length, 2);
 
-    await retry.click();
+    await retry().click();
     await page.getByText('提交过于频繁，请稍后再试。').waitFor();
-    assert.equal(await uncertain.isVisible(), true);
-    assert.equal(await phone.isDisabled(), true);
-    await retry.click();
+    assert.equal(await uncertain().isVisible(), true);
+    assert.equal(await phone().isDisabled(), true);
+    await retry().click();
     await page.getByText(`填单编号：${receipt(1).submissionNo}`).waitFor();
     assert.equal(await readPending(page), null);
     assert.ok(attempts[1].key);
@@ -68,7 +87,7 @@ test('客户填单校验失败后可修改，响应丢失后重试始终使用�
 
     await page.getByRole('button', { name: '再填一单', exact: true }).click();
     await complete(page);
-    await submit.click();
+    await submit().click();
     await page.getByText(`填单编号：${receipt(2).submissionNo}`).waitFor();
     assert.ok(attempts[4].key);
     assert.notEqual(attempts[4].key, attempts[1].key);
@@ -123,6 +142,7 @@ test('扫码重试保留原键，入口检查超时或 503 后仍可恢复', asy
   await page.getByRole('button', { name: '提交预订', exact: true }).waitFor();
   assert.equal(await page.locator('#phone').inputValue(), '');
   await page.goto(`${base}/#/fill/retry`);
+  await page.getByRole('button', { name: '恢复草稿' }).click();
   const retry = page.getByRole('button', { name: '重试提交', exact: true });
   for (let count = 2; count <= 3; count++) {
     await retry.click();
@@ -163,12 +183,17 @@ test('扫码重试保留原键，入口检查超时或 503 后仍可恢复', asy
   assert.equal(await readPending(page), null);
 });
 
-test('浏览器存储不可用时仍可在当前页面用原请求重试', async t => {
+test('浏览器存储不可用时，明确拒绝后保留输入，断线后以原请求重试', async t => {
   const browser = await chromium.launch({ headless: true, channel: 'chrome' });
   t.after(() => browser.close());
   const page = await browser.newPage();
   const attempts = [];
   await page.addInitScript(() => {
+    const open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = (name, version) => {
+      if (name === 'wuhou-order-edits') throw new DOMException('测试配额', 'QuotaExceededError');
+      return open(name, version);
+    };
     const write = Storage.prototype.setItem;
     Storage.prototype.setItem = function (key, value) {
       if (key.startsWith('wuhou:public-submission:')) throw new DOMException('测试配额', 'QuotaExceededError');
@@ -178,13 +203,267 @@ test('浏览器存储不可用时仍可在当前页面用原请求重试', async
   await page.route('**/api/public/order-entries/retry', route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
   await page.route('**/api/public/order-entries/retry/submissions', route => {
     attempts.push([route.request().headers()['idempotency-key'], route.request().postData()]);
-    return attempts.length === 1 ? route.abort() : route.fulfill({ status: 201, json: { success: true, data: receipt(3) } });
+    if (attempts.length === 1) return route.fulfill({ status: 400, json: { success: false, code: 'VALIDATION_FAILED' } });
+    if (attempts.length === 2) return route.abort();
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(3) } });
   });
   await page.goto(`${base}/#/fill/retry`);
   await complete(page);
-  await page.getByRole('button', { name: '提交预订' }).click();
-  await page.getByText('浏览器暂存不可用，本次只能在当前页面重试。').waitFor();
+  const submit = page.getByRole('button', { name: '提交预订', exact: true });
+  await submit.click();
+  await page.getByText('填写内容不符合要求，请检查后重试。').waitFor();
+  assert.equal(await page.getByRole('button', { name: '放弃重试' }).count(), 0);
+  assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+  assert.equal(await page.locator('#address').inputValue(), '测试地址');
+  await page.locator('#phone').fill('13900000000');
+  await submit.click();
+  await page.getByText(/原提交结果仍待确认/).waitFor();
   await page.getByRole('button', { name: '重试提交' }).click();
   await page.getByText(`填单编号：${receipt(3).submissionNo}`).waitFor();
-  assert.deepEqual(attempts[0], attempts[1]);
+  assert.notEqual(attempts[0][0], attempts[1][0]);
+  assert.deepEqual(attempts[1], attempts[2]);
+  assert.deepEqual(JSON.parse(attempts[1][1]), { ...JSON.parse(attempts[0][1]), phone: '13900000000' });
+  await page.getByRole('button', { name: '再填一单' }).click();
+  assert.equal(await page.locator('#phone').inputValue(), '');
+});
+
+test('已有扫码草稿时，待确认记录写入失败不会发送请求', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const context = await browser.newContext();
+  const path = '**/api/public/order-entries/retry';
+  let page = await context.newPage();
+  const attempts = [];
+  await context.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  await context.route(path + '/submissions', async route => {
+    const request = route.request();
+    const attempt = { key: request.headers()['idempotency-key'], content: request.postDataJSON() };
+    attempts.push(attempt);
+    assert.deepEqual(await readPending(page), attempt);
+    return attempts.length === 1 ? route.abort() : route.fulfill({ status: 201, json: { success: true, data: receipt(4) } });
+  });
+  await page.goto(`${base}/#/fill/retry`);
+  await complete(page);
+  await page.getByText(/草稿已保存在本机/).waitFor();
+  await page.evaluate(() => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (record, key) {
+      if (record.value?.pending) throw new DOMException('测试配额', 'QuotaExceededError');
+      return put.call(this, record, key);
+    };
+  });
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  await page.getByText(/本次未发送/).waitFor();
+  assert.equal(attempts.length, 0);
+  assert.equal(await page.locator('#phone').isEditable(), true);
+  assert.equal(await page.evaluate(key => sessionStorage.getItem(key), storageKey), null);
+  await page.close();
+
+  page = await context.newPage();
+  await page.goto(`${base}/#/fill/retry`);
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+  assert.equal(await page.locator('#address').inputValue(), '测试地址');
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  await page.getByText(/原提交结果仍待确认/).waitFor();
+  assert.equal(attempts.length, 1);
+  await page.close();
+
+  page = await context.newPage();
+  await page.goto(`${base}/#/fill/retry`);
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  await page.getByRole('button', { name: '重试提交' }).click();
+  await page.getByText(`填单编号：${receipt(4).submissionNo}`).waitFor();
+  assert.deepEqual(attempts, [attempts[0], attempts[0]]);
+});
+
+test('旧版会话记录恢复后仍可用原请求取回回执', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const path = '**/api/public/order-entries/retry';
+  const legacy = { key: '20000000-0000-4000-8000-000000000088', content: {
+    phone: '13800000000', memberPhone: null, address: null, fulfillmentType: 'PICKUP',
+    requestedReceiveAt: '2026-11-17T10:00:00Z',
+    items: [{ name: '合成蛋糕', quantity: 1, productType: 'CAKE', attributes: { size: '6' } }],
+  } };
+  const attempts = [];
+  await page.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  await page.route(path + '/submissions', route => {
+    attempts.push({ key: route.request().headers()['idempotency-key'], content: route.request().postDataJSON() });
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(5) } });
+  });
+  await page.goto(`${base}/#/fill/retry`);
+  await page.locator('#phone').waitFor();
+  await page.evaluate(([key, value]) => sessionStorage.setItem(key, JSON.stringify(value)), [storageKey, legacy]);
+  await page.reload();
+  await page.getByRole('button', { name: '重试提交' }).click();
+  await page.getByText(`填单编号：${receipt(5).submissionNo}`).waitFor();
+  assert.deepEqual(attempts, [legacy]);
+  assert.equal(await page.evaluate(key => sessionStorage.getItem(key), storageKey), null);
+});
+
+test('另一标签页已经更换草稿时，仍可保留并重试旧版会话请求', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const context = await browser.newContext();
+  const path = '**/api/public/order-entries/retry';
+  const url = `${base}/#/fill/retry`;
+  const attempts = [];
+  await context.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  await context.route(path + '/submissions', route => {
+    const request = route.request();
+    attempts.push({ key: request.headers()['idempotency-key'], content: request.postDataJSON() });
+    return attempts.length === 1 ? route.abort() : route.fulfill({ status: 201, json: { success: true, data: receipt(6) } });
+  });
+  const other = await context.newPage();
+  await other.goto(url);
+  await complete(other);
+  await other.getByRole('button', { name: '提交预订', exact: true }).click();
+  await other.getByText(/原提交结果仍待确认/).waitFor();
+  assert.equal(attempts.length, 1);
+  const legacy = { key: '20000000-0000-4000-8000-000000000099', content: { ...attempts[0].content, phone: '13900000000' } };
+
+  const page = await context.newPage();
+  await page.goto(url);
+  const restore = page.getByRole('button', { name: '恢复草稿', exact: true });
+  await restore.waitFor();
+  await page.evaluate(([key, value]) => sessionStorage.setItem(key, JSON.stringify(value)), [storageKey, legacy]);
+  await page.reload();
+  await restore.waitFor();
+
+  other.once('dialog', dialog => dialog.accept());
+  await other.getByRole('button', { name: '放弃重试', exact: true }).click();
+  await other.locator('#phone').fill('13600000000');
+  await other.getByText(/草稿已保存在本机/).waitFor();
+
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: '重新填写' }).click();
+  await page.getByRole('button', { name: '重试提交', exact: true }).waitFor();
+  assert.equal(attempts.length, 1);
+  const readLegacy = () => page.evaluate(key => JSON.parse(sessionStorage.getItem(key)), storageKey);
+  assert.deepEqual(await readLegacy(), legacy);
+
+  await page.reload();
+  await page.getByRole('button', { name: '重试提交', exact: true }).click();
+  await page.getByText(`填单编号：${receipt(6).submissionNo}`).waitFor();
+  assert.deepEqual(attempts.slice(1), [legacy]);
+  assert.equal(await readLegacy(), null);
+  await other.reload();
+  await other.getByRole('button', { name: '恢复草稿', exact: true }).click();
+  assert.equal(await other.locator('#phone').inputValue(), '13600000000');
+});
+
+test('明确拒绝的会话记录清理失败后，可在下次发送前清理原键', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const attempts = [];
+  const path = '**/api/public/order-entries/retry';
+  await page.addInitScript(key => {
+    const open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = (name, version) => {
+      if (name === 'wuhou-order-edits') throw new DOMException('测试暂存不可用', 'InvalidStateError');
+      return open(name, version);
+    };
+    const remove = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function (name) {
+      if (name === key) throw new DOMException('测试清理失败', 'SecurityError');
+      return remove.call(this, name);
+    };
+    window.allowSessionCleanup = () => { Storage.prototype.removeItem = remove; };
+  }, storageKey);
+  await page.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  await page.route(path + '/submissions', route => {
+    const request = route.request();
+    attempts.push({ key: request.headers()['idempotency-key'], content: request.postDataJSON() });
+    if (attempts.length === 1) return route.fulfill({ status: 400, json: { success: false, code: 'VALIDATION_FAILED' } });
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(7) } });
+  });
+  await page.goto(`${base}/#/fill/retry`);
+  await complete(page);
+  const submit = page.getByRole('button', { name: '提交预订', exact: true });
+  await submit.click();
+  await page.getByText('填写内容不符合要求，请检查后重试。').waitFor();
+  await page.locator('#phone').fill('13900000000');
+  await submit.click();
+  await page.getByText(/本次未发送/).waitFor();
+  assert.deepEqual(await readPending(page), attempts[0]);
+  assert.equal(attempts.length, 1);
+
+  await page.evaluate(() => window.allowSessionCleanup());
+  await submit.click();
+  await page.getByText(`填单编号：${receipt(7).submissionNo}`).waitFor();
+  assert.equal(attempts.length, 2);
+  assert.notEqual(attempts[1].key, attempts[0].key);
+  assert.equal(attempts[1].content.phone, '13900000000');
+  assert.equal(await page.evaluate(key => sessionStorage.getItem(key), storageKey), null);
+});
+
+test('扫码未提交草稿跨标签页恢复，入口隔离并在24小时后淘汰', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await context.route('**/api/public/order-entries/*', route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  const first = await context.newPage();
+  await first.goto(`${base}/#/fill/retry`);
+  await first.locator('#phone').fill('1397');
+  await first.locator('#address').fill('未输完的合成地址');
+  await first.getByText(/草稿已保存在本机/).waitFor();
+  // Submit a final field event with a distinct value to check that the last edit has committed.
+  await first.locator('#phone').fill('13978');
+  await first.getByText(/草稿已保存在本机/).waitFor();
+  await first.close();
+  const other = await context.newPage();
+  await other.goto(`${base}/#/fill/other`);
+  assert.equal(await other.locator('#phone').inputValue(), '');
+  await other.goto(`${base}/#/fill/retry`);
+  const restore = other.getByRole('button', { name: '恢复草稿' });
+  await restore.waitFor();
+  assert.equal(await other.locator('#phone').count(), 0);
+  await restore.click();
+  assert.equal(await other.locator('#phone').inputValue(), '13978');
+  assert.equal(await other.locator('#address').inputValue(), '未输完的合成地址');
+  await context.addInitScript(() => {
+    const now = Date.now.bind(Date);
+    Date.now = () => now() + (24 * 60 * 60 + 1) * 1000;
+  });
+  await other.reload();
+  assert.equal(await other.locator('#phone').inputValue(), '');
+  assert.equal(await restore.count(), 0);
+});
+
+test('待确认填单超过24小时后仍能跨标签页用同键和原内容确认', async t => {
+  const browser = await chromium.launch({ headless: true, channel: process.env.DRAFT_BROWSER_CHANNEL || 'chrome' });
+  t.after(() => browser.close());
+  const context = await browser.newContext();
+  const attempts = [];
+  const path = '**/api/public/order-entries/retry';
+  await context.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  await context.route(path + '/submissions', route => {
+    const request = route.request();
+    attempts.push({ key: request.headers()['idempotency-key'], body: request.postDataJSON() });
+    if (attempts.length === 1) return route.abort('failed');
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(1) } });
+  });
+
+  const first = await context.newPage();
+  await first.goto(`${base}/#/fill/retry`);
+  await complete(first);
+  await first.getByRole('button', { name: '提交预订', exact: true }).click();
+  await first.getByText(/原提交结果仍待确认/).waitFor();
+  await first.close();
+
+  await context.addInitScript(() => {
+    const now = Date.now.bind(Date);
+    Date.now = () => now() + (24 * 60 * 60 + 1) * 1000;
+  });
+  const second = await context.newPage();
+  await second.goto(`${base}/#/fill/retry`);
+  await second.getByRole('button', { name: '恢复草稿' }).click();
+  await second.getByRole('button', { name: '重试提交', exact: true }).click();
+  await second.getByRole('heading', { name: '已提交，待客服确认' }).waitFor();
+  assert.deepEqual(attempts, [attempts[0], attempts[0]]);
+  assert.ok(attempts[0].key);
+  assert.equal(await readPending(second), null);
 });

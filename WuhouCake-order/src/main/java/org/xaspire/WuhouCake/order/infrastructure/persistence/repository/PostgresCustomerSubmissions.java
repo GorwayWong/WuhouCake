@@ -36,9 +36,25 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
         return mapper.search(string(owner), status, keyword, limit, offset).stream().map(this::submission).toList();
     }
     @Override public long count(UUID owner, String status, String keyword) { return mapper.count(string(owner), status, keyword); }
+    @Override public void lockDuplicateGroup(CustomerSubmission submission) {
+        var key = duplicateGroup(submission);
+        mapper.lockDuplicateGroup(key.phone(), key.date().toString());
+    }
+
+    private record DuplicateGroup(String phone, java.time.LocalDate date) { }
+
+    private static DuplicateGroup duplicateGroup(CustomerSubmission submission) {
+        var review = submission.reviewed();
+        var content = review == null ? submission.original() : review.content();
+        var date = review != null && review.plannedHandoffAt() != null
+                ? review.plannedHandoffAt().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate()
+                : content.requestedDate();
+        return new DuplicateGroup(content.phone().replaceAll("[ ()-]", ""), date);
+    }
+
     @Override public List<Duplicate> duplicates(CustomerSubmission submission) {
-        var content = submission.reviewed() == null ? submission.original() : submission.reviewed().content();
-        return mapper.duplicates(submission.id().toString(), content.phone().replaceAll("[ ()-]", ""), (submission.reviewed() != null && submission.reviewed().plannedHandoffAt() != null ? submission.reviewed().plannedHandoffAt().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate() : content.requestedDate())).stream()
+        var key = duplicateGroup(submission);
+        return mapper.duplicates(submission.id().toString(), key.phone(), key.date()).stream()
                 .map(row -> new Duplicate(row.kind(), uuid(row.id()), row.version(), row.status(), row.orderNo(), row.phone(),
                         row.requestedReceiveDate(), row.requestedReceiveAt(), List.of(json.read(row.items(), DuplicateItem[].class)),
                         row.totalAmountCents(), row.handledBy(), row.createdAt(), !"CANCELLED".equals(row.status()))).toList();
