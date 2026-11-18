@@ -109,7 +109,8 @@ class ResourceContract(unittest.TestCase):
             volume = next(volume for volume in mounted["volumes"] if volume["target"] == target)
             self.assertEqual("/synthetic/scratch", volume["source"])
             self.assertEqual("bind", volume["type"])
-            self.assertFalse(volume["bind"]["create_host_path"])
+            # Compose versions may omit false values from the resolved JSON.
+            self.assertFalse(volume.get("bind", {}).get("create_host_path", False))
 
     def test_ip_app_only_mounts_the_status_summary(self):
         services = resolve("ip")
@@ -117,7 +118,7 @@ class ResourceContract(unittest.TestCase):
         target = "/run/wuhou-server-status"
         status = next(mount for mount in app["volumes"] if mount["target"] == target)
         self.assertTrue(status["read_only"])
-        self.assertFalse(status["bind"]["create_host_path"])
+        self.assertFalse(status.get("bind", {}).get("create_host_path", False))
         self.assertTrue(status["source"].endswith("/maintenance/server-status"))
         self.assertEqual(target + "/status.json", app["environment"]["WUHOU_SERVER_STATUS_FILE"])
         self.assertNotIn(target, [mount["target"] for mount in services["image-worker"].get("volumes", [])])
