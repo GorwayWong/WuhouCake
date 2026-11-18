@@ -111,6 +111,17 @@ class ResourceContract(unittest.TestCase):
             self.assertEqual("bind", volume["type"])
             self.assertFalse(volume["bind"]["create_host_path"])
 
+    def test_ip_app_only_mounts_the_status_summary(self):
+        services = resolve("ip")
+        app = services["app"]
+        target = "/run/wuhou-server-status"
+        status = next(mount for mount in app["volumes"] if mount["target"] == target)
+        self.assertTrue(status["read_only"])
+        self.assertFalse(status["bind"]["create_host_path"])
+        self.assertTrue(status["source"].endswith("/maintenance/server-status"))
+        self.assertEqual(target + "/status.json", app["environment"]["WUHOU_SERVER_STATUS_FILE"])
+        self.assertNotIn(target, [mount["target"] for mount in services["image-worker"].get("volumes", [])])
+
     def test_compose_does_not_accept_inherited_jvm_overrides(self):
         for services in (resolve("app"), resolve("ip")):
             app = services["app"]["environment"]

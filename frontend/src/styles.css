@@ -2427,3 +2427,8 @@ button,a{
 .production-reminders .reminder-overdue{color:var(--danger,#9e3027)}
 .production-reminders .reminder-orders{display:grid;gap:8px;padding:8px 0}
 .production-reminders .reminder-pages{justify-content:space-between;align-items:center}
+
+.server-status { max-width: 960px; margin-inline: auto; }
+.server-status-backups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 16px; }
+.server-status-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 12px; }
+.server-status-facts dd { margin: 4px 0 0; font-weight: 600; overflow-wrap: anywhere; }

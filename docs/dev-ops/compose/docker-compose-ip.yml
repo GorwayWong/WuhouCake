@@ -57,12 +57,19 @@ services:
       IDENTITY_PRIVATE_KEY: /run/identity/private.pem
       IDENTITY_PUBLIC_KEY: /run/identity/public.pem
       CUSTOMER_ENTRY_PUBLIC_ORIGIN: https://${PUBLIC_IP:?required}
+      WUHOU_SERVER_STATUS_FILE: /run/wuhou-server-status/status.json
       DB_POOL_MAX_SIZE: 5
       IMAGE_WORKER_URL: http://image-worker:8091/process
       JAVA_TOOL_OPTIONS: -Xms64m -Xmx256m -XX:MaxDirectMemorySize=24m -XX:MaxMetaspaceSize=136m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:ActiveProcessorCount=2 -XX:+ExitOnOutOfMemoryError -Xlog:gc,safepoint:stdout:time,uptime,level,tags
       TZ: Asia/Shanghai
     volumes:
       - ./keys:/run/identity:ro
+      - type: bind
+        source: ./maintenance/server-status
+        target: /run/wuhou-server-status
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       postgres:
         condition: service_healthy

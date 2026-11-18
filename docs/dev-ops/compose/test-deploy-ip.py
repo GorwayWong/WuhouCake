@@ -51,6 +51,18 @@ class DeployPreflight(unittest.TestCase):
                 self.assertIn("up", commands[-2])
                 self.assertIn("exec", commands[-1])
 
+    def test_release_runs_verified_backup_before_startup(self):
+        for failure in ("", "backup_failed"):
+            with self.subTest(failure=failure):
+                result, commands = self.run_preflight(failure=failure, args=["--release"])
+                self.assertIn(["backup", "predeploy"], commands)
+                if failure:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse(any("up" in call for call in commands))
+                else:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(["backup", "predeploy"], commands[-3])
+
     def run_preflight(self, failure="", pitr=False, args=()):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory).resolve()
@@ -95,6 +107,16 @@ class DeployPreflight(unittest.TestCase):
                 }]},
             }
             (work / "fixture.json").write_text(json.dumps(fixture))
+            backup = work / "backup-ip-database.sh"
+            backup.write_text("""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+with Path("commands.jsonl").open("a") as log:
+    log.write(json.dumps(["backup", *sys.argv[1:]]) + "\\n")
+sys.exit(json.loads(Path("fixture.json").read_text())["failure"] == "backup_failed")
+""")
+            backup.chmod(0o700)
             docker = work / "docker"
             docker.write_text(r"""#!/usr/bin/env python3
 import json

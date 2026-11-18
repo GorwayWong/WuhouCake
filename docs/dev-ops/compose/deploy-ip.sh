@@ -19,11 +19,12 @@ def stop(message):
 
 args = sys.argv[1:]
 check_only = "--check" in args
+release = "--release" in args
 disable_pitr = "--disable-pitr" in args
-services = [arg for arg in args if arg not in ("--check", "--disable-pitr")]
+services = [arg for arg in args if arg not in ("--check", "--disable-pitr", "--release")]
 if (len(set(args)) != len(args) or services not in ([], ["postgres"])
-        or disable_pitr and services != ["postgres"]):
-    stop("用法：./deploy-ip.sh [--check] [postgres [--disable-pitr]]")
+        or disable_pitr and services != ["postgres"] or release and (check_only or services)):
+    stop("用法：./deploy-ip.sh [--release | [--check] [postgres [--disable-pitr]]]")
 
 compose = ["docker", "compose", "--env-file", ".env"]
 
@@ -136,6 +137,8 @@ if check_only:
 elif services:
     os.execvp("docker", up)
 else:
+    if release and subprocess.run(["./backup-ip-database.sh", "predeploy"]).returncode:
+        stop("发布前备份或校验失败。请查看 wuhou-backup 日志。")
     if subprocess.run(up).returncode:
         stop("容器启动失败，请核对 Compose 状态和服务日志。")
     failure = "应用未通过 readiness 检查，请核对 PostgreSQL、Redis 和应用日志。"

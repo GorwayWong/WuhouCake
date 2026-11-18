@@ -59,6 +59,11 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
+      - name: Verify local backup and deployment contracts
+        run: |
+          python3 -B docs/dev-ops/compose/test-backup-ip-database.py
+          python3 docs/dev-ops/compose/test-deploy-ip.py
+          python3 docs/dev-ops/compose/test-resource-config.py
       - name: Run unit, architecture and integration tests
         run: ./mvnw --batch-mode --no-transfer-progress -Pintegration verify
       - name: Upload test reports

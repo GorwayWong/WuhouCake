@@ -31,7 +31,7 @@ docker compose exec -T image-worker wget -qO- http://127.0.0.1:8091/metrics
 ./probe-ip-readiness.sh
 ```
 
-脚本检查应用容器内固定的 readiness 地址，覆盖 PostgreSQL 和 Redis。任一依赖不可用、应用未就绪或探测不可达时输出 `wuhou_app_ready 0`。采集器执行失败时返回非 2xx。容器存活检查仍使用 liveness，备份异常单独处理。
+脚本检查应用容器内固定的 readiness 地址，覆盖 PostgreSQL 和 Redis。任一依赖不可用、应用未就绪或探测不可达时输出 `wuhou_app_ready 0`。采集器执行失败时返回非 2xx。容器存活检查使用 liveness。日常备份告警由主机任务汇总到「服务器情况」及 `wuhou-backup` 系统日志，见[备份与恢复](../backup-recovery.md)。
 
 将 `WuhouAppScrapeUnavailable` 和 `WuhouAppProbeUnavailable` 路由到现有 Alertmanager 通知通道并启用恢复通知。预发布依次模拟应用停止、数据库停止和网关不可达，每次确认对应探测失败、持续 2 分钟后触发以及恢复后的通知，再进行下一项。缺失也会触发告警，因此安装时先启用探测目标再加载规则。
 

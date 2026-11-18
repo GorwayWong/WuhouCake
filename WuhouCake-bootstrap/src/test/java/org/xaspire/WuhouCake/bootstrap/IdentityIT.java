@@ -39,12 +39,18 @@ class IdentityIT {
     private static final String NAMESPACE = "wuhoucake:identity-it:" + UUID.randomUUID();
     private static final String INITIAL = "Initial password for test!";
     private static final String PASSWORD = "Permanent password for test!";
+    private static final java.nio.file.Path SERVER_STATUS = serverStatusDirectory().resolve("status.json");
+    private static java.nio.file.Path serverStatusDirectory() {
+        try { return java.nio.file.Files.createTempDirectory("wuhou-server-status-it-"); }
+        catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
+    }
     @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
         JwtTestKeys.properties(registry);
         registry.add("spring.flyway.default-schema", () -> SCHEMA);
         registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("spring.datasource.hikari.schema", () -> SCHEMA);
         registry.add("wuhoucake.identity.redis-namespace", () -> NAMESPACE);
+        registry.add("wuhou.server-status-file", SERVER_STATUS::toString);
         registry.add("wuhoucake.authorization.job-permissions.PASTRY_CHEF", () -> "ORDER_READ,ORDER_PRODUCTION_UPDATE,ORDER_NOTE_CREATE");
     }
     @LocalServerPort int port;
@@ -64,10 +70,12 @@ class IdentityIT {
         jdbc.execute("TRUNCATE audit_operation, identity_account_role, identity_account CASCADE");
         var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys);
     }
-    @AfterAll void removeTestData() {
+    @AfterAll void removeTestData() throws java.io.IOException {
         reset(accounts, sessions, clock);
         var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys);
         jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE");
+        java.nio.file.Files.deleteIfExists(SERVER_STATUS);
+        java.nio.file.Files.deleteIfExists(SERVER_STATUS.getParent());
     }
     @Test void accountLifecycleAndAuthorizationAreEnforced() throws Exception {
         Browser admin = administrator();
@@ -495,6 +503,46 @@ class IdentityIT {
         assertEquals(403, admin.request("GET", "/api/admin/missing", null).status);
         assertEquals(403, admin.request("DELETE", "/api/admin/employees", null).status);
         assertEquals(404, admin.request("POST", "/api/admin/employees/" + UUID.randomUUID() + "/archive", null).status);
+    }
+
+    @Test void serverStatusIsPrivateAndOnlyDisplaysFreshValidatedSummaries() throws Exception {
+        String path = "/api/admin/server-status";
+        Browser admin = administrator();
+        var created = provision(admin, "STATUS01", "STAFF");
+        String temporary = created.at("/data/temporaryPassword").asText();
+        Browser staff = new Browser();
+        staff.login("STATUS01", temporary);
+        staff.changePassword(temporary, PASSWORD);
+        staff.login("STATUS01", PASSWORD);
+        assertEquals(401, new Browser().request("GET", path, null).status);
+        assertEquals(403, staff.request("GET", path, null).status);
+        assertEquals("UNKNOWN", admin.request("GET", path, null).body.at("/data/state").asText());
+
+        String snapshot = """
+                {"schema":1,"observedAt":"%s","disk":{"totalBytes":4000,"availableBytes":1200},
+                 "daily":{"latestAttempt":null,"lastSuccess":null},"predeploy":{"latestAttempt":null,"lastSuccess":null},
+                 "alerts":["DISK_LOW","DAILY_OVERDUE"],"hostname":"internal-host"}
+                """;
+        try {
+            java.nio.file.Files.writeString(SERVER_STATUS, snapshot.formatted(java.time.Instant.now().minusSeconds(5)));
+            var response = admin.request("GET", path, null);
+            assertEquals(200, response.status);
+            assertEquals("no-store", response.headers.firstValue("Cache-Control").orElseThrow());
+            assertEquals("AVAILABLE", response.body.at("/data/state").asText());
+            assertEquals(1200, response.body.at("/data/disk/availableBytes").asLong());
+            assertEquals("DAILY_OVERDUE", response.body.at("/data/alerts/1").asText());
+            assertTrue(response.body.at("/data/hostname").isMissingNode());
+            assertEquals(403, staff.request("GET", path, null).status);
+            for (String invalid : List.of(snapshot.formatted(java.time.Instant.now().minusSeconds(901)),
+                    snapshot.formatted(java.time.Instant.now().plusSeconds(300)), "broken", " ".repeat(8193))) {
+                java.nio.file.Files.writeString(SERVER_STATUS, invalid);
+                var unknown = admin.request("GET", path, null).body;
+                assertEquals("UNKNOWN", unknown.at("/data/state").asText());
+                assertTrue(unknown.at("/data/disk").isNull());
+            }
+        } finally {
+            java.nio.file.Files.deleteIfExists(SERVER_STATUS);
+        }
     }
     @Test void jobChangesRecomputePermissionsForExistingSessionsAndProtectActualOrderData() throws Exception {
         var admin = administrator(); var created = provision(admin, "ACCESS01", "STAFF");

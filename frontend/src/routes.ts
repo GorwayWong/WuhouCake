@@ -21,6 +21,7 @@ export function workspaceRoute(hash: string, systemRole?: string): { kind: strin
   const paymentList = readPaymentList(hash);
   if (paymentList) return { kind: 'payment-orders', returnToCalendar: paymentList.from };
   if (hash === '#/orders/new') return { kind: 'create' };
+  if (hash === '#/admin/server-status') return { kind: 'server-status' };
   if (hash === '#/admin/orders') return { kind: 'orders' };
   if (hash === '#/admin/order-packages') return { kind: 'packages' };
   if (hash === '#/admin/employees' && systemRole === 'SUPER_ADMIN') return { kind: 'employees' };

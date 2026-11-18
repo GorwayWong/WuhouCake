@@ -74,7 +74,7 @@ public class SecurityConfiguration {
             authorize.requestMatchers(GET, "/api/admin/orders/export").access(permissions(ORDER_MANAGEMENT_READ, ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
             authorize.requestMatchers(POST, "/api/admin/orders/exports/zip").access(permissions(ORDER_MANAGEMENT_READ, ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
             authorize.requestMatchers(GET, "/api/admin/audit-logs").access(permissions(AUDIT_READ));
-            authorize.requestMatchers(GET, "/api/admin/employees").access(permissions(EMPLOYEE_MANAGE));
+            authorize.requestMatchers(GET, "/api/admin/employees", "/api/admin/server-status").access(permissions(EMPLOYEE_MANAGE));
             authorize.requestMatchers(POST, "/api/admin/employees", "/api/admin/employees/{id}/reset-password", "/api/admin/employees/{id}/archive").access(permissions(EMPLOYEE_MANAGE));
             authorize.requestMatchers(PATCH, "/api/admin/employees/{id}", "/api/admin/employees/{id}/password").access(permissions(EMPLOYEE_MANAGE));
             authorize.requestMatchers("/api/me", "/api/me/**").authenticated();

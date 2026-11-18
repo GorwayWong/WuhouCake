@@ -42,12 +42,12 @@ docker compose exec -T -u postgres postgres psql -XAt -U wuhou -d wuhou \
 
 ```sh
 ./deploy-ip.sh --check
-./deploy-ip.sh
+./deploy-ip.sh --release
 # 已启用 PITR 的环境在更新后执行。
 ./backup-ip-pitr.sh check
 ```
 
-发布长期保留订单的版本前，验证一份可读备份，准备已停用物理清理的回滚镜像，并停止旧应用实例。恢复应用读写后核对正常身份认证、工作台列表、历史订单查询和归档。
+正式发布先校验数据库卷，再生成已验证的发布前备份。日常启动及回退使用 `./deploy-ip.sh`。服务器状态摘要目录与备份脚本的安装步骤见[备份与恢复手册](backup-recovery.md)。
 
 两种模式共用容器内 `/tmp/wuhoucake-app` 和应用预算。Caddy 分别限制订单图片正文 6 MiB 与套餐正文 65 MiB，并拒绝公网 Actuator。采集入口和告警规则见[生产监控](monitoring/README.md)。
 
@@ -74,19 +74,14 @@ docker compose restart app
 
 ## 证书与备份
 
-生产默认每天做一次 PostgreSQL 逻辑备份，备份文件保存在同一台服务器。独立备份盘和时间点恢复（PITR）均为可选项，默认配置可直接用于应用启动和常规发布。启用 PITR 的配置、切换和演练见 [PITR 手册](pitr-ip.md)。
+生产每天北京时间 03:35 备份到本机，备份失败、漏跑与磁盘告警显示在管理员「服务器情况」并写入主机日志。保留和恢复步骤见[单机单盘备份与恢复](backup-recovery.md)。异机、异盘和[时间点恢复](pitr-ip.md)为可选项。
 
-备份任务异常由运维单独排查和重试，保留最近一次成功的备份。业务数据库正常时，门店继续使用原库营业。
-
-部署账号的 crontab 每 12 小时执行证书续期并重载网关，每天服务器时间 03:35 执行数据库备份。两项任务均使用 `flock` 防止重叠；日志存放于 `maintenance/renew.log`、`maintenance/backup.log`。
+证书续期每 12 小时运行，用 `flock` 避免重叠，日志位于 `maintenance/renew.log`。
 
 ```bash
 cd /home/tago-deploy/wuhou
 ./renew-ip-certificate.sh
-./backup-ip-database.sh
 docker compose run --rm -T certbot renew --dry-run --no-random-sleep-on-renew
 ```
 
-备份为 `backups/wuhou-<UTC时间>.dump`，保留至少七天。首次备份已通过临时数据库的完整恢复验证，临时数据库在验证后删除。系统盘损坏可能同时影响原库和存放在该盘的备份。
-
-证书续期 dry-run 已通过。服务器目录 `maintenance/verification.json` 保存首次备份恢复和资源检查结果。请由运维方妥善保管 `letsencrypt/`、`keys/`、`.env`、数据库卷和备份文件。
+请由运维方妥善保管 `letsencrypt/`、`keys/`、`.env`、数据库卷和备份文件。
