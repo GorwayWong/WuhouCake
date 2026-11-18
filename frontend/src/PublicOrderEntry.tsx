@@ -37,6 +37,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   const hasDurableDraft = useRef(false);
   const legacyOnly = useRef(Boolean(pending));
   const sessionKey = useRef(pending?.key);
+  const recoveredSession = useRef<PendingSubmission | null>(null);
   const rejectedSessionKey = useRef<string | undefined>(undefined);
   const latestWrite = useRef(0);
   const [loaded, setLoaded] = useState(false);
@@ -53,6 +54,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   const [tabOnly, setTabOnly] = useState(Boolean(pending));
   const [cleanupFailed, setCleanupFailed] = useState(false);
   const [submitNotSent, setSubmitNotSent] = useState(false);
+  const [restoreSession, setRestoreSession] = useState(false);
   const writing = useRef<AbortController | null>(null); const form = useRef<HTMLFormElement>(null);
   useEffect(() => () => writing.current?.abort(), []);
   useEffect(() => {
@@ -91,10 +93,10 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
     return saved;
   }
 
-  async function persist(value?: SavedPublicDraft): Promise<DraftWriteResult> {
+  async function persist(value?: SavedPublicDraft, beforeCommit?: () => boolean): Promise<DraftWriteResult> {
     const write = ++latestWrite.current;
     setStorage('saving');
-    const result = await slot.current?.write(value, value?.expiresAt) ?? 'unavailable';
+    const result = await slot.current?.write(value, value?.expiresAt, beforeCommit) ?? 'unavailable';
     if (result === 'saved') hasDurableDraft.current = value !== undefined;
     if (result === 'conflict') hasDurableDraft.current = true;
     if (write === latestWrite.current) setStorage(result);
@@ -111,6 +113,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
     if (sessionKey.current !== key) return true;
     if (!clearPendingSubmission(token, key)) return false;
     sessionKey.current = undefined;
+    if (recoveredSession.current?.key === key) recoveredSession.current = null;
     return true;
   }
 
@@ -125,6 +128,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
     initial.current = next; setDraft(next); setPending(null); setStored(false); setTabOnly(false);
     setCandidate(undefined); setReceipt(null); setErrors({}); setError(null); setCleanupFailed(false); setStorage('idle');
     setSubmitNotSent(false);
+    setRestoreSession(false);
     legacyOnly.current = false;
   }
 
@@ -144,8 +148,11 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   const unavailable = (entry.error instanceof ApiError && entry.error.status === 404) || submissionEntryUnavailable;
   const needsEntryCheck = unavailable || !entry.data;
   const checkEntry = () => { void entry.refetch({ cancelRefetch: false }); };
-  function restoreLegacyPending() {
-    const legacy = readPendingSubmission(token);
+  function findLegacyPending() {
+    return readPendingSubmission(token) ?? recoveredSession.current;
+  }
+
+  function restoreLegacyPending(legacy = findLegacyPending()) {
     if (!legacy) return false;
     sessionKey.current = legacy.key;
     legacyOnly.current = true;
@@ -153,23 +160,39 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
     setDraft(draftFromSubmissionContent(legacy.content));
     setStored(true);
     setTabOnly(true);
+    setRestoreSession(false);
+    setSubmitNotSent(false);
+    setError(null);
     return true;
   }
 
-  const abandon = async () => {
-    if (!pending || writing.current || !window.confirm('请先向客服核对。放弃本页重试记录后，已经收到的填单仍会保留。确定放弃吗？')) return;
-    if (!await clear(pending)) { setCleanupFailed(true); return; }
-    reset();
-    restoreLegacyPending();
+  async function returnToDraft() {
+    if (writing.current) return;
+    const controller = new AbortController();
+    writing.current = controller; setBusy(true);
+    try {
+      if (pending && !await clear(pending)) { if (!controller.signal.aborted) setCleanupFailed(true); return; }
+      if (controller.signal.aborted) return;
+      const legacy = findLegacyPending();
+      let saved: SavedPublicDraft | undefined, failed = false;
+      if (!legacy) {
+        try { saved = await readSavedDraft(); } catch { failed = true; }
+      }
+      if (controller.signal.aborted) return;
+      reset();
+      if (!restoreLegacyPending(legacy)) {
+        setCandidate(saved);
+        if (failed) setStorage('unavailable');
+      }
+    } finally { writing.current = null; if (!controller.signal.aborted) setBusy(false); }
+  }
+
+  const abandon = () => {
+    if (pending && !writing.current && window.confirm('请先向客服核对。放弃本页重试记录后，已经收到的填单仍会保留。确定放弃吗？'))
+      void returnToDraft();
   };
   return <main className="customer-page"><header className="customer-header"><img className="customer-brand" src="/brand.jpg" alt="午逅 Story" />{entry.data && <span>客服：{entry.data.ownerName}</span>}</header>
-    {receipt ? <section className="panel submission-success" role="status"><CheckCircle size={42} /><h1>已提交，待客服确认</h1><p>修改请联系接待客服。</p><p className="submission-number">填单编号：{receipt.submissionNo}</p><button type="button" className="secondary" onClick={async () => {
-      if (pending && !await clear(pending)) { setCleanupFailed(true); return; }
-      reset();
-      if (!restoreLegacyPending()) {
-        try { setCandidate(await readSavedDraft()); } catch { setStorage('unavailable'); }
-      }
-    }}>再填一单</button>{cleanupFailed && <p className="notice error" role="alert">暂存记录清理失败，请重试「再填一单」。</p>}</section>
+    {receipt ? <section className="panel submission-success" role="status"><CheckCircle size={42} /><h1>已提交，待客服确认</h1><p>修改请联系接待客服。</p><p className="submission-number">填单编号：{receipt.submissionNo}</p><button type="button" className="secondary" disabled={busy} onClick={() => void returnToDraft()}>再填一单</button>{cleanupFailed && <p className="notice error" role="alert">暂存记录清理失败，请重试「再填一单」。</p>}</section>
     : !loaded ? <Loading />
     : (!entry.data && (!dirty || unavailable || candidate) || Boolean(candidate) && unavailable) ? entry.isFetching ? <Loading /> : <section className="panel"><h1>暂时无法填写</h1><ErrorNotice error={entry.error ?? error} retry={checkEntry} />{(pending || candidate?.pending) && <p>请联系发码客服核对原填单。</p>}</section>
     : candidate ? <section className="panel notice">
@@ -202,6 +225,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
         }
         const controller = new AbortController();
         writing.current = controller; setBusy(true); setError(null); setSubmitNotSent(false); setCleanupFailed(false);
+        setRestoreSession(false);
         let durable: DraftWriteResult = 'unavailable';
         try {
           if (!retry && rejectedSessionKey.current) {
@@ -210,14 +234,31 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
             }
             rejectedSessionKey.current = undefined;
           }
+          const noLegacyPending = () => {
+            recoveredSession.current = findLegacyPending();
+            return !recoveredSession.current;
+          };
+          if (!retry && !noLegacyPending()) { setRestoreSession(true); return; }
           durable = legacyOnly.current ? 'unavailable'
-            : await persist({ value: draft, pending: request });
+            : await persist({ value: draft, pending: request }, retry ? undefined : noLegacyPending);
           if (controller.signal.aborted) return;
+          if (!retry && !noLegacyPending()) {
+            if (durable === 'saved') {
+              const editable = await persist({ value: draft, expiresAt: Date.now() + draftLifetime });
+              if (controller.signal.aborted) return;
+              setCleanupFailed(editable === 'unavailable');
+            }
+            setRestoreSession(true); return;
+          }
           const sessionOccupied = sessionKey.current !== undefined && sessionKey.current !== request.key;
           if (!retry && durable !== 'saved' && (hasDurableDraft.current || sessionOccupied)) {
             setSubmitNotSent(true); return;
           }
-          const inTab = durable !== 'saved' && !sessionOccupied && storePendingSubmission(token, request);
+          const fallback = durable !== 'saved' && !sessionOccupied ? storePendingSubmission(token, request) : 'unavailable';
+          if (!retry && typeof fallback === 'object') {
+            recoveredSession.current = fallback; setRestoreSession(true); return;
+          }
+          const inTab = fallback === 'saved';
           if (inTab) sessionKey.current = request.key;
           setTabOnly(inTab);
           setStored(durable === 'saved' || inTab); setPending(request);
@@ -245,6 +286,13 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
         {needsEntryCheck && entry.isFetching ? <p className="notice" role="status">正在检查填写入口…</p>
           : <ErrorNotice error={needsEntryCheck ? entry.error ?? error : error} retry={needsEntryCheck ? checkEntry : undefined} />}
         {submitNotSent && <p className="notice error" role="alert">本次未发送，填写内容仍在本页。请处理暂存问题后再提交。</p>}
+        {restoreSession && !pending && <div className="notice error" role="alert">
+          <p>本次未发送。本页找到一笔待确认的提交，当前输入仍在本页。</p>
+          <button type="button" className="secondary" disabled={busy} onClick={() => {
+            if (!window.confirm('恢复原提交会替换当前表单，请先复制需要保留的输入。确定恢复吗？')) return;
+            if (!restoreLegacyPending()) { setRestoreSession(false); setSubmitNotSent(true); }
+          }}>恢复原提交</button>
+        </div>}
         {!uncertain && dirty && storage === 'saved' && <p className="form-help" role="status">草稿已保存在本机，24 小时内可重扫本入口恢复。</p>}
         {!uncertain && dirty && storage === 'unavailable' && <p className="form-help" role="status">浏览器暂存不可用，请保留当前页面。</p>}
         {storage === 'conflict' && !pending && <div className="notice">

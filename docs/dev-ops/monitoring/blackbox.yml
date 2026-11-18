@@ -8,3 +8,11 @@ modules:
       fail_if_body_not_matches_regexp:
         - '"success"[[:space:]]*:[[:space:]]*true'
         - '"headerName"[[:space:]]*:'
+  wuhou_frontend:
+    prober: http
+    timeout: 5s
+    http:
+      follow_redirects: false
+      fail_if_not_ssl: true
+      fail_if_body_not_matches_regexp:
+        - '<script[^>]*type="module"[^>]*src="/assets/[^"]+\.js"'

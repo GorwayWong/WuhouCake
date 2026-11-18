@@ -19,10 +19,31 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     await context.route('**/api/orders/calendar?**', route => route.fulfill({ json: { success: true, data: pending().map(order => ({ ...order, customerPhoneLast4: '0000' })) } }));
     await context.route('**/api/orders/workbench/cards?**', route => route.fulfill({ json: { success: true, data: workbenchCards(route.request(), pending()) } }));
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
+    await page.evaluate(() => {
+      const request = navigator.locks.request.bind(navigator.locks);
+      navigator.locks.request = (name, callback) => name === 'wuhou:order-submit:alice' && localStorage.getItem('wuhou:order-draft:v1:alice')
+        ? request(name, async lock => {
+          await new Promise(resolve => { window.finishDraftCleanup = resolve; });
+          return callback(lock);
+        }) : request(name, callback);
+      const scroll = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (options) {
+        if (this.classList.contains('is-new-order')) window.scrolledToNewOrder = this.dataset.orderId;
+        return scroll.call(this, options);
+      };
+    });
     await complete(); await page.getByRole('button', { name: '创建订单', exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishDraftCleanup === 'function');
+    assert.ok(page.url().endsWith('#/orders/new'));
+    await page.evaluate(async () => {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      window.finishDraftCleanup();
+    });
     await page.locator('.is-new-order .created-order-badge').waitFor();
     assert.equal(await page.locator('.is-new-order .created-order-badge').innerText(), '刚刚创建');
     const date = model.order.fulfillment.requestedReceiveDate;
+    assert.equal(new URLSearchParams(new URL(page.url()).hash.split('?')[1]).get('date'), date);
+    assert.equal(await page.evaluate(() => window.scrolledToNewOrder), orderId);
     const prior = new Date(Date.parse(date + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
     const cake = model.order.items[0];
     cake.name = '草莓芒果生日蛋糕'.repeat(8);

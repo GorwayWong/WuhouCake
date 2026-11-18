@@ -46,6 +46,7 @@ https://{$PUBLIC_IP} {
   }
   request_body @packageUpload {
     max_size 65MiB
+    read_timeout 90s
   }
   request_body @jsonWrite {
     max_size 1MiB

@@ -5,8 +5,15 @@ const storageKey = (token: string) => `wuhou:public-submission:v1:${token}`;
 const nullableText = (value: unknown) => value === null || typeof value === 'string';
 
 export function readPendingSubmission(token: string): PendingSubmission | null {
+  return inspectPendingSubmission(token) ?? null;
+}
+
+function inspectPendingSubmission(token: string): PendingSubmission | null | undefined {
+  let stored: string | null;
+  try { stored = sessionStorage.getItem(storageKey(token)); }
+  catch { return undefined; }
   try {
-    const pending = JSON.parse(sessionStorage.getItem(storageKey(token)) ?? 'null');
+    const pending = JSON.parse(stored ?? 'null');
     const content = pending?.content;
     if (typeof pending?.key !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pending.key)
         || typeof content?.phone !== 'string' || !nullableText(content.memberPhone) || !nullableText(content.address)
@@ -21,11 +28,14 @@ export function readPendingSubmission(token: string): PendingSubmission | null {
   } catch { return null; }
 }
 
-export function storePendingSubmission(token: string, pending: PendingSubmission): boolean {
+export function storePendingSubmission(token: string, pending: PendingSubmission): 'saved' | 'unavailable' | PendingSubmission {
+  const current = inspectPendingSubmission(token);
+  if (current === undefined) return 'unavailable';
+  if (current && current.key !== pending.key) return current;
   try {
     sessionStorage.setItem(storageKey(token), JSON.stringify(pending));
-    return true;
-  } catch { return false; }
+    return 'saved';
+  } catch { return 'unavailable'; }
 }
 
 export function clearPendingSubmission(token: string, key: string): boolean {

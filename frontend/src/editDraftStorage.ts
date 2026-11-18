@@ -57,7 +57,7 @@ function checkRecord<T>(value: unknown): Record<T> | undefined {
   return row as Record<T>;
 }
 
-async function transaction<T>(key: string, update?: (row?: Record<T>) => Record<T> | undefined): Promise<Record<T> | undefined> {
+async function transaction<T>(key: string, update?: (row?: Record<T>) => Record<T> | undefined, beforeCommit?: () => boolean): Promise<Record<T> | undefined> {
   const db = await openDatabase();
   try {
     return await new Promise((resolve, reject) => {
@@ -71,8 +71,8 @@ async function transaction<T>(key: string, update?: (row?: Record<T>) => Record<
           const current = checkRecord<T>(read.result);
           result = update ? update(current) : current;
           if (update) {
-            if (result) store.put(result, key);
-            else store.delete(key);
+            const write = result ? store.put(result, key) : store.delete(key);
+            if (beforeCommit) write.onsuccess = () => { if (!beforeCommit()) tx.abort(); };
           }
         } catch (error) {
           failure = error;
@@ -107,13 +107,13 @@ export class EditDraftSlot<T> {
     return read;
   }
 
-  write(value?: T, expiresAt?: number): Promise<DraftWriteResult> {
+  write(value?: T, expiresAt?: number, beforeCommit?: () => boolean): Promise<DraftWriteResult> {
     const next = this.queue.then(async (): Promise<DraftWriteResult> => {
       try {
         const record = await transaction<T>(this.key, current => {
           if (current?.revision !== this.revision) throw new DraftConflict();
           return value === undefined ? undefined : { schema: 1, revision: randomUUID(), value, expiresAt };
-        });
+        }, beforeCommit);
         this.revision = record?.revision;
         return 'saved';
       } catch (error) {

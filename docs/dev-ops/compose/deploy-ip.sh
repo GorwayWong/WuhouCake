@@ -8,9 +8,14 @@ unset DEPLOY_POSTGRES_PROJECT DEPLOY_POSTGRES_VOLUME DEPLOY_POSTGRES_SYSTEM_IDEN
 exec python3 - "$@" <<'PYTHON'
 import json
 import os
+from html.parser import HTMLParser
+from ipaddress import IPv4Address
+from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 
 def stop(message):
@@ -131,9 +136,62 @@ if repository:
             or not os.path.isfile(config_mount.get("source", ""))):
         stop("PostgreSQL 缺少 pgBackRest 配置的只读挂载。")
 
+class EntryPage(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.assets = {}
+        self.has_entry = False
+
+    def handle_starttag(self, tag, attributes):
+        attrs = dict(attributes)
+        is_entry = tag == "script" and attrs.get("type") == "module"
+        relation = attrs.get("rel") if tag == "link" else None
+        if not is_entry and relation not in ("modulepreload", "stylesheet"):
+            return
+        url = urlsplit(attrs.get("src" if is_entry else "href") or "")
+        if url.netloc or url.scheme:
+            return
+        if not re.fullmatch(r"/assets/[A-Za-z0-9._/-]+", url.path) or url.query or url.fragment:
+            raise ValueError("Invalid entry asset path")
+        self.has_entry |= is_entry
+        self.assets[url.path] = "css" if relation == "stylesheet" else "js"
+
+
+if not services:
+    try:
+        gateway = json.loads(config("--format", "json", "gateway"))["services"]["gateway"]
+        site_mount, = [mount for mount in gateway["volumes"] if mount["target"] == "/srv"]
+        if site_mount["type"] != "bind" or not site_mount.get("read_only"):
+            raise ValueError("Frontend mount must be read-only")
+        dist = Path(site_mount["source"]).resolve()
+        index = (dist / "index.html").resolve(strict=True)
+        if not index.is_relative_to(dist) or not index.is_file():
+            raise ValueError("Invalid frontend entry")
+        page = EntryPage()
+        page.feed(index.read_text(encoding="utf-8"))
+        page.close()
+        if not page.has_entry:
+            raise ValueError("Missing module entry")
+        assets = {"/": (index, ("text/html",))}
+        for url, kind in page.assets.items():
+            source = (dist / url.lstrip("/")).resolve(strict=True)
+            if not source.is_relative_to(dist) or not source.is_file() or not source.stat().st_size:
+                raise ValueError("Missing frontend asset")
+            assets[url] = (source, ("text/css",) if kind == "css" else ("text/javascript", "application/javascript"))
+        public_ip = str(IPv4Address(gateway["environment"]["PUBLIC_IP"]))
+        https_port, = [int(port["published"]) for port in gateway["ports"]
+                       if port["target"] == 443 and port.get("protocol", "tcp") == "tcp"]
+        if not 1 <= https_port <= 65535:
+            raise ValueError("Invalid gateway host port")
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, AttributeError):
+        stop("前端产物或网关挂载配置不完整，请检查 /srv 对应的发布目录、入口文件和 HTTPS 端口。")
+    if not shutil.which("curl"):
+        stop("网关前端检查需要 curl。")
+
+
 up = compose + ["up", "-d", "--wait", *services]
 if check_only:
-    print("原数据库与 PITR 配置预检通过。")
+    print("原数据库与 PITR 配置预检通过。" + ("" if services else "前端产物预检通过。"))
 elif services:
     os.execvp("docker", up)
 else:
@@ -149,4 +207,19 @@ else:
             stop(failure)
     except (ValueError, AttributeError):
         stop(failure)
+    for path, (source, media_types) in assets.items():
+        failure = f"网关前端检查失败：{path}。请核对 HTTPS、发布目录及静态文件响应。"
+        try:
+            response = subprocess.check_output(
+                ["curl", "--disable", "--noproxy", "*", "--connect-to", f"{public_ip}:443:127.0.0.1:{https_port}",
+                 "--fail", "--silent", "--show-error", "--max-time", "10",
+                 "--write-out", "\n%{http_code} %{content_type}", f"https://{public_ip}{path}"],
+                stderr=subprocess.DEVNULL, timeout=12)
+            content, metadata = response.rsplit(b"\n", 1)
+            status, media_type = metadata.decode("ascii").split(" ", 1)
+            if status != "200" or media_type.split(";")[0].strip() not in media_types or content != source.read_bytes():
+                stop(failure)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            stop(failure)
+    print("应用 readiness 与网关前端检查通过。")
 PYTHON

@@ -92,6 +92,24 @@ tests:
 
   - interval: 1m
     input_series:
+      - series: 'probe_success{job="wuhou-frontend-probe",instance="home"}'
+        values: '1 0 0 0 1 stale _ _'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: WuhouFrontendUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-frontend-probe, instance: home, severity: critical}
+            exp_annotations: {summary: "午逅公网首页探测失败或缺失"}
+      - eval_time: 4m
+        alertname: WuhouFrontendUnavailable
+      - eval_time: 7m
+        alertname: WuhouFrontendUnavailable
+        exp_alerts:
+          - exp_labels: {job: wuhou-frontend-probe, severity: critical}
+            exp_annotations: {summary: "午逅公网首页探测失败或缺失"}
+
+  - interval: 1m
+    input_series:
       - series: 'up{job="wuhou-pitr"}'
         values: '1 1 1 1 1'
       - series: wuhou_pitr_archive_failures_total

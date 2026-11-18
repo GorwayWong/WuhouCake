@@ -303,6 +303,143 @@ test('旧版会话记录恢复后仍可用原请求取回回执', async t => {
   assert.equal(await page.evaluate(key => sessionStorage.getItem(key), storageKey), null);
 });
 
+test('会话存储恢复读取后保留旧提交键，明确恢复原提交前不发送新请求', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
+  const path = '**/api/public/order-entries/retry';
+  const legacy = { key: '20000000-0000-4000-8000-000000000088', content: {
+    phone: '13800000000', memberPhone: null, address: null, fulfillmentType: 'PICKUP',
+    requestedReceiveAt: '2026-11-17T10:00:00Z',
+    items: [{ name: '原填单', quantity: 1, productType: 'CAKE', attributes: { size: '6' } }],
+  } };
+  const attempts = [];
+  await page.addInitScript(([key, value]) => {
+    sessionStorage.setItem(key, JSON.stringify(value));
+    Object.defineProperty(window, 'indexedDB', { get() { throw new DOMException('测试暂存不可用', 'SecurityError'); } });
+    const getItem = Storage.prototype.getItem;
+    window.failedSessionReadsRemaining = Infinity;
+    Storage.prototype.getItem = function (name) {
+      if (name === key && window.failedSessionReadsRemaining > 0) {
+        window.failedSessionReadsRemaining--;
+        throw new DOMException('测试会话读取失败', 'SecurityError');
+      }
+      return getItem.call(this, name);
+    };
+  }, [storageKey, legacy]);
+  await page.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  await page.route(path + '/submissions', route => {
+    const request = route.request();
+    attempts.push({ key: request.headers()['idempotency-key'], content: request.postDataJSON() });
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(5) } });
+  });
+  await page.goto(base + '/#/fill/retry');
+  await complete(page);
+  await page.locator('#phone').fill('13900000000');
+  await page.evaluate(() => { window.failedSessionReadsRemaining = 1; });
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  const restore = page.getByRole('button', { name: '恢复原提交', exact: true });
+  await restore.waitFor();
+  assert.deepEqual(attempts, []);
+  assert.equal(await page.locator('#phone').inputValue(), '13900000000');
+  assert.deepEqual(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)), storageKey), legacy);
+  await page.evaluate(() => { window.failedSessionReadsRemaining = Infinity; });
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  await restore.waitFor();
+  assert.deepEqual(attempts, []);
+  page.once('dialog', dialog => dialog.accept());
+  await restore.click();
+  await page.evaluate(() => { window.failedSessionReadsRemaining = 0; });
+  await page.getByRole('button', { name: '重试提交', exact: true }).click();
+  await page.getByText('填单编号：' + receipt(5).submissionNo).waitFor();
+  assert.deepEqual(attempts, [legacy]);
+  assert.equal(await page.evaluate(key => sessionStorage.getItem(key), storageKey), null);
+});
+
+async function editableDraftWithUnreadableLegacy(browser, attempts) {
+  const page = await browser.newPage();
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
+  const legacy = { key: '20000000-0000-4000-8000-000000000088', content: {
+    phone: '13800000000', memberPhone: null, address: null, fulfillmentType: 'PICKUP',
+    requestedReceiveAt: '2026-11-17T10:00:00Z',
+    items: [{ name: '原填单', quantity: 1, productType: 'CAKE', attributes: { size: '6' } }],
+  } };
+  await page.addInitScript(([key, record]) => {
+    if (!sessionStorage.getItem(key) && !sessionStorage.getItem('audit-legacy-seeded')) {
+      sessionStorage.setItem(key, JSON.stringify(record));
+      sessionStorage.setItem('audit-legacy-seeded', 'yes');
+    }
+    window.canReadLegacy = false;
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (name) {
+      if (name === key && !window.canReadLegacy) throw new DOMException('Synthetic session read failure', 'SecurityError');
+      return getItem.call(this, name);
+    };
+  }, [storageKey, legacy]);
+  const path = '**/api/public/order-entries/retry';
+  await page.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
+  await page.route(path + '/submissions', route => {
+    const request = route.request();
+    attempts.push({ key: request.headers()['idempotency-key'], content: request.postDataJSON() });
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(5) } });
+  });
+  page.on('dialog', dialog => dialog.accept());
+  await page.goto(base + '/#/fill/retry');
+  await complete(page);
+  await page.locator('#phone').fill('13900000000');
+  await page.locator('#address').fill('新预订的合成地址');
+  await page.getByText(/草稿已保存在本机/).waitFor();
+  return { page, legacy };
+}
+
+test('放弃找回的旧扫码提交后恢复独立草稿，继续填写保留其余字段', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const attempts = [];
+  const { page } = await editableDraftWithUnreadableLegacy(browser, attempts);
+  await page.evaluate(() => { window.canReadLegacy = true; });
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  await page.getByRole('button', { name: '恢复原提交' }).click();
+  await page.getByRole('button', { name: '放弃重试' }).click();
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  assert.equal(await page.locator('#phone').inputValue(), '13900000000');
+  await page.locator('#phone').fill('13700000000');
+  await page.getByText(/草稿已保存在本机/).waitFor();
+  await page.reload();
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  assert.equal(await page.locator('#phone').inputValue(), '13700000000');
+  assert.equal(await page.locator('#address').inputValue(), '新预订的合成地址');
+  assert.deepEqual(attempts, []);
+});
+
+test('旧会话键在 IndexedDB 写入期间恢复时停止新提交并保留可编辑草稿', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const attempts = [];
+  const { page, legacy } = await editableDraftWithUnreadableLegacy(browser, attempts);
+  await page.evaluate(() => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (record, ...args) {
+      if (record?.value?.pending) window.canReadLegacy = true;
+      return put.call(this, record, ...args);
+    };
+  });
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  const restore = page.getByRole('button', { name: '恢复原提交' });
+  await restore.waitFor();
+  assert.deepEqual(attempts, []);
+  assert.deepEqual(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)), storageKey), legacy);
+  await restore.click();
+  await page.getByRole('button', { name: '重试提交', exact: true }).click();
+  await page.getByText('填单编号：' + receipt(5).submissionNo).waitFor();
+  assert.deepEqual(attempts, [legacy]);
+  await page.getByRole('button', { name: '再填一单' }).click();
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  assert.equal(await page.locator('#address').inputValue(), '新预订的合成地址');
+  assert.equal(await page.getByRole('button', { name: '提交预订', exact: true }).isEnabled(), true);
+});
+
 test('另一标签页已经更换草稿时，仍可保留并重试旧版会话请求', async t => {
   const browser = await chromium.launch({ headless: true, channel: 'chrome' });
   t.after(() => browser.close());
@@ -437,6 +574,7 @@ test('待确认填单超过24小时后仍能跨标签页用同键和原内容确
   const browser = await chromium.launch({ headless: true, channel: process.env.DRAFT_BROWSER_CHANNEL || 'chrome' });
   t.after(() => browser.close());
   const context = await browser.newContext();
+  await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
   const attempts = [];
   const path = '**/api/public/order-entries/retry';
   await context.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));

@@ -7,6 +7,8 @@ export interface PackageDraftRecord {
   name: string; items: PackageRow[]; original: string; member: string;
   baseline: string; creationKey: string; pending: PendingPackage | null;
   revision?: string;
+  resumedUpload?: boolean;
+  sourceRevision?: string;
 }
 type StoredFile = { blob: Blob; name: string; lastModified: number };
 type StoredDraft = Omit<PackageDraftRecord, 'items' | 'pending'> & {
@@ -14,7 +16,14 @@ type StoredDraft = Omit<PackageDraftRecord, 'items' | 'pending'> & {
   pending: (Omit<PendingPackage, 'files'> & { files?: { id: string; file: StoredFile }[] }) | null;
 };
 let database: Promise<IDBDatabase> | undefined;
-export class PackageDraftConflict extends Error { }
+export class PackageDraftConflict extends Error {
+  readonly tabId: string;
+
+  constructor(tabId: string) {
+    super('套餐暂存已在其他标签页更新，请保留当前输入并回到原标签页处理。');
+    this.tabId = tabId;
+  }
+}
 export const packageCreationSlot = 'new-package';
 export const packageDraftStorageMessage = (error: unknown, fallback: string) => error instanceof PackageDraftConflict ? error.message : fallback;
 function open() {
@@ -50,6 +59,8 @@ export function decodePackageDraft(value: unknown, accountId: string, tabId: str
   const row = value as StoredDraft;
   if (row.version !== 1 || row.accountId !== accountId || row.tabId !== tabId || !Array.isArray(row.items)
       || row.revision !== undefined && typeof row.revision !== 'string'
+      || row.resumedUpload !== undefined && typeof row.resumedUpload !== 'boolean'
+      || row.sourceRevision !== undefined && typeof row.sourceRevision !== 'string'
       || ![row.name, row.original, row.member, row.baseline, row.creationKey].every(item => typeof item === 'string')
       || row.editing !== null && row.editing !== 'new' && (typeof row.editing !== 'object' || typeof row.editing.id !== 'string')
       || row.items.some(item => !item || ![item.itemId, item.name, item.specification, item.quantity, item.unitPrice, item.memberPrice].every(value => typeof value === 'string')))
@@ -60,18 +71,24 @@ export function decodePackageDraft(value: unknown, accountId: string, tabId: str
   return { ...row, items: row.items.map(item => ({ ...item, file: item.file ? restoreFile(item.file) : undefined })),
     pending: row.pending ? { ...row.pending, files: row.pending.files?.map(item => ({ ...item, file: restoreFile(item.file) })) } : null };
 }
-async function write(accountId: string, tabId: string, revision: string | null, value: StoredDraft | null) {
+type DraftVersion = { tabId: string; revision: string | null };
+
+async function write(accountId: string, changes: (DraftVersion & { value: StoredDraft | null })[]) {
   const db = await open();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('drafts', 'readwrite');
     tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error || new Error('套餐暂存未完成。'));
     try {
-      const store = tx.objectStore('drafts'), request = store.get([accountId, tabId]);
-      request.onsuccess = () => {
-        if ((request.result?.revision ?? null) !== revision) { tx.abort(); reject(new PackageDraftConflict('套餐暂存已在其他标签页更新，请保留当前输入并回到原标签页处理。')); return; }
-        try { if (value) store.put(value); else store.delete([accountId, tabId]); }
-        catch (error) { tx.abort(); reject(error); }
-      };
+      const store = tx.objectStore('drafts');
+      for (const { tabId, revision, value } of changes) {
+        const key = [accountId, tabId];
+        const request = store.get(key);
+        request.onsuccess = () => {
+          if ((request.result?.revision ?? null) !== revision) { tx.abort(); reject(new PackageDraftConflict(tabId)); return; }
+          try { if (value) store.put(value); else store.delete(key); }
+          catch (error) { tx.abort(); reject(error); }
+        };
+      }
     } catch (error) { tx.abort(); reject(error); }
   });
 }
@@ -83,8 +100,12 @@ export async function readPackageDraft(accountId: string, tabId: string) {
     request.onerror = () => reject(request.error);
   });
 }
-export async function savePackageDraft(record: PackageDraftRecord, expectedRevision: string | null) {
+export async function savePackageDraft(record: PackageDraftRecord, expectedRevision: string | null, previous?: DraftVersion) {
   const revision = randomUUID(), value = encodePackageDraft({ ...record, revision });
-  await write(record.accountId, record.tabId, expectedRevision, value); return revision;
+  const changes: (DraftVersion & { value: StoredDraft | null })[] = [{ tabId: record.tabId, revision: expectedRevision, value }];
+  if (previous) changes.push({ ...previous, value: null });
+  await write(record.accountId, changes); return revision;
 }
-export async function removePackageDraft(accountId: string, tabId: string, expectedRevision: string | null) { await write(accountId, tabId, expectedRevision, null); }
+export async function removePackageDraft(accountId: string, tabId: string, expectedRevision: string | null) {
+  await write(accountId, [{ tabId, revision: expectedRevision, value: null }]);
+}

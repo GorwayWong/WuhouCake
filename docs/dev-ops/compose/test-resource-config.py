@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import tempfile
@@ -43,6 +44,18 @@ def resolve(*files, development=False):
 
 
 class ResourceContract(unittest.TestCase):
+    def test_gateway_only_extends_package_multipart_body_deadline(self):
+        caddyfile = (COMPOSE / "Caddyfile.ip").read_text()
+        self.assertRegex(caddyfile, r"(?m)^\s*read_body 30s$")
+        package = re.search(r"(?ms)^  @packageUpload \{\n(.*?)^  }", caddyfile).group(1)
+        self.assertIn("path /api/order-packages /api/order-packages/*", package)
+        self.assertIn("method POST PUT", package)
+        self.assertIn("header Content-Type multipart/form-data*", package)
+        self.assertEqual(["max_size 65MiB", "read_timeout 90s"], [
+            line.strip() for line in re.search(r"(?ms)^  request_body @packageUpload \{\n(.*?)^  }", caddyfile).group(1).splitlines()
+        ])
+        self.assertEqual(1, len(re.findall(r"(?m)^\s*read_timeout\b", caddyfile)))
+
     def test_app_entrypoint_prepares_local_scratch_for_disabled_mount(self):
         dockerfile = COMPOSE.parents[2] / "WuhouCake-bootstrap/Dockerfile"
         entrypoint = json.loads(next(line.removeprefix("ENTRYPOINT ") for line in dockerfile.read_text().splitlines()

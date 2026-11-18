@@ -16,6 +16,11 @@ groups:
         for: 2m
         labels: {severity: critical}
         annotations: {summary: "午逅 API 或应用就绪探测失败或缺失"}
+      - alert: WuhouFrontendUnavailable
+        expr: probe_success{job="wuhou-frontend-probe"} == 0 or absent(probe_success{job="wuhou-frontend-probe"})
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "午逅公网首页探测失败或缺失"}
       - alert: WuhouContainerOomKilled
         expr: increase(container_oom_events_total{container_label_com_docker_compose_service=~"app|image-worker|postgres|redis|gateway"}[10m]) > 0
         labels: {severity: critical}

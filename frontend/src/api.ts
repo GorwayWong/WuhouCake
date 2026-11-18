@@ -258,8 +258,8 @@ export async function readOrderDetail(id: string, signal: AbortSignal): Promise<
   }
 }
 
-export async function writeRequest<T>(path: string, options: { method: string; body?: unknown; signal: AbortSignal; headers?: Record<string, string> }): Promise<T> {
-  return withRequestDeadline(options.signal, 'WRITE_TIMEOUT', signal => api<T>(path, { ...options, signal }), 60_000);
+export async function writeRequest<T>(path: string, options: { method: string; body?: unknown; signal: AbortSignal; headers?: Record<string, string> }, timeout = 60_000): Promise<T> {
+  return withRequestDeadline(options.signal, 'WRITE_TIMEOUT', signal => api<T>(path, { ...options, signal }), timeout);
 }
 async function withRequestDeadline<T>(signal: AbortSignal, code: string, request: (signal: AbortSignal) => Promise<T>, timeout = 30_000): Promise<T> {
   if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');

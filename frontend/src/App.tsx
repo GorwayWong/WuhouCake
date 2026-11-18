@@ -2,7 +2,7 @@ import { VersionNotice } from './VersionNotice';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, CalendarBlank, LockKey, SignOut, UserCircle } from '@phosphor-icons/react';
-import { api, ApiError, creationResultUnknown, forgetSession, refresh, session, readQuery } from './api';
+import { api, ApiError, creationResultUnknown, forgetSession, refresh, session, readQuery, writeRequest } from './api';
 import type { Account, CreateOrderRequest, Detail } from './types';
 import { collectUpdate, connectOrders, synchronize } from './realtime';
 import type { Connection, OrderUpdate } from './realtime';
@@ -190,8 +190,9 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
       const withImages = record.value.items.some(item => item.images?.length);
       const transferred = withImages ? await transferredOrder(record) : undefined;
       const existingId = record.createdOrderId || transferred;
-      const order = existingId ? await api<Detail>(`/orders/${existingId}`)
-        : await api<Detail>('/orders', { method: 'POST', body: request, headers: { 'Idempotency-Key': record.idempotencyKey || record.requestId } });
+      const signal = new AbortController().signal;
+      const order = existingId ? await readQuery<Detail>(`/orders/${existingId}`, signal)
+        : await writeRequest<Detail>('/orders', { method: 'POST', body: request, signal, headers: { 'Idempotency-Key': record.idempotencyKey || record.requestId } });
       if (withImages) {
         if (!await drafts.created(order.orderId)) throw new Error('订单已创建，本机保存未完成，草稿已保留。');
         if (transferred !== order.orderId) await promoteDraftImages(record, order);
@@ -206,7 +207,6 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
       const record = draftRef.current;
       if (!record || record.accountId !== accountRef.current) return;
       const date = order.fulfillment.requestedReceiveDate;
-      setCreatedOrder({ accountId: record.accountId, orderId: order.orderId, orderNo: order.orderNo, date, located: false });
       const withImages = record.value.items.some(item => item.images?.length);
       const cleared = await clearDraft();
       if (record.accountId !== accountRef.current || !session.snapshot().token) return;
@@ -215,6 +215,7 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
       setSelected(date);
       setNotice(cleared ? '' : '订单已创建，但本机草稿未能清除。再次恢复时请先核对原订单。');
       const next = withImages ? `#/orders/${order.orderId}` : calendarHref(defaultCalendarView(date));
+      if (!withImages) setCreatedOrder({ accountId: record.accountId, orderId: order.orderId, orderNo: order.orderNo, date, located: false });
       window.history.replaceState(window.history.state, '', next);
       hashRef.current = next; setHash(next); window.scrollTo(0, 0);
     },

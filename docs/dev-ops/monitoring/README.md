@@ -25,7 +25,7 @@ docker compose exec -T image-worker wget -qO- http://127.0.0.1:8091/metrics
 
 ## 主应用探测
 
-把 [blackbox.yml](blackbox.yml) 的公网 API 模块合并至私网 Blackbox Exporter，并移除原 `wuhou_ready` 模块和对应凭据挂载。更新 [scrape.yml](scrape.yml) 中的公网 API、私有采集器和探测器地址。Prometheus 直接通过 HTTPS 和采集凭据抓取私有采集器的 `/ready`。将 [就绪采集脚本](../compose/probe-ip-readiness.sh) 放到 IP 部署目录，由采集器在受认证的 `/ready` 执行。响应使用 Prometheus 文本格式，禁用缓存，并且接口不接受探测地址参数。
+把 [blackbox.yml](blackbox.yml) 的公网 API 和首页模块合并至私网 Blackbox Exporter，并移除原 `wuhou_ready` 模块和对应凭据挂载。更新 [scrape.yml](scrape.yml) 中的公网 API、首页、私有采集器和探测器地址。首页探针校验 HTTPS 和前端入口模块标记，发布脚本另行核对静态文件。Prometheus 直接通过 HTTPS 和采集凭据抓取私有采集器的 `/ready`。将 [就绪采集脚本](../compose/probe-ip-readiness.sh) 放到 IP 部署目录，由采集器在受认证的 `/ready` 执行。响应使用 Prometheus 文本格式，禁用缓存，并且接口不接受探测地址参数。
 
 ```sh
 ./probe-ip-readiness.sh

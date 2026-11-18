@@ -38,8 +38,8 @@ class DeployPreflight(unittest.TestCase):
             with self.subTest(args=args):
                 result, commands = self.run_preflight(failure=failure, args=args)
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual(["compose", "--env-file", ".env", "up", "-d", "--wait"]
-                                 + (["postgres"] if args else []), commands[-1 if args else -2])
+                self.assertIn(["compose", "--env-file", ".env", "up", "-d", "--wait"]
+                              + (["postgres"] if args else []), commands)
                 self.assertEqual(not args, any("exec" in call for call in commands))
 
     def test_release_requires_dependency_readiness(self):
@@ -61,7 +61,31 @@ class DeployPreflight(unittest.TestCase):
                     self.assertFalse(any("up" in call for call in commands))
                 else:
                     self.assertEqual(0, result.returncode, result.stderr)
-                    self.assertEqual(["backup", "predeploy"], commands[-3])
+                    self.assertEqual(["backup", "predeploy"], commands[next(i for i, call in enumerate(commands) if "up" in call) - 1])
+
+    def test_site_files_are_required_before_backup_and_startup(self):
+        for failure in ("missing_index", "missing_entry", "missing_style"):
+            for args in (["--check"], ["--release"]):
+                with self.subTest(failure=failure, args=args):
+                    result, commands = self.run_preflight(failure=failure, args=args)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("前端产物", result.stderr)
+                    self.assertFalse(any("up" in call or "backup" in call for call in commands))
+
+    def test_release_probes_the_actual_gateway(self):
+        for failure in ("", "gateway_404", "entry_returns_html", "stale_home", "wrong_media"):
+            with self.subTest(failure=failure):
+                result, commands = self.run_preflight(failure=failure, args=["--release"])
+                probes = [call for call in commands if call[0] == "curl"]
+                self.assertTrue(probes)
+                self.assertIn("192.0.2.1:443:127.0.0.1:8443", probes[0])
+                if failure:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("网关前端", result.stderr)
+                else:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(["https://192.0.2.1/", "https://192.0.2.1/assets/main.js",
+                                      "https://192.0.2.1/assets/main.css"], [call[-1] for call in probes])
 
     def run_preflight(self, failure="", pitr=False, args=()):
         with tempfile.TemporaryDirectory() as directory:
@@ -72,6 +96,15 @@ class DeployPreflight(unittest.TestCase):
             repo.mkdir(parents=True)
             settings = work / "pgbackrest-ip.conf"
             settings.touch()
+            dist = work / "dist"
+            (dist / "assets").mkdir(parents=True)
+            for error, path, body in (
+                    ("missing_index", "index.html", '<script type="module" src="/assets/main.js"></script>'
+                     '<link rel="stylesheet" href="/assets/main.css">'),
+                    ("missing_entry", "assets/main.js", "export {};"),
+                    ("missing_style", "assets/main.css", "body {}")):
+                if error != failure:
+                    (dist / path).write_text(body)
             environment = {
                 "DEPLOY_POSTGRES_PROJECT": PROJECT,
                 "DEPLOY_POSTGRES_VOLUME": VOLUME,
@@ -94,7 +127,12 @@ class DeployPreflight(unittest.TestCase):
                 ])
             fixture = {
                 "environment": environment, "failure": failure,
-                "model": {"name": "wrong" if failure == "wrong_project" else PROJECT, "services": {"postgres": postgres},
+                "model": {"name": "wrong" if failure == "wrong_project" else PROJECT,
+                          "services": {"postgres": postgres, "gateway": {
+                              "environment": {"PUBLIC_IP": "192.0.2.1"},
+                              "volumes": [{"type": "bind", "source": str(dist), "target": "/srv", "read_only": True}],
+                              "ports": [{"target": 443, "published": "8443", "protocol": "tcp"}],
+                          }},
                           "volumes": {"postgres-data": {"name": "wrong" if failure == "wrong_volume" else VOLUME, "external": True}}},
                 "existing": [{"Image": "sha256:local-image", "Mounts": existing_mounts}],
                 "cluster": "18" if failure == "empty_database" else "17",
@@ -156,7 +194,31 @@ import json
 from pathlib import Path
 print(json.dumps(json.loads(Path("fixture.json").read_text())["filesystem"]))
 """)
-            for command in (docker, findmnt):
+            curl = work / "curl"
+            curl.write_text("""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+args = sys.argv[1:]
+with Path("commands.jsonl").open("a") as log:
+    log.write(json.dumps(["curl", *args]) + "\\n")
+failure = json.loads(Path("fixture.json").read_text())["failure"]
+path = urlsplit(args[-1]).path.lstrip("/")
+if failure == "gateway_404":
+    sys.exit(22)
+index = Path("dist/index.html").read_bytes()
+body = index if not path else (Path("dist") / path).read_bytes()
+media = "text/html" if not path else "text/javascript" if path.endswith(".js") else "text/css"
+if path.endswith(".js") and failure == "entry_returns_html":
+    body, media = index, "text/html"
+if not path and failure == "stale_home":
+    body += b"old"
+if not path and failure == "wrong_media":
+    media = "text/plain"
+sys.stdout.buffer.write(body + ("\\n200 " + media).encode())
+""")
+            for command in (docker, findmnt, curl):
                 command.chmod(0o700)
             result = subprocess.run(["sh", str(work / SCRIPT.name), *args], capture_output=True, text=True,
                                     env=os.environ | {"PATH": f"{work}{os.pathsep}{os.environ['PATH']}"}, timeout=8)

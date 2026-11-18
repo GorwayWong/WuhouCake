@@ -47,10 +47,12 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
   const [exit, setExit] = useState<{ leave: () => void; stay: () => void } | null>(null);
   const [exitError, setExitError] = useState('');
   const slotRevision = useRef<string | null>(null), sourceRevision = useRef<string | undefined>(undefined);
+  const resumedUpload = useRef(false);
   const active = useRef<AbortController | null>(null), form = useRef<HTMLFormElement>(null);
-  const dirty = Boolean(pending || editing && JSON.stringify([name, items, original, member]) !== baseline.current);
+  const dirty = Boolean(pending || editing && (resumedUpload.current || JSON.stringify([name, items, original, member]) !== baseline.current));
   function snapshot(operation = pending): PackageDraftRecord {
-    return { accountId, tabId: tabId.current, editing, name, items, original, member, baseline: baseline.current, creationKey: creationKey.current, pending: operation };
+    return { accountId, tabId: tabId.current, editing, name, items, original, member, baseline: baseline.current,
+      creationKey: creationKey.current, pending: operation, resumedUpload: resumedUpload.current || undefined, sourceRevision: sourceRevision.current };
   }
   function persist(record: PackageDraftRecord | null) {
     const next = storageQueue.current.catch(() => {}).then(async () => {
@@ -69,7 +71,7 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
         if (!alive) return;
         if (saved) {
           storageRevision.current = saved.revision ?? null;
-          if (saved.editing === 'new' && !saved.pending) {
+          if (saved.editing === 'new' && !saved.pending && !saved.resumedUpload) {
             // 旧版会把新套餐写入当前标签页。迁移仅在共享槽为空时写入。
             const changed = JSON.stringify([saved.name, saved.items, saved.original, saved.member]) !== saved.baseline;
             if (changed && !await readPackageDraft(accountId, packageCreationSlot)) {
@@ -82,6 +84,9 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
           } else {
             setEditing(saved.editing); setName(saved.name); setItems(saved.items); setOriginal(saved.original); setMember(saved.member);
             baseline.current = saved.baseline; creationKey.current = saved.creationKey; setPending(saved.pending);
+            resumedUpload.current = Boolean(saved.resumedUpload);
+            sourceRevision.current = saved.sourceRevision ?? saved.pending?.draftRevision;
+            slotRevision.current = sourceRevision.current ?? null;
             setMessage(saved.pending ? '已恢复待核对操作，请先确认原请求结果。' : '已恢复本机暂存的套餐，请核对后保存。');
           }
         }
@@ -135,6 +140,7 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
     baseline.current = JSON.stringify([next.name, next.items, next.original, next.member]);
     creationKey.current = saved?.creationKey ?? randomUUID();
     sourceRevision.current = saved?.revision;
+    resumedUpload.current = Boolean(saved?.resumedUpload);
     setCandidate(null); setEditing(value); setName(next.name); setItems(next.items); setOriginal(next.original); setMember(next.member);
     setErrors({}); setConflict(false); setLatest(null); setChoices({});
   }
@@ -149,16 +155,24 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
   function finishExit(save: boolean) {
     if (!exit || active.current) return;
     const leave = () => { setExit(null); setExitError(''); exit.leave(); };
-    if (!save) { leave(); return; }
+    if (!save && !resumedUpload.current) { leave(); return; }
     const controller = new AbortController(); active.current = controller;
     setBusy(true); onWritingChange(true); setExitError('');
-    void savePackageDraft({ ...snapshot(null), tabId: packageCreationSlot, creationKey: randomUUID() }, slotRevision.current)
+    void (async () => {
+      if (save) {
+        const previous = resumedUpload.current && storageRevision.current !== null
+          ? { tabId: tabId.current, revision: storageRevision.current } : undefined;
+        slotRevision.current = await savePackageDraft({ ...snapshot(null), tabId: packageCreationSlot,
+          creationKey: resumedUpload.current ? creationKey.current : randomUUID(), sourceRevision: undefined }, slotRevision.current, previous);
+        if (previous) storageRevision.current = null;
+      } else if (storageRevision.current !== null) await persist(null);
+    })()
       .then(() => {
-        if (!controller.signal.aborted) { setMessage('草稿已保存。'); leave(); }
+        if (!controller.signal.aborted) { if (save) setMessage('草稿已保存。'); leave(); }
       })
       .catch(async failure => {
         if (controller.signal.aborted) return;
-        if (failure instanceof PackageDraftConflict) {
+        if (save && failure instanceof PackageDraftConflict && failure.tabId === packageCreationSlot) {
           try {
             const saved = await readPackageDraft(accountId, packageCreationSlot);
             if (controller.signal.aborted) return;
@@ -167,7 +181,7 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
             return;
           } catch { if (controller.signal.aborted) return; }
         }
-        setExitError('草稿保存失败。请保留当前页面，检查浏览器存储空间后重试。');
+        setExitError(packageDraftStorageMessage(failure, '草稿保存失败。请保留当前页面，检查浏览器存储空间后重试。'));
       })
       .finally(() => {
         if (active.current === controller) { active.current = null; setBusy(false); onWritingChange(false); }
@@ -207,14 +221,15 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
         body = multipart;
       }
       sent = true;
-      await writeRequest(operation.path, { method: operation.method, body, headers: operation.method === 'POST' ? { 'Idempotency-Key': operation.key } : undefined, signal: controller.signal });
+      await writeRequest(operation.path, { method: operation.method, body, headers: operation.method === 'POST' ? { 'Idempotency-Key': operation.key } : undefined, signal: controller.signal },
+        operation.files?.length ? 150_000 : undefined);
       if (!controller.signal.aborted) await success(operation);
     } catch (failure) {
       if (controller.signal.aborted) return;
       if (!sent) { setStorageError(packageDraftStorageMessage(failure, '本机暂存失败，尚未发送保存请求。请保留当前页面，检查存储空间后重试。')); return; }
       if (creationResultUnknown(failure) || pending?.key === operation.key && rejectedBeforeWrite(failure)) { setError(failure); setPending(operation); }
       else {
-        try { await persist(editing === 'new' ? null : snapshot(null)); }
+        try { await persist(editing === 'new' && !resumedUpload.current ? null : snapshot(null)); }
         catch (storageFailure) {
           setStorageError(packageDraftStorageMessage(storageFailure, '请求未保存，但本机恢复记录未能更新。请重试确认原操作。'));
           setError(failure); setPending(operation);
@@ -230,6 +245,24 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
       }
     } finally { if (active.current === controller) { active.current = null; setBusy(false); onWritingChange(false); } }
   }
+  async function resumeEditing() {
+    if (active.current || !pending?.files?.length
+        || !window.confirm('请先核对套餐列表。原操作可能已保存，继续编辑会保留原提交标识。确定继续吗？')) return;
+    const controller = new AbortController(); active.current = controller;
+    setBusy(true); onWritingChange(true);
+    try {
+      const resumeCreation = pending.method === 'POST';
+      await persist({ ...snapshot(null), resumedUpload: resumeCreation || undefined });
+      if (controller.signal.aborted) return;
+      resumedUpload.current = resumeCreation;
+      setPending(null); setError(null); setStorageError('');
+    } catch (failure) {
+      if (!controller.signal.aborted) setStorageError(packageDraftStorageMessage(failure, '本机草稿更新失败，原待确认记录仍保留。'));
+    } finally {
+      if (active.current === controller) { active.current = null; setBusy(false); onWritingChange(false); }
+    }
+  }
+
   async function verify() {
     if (!pending || active.current) return;
     const operation = pending;
@@ -294,7 +327,13 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
     {message && <div className="notice" role="status">{message}</div>}
     {storageError && <p className="notice error" role="alert">{storageError}</p>}
     <ErrorNotice error={error} />
-    {pending && <div className="notice error" role="alert"><p>操作结果尚未确认，输入已保留。请先确认原请求结果，再继续编辑。</p><button className="secondary" disabled={busy} onClick={() => void verify()}>{busy ? '正在确认…' : '确认原操作结果'}</button></div>}
+    {pending && <div className="notice error" role="alert"><p>操作结果尚未确认，输入已保留。请先核对套餐列表。</p><div className="actions">
+      <button className="secondary" disabled={busy} onClick={() => void verify()}>{busy ? '正在确认…' : '确认原操作结果'}</button>
+      {!!pending.files?.length && <>
+        <a className="text-button" href="#/admin/order-packages" target="_blank" rel="noopener">另开标签页查看套餐列表</a>
+        <button className="secondary" disabled={busy} onClick={() => void resumeEditing()}>核对后继续编辑</button>
+      </>}
+    </div></div>}
     {editing ? <>
       <button className="text-button back-link" disabled={disabled} onClick={close}><ArrowLeft />返回套餐列表</button>
       <form ref={form} noValidate onSubmit={event => {

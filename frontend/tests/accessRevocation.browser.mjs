@@ -50,6 +50,7 @@ test('共享 Cookie 换员工后旧标签页不重发订单修改且必须重新
       return ok(route, model.order);
     });
     await page.evaluate(id => { location.hash = '#/orders/' + id; }, orderId);
+    await page.getByRole('button', { name: '保存草稿并退出' }).click();
     await page.getByRole('button', { name: '编辑资料', exact: true }).click();
     await page.locator('#edit-phone').fill('13900008888');
     const second = await context.newPage();

@@ -137,6 +137,39 @@ test('响应丢失后重载，用原始载荷及相同标识重试，仅产生�
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
+test('录单响应体挂起后解除页面锁定，原提交可按相同键取回', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await page.clock.install();
+    await page.evaluate(() => {
+      const original = window.fetch.bind(window);
+      window.fetch = async (path, options) => {
+        const result = await original(path, options);
+        if (path !== '/api/orders' || options?.method !== 'POST' || window.firstOrderHeaders) return result;
+        if (!result.ok) throw new Error('测试订单未创建');
+        window.firstOrderHeaders = true;
+        return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{')); } }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } });
+      };
+    });
+    await complete(page);
+    await page.getByRole('button', { name: '创建订单', exact: true }).click();
+    await page.waitForFunction(() => window.firstOrderHeaders);
+    const original = await pending(page);
+    assert.ok(original.pending);
+    await page.clock.fastForward(60_001);
+    await page.getByText('提交结果待确认，可以重试。', { exact: true }).waitFor();
+    await page.getByRole('link', { name: '退出下单', exact: true }).click();
+    await page.waitForURL('**/#/?date=*');
+    assert.deepEqual((await pending(page)).pending, original.pending);
+    await page.getByRole('link', { name: '新建订单', exact: true }).click();
+    await page.getByRole('button', { name: '重试提交' }).click();
+    await waitFor(async () => (await pending(page)) === null);
+    assert.deepEqual(model.requests.map(request => request.id), [original.requestId, original.requestId]);
+    assert.deepEqual(model.requests[1].body, original.pending);
+    assert.equal(model.orders.size, 1);
+  } finally { await context.close(); }
+});
 test('明确拒绝后解锁表单，草稿保持可编辑', async () => {
   const { context, page, model } = await fixture();
   try {

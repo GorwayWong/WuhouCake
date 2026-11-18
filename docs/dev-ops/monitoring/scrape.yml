@@ -26,6 +26,16 @@ scrape_configs:
       - {source_labels: [__address__], target_label: __param_target}
       - {source_labels: [__param_target], target_label: instance}
       - {target_label: __address__, replacement: blackbox.example.internal:9115}
+  - job_name: wuhou-frontend-probe
+    metrics_path: /probe
+    params:
+      module: [wuhou_frontend]
+    static_configs:
+      - targets: ["https://shop.example.com/"]
+    relabel_configs:
+      - {source_labels: [__address__], target_label: __param_target}
+      - {source_labels: [__param_target], target_label: instance}
+      - {target_label: __address__, replacement: blackbox.example.internal:9115}
   - job_name: wuhou-ready-probe
     scheme: https
     metrics_path: /ready
