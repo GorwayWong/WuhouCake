@@ -42,20 +42,20 @@ export function OrderRecognition({ initialDraft, getDraft, getFeedback, manualFi
   const parse = async () => {
     const key = text.replace(/\r\n?/g, '\n').trim();
     if (busy || parseBusy.current || !key || text.length > recognitionLimit || processed.current.has(key)) return;
-    const request = lifecycle.current.begin();
+    const signal = lifecycle.current.begin();
     parseBusy.current = true;
     setParsing(true); setFailure(null); setNotice('');
     try {
-      const next = await api<RecognitionDraft>('/orders/recognition/parse', { method: 'POST', body: { text }, signal: request.signal });
-      if (!lifecycle.current.accepts(request)) return;
+      const next = await api<RecognitionDraft>('/orders/recognition/parse', { method: 'POST', body: { text }, signal });
+      if (signal.aborted) return;
       if (!next || !validFields(next.fields) || !Array.isArray(next.items)
         || !next.items.every(item => item && typeof item.id === 'string' && validFields(item.fields))) {
         throw new Error('识别结果格式无效。');
       }
       fill(next);
       processed.current.add(key);
-    } catch (error) { if (lifecycle.current.accepts(request)) setFailure(error); }
-    finally { if (lifecycle.current.accepts(request)) { parseBusy.current = false; setParsing(false); } }
+    } catch (error) { if (!signal.aborted) setFailure(error); }
+    finally { if (!signal.aborted) { parseBusy.current = false; setParsing(false); } }
   };
   return <section className="recognition-section">
     <details ref={panel} className="panel recognition-panel" open={open} onToggle={event => { if (event.currentTarget.open !== open) onEditorChange({ open: event.currentTarget.open }); }}><summary><strong>粘贴下单信息</strong><span>可选</span></summary>

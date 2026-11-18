@@ -34,7 +34,7 @@ import { uniqueActivities } from './activities';
 import { Select } from './Select';
 import { hasPermissions, orderAccess } from './access';
 import { productionFields } from './productionFields';
-import { orderRequirements } from './orderingRequirements';
+import { itemRequirement } from './orderingRequirements';
 import { nextProductionAction, previousOrderStep } from './orderTransitions';
 import { historicalStatusNames, productionStatuses } from './orderStates';
 import { ItemPageNumber } from './ItemPageNumber';
@@ -620,7 +620,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
           {(frontDeskView || access.productionView) && (
             <section className="front-order-requirements" aria-labelledby="front-requirements-title">
               <h3 id="front-requirements-title">特殊要求</h3>
-              <p>{orderRequirements([currentProduct])[0]?.text || '无'}</p>
+              <p>{itemRequirement(currentProduct.attributes) || '无'}</p>
             </section>
           )}
         </div>

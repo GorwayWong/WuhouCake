@@ -10,8 +10,6 @@
 .order-partition>h3{font-size:16px;margin:16px 0;color:var(--ink)}
 .order-partition>h3>span{font-size:13px;color:#4a5650;font-weight:400}
 .production-summary .production-checklist label{display:flex;flex-direction:row;text-align:left;align-items:center;gap:12px;min-height:48px;padding:10px 0;cursor:pointer}
-.production-summary .order-requirements{padding:12px 0;border-top:1px solid #e4e7e2;margin:0}
-.production-summary .order-requirements h2{font-size:15px}
 .optional-time-help{display:flex;align-items:center;gap:12px;color:#4a5650;font-size:13px;grid-column:1/-1}
 @media(max-width:600px){.production-summary .order-progress{grid-auto-flow:row;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 8px}.production-summary .progress-label{font-size:12px;white-space:nowrap}.production-summary .progress-step:nth-child(4n)::after{display:none}}
 .customer-page{max-width:800px;margin:0 auto;padding:24px;min-width:0}
@@ -2070,12 +2068,6 @@ button,a{
 .pending-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 5px;margin-left:6px;border-radius:10px;background:#b33b2e;color:white;font-size:12px;font-weight:700;line-height:1}
 .history-unpaid-action{margin:12px 0 18px;flex-wrap:wrap}
 #management-advanced-filters[hidden]{display:none}
-.order-requirements{background:#fff8e6;border:1px solid #d4b66e;box-shadow:none}
-.order-requirements h2{display:flex;align-items:center;gap:10px;font-size:20px;color:#59400b;margin:0}
-.order-requirements dl{margin:0;display:flex;flex-direction:column;gap:16px}
-.order-requirements dl>div{display:grid;grid-template-columns:minmax(120px,200px) minmax(0,1fr);gap:20px;align-items:baseline}
-.order-requirements dt{font-size:15px;font-weight:600;overflow-wrap:anywhere;color:#59400b}
-.order-requirements dd,.requirement-empty{margin:0;font-size:20px;font-weight:600;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;color:#352a12}
 .detail-summary .detail-status{width:100%}
 .detail-page>.payment-panel{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
 .detail-page>.payment-panel h2{margin-right:auto}
@@ -2084,7 +2076,7 @@ button,a{
 .payment-panel .payment-heading{flex-basis:100%;width:100%;margin-bottom:0}
 .order-category-list{display:block;font-weight:600;margin-bottom:6px;color:#324b3b}
 .order-result-date,.order-result-phone{font-variant-numeric:tabular-nums}
-@media(max-width:600px){.order-requirements dl>div{grid-template-columns:1fr;gap:4px}.order-requirements dd{font-size:18px}.detail-page>.payment-panel{gap:16px}.detail-page>.payment-panel h2{width:100%}}
+@media(max-width:600px){.detail-page>.payment-panel{gap:16px}.detail-page>.payment-panel h2{width:100%}}
 .shipping-summary .section-heading{align-items:baseline;flex-wrap:wrap;gap:8px}
 .summary-scope{font-size:13px;color:#46564d;margin:0}
 .shipping-counts{display:flex;gap:40px;margin:20px 0;flex-wrap:wrap}

@@ -120,28 +120,6 @@ export function undoRecognition(current: OrderDraft, before: OrderDraft, after: 
   if (!result.items.length) result.items.push(newItem());
   return result;
 }
-export function mergeModelFields(rules: RecognitionDraft, suggestions: { itemId: string; field: string; candidate: RecognitionField }[]): RecognitionDraft {
-  const result = structuredClone(rules);
-  const seen = new Map<string, string | null>(), conflicts = new Set<string>();
-  for (const suggestion of suggestions) {
-    const item = result.items.find(x => x.id === suggestion.itemId), original = item?.fields[suggestion.field];
-    if (!item || !original) { result.issues.push('模型建议的商品或字段归属无效，已忽略。'); continue; }
-    if (original.source === 'RULE' && original.value !== null) {
-      if (original.value !== suggestion.candidate.value) result.issues.push('模型与规则候选冲突，保留规则值，请人工核对。');
-      continue;
-    }
-    const key = suggestion.itemId + '.' + suggestion.field;
-    if (conflicts.has(key)) continue;
-    if (seen.has(key) && seen.get(key) !== suggestion.candidate.value) {
-      const initial = rules.items.find(x => x.id === suggestion.itemId)!.fields[suggestion.field];
-      item.fields[suggestion.field] = structuredClone(initial); conflicts.add(key);
-      result.issues.push('同一字段的AI建议互相冲突，已保留原候选，请人工填写。'); continue;
-    }
-    seen.set(key, suggestion.candidate.value);
-    item.fields[suggestion.field] = { ...suggestion.candidate, source: 'MODEL', needsReview: true };
-  }
-  return result;
-}
 export const recognitionRowKey = (field: string, itemId?: string) => (itemId || 'order') + '.' + field;
 export interface RecognitionFeedback {
   field: string; itemKey?: string; value: string; source: RecognitionField['source']; needsReview: boolean; error?: string; hint?: string;
@@ -201,10 +179,10 @@ export function orderEntryRecognition(result: RecognitionDraft, manualFields: Re
 }
 
 export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result: RecognitionDraft,
-  manualFields: ReadonlySet<string>, options: { supplement?: boolean; targets?: Record<string, string> } = {}) {
+  manualFields: ReadonlySet<string>) {
   let next = structuredClone(draft), cleared = 0;
   let feedback: RecognitionFeedbackMap = {};
-  const targets: Record<string, string> = options.supplement ? { ...options.targets } : {};
+  const targets: Record<string, string> = {};
   const ignoredField = (field: string, value: string | null) =>
     field === 'unitPriceCents' || field === 'memberPriceCents' ||
     (field === 'specification' && Boolean(value) && visibleSpecification(value) === '');
@@ -214,7 +192,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     try { validateCandidate(field, recognitionValue(field, candidate.value)); return true; } catch { return false; }
   });
   const products = result.items.filter(item => validContent(item.fields));
-  const replacedItems = !options.supplement && products.length > 0;
+  const replacedItems = products.length > 0;
   if (replacedItems) {
     next.items = products.map(item => { const empty = emptyRecognitionItem(); targets[item.id] = empty.key; return empty; });
   }
@@ -242,27 +220,25 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
       mark((error as Error).message);
     }
   };
-  if (!options.supplement) {
-    const recognizable = products.length > 0 || Object.values(result.fields).some(field => field.source === 'RULE');
-    if (recognizable && !result.fields.requestedReceiveDate?.value && !result.fields.requestedReceiveAt?.value
-      && !manualFields.has('requestedReceiveDate') && !manualFields.has('requestedReceiveAt')
-      && next.requestedReceiveDate === initial.requestedReceiveDate && next.requestedReceiveAt === initial.requestedReceiveAt) {
-      next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared = 1;
-      if (![result.fields.requestedReceiveDate, result.fields.requestedReceiveAt].some(field => field?.needsReview && field.issues.length)) {
-        feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填取货日期。' };
-      }
+  const recognizable = products.length > 0 || Object.values(result.fields).some(field => field.source === 'RULE');
+  if (recognizable && !result.fields.requestedReceiveDate?.value && !result.fields.requestedReceiveAt?.value
+    && !manualFields.has('requestedReceiveDate') && !manualFields.has('requestedReceiveAt')
+    && next.requestedReceiveDate === initial.requestedReceiveDate && next.requestedReceiveAt === initial.requestedReceiveAt) {
+    next.requestedReceiveDate = ''; next.requestedReceiveAt = ''; cleared = 1;
+    if (![result.fields.requestedReceiveDate, result.fields.requestedReceiveAt].some(field => field?.needsReview && field.issues.length)) {
+      feedback[feedbackKey('requestedReceiveAt')] = { field: 'requestedReceiveAt', value: '', source: null, needsReview: false, error: '请补填取货日期。' };
     }
-    // 日期先于完整时刻写入，避免服务端字段顺序影响最终值。
-    const order = ['requestedReceiveDate', 'requestedReceiveAt', 'plannedFinishAt'];
-    const fields = Object.entries(result.fields).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
-    fields.forEach(([field, candidate]) => write(field, candidate));
   }
+  // 日期先于完整时刻写入，避免服务端字段顺序影响最终值。
+  const order = ['requestedReceiveDate', 'requestedReceiveAt', 'plannedFinishAt'];
+  const fields = Object.entries(result.fields).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
+  fields.forEach(([field, candidate]) => write(field, candidate));
   for (const [index, item] of result.items.entries()) {
-    const onlyErrors = !options.supplement && !replacedItems;
+    const onlyErrors = !replacedItems;
     const itemKey = onlyErrors ? next.items[index]?.key : targets[item.id];
     if (!itemKey || !next.items.some(existing => existing.key === itemKey)) continue;
     Object.entries(item.fields).sort(([a], [b]) => Number(b === 'productType') - Number(a === 'productType')).forEach(([field, candidate]) => {
-      if (!options.supplement || candidate.source === 'MODEL') write(field, candidate, itemKey, onlyErrors);
+      write(field, candidate, itemKey, onlyErrors);
     });
   }
   for (const mark of Object.values(feedback)) {
@@ -272,8 +248,7 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     }
     if (mark.error && mark.value && mark.value === currentValue(draft, mark.field, mark.itemKey)) mark.error += '。原值未修改。';
   }
-  const changed = Object.values(feedback).filter(mark => !mark.error && currentValue(draft, mark.field, mark.itemKey) !== mark.value);
-  const applied = changed.length, overwritten = changed.filter(mark => currentValue(draft, mark.field, mark.itemKey)).length;
+  const applied = Object.values(feedback).filter(mark => !mark.error && currentValue(draft, mark.field, mark.itemKey) !== mark.value).length;
   next.items = next.items.map(item => {
     if (normalizeProductType(item.productType) !== 'OTHER') return item;
     if (!replacedItems && !Object.values(feedback).some(mark => mark.itemKey === item.key)) return item;
@@ -281,18 +256,19 @@ export function applyRecognition(draft: OrderDraft, initial: OrderDraft, result:
     feedback = foldOtherRecognitionFeedback(converted, feedback);
     return converted;
   });
-  return { draft: next, targets, applied, overwritten, cleared, feedback, replacedItems };
+  return { draft: next, applied, cleared, feedback, replacedItems };
 }
 export class RecognitionLifecycle {
-  private generation = 0;
-  private controllers: AbortController[] = [];
-  begin(): { generation: number; signal: AbortSignal } {
-    this.cancel(); return this.request();
+  private controller?: AbortController;
+
+  begin(): AbortSignal {
+    this.cancel();
+    this.controller = new AbortController();
+    return this.controller.signal;
   }
-  request(): { generation: number; signal: AbortSignal } {
-    const controller = new AbortController(); this.controllers.push(controller);
-    return { generation: this.generation, signal: controller.signal };
+
+  cancel() {
+    this.controller?.abort();
+    this.controller = undefined;
   }
-  accepts(request: { generation: number; signal: AbortSignal }): boolean { return request.generation === this.generation && !request.signal.aborted; }
-  cancel() { this.generation++; this.controllers.forEach(x => x.abort()); this.controllers = []; }
 }

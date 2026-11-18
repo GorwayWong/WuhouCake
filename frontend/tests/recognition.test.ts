@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { changeItemDraft, createOrderRequest, newDraft, newItem } from '../src/orderForm.ts';
 import type { RecognitionDraft, RecognitionField } from '../src/types.ts';
-import { RecognitionLifecycle, applyRecognition, emptyRecognitionItem, mergeModelFields, recognitionValue,
+import { RecognitionLifecycle, applyRecognition, emptyRecognitionItem, recognitionValue,
   setCandidate, undoRecognition, validateCandidate, retainRecognitionFeedback, formFeedback, feedbackKey, orderEntryRecognition } from '../src/recognition.ts';
 import { decodeOrderDraft, freshOrderDraft } from '../src/orderDraftStorage.ts';
 import { cakeDefaults, normalizeSize } from '../src/productRules.ts';
@@ -184,7 +184,7 @@ test('没有有效商品内容时保留已有商品，不因空标题或无效�
   assert(filled.feedback[feedbackKey('quantity', current.items[0].key)].error);
   result.items = []; assert.deepEqual(apply(current, result).draft.items, current.items);
 });
-test('纯单位不会替换商品、清除取货日期或覆盖补充识别的商品说明', () => {
+test('纯单位不会替换商品、清除取货日期', () => {
   const current = newDraft('2026-10-16');
   const item = current.items[0];
   item.name = '原蛋糕';
@@ -200,12 +200,6 @@ test('纯单位不会替换商品、清除取货日期或覆盖补充识别的�
   assert.deepEqual(current, before);
   assert.equal(filled.replacedItems, false);
   assert.equal(filled.cleared, 0);
-
-  result.items[0].fields.specification = field('个/块', 'MODEL');
-  const supplemented = applyRecognition(current, current, result, new Set(), { supplement: true, targets: { unit: item.key } });
-  assert.deepEqual(supplemented.draft, before);
-  assert.deepEqual(current, before);
-  assert.equal(supplemented.applied, 0);
 
   result.items.push({
     id: 'valid', fields: { name: field('新点心'), quantity: field('3'), specification: field('块') },
@@ -244,18 +238,6 @@ test('撤销将收货日期与时刻作为整体，保留用户只修改时刻�
   const restored = undoRecognition(current, before, after);
   assert.equal(restored.requestedReceiveDate, '2026-11-03'); assert.equal(restored.requestedReceiveAt, '2026-11-03T19:30');
 });
-test('AI补充只写入模型字段，不替换商品、不重放规则，撤销保留后续手工修改', () => {
-  const initial = newDraft('2026-10-16'), rules = candidate(), first = apply(initial, rules);
-  const current = structuredClone(first.draft); current.phone = '13900000013'; current.items[0].name = '人工名称';
-  const merged = mergeModelFields(rules, [{ itemId: 'item-1', field: 'flavor', candidate: field('动物奶油', 'MODEL') }]);
-  const filled = applyRecognition(current, initial, merged, new Set(), { supplement: true, targets: first.targets });
-  assert.deepEqual(filled.draft.items.map(item => item.key), current.items.map(item => item.key));
-  assert.equal(filled.draft.phone, current.phone); assert.equal(filled.draft.items[0].name, '人工名称');
-  assert.equal(filled.draft.items[0].attributes.flavor, '动物奶油');
-  assert.equal(filled.feedback[feedbackKey('flavor', current.items[0].key)].needsReview, true);
-  const edited = structuredClone(filled.draft); edited.items[0].attributes.flavor = '手改奶油';
-  assert.equal(undoRecognition(edited, current, filled.draft).items[0].attributes.flavor, '手改奶油');
-});
 test('缺失日期清空未手改初始日期，保留手动日期；非订单不修改草稿', () => {
   const initial = newDraft('2026-10-16'), result = candidate(); result.fields.requestedReceiveDate = field(null, 'RULE', true);
   const filled = apply(initial, result); assert.equal(filled.draft.requestedReceiveDate, ''); assert.equal(filled.cleared, 1);
@@ -272,19 +254,10 @@ test('完整时刻优先于日期，不依赖返回字段顺序；未知商品�
   assert.equal(filled.draft.requestedReceiveAt, '2026-11-03T18:30'); assert.equal(filled.draft.items[0].productType, '');
   assert(filled.feedback[feedbackKey('productType', filled.draft.items[0].key)].error);
 });
-test('模型冲突保留规则，重复模型建议冲突不以最后一条覆盖', () => {
-  const rules = candidate(), result = mergeModelFields(rules, [
-    { itemId: 'item-1', field: 'filling', candidate: field('草莓', 'MODEL') },
-    { itemId: 'item-1', field: 'flavor', candidate: field('动物奶油', 'MODEL') },
-    { itemId: 'item-1', field: 'flavor', candidate: field('植物奶油', 'MODEL') },
-  ]);
-  assert.equal(result.items[0].fields.filling.value, rules.items[0].fields.filling.value);
-  assert.equal(result.items[0].fields.flavor.value, null); assert.equal(result.issues.length, 2);
-});
 test('取消、下一轮和卸载使迟到响应失效', () => {
-  const lifecycle = new RecognitionLifecycle(), first = lifecycle.begin(), assist = lifecycle.request(), second = lifecycle.begin();
-  assert(first.signal.aborted && assist.signal.aborted); assert(!lifecycle.accepts(first)); assert(lifecycle.accepts(second));
-  lifecycle.cancel(); assert(!lifecycle.accepts(second));
+  const lifecycle = new RecognitionLifecycle(), first = lifecycle.begin(), second = lifecycle.begin();
+  assert(first.aborted); assert(!second.aborted);
+  lifecycle.cancel(); assert(second.aborted);
 });
 test('保留金额、字段白名单和规格校验，未知类型由正常表单补齐', () => {
   assert.equal(recognitionValue('unitPriceCents', '19929'), '199.29'); assert.equal(recognitionValue('totalAmountCents', '0'), '0.00');

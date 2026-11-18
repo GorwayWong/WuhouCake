@@ -73,6 +73,3 @@ export interface RecognitionDraft {
   fields: Record<string, RecognitionField>; items: RecognitionItem[]; issues: string[];
   fragments: { itemId: string | null; text: string }[]; unmappedText: string[]; assistAvailable: boolean;
 }
-export interface RecognitionAssist {
-  status: string; suggestions: { itemId: string; field: string; candidate: RecognitionField }[]; issues: string[];
-}
