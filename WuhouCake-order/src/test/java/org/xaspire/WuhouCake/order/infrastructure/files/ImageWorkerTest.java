@@ -155,16 +155,23 @@ class ImageWorkerTest {
         } finally { Files.deleteIfExists(pidFile); }
     }
     private static void assertCounters(ImageWorkerServer server, long success, long invalid, long timeout,
-                                       long failure, long busy) throws Exception {
-        try (var client = HttpClient.newHttpClient()) {
-            var request = HttpRequest.newBuilder(endpoint(server).resolve("/metrics")).build();
-            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            assertEquals(200, response.statusCode());
-            var expected = Map.of("admitted", success + invalid + timeout + failure, "success", success,
-                    "invalid_input", invalid, "timeout", timeout, "failed", failure, "rejected", busy);
-            expected.forEach((counter, value) -> assertTrue(response.body().lines().anyMatch(line ->
-                    line.equals("wuhou_image_worker_" + counter + "_total " + value)), response.body()));
-        }
+                                       long failure, long busy) {
+        String metrics = assertTimeoutPreemptively(Duration.ofSeconds(3), () -> {
+            try (var client = HttpClient.newHttpClient()) {
+                var request = HttpRequest.newBuilder(endpoint(server).resolve("/metrics")).build();
+                while (true) {
+                    var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, response.statusCode());
+                    // A fixed-length response can finish before the worker records the outcome and releases its permit.
+                    if (response.body().lines().anyMatch("wuhou_image_worker_active 0"::equals)) return response.body();
+                    Thread.sleep(10);
+                }
+            }
+        }, "Image worker did not become idle before checking counters");
+        var expected = Map.of("admitted", success + invalid + timeout + failure, "success", success,
+                "invalid_input", invalid, "timeout", timeout, "failed", failure, "rejected", busy);
+        expected.forEach((counter, value) -> assertTrue(metrics.lines().anyMatch(line ->
+                line.equals("wuhou_image_worker_" + counter + "_total " + value)), metrics));
     }
 
     @Test void clientDeadlineIncludesResponseBodyAndDoesNotDecodeOnFailure() throws Exception {
