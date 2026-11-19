@@ -13,7 +13,7 @@
 */5 * * * * /home/tago-deploy/wuhou/backup-ip-database.sh status >> /home/tago-deploy/wuhou/maintenance/backup.log 2>&1 # wuhou-ip-backup-status
 ```
 
-- 手动补跑执行 `./backup-ip-database.sh daily`。发布使用 `./deploy-ip.sh --release`，由它在切换前完成一次发布前备份。启动或回退时用 `./deploy-ip.sh` 恢复服务。
+- 手动补跑执行 `./backup-ip-database.sh daily`。发布使用 `./deploy-ip.sh --release "$candidate_image" "$candidate_release_dir"`，在切换前完成一次发布前备份。候选发布失败时按[发布恢复流程](ip-deployment.md#失败发布的恢复)处理。
 - 每份备份目录包含 `database.dump` 和 `manifest.json`。导出、完整验读和校验清单写入完成后才发布，失败时旧备份保留。日常备份在 `backups/daily/` 保留最近 14 份。发布前备份在 `backups/predeploy/` 保留最近 30 天内最多 5 份，并始终保留最新一份。成功后在同类目录轮换，失败时不清理旧备份。
 - 首次切换前用 `find backups releases -type f -name '*.dump' -printf '%s %p\n'` 盘点旧文件。旧目录中的发布回执和转储由运维保管。新备份策略覆盖统一目录。
 - 备份失败、04:35 后缺当天有效备份、磁盘低于 4 GiB 或 15% 时查看「服务器情况」。部署账号可查 `maintenance/backup.log`，具备主机日志权限时也可用 `journalctl -t wuhou-backup --since today` 核对告警和恢复。空余不足 2 GiB 时中止备份，先从日志、发布文件和磁盘使用量定位来源。页面显示状态不可确认时检查采集 cron 及挂载权限，手动运行 `./backup-ip-database.sh status`。全部定时任务停摆时，页面会在状态摘要过期后提示。

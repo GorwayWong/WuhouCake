@@ -3,9 +3,13 @@ set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 unset COMPOSE_FILE COMPOSE_PATH_SEPARATOR COMPOSE_ENV_FILES COMPOSE_DISABLE_ENV_FILE COMPOSE_PROJECT_NAME PITR_REPO_DIR
-unset DEPLOY_POSTGRES_PROJECT DEPLOY_POSTGRES_VOLUME DEPLOY_POSTGRES_SYSTEM_IDENTIFIER PITR_REPO_MOUNT PITR_REPO_FS_UUID
+unset DEPLOY_POSTGRES_PROJECT DEPLOY_POSTGRES_VOLUME DEPLOY_POSTGRES_SYSTEM_IDENTIFIER PITR_REPO_MOUNT PITR_REPO_FS_UUID APP_IMAGE RELEASE_DIR
 
 exec python3 - "$@" <<'PYTHON'
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import io
 import json
 import os
 from html.parser import HTMLParser
@@ -14,6 +18,8 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
+import zipfile
 import sys
 from urllib.parse import urlsplit
 
@@ -23,15 +29,30 @@ def stop(message):
 
 
 args = sys.argv[1:]
+release = bool(args and args[0] == "--release")
+rollback_safe = release and args[-1] == "--rollback-safe"
+candidate = args[1:-1] if rollback_safe else args[1:]
 check_only = "--check" in args
-release = "--release" in args
 disable_pitr = "--disable-pitr" in args
-services = [arg for arg in args if arg not in ("--check", "--disable-pitr", "--release")]
-if (len(set(args)) != len(args) or services not in ([], ["postgres"])
-        or disable_pitr and services != ["postgres"] or release and (check_only or services)):
-    stop("用法：./deploy-ip.sh [--release | [--check] [postgres [--disable-pitr]]]")
+services = [] if release else [arg for arg in args if arg not in ("--check", "--disable-pitr")]
+if (release and len(candidate) != 2 or not release and (
+        len(set(args)) != len(args) or services not in ([], ["postgres"]) or disable_pitr and services != ["postgres"])):
+    stop("用法：./deploy-ip.sh [--release IMAGE RELEASE_DIR [--rollback-safe] | [--check] [postgres [--disable-pitr]]]")
 
 compose = ["docker", "compose", "--env-file", ".env"]
+release_services = ["app", "image-worker", "gateway"]
+journal = Path("maintenance/release-pending.json")
+receipt = journal.with_name("release-last.json")
+
+if release or not check_only:
+    journal.parent.mkdir(exist_ok=True)
+    lock = journal.with_name("release.lock").open("a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        stop("已有发布或启动在运行。")
+    if journal.exists():
+        stop("上次发布未完成。请按运维手册处理 maintenance/release-pending.json。")
 
 
 def read(command, failure):
@@ -157,13 +178,15 @@ class EntryPage(HTMLParser):
         self.assets[url.path] = "css" if relation == "stylesheet" else "js"
 
 
-if not services:
+def frontend(command, expected_directory=None):
     try:
-        gateway = json.loads(config("--format", "json", "gateway"))["services"]["gateway"]
+        gateway = json.loads(read(command + ["config", "--format", "json", "gateway"], "无法读取网关配置。"))["services"]["gateway"]
         site_mount, = [mount for mount in gateway["volumes"] if mount["target"] == "/srv"]
         if site_mount["type"] != "bind" or not site_mount.get("read_only"):
             raise ValueError("Frontend mount must be read-only")
         dist = Path(site_mount["source"]).resolve()
+        if expected_directory is not None and dist != Path(expected_directory, "dist").resolve():
+            raise ValueError("Compose did not select the candidate directory")
         index = (dist / "index.html").resolve(strict=True)
         if not index.is_relative_to(dist) or not index.is_file():
             raise ValueError("Invalid frontend entry")
@@ -188,25 +211,29 @@ if not services:
     if not shutil.which("curl"):
         stop("网关前端检查需要 curl。")
 
+    return assets, public_ip, https_port
 
-up = compose + ["up", "-d", "--wait", *services]
-if check_only:
-    print("原数据库与 PITR 配置预检通过。" + ("" if services else "前端产物预检通过。"))
-elif services:
-    os.execvp("docker", up)
-else:
-    if release and subprocess.run(["./backup-ip-database.sh", "predeploy"]).returncode:
-        stop("发布前备份或校验失败。请查看 wuhou-backup 日志。")
-    if subprocess.run(up).returncode:
-        stop("容器启动失败，请核对 Compose 状态和服务日志。")
+class ReleaseError(Exception):
+    pass
+
+
+def checked(command, failure, timeout=30):
+    try:
+        return subprocess.check_output(command, stderr=subprocess.DEVNULL, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+        raise ReleaseError(failure) from error
+
+
+def probe(command, site):
+    assets, public_ip, https_port = site
     failure = "应用未通过 readiness 检查，请核对 PostgreSQL、Redis 和应用日志。"
-    body = read(compose + ["exec", "-T", "app", "wget", "-T", "10", "-qO-",
+    body = checked(command + ["exec", "-T", "app", "wget", "-T", "10", "-qO-",
                            "http://127.0.0.1:8080/actuator/health/readiness"], failure)
     try:
         if json.loads(body).get("status") != "UP":
-            stop(failure)
+            raise ReleaseError(failure)
     except (ValueError, AttributeError):
-        stop(failure)
+        raise ReleaseError(failure)
     for path, (source, media_types) in assets.items():
         failure = f"网关前端检查失败：{path}。请核对 HTTPS、发布目录及静态文件响应。"
         try:
@@ -218,8 +245,185 @@ else:
             content, metadata = response.rsplit(b"\n", 1)
             status, media_type = metadata.decode("ascii").split(" ", 1)
             if status != "200" or media_type.split(";")[0].strip() not in media_types or content != source.read_bytes():
-                stop(failure)
+                raise ReleaseError(failure)
         except (OSError, subprocess.SubprocessError, ValueError):
-            stop(failure)
-    print("应用 readiness 与网关前端检查通过。")
+            raise ReleaseError(failure)
+
+
+def image_id(reference):
+    value = checked(["docker", "image", "inspect", "--format", "{{.Id}}", reference], "发布镜像必须已在本地。").strip()
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", value):
+        raise ReleaseError("无法识别本地镜像 ID。")
+    return value
+
+
+def previous_artifacts():
+    ids = checked(compose + ["ps", "-q", *release_services], "无法读取现有发布服务。").split()
+    if len(ids) != len(release_services):
+        raise ReleaseError("发布前需要一套运行中的基线服务。")
+    rows = json.loads(checked(["docker", "inspect", *ids], "无法读取现有容器。"))
+    running = {row["Config"]["Labels"]["com.docker.compose.service"]: row for row in rows}
+    app = image_id(environment["APP_IMAGE"])
+    gateway = running["gateway"]
+    mount, = [item for item in gateway["Mounts"] if item["Destination"] == "/srv"]
+    if (not all(running[name]["State"]["Running"] for name in release_services)
+            or any(running[name]["Image"] != app for name in ["app", "image-worker"])
+            or gateway["Image"] != image_id(environment.get("GATEWAY_IMAGE") or "caddy:2.10.2-alpine")
+            or mount["RW"] or Path(mount["Source"]).resolve() != Path(environment["RELEASE_DIR"], "dist").resolve()):
+        raise ReleaseError("现有发布与 .env 登记不符，请先核对基线镜像和前端目录。")
+    hashes = dict(line.split() for line in checked(compose + ["config", "--hash=*"], "无法验证运行中服务的 Compose 配置。").splitlines())
+    if any(running[name]["Config"]["Labels"].get("com.docker.compose.config-hash") != hashes.get(name)
+           or not hashes.get(name) for name in release_services):
+        raise ReleaseError("运行中服务的 Compose 配置已变化，请走单独维护流程。")
+    return {"image": app, "directory": environment["RELEASE_DIR"]}
+
+
+def flyway_history():
+    sql = ("SELECT json_build_array((SELECT system_identifier::text FROM pg_control_system()), "
+           "(SELECT json_agg(h ORDER BY installed_rank) FROM public.flyway_schema_history h))")
+    value = json.loads(checked(compose + ["exec", "-T", "-u", "postgres", "postgres", "psql", "-XAt",
+                                          "-v", "ON_ERROR_STOP=1", "-U", "wuhou", "-d", "wuhou", "-c", sql],
+                               "无法读取 Flyway 历史或数据库集群标识。"))
+    if value[0] != expected_cluster or not value[1] or not all(row["success"] for row in value[1]):
+        raise ReleaseError("Flyway 历史或数据库集群标识不满足回退条件。")
+    return value
+
+
+def migrations(image):
+    # Read packaged SQL from the image without starting the application.
+    command = ["docker", "run", "--pull=never", "--rm", "--network", "none", "--entrypoint", "cat",
+               image, "/app/application.jar"]
+    with tempfile.TemporaryFile() as jar:
+        subprocess.run(command, stdout=jar, stderr=subprocess.DEVNULL, check=True, timeout=60)
+        with zipfile.ZipFile(jar) as boot:
+            result = {}
+            def scan(archive, prefix, owner):
+                for name in archive.namelist():
+                    if name.startswith(prefix + "db/migration/") and not name.endswith("/"):
+                        result[(owner, name)] = hashlib.sha256(archive.read(name)).digest()
+            scan(boot, "BOOT-INF/classes/", "bootstrap")
+            for name in boot.namelist():
+                if name.startswith("BOOT-INF/lib/") and name.endswith(".jar"):
+                    with zipfile.ZipFile(io.BytesIO(boot.read(name))) as module:
+                        scan(module, "", Path(name).name)
+        if not result:
+            raise ReleaseError("镜像未包含可核实的 Flyway 迁移。")
+        return result
+
+
+def atomic_record(path, data):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as file:
+        tmp = Path(file.name)
+        try:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def record(path, data):
+    atomic_record(path, (json.dumps(data, ensure_ascii=False) + "\n").encode())
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+
+
+@contextmanager
+def candidate_config(image, directory):
+    env = Path(".env")
+    if env.is_symlink() or not env.is_file():
+        raise ReleaseError(".env 必须为普通文件。")
+    original = env.read_bytes()
+    content = original.decode()
+    for key, value in (("APP_IMAGE", image), ("RELEASE_DIR", directory)):
+        content, count = re.subn(r"^" + key + r"=[^\r\n]*", lambda match: f"{key}={value}", content, flags=re.M)
+        if count != 1:
+            raise ReleaseError(f".env 必须包含唯一的 {key}= 配置行。")
+    with tempfile.NamedTemporaryFile(dir=".", prefix=".release-", delete=False) as file:
+        temporary = Path(file.name)
+    try:
+        temporary.write_text(content)
+        yield ["docker", "compose", "--env-file", str(temporary)], original, content.encode()
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def apply_release(command, site):
+    checked(command + ["up", "-d", "--no-deps", "--pull", "never", "--wait", "--wait-timeout", "180", *release_services],
+            "发布服务启动失败，请核对容器状态和日志。", timeout=200)
+    probe(command, site)
+
+
+def publish():
+    image, directory = candidate
+    if not re.fullmatch(r"[a-zA-Z0-9_./:@-]+", image) or not re.fullmatch(r"/[a-zA-Z0-9_./-]+", directory):
+        raise ReleaseError("请指定本地候选镜像及不含空格的绝对发布目录。")
+    old = previous_artifacts()
+    baseline_site = frontend(compose)
+    probe(compose, baseline_site)
+    new_id = image_id(image)
+    if Path(directory).resolve() == Path(old["directory"]).resolve():
+        raise ReleaseError("候选前端须使用新目录。")
+    with candidate_config(new_id, directory) as (command, original, content):
+        site = frontend(command, directory)
+        resolved = json.loads(checked(command + ["config", "--format", "json", "app", "image-worker"],
+                                      "无法核对候选服务镜像。"))["services"]
+        if any(resolved[name]["image"] != new_id for name in ("app", "image-worker")):
+            raise ReleaseError("Compose 未选择指定的候选镜像。")
+        safe_schema = rollback_safe and migrations(old["image"]) == migrations(new_id)
+        history = flyway_history() if safe_schema else None
+        if subprocess.run(["./backup-ip-database.sh", "predeploy"], timeout=1250).returncode:
+            raise ReleaseError("发布前备份或校验失败。请查看 wuhou-backup 日志。")
+        metadata = {"previous": old, "candidate": {"image": new_id, "directory": directory},
+                    "cluster": expected_cluster, "sameMigrationHistoryRequired": history is not None, "state": "switching"}
+        record(journal, metadata)
+        try:
+            apply_release(command, site)
+            if Path(".env").read_bytes() != original:
+                raise ReleaseError("发布期间 .env 发生变化。")
+            atomic_record(Path(".env"), content)
+        except (ReleaseError, OSError) as error:
+            metadata.update(state="manual-recovery", failure=str(error) if isinstance(error, ReleaseError) else "发布配置写入失败")
+            record(journal, metadata)
+            try:
+                checked(command + ["stop", "-t", "10", *release_services], "无法停止候选发布服务。", timeout=45)
+                if (history is None or flyway_history() != history or Path(".env").read_bytes() != original
+                        or image_id(environment["APP_IMAGE"]) != old["image"]):
+                    raise ReleaseError("自动回退条件不满足，请执行人工恢复流程。")
+                apply_release(compose, baseline_site)
+                metadata.update(state="rolled-back")
+                record(receipt, metadata)
+                journal.unlink()
+            except (ReleaseError, OSError, ValueError, TypeError, KeyError) as rollback_error:
+                raise ReleaseError(f"{metadata['failure']} 自动回退未完成。请查阅发布记录和恢复手册。") from rollback_error
+            raise ReleaseError(f"{metadata['failure']} 已回退并验证上一版。") from error
+        metadata.update(state="published")
+        record(receipt, metadata)
+        journal.unlink()
+
+
+try:
+    up = compose + ["up", "-d", "--wait", *services]
+    if check_only:
+        if not services:
+            frontend(compose)
+        print("原数据库与 PITR 配置预检通过。" + ("" if services else "前端产物预检通过。"))
+    elif services:
+        checked(up, "PostgreSQL 启动失败，请核对 Compose 状态和服务日志。", timeout=200)
+    elif release:
+        publish()
+        print("应用 readiness 与网关前端检查通过，候选版本已登记。")
+    else:
+        site = frontend(compose)
+        checked(up, "容器启动失败，请核对 Compose 状态和服务日志。", timeout=200)
+        probe(compose, site)
+        print("应用 readiness 与网关前端检查通过。")
+except ReleaseError as error:
+    stop(str(error))
+except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, zipfile.BadZipFile):
+    stop("无法验证发布输入或执行发布。请检查部署目录和发布记录。")
 PYTHON

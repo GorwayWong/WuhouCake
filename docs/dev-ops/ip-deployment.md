@@ -42,12 +42,18 @@ docker compose exec -T -u postgres postgres psql -XAt -U wuhou -d wuhou \
 
 ```sh
 ./deploy-ip.sh --check
-./deploy-ip.sh --release
+./deploy-ip.sh --release "$candidate_image" "$candidate_release_dir"
 # 已启用 PITR 的环境在更新后执行。
 ./backup-ip-pitr.sh check
 ```
 
-正式发布先校验数据库卷和网关 `/srv` 挂载中的前端产物，再生成已验证的发布前备份。启动后脚本会验证应用 readiness，并通过本机 HTTPS 网关核对首页、入口脚本及样式与发布产物是否一致。检查使用公网 IP 的 HTTPS 证书和宿主机信任链。日常启动及回退使用 `./deploy-ip.sh`。服务器状态摘要目录与备份脚本的安装步骤见[备份与恢复手册](backup-recovery.md)。
+正式发布前，将候选镜像加载到本机，把候选静态产物放在新的绝对发布目录下的 `dist/`。保留当前运行版的 `.env`、镜像和发布目录。脚本先核对当前容器及数据库，探测当前 HTTPS 产物，再生成已验证的发布前备份。随后只切换应用、图片端和网关，验证 readiness 及 HTTPS 首页、入口脚本和样式的内容。检查使用公网 IP 的 HTTPS 证书和宿主机信任链。通过后原子登记候选镜像 ID 和目录，结果写入 `maintenance/release-last.json`。
+
+### 失败发布的恢复
+
+只有在隔离环境验证过上一版能读取候选版写入的业务数据后，正式发布才可加 `--rollback-safe`。如果候选失败，脚本停止候选发布服务，核对两版 Flyway 迁移文件、发布前后数据库集群标识和 Flyway 历史，并检查上一版镜像与配置。条件满足时切回上一版并重新探测。即使服务已恢复，候选发布仍返回失败，回执标记为 `rolled-back`。
+
+若回退条件不满足、回退探测失败或发布中断，读取 `maintenance/release-pending.json`，核对当前容器、`.env`、数据库迁移历史和发布期间的写入。先在隔离库验证选定镜像能使用当前 schema 和数据，再登记经过验证的镜像与静态目录。归档待处理记录后执行 `./deploy-ip.sh` 并复检工作台。对不可兼容的迁移优先准备前滚修复。需要恢复数据库时按[备份与恢复手册](backup-recovery.md)在隔离库验收并清点发布后的写入，生产切换单独审批。
 
 两种模式共用容器内 `/tmp/wuhoucake-app` 和应用预算。Caddy 分别限制订单图片正文 6 MiB 与套餐正文 65 MiB，并拒绝公网 Actuator。采集入口和告警规则见[生产监控](monitoring/README.md)。
 

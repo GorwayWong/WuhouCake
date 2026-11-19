@@ -118,8 +118,15 @@ export function receiveEvent(client: QueryClient, event: { event?: string; data:
     }
   } catch { synchronize(client); }
 }
-export type Connection = 'connecting' | 'live' | 'reconnecting';
-export function connectOrders(client: QueryClient, status: (value: Connection) => void, notify?: (change: OrderUpdate) => void): () => void {
+export async function discardOrderReads(client: QueryClient) {
+  const keys = ['calendar', 'workbench', 'order', 'customer-origin'];
+  const filter: QueryFilters = { predicate: query => keys.includes(String(query.queryKey[0])) };
+  await client.cancelQueries(filter);
+  client.removeQueries(filter);
+}
+
+export type Connection = 'connecting' | 'live' | 'reconnecting' | 'denied';
+export function connectOrders(client: QueryClient, status: (value: Connection) => void, notify?: (change: OrderUpdate) => void, onDenied?: () => void): () => void {
   let stopped = false;
   let active: AbortController | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
@@ -134,6 +141,13 @@ export function connectOrders(client: QueryClient, status: (value: Connection) =
     touch();
     try {
       const response = await authenticatedFetch('/orders/stream', { signal: active.signal, headers: { Accept: 'text/event-stream' } });
+      if (stopped || active.signal.aborted) return;
+      if (response.status === 403) {
+        close();
+        status('denied');
+        onDenied?.();
+        return;
+      }
       if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) throw new Error('Stream unavailable');
       openedAt = Date.now();
       const parser = createParser({ onEvent: event => {
@@ -167,8 +181,10 @@ export function connectOrders(client: QueryClient, status: (value: Connection) =
   window.addEventListener('online', resume);
   document.addEventListener('visibilitychange', resume);
   void connect();
-  return () => {
+  return close;
+
+  function close() {
     stopped = true; clearTimeout(retry); clearTimeout(watchdog); active?.abort();
     window.removeEventListener('online', resume); document.removeEventListener('visibilitychange', resume);
-  };
+  }
 }

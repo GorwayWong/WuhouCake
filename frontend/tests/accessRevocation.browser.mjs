@@ -195,3 +195,91 @@ test('确认被拒但详情可读，后续读取 503 仍保留核对草稿', asy
   assert.ok(await page.getByRole('button', { name: '暂存核对结果' }).isEnabled());
   assert.deepEqual(errors, []);
 });
+
+test('客户填单列表明确撤权后隐藏旧资料和待确认数量，重新获权后补读', async t => {
+  const { context, page, model, errors } = await submissionFixture(t);
+  let permission = true, status = 200;
+  await context.route('**/api/me', route => ok(route, {
+    accountId: model.account, nickname: '合成测试', jobRoles: ['FRONT_DESK'],
+    access: { permissions: model.permissions.filter(p => permission || p !== 'CUSTOMER_SUBMISSION_PROCESS'), uiCapabilities: [] },
+  }));
+  await context.route(/\/api\/customer-submissions\?/, route => status === 200
+    ? ok(route, { items: [detail], total: 1, page: 1, size: 20 })
+    : fail(route, status, status === 403 ? 'FORBIDDEN' : 'SERVICE_UNAVAILABLE'));
+  await context.route('**/api/customer-submissions/pending-count', route => ok(route, { count: 1 }));
+  await page.goto(base + '/?case=list-revocation#/customer-submissions');
+  await page.getByText(phone, { exact: true }).waitFor();
+  await page.getByLabel('1 份待处理填单').waitFor();
+
+  status = 503;
+  const unavailable = page.waitForResponse(r => r.url().includes('/customer-submissions?') && r.status() === 503);
+  await page.getByRole('button', { name: '刷新列表' }).click();
+  await unavailable;
+  assert.equal(await page.getByText(phone, { exact: true }).count(), 1);
+  await page.clock.runFor(12_000);
+  await page.getByRole('alert').waitFor();
+
+  permission = false;
+  status = 403;
+  await page.getByRole('button', { name: '刷新列表' }).click();
+  await page.getByText('当前账号不能查看客户填单。').waitFor();
+  assert.equal(await page.getByText(phone, { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel('1 份待处理填单').count(), 0);
+
+  permission = true;
+  status = 200;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await page.getByText(phone, { exact: true }).waitFor();
+  await page.getByLabel('1 份待处理填单').waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test('SSE 403 暂停重连，旧订单响应不能恢复显示，重新获权后补读', async t => {
+  const fixture = await submissionFixture(t);
+  const { context, page, model, errors } = fixture;
+  await fixture.complete();
+  await page.getByRole('button', { name: '创建订单', exact: true }).click();
+  await page.waitForURL('**/#/?date=*');
+  let permission = true, status = 200, connections = 0, reads = 0;
+  await context.route('**/api/me', route => ok(route, {
+    accountId: model.account, nickname: '合成测试', jobRoles: ['FRONT_DESK'],
+    access: { permissions: model.permissions.filter(p => permission || p !== 'ORDER_READ'), uiCapabilities: [] },
+  }));
+  await context.route('**/api/orders/stream', route => {
+    connections++;
+    return status === 200 ? route.fulfill({ contentType: 'text/event-stream', body: 'event: ready\ndata: {}\n\n' })
+      : fail(route, status, 'FORBIDDEN');
+  });
+  const late = Promise.withResolvers(), started = Promise.withResolvers();
+  let holdRead = false;
+  await context.route(`**/api/orders/${orderId}`, async route => {
+    reads++;
+    if (holdRead) { started.resolve(); await late.promise; }
+    await ok(route, model.order).catch(() => {});
+  });
+  await page.goto(base + '/?case=stream-revocation#/orders/' + orderId);
+  await page.getByRole('button', { name: '编辑资料', exact: true }).waitFor();
+  holdRead = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await started.promise;
+  permission = false;
+  status = 403;
+  await page.clock.runFor(2000);
+  await page.getByText('当前账号不能查看订单。').waitFor();
+  late.resolve();
+  await page.clock.runFor(70_000);
+  assert.equal(await page.getByRole('button', { name: '编辑资料', exact: true }).count(), 0);
+  const deniedConnections = connections;
+  await page.clock.runFor(70_000);
+  assert.equal(connections, deniedConnections);
+
+  holdRead = false;
+  permission = true;
+  status = 200;
+  const readsBefore = reads;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await page.getByRole('button', { name: '编辑资料', exact: true }).waitFor();
+  assert.ok(connections > deniedConnections);
+  assert.ok(reads > readsBefore);
+  assert.deepEqual(errors, []);
+});

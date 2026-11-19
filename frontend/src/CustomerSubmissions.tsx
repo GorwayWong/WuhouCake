@@ -86,7 +86,7 @@ function EntryManager({ account, onWritingChange }: { account: Account; onWritin
   </section>;
 }
 const submissionListViews = new Map<string, SubmissionListView>();
-export function CustomerSubmissions({ account, onWritingChange }: { account: Account; onWritingChange: (busy: boolean) => void }) {
+export function CustomerSubmissions({ account, onWritingChange, onDenied }: { account: Account; onWritingChange: (busy: boolean) => void; onDenied: () => void }) {
   const client = useQueryClient();
   const [view, setView] = useState<SubmissionListView>(() => submissionListViews.get(account.accountId) || { mine: false, status: 'PENDING', keyword: '', page: 1 });
   const [searchText, setSearchText] = useState(view.keyword);
@@ -94,9 +94,11 @@ export function CustomerSubmissions({ account, onWritingChange }: { account: Acc
   const changeView = (next: SubmissionListView) => { setView(next); submissionListViews.set(account.accountId, next); };
   const params = submissionListQuery(view);
   const query = useQuery({ queryKey: ['customer-submissions', params], gcTime: 0, staleTime: 0, queryFn: ({ signal }) => readQuery<Page<SubmissionDetail>>(`/customer-submissions?${params}`, signal), refetchInterval: 15000, enabled: canHandleSubmissions(account) });
+  const denied = query.error instanceof ApiError && query.error.status === 403;
+  useEffect(() => { if (denied) onDenied(); }, [denied, onDenied]);
   const actualPage = query.data?.page;
   const canCorrectPage = query.isFetchedAfterMount && query.isSuccess && !query.isFetching;
-  const result = actualPage === page ? query.data : undefined;
+  const result = !denied && actualPage === page ? query.data : undefined;
   useEffect(() => {
     if (canCorrectPage && actualPage != null && actualPage !== page) {
       const next = { mine, status, keyword, page: actualPage };

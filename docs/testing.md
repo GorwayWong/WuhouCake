@@ -45,6 +45,18 @@ python3 docs/verification/image-isolation-probe.py --base http://127.0.0.1:18080
 
 本轮验收只使用确定性回归和少量并发请求。后续独立资源验收由专用环境执行，流程可参照上文。
 
+## 隔离备份恢复
+
+使用 Java 21、Docker Compose、Python 3.11 及 OpenSSL，从仓库根目录执行。先用 Maven 构建 Spring Boot JAR。
+
+```sh
+python3 -B docs/dev-ops/compose/test-restore-ip.py --jar WuhouCake-bootstrap/target/WuhouCake-bootstrap-*.jar
+docker build -f docs/dev-ops/compose/postgres-pitr.Dockerfile -t wuhou-pitr-test:local docs/dev-ops/compose
+python3 -B docs/dev-ops/compose/test-restore-ip.py --jar WuhouCake-bootstrap/target/WuhouCake-bootstrap-*.jar --pitr-image wuhou-pitr-test:local
+```
+
+逻辑恢复和 PITR 分别运行。测试使用随机 Compose 项目、临时卷、回环端口、合成数据与临时凭据，完成后清理。通过条件为还原库中的订单、商品、图片摘要、付款和活动记录匹配，并通过应用 API 确认恢复点之后的订单缺席。输出记录目标时刻和从开始还原到业务验收完成的耗时。CI 每次运行逻辑恢复。
+
 ## 业务覆盖入口
 
 | 业务或风险 | 代表性测试 |
