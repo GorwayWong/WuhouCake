@@ -125,12 +125,12 @@ function ProductionProductFields({ item, completion }: { item: Detail['items'][n
   const fields = Object.fromEntries(productionFields(item));
   return <dl className="production-order-fields production-product-fields">
     <div className="wide"><dt>商品名称</dt><dd className="detail-product-name-row"><strong>{item.name}</strong>{completion}</dd></div>
-    {cake && <div><dt>尺寸</dt><dd>{fields['尺寸'] || '无'}</dd></div>}
-    <div><dt>数量</dt><dd>{item.quantity}</dd></div>
+    {cake && <div className="product-making-field"><dt>尺寸</dt><dd>{fields['尺寸'] || '无'}</dd></div>}
+    <div className="product-making-field"><dt>数量</dt><dd>{item.quantity}</dd></div>
     {cake && <>
-      <div><dt>夹馅</dt><dd>{fields['夹心'] || '无'}</dd></div>
-      <div><dt>奶油</dt><dd>{fields['奶油'] || '无'}</dd></div>
-      {fields['蛋糕胚口味'] !== '无' && <div><dt>蛋糕胚口味</dt><dd>{fields['蛋糕胚口味']}</dd></div>}
+      <div className="product-making-field"><dt>夹馅</dt><dd>{fields['夹心'] || '无'}</dd></div>
+      <div className="product-making-field"><dt>奶油</dt><dd>{fields['奶油'] || '无'}</dd></div>
+      {fields['蛋糕胚口味'] !== '无' && <div className="product-making-field"><dt>蛋糕胚口味</dt><dd>{fields['蛋糕胚口味']}</dd></div>}
     </>}
     {fields['规格'] && <div className="wide"><dt>商品备注</dt><dd className="product-spec-text">{fields['规格']}</dd></div>}
   </dl>;
@@ -439,7 +439,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     if (window.confirm(`${previous.label}？${impact}`)) mutation.mutate({ path: previous.path, body: { expectedVersion: order.version, ...(previous.action ? { action: previous.action } : {}) } });
   };
   const frontDeskView = access.customer && access.business;
-  const orderContactAtBottom = account.jobRoles.includes('DECORATOR');
+  const isDecorator = account.jobRoles.includes('DECORATOR');
   const orderTimeFields = <>
     <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
     <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>
@@ -595,21 +595,21 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       {editing?.kind === 'information' && informationEditor ? informationEditor : (
         <dl className="front-order-grid">
           {orderTimeFields}
-          {!orderContactAtBottom && orderContactFields}
+          {!isDecorator && orderContactFields}
         </dl>
       )}
-      {!orderContactAtBottom && orderCreatedTime}
+      {!isDecorator && orderCreatedTime}
     </section>}
     {access.productionView && <section className="panel production-order-information" aria-labelledby="production-order-information-title">
       <div className="section-heading"><h2 id="production-order-information-title">订单信息</h2></div>
       <dl className="production-order-fields production-order-contact">
         {orderTimeFields}
-        {!orderContactAtBottom && orderContactFields}
+        {!isDecorator && orderContactFields}
       </dl>
     </section>}
     {productNavigationView}
-    <section className="panel order-products" data-item-tone={currentProduct ? productIndex % 10 : undefined} aria-labelledby="order-products-title">
-      <div className="section-heading">
+    <section className="panel order-products" data-decorator={isDecorator || undefined} data-item-tone={currentProduct ? productIndex % 10 : undefined} aria-labelledby="order-products-title">
+      <div className={isDecorator && !canEditProducts ? 'sr-only' : 'section-heading'}>
         <h2 id="order-products-title">商品资料</h2>
         {canEditProducts && access.business && canEditItems(order) && (
           <button type="button" className="secondary compact" disabled={blocked} onClick={() => {
@@ -692,7 +692,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     {access.history && <details className="panel operation-history" aria-label="操作记录"><summary>操作记录</summary><div className="section-heading"><h2><ListBullets />最近操作记录</h2><a className="text-button" href={orderHref(id, returnToCalendar, undefined, true)}>全部操作记录<ArrowRight /></a></div><ActivityFeed id={id} items={order.items} preview /></details>}
     {hasPermissions(account, 'ORDER_CANCEL') && !readOnly && !['COMPLETED', 'CANCELLED'].includes(order.status) && <section className="cancel-section"><button className="danger-button" disabled={blocked} onClick={() => setShowCancel(!showCancel)} aria-expanded={showCancel}>取消订单</button>{showCancel && <form onSubmit={event => { event.preventDefault(); if (!blocked) mutation.mutate({ path: 'cancel', body: { expectedVersion: order.version, reason: reason.trim() } }); }}>{access.amounts && paid && <p className="form-help">此订单已登记付款，取消后请在线下核对款项。</p>}<label>取消原因<input value={reason} onChange={event => setReason(event.target.value)} required disabled={mutation.isPending} /></label><button className="danger-button" disabled={blocked || !reason.trim()}>确认取消订单</button></form>}</section>}
     {access.delete && !readOnly && <section className="cancel-section"><button type="button" className="danger-button" disabled={blocked} aria-expanded={showDelete} onClick={() => setShowDelete(value => !value)}>删除订单</button>{showDelete && <form onSubmit={event => { event.preventDefault(); if (!blocked && deleteReason.trim() && window.confirm(`确认删除订单 #${order.orderNo}？将退出工作台和经营统计，恢复前仅可在已删除订单中查询。`)) mutation.mutate({ path: 'delete', body: { expectedVersion: order.version, reason: deleteReason.trim() } }); }}><label>删除原因<textarea value={deleteReason} maxLength={1000} required disabled={mutation.isPending} onChange={event => setDeleteReason(event.target.value)} /></label><button className="danger-button" disabled={blocked || !deleteReason.trim()}>确认删除订单</button></form>}</section>}
-    {orderContactAtBottom && (frontDeskView || access.productionView) && <section className="panel" aria-labelledby="order-contact-title">
+    {isDecorator && (frontDeskView || access.productionView) && <section className="panel" aria-labelledby="order-contact-title">
       <div className="section-heading"><h2 id="order-contact-title">客户与交接</h2></div>
       <dl className={frontDeskView ? 'front-order-grid' : 'production-order-fields production-order-contact'}>{orderContactFields}</dl>
       {orderCreatedTime}

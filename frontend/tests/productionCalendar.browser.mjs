@@ -150,7 +150,7 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
     } } }));
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     const cake = { itemId: crypto.randomUUID(), name: '草莓蛋糕', productType: 'CAKE', quantity: 1,
-      attributes: { size: '8', filling: '草莓', flavor: '动物奶油', message: '生日快乐', requirements: '请把文字写在蛋糕正中'.repeat(20) },
+      attributes: { size: '8', base: '原味', filling: '芒果、奥利奥碎、黄油脆片', flavor: '动物奶油', message: '生日快乐', requirements: '请把文字写在蛋糕正中'.repeat(20) },
       productionStatus: 'COMPLETED', recentNotes: [] };
     const cookies = { itemId: crypto.randomUUID(), name: '手工饼干', productType: 'COOKIE', quantity: 3,
       attributes: { specification: '每盒六片', requirements: '分袋装' }, productionStatus: 'IN_PROGRESS', recentNotes: [] };
@@ -180,6 +180,19 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       assert.equal(await contacts.locator('a[href="tel:13800000000"]').count(), 1);
       assert.ok(await contacts.evaluate(section => section === section.parentElement.lastElementChild));
     };
+    const products = page.getByRole('region', { name: '商品资料' });
+    const checkProductFields = async (editable, baseLabel) => {
+      for (const name of ['添加商品', '编辑', '移除']) {
+        const action = products.getByRole('button', { name, exact: true });
+        if (editable) assert.ok(await action.isEnabled());
+        else assert.equal(await action.count(), 0);
+      }
+      for (const label of ['数量', '尺寸', baseLabel, '夹馅', '奶油']) {
+        const field = products.getByText(label, { exact: true }).locator('..');
+        assert.ok(await field.locator('dt').evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 16));
+        assert.ok(await field.locator('dd').evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 20 && el.scrollWidth <= el.clientWidth + 1));
+      }
+    };
     for (const width of [390, 1280]) {
       await page.setViewportSize({ width, height: 900 });
       await open();
@@ -191,7 +204,8 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await checkContacts(['下单人', '订购方式', '交接方式', '客户手机号']);
       await contacts.getByText('测试订购人', { exact: true }).waitFor();
       assert.equal(await page.getByText('合成取货地址', { exact: false }).count(), 0);
-      const products = page.getByRole('region', { name: '商品资料' });
+      await checkProductFields(false, '蛋糕胚口味');
+      assert.ok(await products.getByRole('checkbox', { name: '草莓蛋糕制作完成' }).isEnabled());
       await products.getByText(cake.attributes.requirements, { exact: true }).waitFor();
       await products.locator('.reference-image').scrollIntoViewIfNeeded();
       await products.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).waitFor();
@@ -213,6 +227,7 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await page.setViewportSize({ width, height: 900 });
       await open();
       await checkProgress();
+      await checkProductFields(true, '内胚');
       await checkContacts(['客户', '电话', '下单方式', '交接方式', '地址', '下单时间']);
       await contacts.getByText('门店自提 · 合成取货地址', { exact: true }).waitFor();
       assert.equal(await information.getByRole('button', { name: '编辑资料', exact: true }).isEnabled(), true);

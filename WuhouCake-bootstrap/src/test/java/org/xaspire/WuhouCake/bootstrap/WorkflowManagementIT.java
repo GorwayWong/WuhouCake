@@ -630,7 +630,7 @@ class WorkflowManagementIT {
         var adminProfile = admin.data("GET", "/api/me", null);
         assertEquals(409, admin.raw("PATCH", "/api/admin/employees/" + admin.id, Map.of("expectedVersion", adminProfile.path("version").asLong(), "nickname", "店主", "jobRoles", List.of("FRONT_DESK_CLERK"))).statusCode());
     }
-    @Test void decoratorCanMaintainItemsAndProductionButNeedsAnotherJobToEditOrderInformation() throws Exception {
+    @Test void decoratorCanCompleteProductionAndNeedsAnotherJobToMaintainItems() throws Exception {
         var input = new LinkedHashMap<>(create(a.id));
         input.put("orderingMethod", "到店");
         var order = a.data("POST", "/api/orders", input);
@@ -648,9 +648,18 @@ class WorkflowManagementIT {
         assertEquals(0, unchanged.path("version").asLong());
         assertEquals("到店", unchanged.path("orderingMethod").asText());
 
-        var renamed = b.data("PATCH", path, Map.of("expectedVersion", 0, "itemId", firstItem, "changes", Map.of("name", "改款蛋糕")));
-        assertEquals("改款蛋糕", renamed.at("/items/0/name").asText());
         String extraItem = UUID.randomUUID().toString();
+        assertEquals(403, b.raw("PATCH", path, Map.of("expectedVersion", 0, "itemId", firstItem, "changes", Map.of("name", "改款蛋糕"))).statusCode());
+        assertEquals(403, b.raw("POST", path + "/items", Map.of("expectedVersion", 0,
+                "item", Map.of("itemId", extraItem, "name", "补充商品", "quantity", 1))).statusCode());
+        assertEquals(403, b.raw("POST", path + "/items/" + firstItem + "/remove", Map.of("expectedVersion", 0)).statusCode());
+        var completed = b.data("PATCH", path + "/items/" + firstItem + "/production-status", Map.of("expectedVersion", 0, "completed", true));
+        assertEquals("COMPLETED", completed.at("/items/0/productionStatus").asText());
+
+        admin.data("PATCH", employee, Map.of("expectedVersion", decorator.path("version").asLong(),
+                "nickname", "兼岗裱花师", "jobRoles", List.of("DECORATOR", "FRONT_DESK_CLERK")));
+        var renamed = b.data("PATCH", path, Map.of("expectedVersion", completed.path("version").asLong(), "itemId", firstItem, "changes", Map.of("name", "改款蛋糕")));
+        assertEquals("改款蛋糕", renamed.at("/items/0/name").asText());
         var added = b.data("POST", path + "/items", Map.of("expectedVersion", renamed.path("version").asLong(),
                 "item", Map.of("itemId", extraItem, "name", "补充商品", "quantity", 1)));
         assertEquals(4, added.path("items").size());
@@ -659,8 +668,6 @@ class WorkflowManagementIT {
         var produced = b.data("POST", path + "/production-actions", Map.of("expectedVersion", removed.path("version").asLong(), "action", "COMPLETE_BASE"));
         assertEquals("LAYER", produced.path("status").asText());
 
-        admin.data("PATCH", employee, Map.of("expectedVersion", decorator.path("version").asLong(),
-                "nickname", "兼岗裱花师", "jobRoles", List.of("DECORATOR", "FRONT_DESK_CLERK")));
         var edited = b.data("PATCH", path + "/information", Map.of("expectedVersion", produced.path("version").asLong(),
                 "changes", Map.of("orderingMethod", "电话")));
         assertEquals("电话", edited.path("orderingMethod").asText());

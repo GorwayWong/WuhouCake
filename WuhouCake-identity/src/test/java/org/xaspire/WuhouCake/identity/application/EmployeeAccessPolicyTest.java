@@ -19,7 +19,7 @@ class EmployeeAccessPolicyTest {
             var access = policy.access(account(Set.of(role), SystemRole.STAFF));
             boolean production = Set.of(JobRole.PASTRY_CHEF, JobRole.PASTRY_SUPERVISOR, JobRole.DECORATOR, JobRole.BAKER).contains(role);
             assertEquals(role != JobRole.DECORATOR, access.allows(ORDER_EDIT));
-            assertEquals(role == JobRole.DECORATOR, access.allows(ORDER_ITEM_EDIT));
+            assertFalse(access.allows(ORDER_ITEM_EDIT));
             assertTrue(access.allows(ORDER_EXPORT));
             assertEquals(!production, access.allows(ORDER_PAYMENT_UPDATE));
             assertEquals(!production, access.allows(ORDER_AMOUNT_READ));
@@ -39,9 +39,9 @@ class EmployeeAccessPolicyTest {
         }
     }
 
-    @Test void decoratorOverridesKeepItemEditsAndOtherJobsCanGrantOrderEdits() {
-        var policy = new EmployeeAccessPolicy(Map.of(JobRole.DECORATOR, Set.of(ORDER_READ, ORDER_EDIT)));
-        assertEquals(Set.of(ORDER_READ, ORDER_ITEM_EDIT), policy.access(account(Set.of(JobRole.DECORATOR), SystemRole.STAFF)).permissions());
+    @Test void decoratorOverridesExcludeItemEditsAndOtherJobsCanGrantOrderEdits() {
+        var policy = new EmployeeAccessPolicy(Map.of(JobRole.DECORATOR, Set.of(ORDER_READ, ORDER_EDIT, ORDER_ITEM_EDIT)));
+        assertEquals(Set.of(ORDER_READ), policy.access(account(Set.of(JobRole.DECORATOR), SystemRole.STAFF)).permissions());
         for (var other : Set.of(JobRole.FRONT_DESK_CLERK, JobRole.STORE_MANAGER)) {
             assertTrue(policy.access(account(Set.of(JobRole.DECORATOR, other), SystemRole.STAFF)).allows(ORDER_EDIT));
         }

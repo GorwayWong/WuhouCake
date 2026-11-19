@@ -12,14 +12,14 @@ export function FrontProductDetails({ item, prices = false, itemSum = false, chi
     <div className="front-product-heading"><div><h3>商品名称</h3><div className="detail-product-name-row"><strong>{item.name}</strong>{completion}</div></div>{actions}</div>
     {children || <>
       <dl className="front-product-row front-product-pair">
-        <div><dt>数量</dt><dd>{item.quantity}</dd></div>
-        {cake && <div><dt>尺寸</dt><dd className="product-spec-text">{display(attributes.size)}</dd></div>}
+        <div className="product-making-field"><dt>数量</dt><dd>{item.quantity}</dd></div>
+        {cake && <div className="product-making-field"><dt>尺寸</dt><dd className="product-spec-text">{display(attributes.size)}</dd></div>}
         {!cake && specification && <div><dt>商品说明</dt><dd className="product-spec-text">{specification}</dd></div>}
       </dl>
       {cake && <dl className="front-product-row front-product-triple">
-        <div><dt>内胚</dt><dd>{display(attributes.base ?? attributes.cakeBase)}</dd></div>
-        <div><dt>夹馅</dt><dd>{display(attributes.filling)}</dd></div>
-        <div><dt>奶油</dt><dd>{display(attributes.flavor)}</dd></div>
+        <div className="product-making-field"><dt>内胚</dt><dd>{display(attributes.base ?? attributes.cakeBase)}</dd></div>
+        <div className="product-making-field"><dt>夹馅</dt><dd>{display(attributes.filling)}</dd></div>
+        <div className="product-making-field"><dt>奶油</dt><dd>{display(attributes.flavor)}</dd></div>
       </dl>}
       {cake && specification && <dl className="front-product-row"><div><dt>商品说明</dt><dd className="product-spec-text">{specification}</dd></div></dl>}
       {prices && (item.unitPriceCents != null || item.memberPriceCents != null) && (

@@ -2302,6 +2302,8 @@ button,a{
   overflow-wrap:anywhere;
   white-space:pre-wrap;
 }
+.order-products[data-decorator] .product-making-field dt { font-size: 16px; }
+.order-products[data-decorator] .product-making-field dd { font-size: 20px; line-height: 1.4; font-weight: 650; overflow-wrap: anywhere; }
 .production-order-contact { margin-top:16px; }
 @media(max-width:600px) {
   .production-summary .progress-step:not(:last-child)::after { width:calc(100% + 8px); }

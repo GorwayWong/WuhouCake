@@ -76,7 +76,7 @@
 
 制作人员可以通过 `GET /api/orders/{id}/notes` 阅读工作备注。此接口只返回 `NOTE`，忽略其他活动类型参数，需要 `ORDER_READ`；不返回订单创建或字段修改快照。制作、备注、图片等写操作仍使用各自操作权限。
 
-裱花师 `DECORATOR` 岗位授予的 `ORDER_EDIT` 按 `ORDER_ITEM_EDIT` 生效，已有岗位配置也遵循此规则。整单资料和金额修改接口 `PATCH /api/orders/{id}/information` 要求 `ORDER_EDIT`，兼任前厅或店长可从对应岗位获得。商品写入接口接受 `ORDER_EDIT` 或 `ORDER_ITEM_EDIT`，同时校验订单状态及报价权限。
+裱花师 `DECORATOR` 岗位不授予 `ORDER_EDIT` 或 `ORDER_ITEM_EDIT`，显式岗位配置也遵循此限制。单岗裱花师可以按制作权限标记商品完成。兼岗员工仍可通过其他岗位取得商品维护权限。商品写入接口接受 `ORDER_EDIT` 或 `ORDER_ITEM_EDIT`，同时校验订单状态及报价权限。
 
 通过 `wuhoucake.authorization.job-permissions` 覆盖具体岗位的完整权限集合。非 `STORE_MANAGER` 岗位配置 `ORDER_DELETE` 会在启动时被拒绝；仅有 `SUPER_ADMIN` 身份不会获得订单删除权限。配置只影响列出的岗位，未列出岗位保留上述默认值；空集合表示该岗位不提供业务权限。多岗位按并集计算，因此只收窄一个兼任岗位不会撤销另一个岗位授予的权限。
 

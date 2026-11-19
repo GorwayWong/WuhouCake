@@ -47,13 +47,10 @@ public final class EmployeeAccessPolicy {
                 throw new IllegalArgumentException("Order deletion can only be granted to STORE_MANAGER");
             configured.put(role, Set.copyOf(permissions));
         });
-        var decoratorGrants = configured.get(JobRole.DECORATOR);
-        if (decoratorGrants.contains(ORDER_EDIT)) {
-            var itemGrants = EnumSet.copyOf(decoratorGrants);
-            itemGrants.remove(ORDER_EDIT);
-            itemGrants.add(ORDER_ITEM_EDIT);
-            configured.put(JobRole.DECORATOR, Set.copyOf(itemGrants));
-        }
+        var decoratorGrants = EnumSet.noneOf(Permission.class);
+        decoratorGrants.addAll(configured.get(JobRole.DECORATOR));
+        decoratorGrants.removeAll(Set.of(ORDER_EDIT, ORDER_ITEM_EDIT));
+        configured.put(JobRole.DECORATOR, Set.copyOf(decoratorGrants));
         grants = Map.copyOf(configured);
     }
 
