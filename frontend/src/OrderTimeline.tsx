@@ -69,7 +69,6 @@ export function OrderTimeline({ orders, counts, view, account, status = '', crea
     if (fromBottom) { headings.current[id]?.focus({ preventScroll: true }); headings.current[id]?.scrollIntoView({ block: 'start' }); }
   };
   return <div className="order-timeline">
-    {!access.productionView && <div className="timeline-heading"><strong>{slotLabel}</strong><p>按取货时间每 30 分钟分组，准确时间见订单卡片</p></div>}
     {timelinePartitions(timedOrders, status, counts).map(partition => {
       const expanded = opened[partition.id] ?? partition.expanded;
       const contentId = `timeline-${view.date}-${partition.id}`;

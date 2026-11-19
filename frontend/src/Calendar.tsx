@@ -146,7 +146,7 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     if (ready) scrollAnchor.current = null;
   }, [view, mode, workbench.isPending, workbench.data, calendar.data, reservedHeight, resetVersion]);
   const changeFilters = (next: CalendarFilters) => { resetDay(selected); onFiltersChange(next); };
-  const filtersControl = <div className="calendar-filters" aria-label="订单筛选"><span className="calendar-date-help">按取货日期显示订单</span>
+  const filtersControl = <div className="calendar-filters" aria-label="订单筛选">
     {((access.amounts ? ['status', 'paymentStatus'] : ['status']) as (keyof CalendarFilters)[]).map(key => <label className="calendar-filter" key={key}>{key === 'status' ? '订单状态' : '付款状态'}<Select label={key === 'status' ? '订单状态' : '付款状态'} value={effectiveFilters[key]} onChange={value => changeFilters({ ...filters, [key]: value })}><option value="">全部</option>{(key === 'status' ? statuses : Object.entries(exportOptions.paymentStatus)).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</Select></label>)}
     {(effectiveFilters.status || effectiveFilters.paymentStatus) && <button type="button" className="text-button" onClick={() => changeFilters({ ...allCalendarFilters })}>清除筛选</button>}
   </div>;

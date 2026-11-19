@@ -37,11 +37,16 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     model.order.fulfillment.address = '长地址'.repeat(50);
     model.images = model.order.items.map((item, i) => ({ imageId: `image-${i}`, orderId, itemId: item.itemId, filename: `${i}.png`, uploadedAt: model.order.createdAt, uploaderNameSnapshot: '测试员工' }));
     await page.reload(); await page.locator('.front-order-grid').waitFor();
+    const title = page.getByRole('heading', { level: 1 });
+    const firstName = model.order.items[0].name;
+    assert.equal(await title.innerText(), `${firstName} · 另有 1 项`);
+    await page.getByText(`订单 #${model.order.orderNo}`, { exact: true }).waitFor();
     const panel = page.locator('.front-order-information');
     const productPanel = page.getByRole('region', { name: '商品资料', exact: true });
     assert.equal(await page.locator('.order-supplement').evaluate(el => el.open), false);
     assert.equal(await panel.locator('a[href="tel:13800000000"]').count(), 1);
     await page.locator('.front-order-requirements').getByText('需要10份叉碟', { exact: false }).waitFor();
+    await productPanel.locator('.reference-image').scrollIntoViewIfNeeded();
     await productPanel.getByRole('button', { name: '查看大图：0.png', exact: true }).waitFor();
     await productPanel.getByRole('button', { name: '查看大图：0.png', exact: true }).click(); await page.getByRole('dialog').waitFor();
     await page.getByRole('button', { name: '关闭大图' }).click();
@@ -55,9 +60,11 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
       await page.screenshot({ path: `/private/tmp/wuhou-detail-${width}.png`, fullPage: true });
     }
     await page.getByRole('button', { name: '下一个商品', exact: true }).click();
+    assert.equal(await title.innerText(), `${firstName} · 另有 1 项`);
     assert.equal(await productPanel.locator('.front-product-heading strong').innerText(), '蛋糕B');
     assert.equal(await productPanel.locator('.front-order-requirements p').innerText(), '无');
     assert.doesNotMatch(await panel.innerText(), /蛋糕B|特殊要求/);
+    await productPanel.locator('.reference-image').scrollIntoViewIfNeeded();
     await productPanel.getByRole('button', { name: '查看大图：1.png', exact: true }).waitFor(); assert.equal(await productPanel.getByAltText('0.png', { exact: true }).count(), 0);
     await page.getByRole('button', { name: '编辑资料', exact: true }).click();
     assert.equal(await page.getByRole('button', { name: '上一个商品', exact: true }).isDisabled(), true);
@@ -77,7 +84,7 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     assert.deepEqual(errors, []);
     model.order.items[0].attributes.size = '8';
     model.order.items[0].attributes.specification = '切成 12 份\n分开包装';
-    model.permissions = ['ORDER_READ', 'ORDER_PHONE_READ', 'ORDER_PRODUCTION_UPDATE'];
+    model.permissions = ['ORDER_READ', 'ORDER_PHONE_READ', 'ORDER_ITEM_EDIT', 'ORDER_PRODUCTION_UPDATE'];
     await page.reload(); await page.locator('.production-detail').waitFor();
     const production = page.locator('.production-product-fields');
     assert.equal(await production.getByText('尺寸', { exact: true }).locator('..').locator('dd').innerText(), '8');
@@ -87,6 +94,11 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.equal(await page.locator('.front-order-information').count(), 0);
     assert.equal(await page.locator('.payment-panel').count(), 0);
+    assert.equal(await page.getByRole('button', { name: '编辑资料', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('checkbox', { name: `${firstName}制作完成` }).count(), 1);
+    model.order.items = [];
+    await page.reload();
+    await page.getByRole('heading', { level: 1, name: `订单 #${model.order.orderNo}`, exact: true }).waitFor();
   } finally { await context.close(); }
 });
 
@@ -438,7 +450,7 @@ test('完成装饰列出同名缺项、定位高亮、保留失败状态并重�
       await selector.waitFor();
       for (const width of [390, 1280]) {
         await page.setViewportSize({ width, height: 844 });
-        await selector.scrollIntoViewIfNeeded();
+        await product.locator('.reference-image').first().scrollIntoViewIfNeeded();
         await product.getByRole('button', { name: '查看大图：蛋糕0.png' }).waitFor();
         await next.focus();
         const orderInfo = await detail.boundingBox();

@@ -649,9 +649,6 @@ small{
 .month-expanded .section-heading h2{font-size:18px}
 .month-expanded .section-heading>button{flex:none}
 .order-timeline{display:flex;flex-direction:column;gap:18px;min-width:0}
-.timeline-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 16px}
-.timeline-heading>strong{font-size:14px;font-weight:600;color:var(--ink)}
-.timeline-heading>p{margin:0;font-size:13px;line-height:1.6;color:var(--muted)}
 .timeline-group{position:relative;display:grid;grid-template-columns:84px minmax(0,1fr);gap:20px;align-items:start;min-width:0;padding-bottom:16px}
 .timeline-group:last-child{padding-bottom:0}
 .timeline-group::before{content:"";position:absolute;left:93px;top:27px;bottom:-27px;width:1px;background:var(--line)}
@@ -1936,6 +1933,8 @@ button,a{
 .password-editor .actions{margin-top:20px}
 .detail-page>.page-heading{flex-wrap:wrap}
 .detail-page>.page-heading h1,.history-page h1{font-size:28px;font-weight:700;letter-spacing:0}
+.order-detail-title{min-width:0;overflow-wrap:anywhere}
+.order-detail-number{font-size:13px;margin-top:4px}
 .order-pagination{display:flex;align-items:center;flex-wrap:wrap;gap:12px;font-size:13px}
 .page-range{font-weight:600}
 .page-size,.page-count{color:var(--muted)}
@@ -2026,8 +2025,6 @@ button,a{
   .date-select>span{font-size:17px}
   .date-select small{font-size:9px;padding:0 2px}
   .month-day-summary{font-size:10px;margin-top:7px;gap:3px}
-  .timeline-heading{gap:4px 12px}
-  .timeline-heading>p{font-size:12px}
   .timeline-group{grid-template-columns:70px minmax(0,1fr);gap:14px}
   .timeline-group::before{left:76px;top:22px;bottom:-22px}
   .timeline-group::after{left:74px;top:20px}
@@ -2163,7 +2160,7 @@ button,a{
 .compact-order-card .order-summary-meta{font-size:12px;line-height:1.5;gap:3px 10px}
 .compact-order-card .order-summary-receive-time{font-size:13px;line-height:1.5}
 .compact-order-card .badges{gap:5px}
-@media(max-width:640px){.order-summary-card.compact-order-card{padding:10px;gap:6px}.compact-order-card .order-summary-title{gap:7px}.compact-order-card .order-summary-title h3{font-size:14px}.compact-order-card .production-thumbnail{width:48px;height:48px;flex-basis:48px}.timeline-heading{gap:4px}.calendar-workbench .section-heading>button{min-height:44px;flex:none}}
+@media(max-width:640px){.order-summary-card.compact-order-card{padding:10px;gap:6px}.compact-order-card .order-summary-title{gap:7px}.compact-order-card .order-summary-title h3{font-size:14px}.compact-order-card .production-thumbnail{width:48px;height:48px;flex-basis:48px}.calendar-workbench .section-heading>button{min-height:44px;flex:none}}
 
 .submission-search{display:flex;align-items:end;gap:10px;margin-bottom:18px;flex-wrap:wrap}
 .submission-search>label{flex:1 1 260px;min-width:0}
@@ -2351,7 +2348,7 @@ button,a{
 @media(max-width:640px){.workspace-create .package-picker input{font-size:16px}.workspace-create .package-picker button{min-height:44px}}
 
 .front-order-information .detail-business-time dd{font-size:20px;font-weight:700;line-height:1.5;overflow-wrap:anywhere;color:var(--ink)}
-.front-order-information .detail-contact-phone dd,.front-order-information .detail-contact-address dd{font-size:18px;line-height:1.6;overflow-wrap:anywhere}
+.front-order-grid .detail-contact-phone dd,.front-order-grid .detail-contact-address dd{font-size:18px;line-height:1.6;overflow-wrap:anywhere}
 .product-form-fields textarea{resize:vertical;min-height:72px;white-space:pre-wrap}
 
 .order-quoted-prices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}
@@ -2363,7 +2360,6 @@ button,a{
 .create-grid.order-pricing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:359px){.create-grid.order-pricing-fields{grid-template-columns:1fr}}
 
-.calendar-date-help{flex-basis:100%;font-size:13px;color:var(--muted)}
 .version-notice{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px}
 .version-notice button{min-height:44px}
 .staged-edit-image{margin:12px 0;list-style:none}

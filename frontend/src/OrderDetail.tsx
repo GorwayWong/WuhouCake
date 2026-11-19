@@ -316,6 +316,9 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       if (failedNote && variables.noteRequest) clearPendingNote(noteKey, variables.noteRequest.requestId);
       if (context?.page === page.current) {
         setMessage(variables.path === 'images-only' ? '图片保存准备未完成，图片仍暂存，请重试保存。' : '');
+        if (variables.path === 'information' && error instanceof ApiError && error.status === 403) {
+          void client.invalidateQueries({ queryKey: ['me'], exact: true });
+        }
         if (failedNote && variables.noteRequest) {
           setNote(variables.noteRequest.content); setItemId(variables.noteRequest.itemId || '');
           removeNoteFromView(variables.noteRequest.requestId);
@@ -349,6 +352,11 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   if (!account || detail.isPending) return <Loading />;
   if (!detail.data) return <>{returnHref && <a className="back-link" href={returnHref}><ArrowLeft />{returnLabel}</a>}<ErrorNotice error={detail.error} retry={() => void detail.refetch()} /></>;
   const order = detail.data;
+  const titleProductName = order.items[0]?.name.trim();
+  const canEditInformation = hasPermissions(account, 'ORDER_EDIT');
+  const canEditProducts = canEditInformation || hasPermissions(account, 'ORDER_ITEM_EDIT');
+  const informationEditing = editing?.kind === 'information' || editing?.kind === 'amount';
+  const informationEditRevoked = informationEditing && !canEditInformation;
   const unknownStatus = !Object.hasOwn(statusNames, order.status);
   const readOnly = unknownStatus || Boolean(order.deletion || order.deleted);
   const removedDraft = editing?.kind === 'item' && editing.itemId && !order.items.some(item => item.itemId === editing.itemId) ? editing.order.items.find(item => item.itemId === editing.itemId) : undefined;
@@ -398,9 +406,9 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const editorBusy = mutation.isPending || imageWriting || discardingImages || readOnly;
   const draftAccess = [access.customer, access.amounts, access.phone, access.ordering] as const;
   const draftScope = editing ? editDraftKey(account.accountId, id, editing.kind, editing.itemId, draftAccess) : '';
-  const canViewLockedDrafts = !editing && (order.deletion ? access.deleted : !readOnly && hasPermissions(account, 'ORDER_EDIT'))
+  const canViewLockedDrafts = !editing && (order.deletion ? access.deleted : !readOnly && canEditProducts)
     && (access.business || access.amounts) && hasPermissions(account, 'ORDER_READ');
-  const itemEditor = editing?.kind === 'item' && hasPermissions(account, 'ORDER_EDIT') && access.business ? (
+  const itemEditor = editing?.kind === 'item' && canEditProducts && access.business ? (
     <EditDraftRecovery<ItemEditDraft> key={draftScope} scope={draftScope} onClose={() => setEditing(null)}>
       {(recovered, writer) => <ItemEdit prices={access.amounts} initial={editing.order} itemId={editing.itemId}
         latest={order} reopened={editing.reopened} busy={editorBusy} error={mutation.error} onDirtyChange={editorDirtyChange}
@@ -410,7 +418,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
         })} onSaveUnchanged={saveUnchanged} onCancel={cancelEdit} recovered={recovered} writer={writer} />}
     </EditDraftRecovery>
   ) : null;
-  const informationEditor = (editing?.kind === 'information' || editing?.kind === 'amount') && hasPermissions(account, 'ORDER_EDIT') ? (
+  const informationEditor = informationEditing && canEditInformation ? (
     <EditDraftRecovery<InformationEditDraft> key={draftScope} scope={draftScope} onClose={() => setEditing(null)}>
       {(recovered, writer) => <InformationEdit amountOnly={editing.kind === 'amount'} canEditAmount={access.amounts}
         hasStagedImages={imageDraft} initial={editing.order} latest={order} busy={editorBusy}
@@ -431,6 +439,27 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     if (window.confirm(`${previous.label}？${impact}`)) mutation.mutate({ path: previous.path, body: { expectedVersion: order.version, ...(previous.action ? { action: previous.action } : {}) } });
   };
   const frontDeskView = access.customer && access.business;
+  const orderContactAtBottom = account.jobRoles.includes('DECORATOR');
+  const orderTimeFields = <>
+    <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
+    <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>
+  </>;
+  const handoffField = <div><dt>交接方式</dt><dd>{order.fulfillment.type === 'PICKUP' ? '门店自提' : '配送上门'}</dd></div>;
+  const orderContactFields = frontDeskView ? <>
+    <div><dt>客户</dt><dd>{order.customer?.customerName || '未填写'}</dd></div>
+    <div className="detail-contact-phone"><dt>电话</dt><dd>{order.customer?.phone ? <a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a> : '未填写'}</dd></div>
+    <div><dt>下单方式</dt><dd>{order.orderingMethod || '未填写'}</dd></div>
+    {handoffField}
+    <div className="wide detail-contact-address"><dt>地址</dt><dd>{order.fulfillment.type === 'PICKUP' ? `门店自提${order.fulfillment.address ? ` · ${order.fulfillment.address}` : ''}` : order.fulfillment.address || '未填写'}</dd></div>
+  </> : <>
+    {access.ordering && <>
+      <div><dt>下单人</dt><dd>{order.customer?.buyerName || '未填写'}</dd></div>
+      <div><dt>订购方式</dt><dd>{order.orderingMethod || '未填写'}</dd></div>
+    </>}
+    {handoffField}
+    {access.phone && <div><dt>客户手机号</dt><dd>{order.customer?.phone ? <a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a> : '未填写'}</dd></div>}
+  </>;
+  const orderCreatedTime = frontDeskView && <dl className="front-order-created"><div><dt>下单时间</dt><dd>{order.createdAt ? businessTime(order.createdAt) : '未填写'}</dd></div></dl>;
   const ProductView = frontDeskView ? FrontProductDetails : Product;
   const canUpdateProduction = hasPermissions(account, 'ORDER_PRODUCTION_UPDATE');
   const currentComplete = currentProduct?.productionStatus === 'COMPLETED';
@@ -475,11 +504,10 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       <span>{currentComplete ? '已完成' : '未完成'}</span>
     </label>
   );
-  const images = <OrderImages key={id} order={order} itemId={currentProduct?.itemId} accountId={account?.accountId || ''} canUpload={hasPermissions(account, 'ORDER_IMAGE_UPLOAD')} canDelete={hasPermissions(account, 'ORDER_IMAGE_DELETE')} productionView={access.productionView} compact ownerSession={imageSessionReady ? imageSession.current : undefined} editSession={editing ? imageSession.current : undefined} editActions={imageActions} recover={!readOnly && hasPermissions(account, 'ORDER_EDIT') ? session => { imageSession.current = session; setEditing({ kind: 'information', order }); mutation.reset(); } : undefined} blocked={mutation.isPending || discardingImages || Boolean(editing?.kind === 'item' && !editing.itemId) || exportWriting || readOnly} onDraftChange={imageDraftChange} onWritingChange={imageWritingChange} />;
+  const images = <OrderImages key={id} order={order} itemId={currentProduct?.itemId} accountId={account?.accountId || ''} canUpload={hasPermissions(account, 'ORDER_IMAGE_UPLOAD')} canDelete={hasPermissions(account, 'ORDER_IMAGE_DELETE')} productionView={access.productionView} compact ownerSession={imageSessionReady ? imageSession.current : undefined} editSession={editing ? imageSession.current : undefined} editActions={imageActions} recover={!readOnly && canEditInformation ? session => { imageSession.current = session; setEditing({ kind: 'information', order }); mutation.reset(); } : undefined} blocked={mutation.isPending || discardingImages || Boolean(editing?.kind === 'item' && !editing.itemId) || exportWriting || readOnly || informationEditRevoked} onDraftChange={imageDraftChange} onWritingChange={imageWritingChange} />;
   const paid = order.paymentStatus === 'PAID';
   const canRecordPayment = hasPermissions(account, 'ORDER_AMOUNT_READ', 'ORDER_PAYMENT_UPDATE');
-  const editingManualAmount = order.pricingMode !== 'ITEM_SUM' && hasPermissions(account, 'ORDER_EDIT')
-    && (editing?.kind === 'information' || editing?.kind === 'amount');
+  const editingManualAmount = order.pricingMode !== 'ITEM_SUM' && canEditInformation && informationEditing;
   const reversalBlocked = editingManualAmount
     ? readOnly || discardingImages || mutation.isPending || imageWriting || exportWriting
     : blocked;
@@ -487,7 +515,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     path: 'payment-status', method: 'PATCH',
     body: { expectedVersion: order.version, paymentStatus: paymentMethod === 'UNPAID' ? 'UNPAID' : 'PAID', paymentMethod },
   });
-  const paymentPanel = access.amounts && <section className="panel payment-panel"><div className="section-heading payment-heading"><h2>金额与付款</h2>{hasPermissions(account, 'ORDER_EDIT') && order.pricingMode !== 'ITEM_SUM' && !paid && !editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'amount', order }); }}><NotePencil />修改金额</button>}</div>{editing?.kind === 'amount' && <div className="amount-editor">{informationEditor}</div>}<div><dl className="order-quoted-prices"><div><dt>原价</dt><dd>{money(order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null))}</dd></div><div><dt>会员价</dt><dd>{money(order.memberAmountCents ?? null)}</dd></div></dl><p className="muted">成交金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong>{order.paymentStatus === 'PAID' && <p className="form-help">付款时间：{order.paidAt ? businessTime(order.paidAt) : '历史付款时间未记录'}</p>}</div>{access.amounts && <Payment status={order.paymentStatus} />}<p>支付方式：{paymentMethodLabel(order.paymentMethod, order.paymentStatus)}</p>{paid && <div className="notice payment-lock">
+  const paymentPanel = access.amounts && <section className="panel payment-panel"><div className="section-heading payment-heading"><h2>金额与付款</h2>{canEditInformation && order.pricingMode !== 'ITEM_SUM' && !paid && !editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'amount', order }); }}><NotePencil />修改金额</button>}</div>{editing?.kind === 'amount' && <div className="amount-editor">{informationEditor}</div>}<div><dl className="order-quoted-prices"><div><dt>原价</dt><dd>{money(order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null))}</dd></div><div><dt>会员价</dt><dd>{money(order.memberAmountCents ?? null)}</dd></div></dl><p className="muted">成交金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong>{order.paymentStatus === 'PAID' && <p className="form-help">付款时间：{order.paidAt ? businessTime(order.paidAt) : '历史付款时间未记录'}</p>}</div>{access.amounts && <Payment status={order.paymentStatus} />}<p>支付方式：{paymentMethodLabel(order.paymentMethod, order.paymentStatus)}</p>{paid && <div className="notice payment-lock">
       <p>{order.status === 'CANCELLED' ? '此订单取消前已登记付款，请在线下核对款项。' : '已登记付款，请先撤销付款登记再改价。'}</p>
       {canRecordPayment && <button type="button" className="secondary" disabled={reversalBlocked} onClick={() => {
         if (window.confirm('撤销后订单将改为未付款，当前付款时间会清除。确定撤销付款登记？')) updatePayment('UNPAID');
@@ -498,7 +526,13 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   </section>;
   return <div className={`detail-page ${access.productionView ? 'production-detail' : ''}`}>
     {returnHref && <a className="back-link" href={returnHref} aria-disabled={mutation.isPending || imageWriting || exportWriting} onClick={event => { if (mutation.isPending || imageWriting || exportWriting) event.preventDefault(); }}><ArrowLeft />{returnLabel}</a>}
-    <div className="page-heading"><h1>订单 #{order.orderNo}</h1><div className="badges"><Status order={order} />{access.amounts && <Payment status={order.paymentStatus} />}</div></div>
+    <div className="page-heading">
+      <div className="order-detail-title">
+        <h1>{titleProductName || `订单 #${order.orderNo}`}{titleProductName && order.items.length > 1 && ` · 另有 ${order.items.length - 1} 项`}</h1>
+        {titleProductName && <p className="muted order-detail-number">订单 #{order.orderNo}</p>}
+      </div>
+      <div className="badges"><Status order={order} />{access.amounts && <Payment status={order.paymentStatus} />}</div>
+    </div>
     {access.customer && <CustomerOrderOrigin orderId={id} />}
     {order.deletion && <div className="notice" role="status"><p>已删除 · {time(order.deletion.deletedAt, true)} · {order.deletion.employeeName}</p><p>删除原因：{order.deletion.reason}</p><p>恢复前不参与工作台和经营统计。</p>{access.delete && access.deleted && <button type="button" className="secondary" disabled={mutation.isPending || imageWriting || discardingImages || exportWriting || Boolean(editing)} onClick={() => {
       const payment = order.paymentStatus === 'PAID' ? '已付款' : order.paymentStatus === 'UNPAID' ? '未付款' : '付款状态不可见';
@@ -507,6 +541,10 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
         mutation.mutate({ path: 'restore', body: { expectedVersion: order.version } });
     }}>恢复订单</button>}{editing && <button type="button" className="secondary" disabled={mutation.isPending || imageWriting || discardingImages} onClick={closeLockedEditor}>关闭编辑草稿</button>}</div>}
     {readOnly && !order.deletion && <div className="notice" role="status">订单已删除，当前页面只保留原有资料和未保存输入，不可继续操作。{editing && <button type="button" className="secondary" disabled={mutation.isPending || imageWriting || discardingImages} onClick={closeLockedEditor}>关闭编辑草稿</button>}</div>}
+    {!readOnly && informationEditRevoked && <div className="notice" role="status">
+      <p>当前岗位无法修改订单资料。已暂存的草稿会保留。</p>
+      <button type="button" className="secondary" disabled={mutation.isPending || imageWriting || discardingImages} onClick={closeLockedEditor}>关闭编辑草稿</button>
+    </div>}
     <ErrorNotice error={detail.error} retry={() => void detail.refetch()} />
     {canViewLockedDrafts && <LockedOrderDrafts accountId={account.accountId} order={order} access={draftAccess} canViewItems={access.business} />}
     <div className="feedback" aria-live="polite">{message && (!itemMutation || canEditItems(order)) && <div className="notice success"><CheckCircle />{message}<button type="button" className="text-button" aria-label="关闭操作提示" onClick={() => setMessage('')}>关闭</button></div>}<ErrorNotice error={mutation.error === handledGateError || editing || (mutation.variables?.noteRequest && pendingNotes.some(record => record.requestId === mutation.variables?.noteRequest?.requestId)) ? null : mutation.error} /></div>
@@ -553,38 +591,27 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       </dialog>
     )}
     {frontDeskView && <section className="panel front-order-information" aria-labelledby="front-order-information-title">
-      <div className="section-heading"><h2 id="front-order-information-title">订单信息</h2>{!editing && hasPermissions(account, 'ORDER_EDIT') && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'information', order }); }}><NotePencil />编辑资料</button>}</div>
+      <div className="section-heading"><h2 id="front-order-information-title">订单信息</h2>{!editing && canEditInformation && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'information', order }); }}><NotePencil />编辑资料</button>}</div>
       {editing?.kind === 'information' && informationEditor ? informationEditor : (
         <dl className="front-order-grid">
-          <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
-          <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>
-          <div><dt>客户</dt><dd>{order.customer?.customerName || '未填写'}</dd></div>
-          <div className="detail-contact-phone"><dt>电话</dt><dd>{order.customer?.phone ? <a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a> : '未填写'}</dd></div>
-          <div><dt>下单方式</dt><dd>{order.orderingMethod || '未填写'}</dd></div>
-          <div><dt>交接方式</dt><dd>{order.fulfillment.type === 'PICKUP' ? '门店自提' : '配送上门'}</dd></div>
-          <div className="wide detail-contact-address"><dt>地址</dt><dd>{order.fulfillment.type === 'PICKUP' ? `门店自提${order.fulfillment.address ? ` · ${order.fulfillment.address}` : ''}` : order.fulfillment.address || '未填写'}</dd></div>
+          {orderTimeFields}
+          {!orderContactAtBottom && orderContactFields}
         </dl>
       )}
-      <dl className="front-order-created"><div><dt>下单时间</dt><dd>{order.createdAt ? businessTime(order.createdAt) : '未填写'}</dd></div></dl>
+      {!orderContactAtBottom && orderCreatedTime}
     </section>}
     {access.productionView && <section className="panel production-order-information" aria-labelledby="production-order-information-title">
       <div className="section-heading"><h2 id="production-order-information-title">订单信息</h2></div>
       <dl className="production-order-fields production-order-contact">
-        <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
-        <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>
-        {access.ordering && <>
-          <div><dt>下单人</dt><dd>{order.customer?.buyerName || '未填写'}</dd></div>
-          <div><dt>订购方式</dt><dd>{order.orderingMethod || '未填写'}</dd></div>
-        </>}
-        <div><dt>交接方式</dt><dd>{order.fulfillment.type === 'PICKUP' ? '门店自提' : '配送上门'}</dd></div>
-        {access.phone && <div><dt>客户手机号</dt><dd>{order.customer?.phone ? <a href={`tel:${order.customer.phone}`}>{order.customer.phone}</a> : '未填写'}</dd></div>}
+        {orderTimeFields}
+        {!orderContactAtBottom && orderContactFields}
       </dl>
     </section>}
     {productNavigationView}
     <section className="panel order-products" data-item-tone={currentProduct ? productIndex % 10 : undefined} aria-labelledby="order-products-title">
       <div className="section-heading">
         <h2 id="order-products-title">商品资料</h2>
-        {hasPermissions(account, 'ORDER_EDIT') && access.business && canEditItems(order) && (
+        {canEditProducts && access.business && canEditItems(order) && (
           <button type="button" className="secondary compact" disabled={blocked} onClick={() => {
             mutation.reset();
             setMessage('');
@@ -596,7 +623,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
         <div className="products detail-products detail-product-card">
           {access.productionView ? <ProductionProductFields item={currentProduct} completion={completion} /> : (
             <ProductView completion={completion} itemSum={order.pricingMode === 'ITEM_SUM'} item={currentProduct} prices={access.amounts}
-              actions={hasPermissions(account, 'ORDER_EDIT') && access.business && canEditItems(order) && editing?.itemId !== currentProduct.itemId && (
+              actions={canEditProducts && access.business && canEditItems(order) && editing?.itemId !== currentProduct.itemId && (
                 <div className="product-actions">
                   <button type="button" className="text-button" disabled={blocked} onClick={() => {
                     mutation.reset();
@@ -665,5 +692,10 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     {access.history && <details className="panel operation-history" aria-label="操作记录"><summary>操作记录</summary><div className="section-heading"><h2><ListBullets />最近操作记录</h2><a className="text-button" href={orderHref(id, returnToCalendar, undefined, true)}>全部操作记录<ArrowRight /></a></div><ActivityFeed id={id} items={order.items} preview /></details>}
     {hasPermissions(account, 'ORDER_CANCEL') && !readOnly && !['COMPLETED', 'CANCELLED'].includes(order.status) && <section className="cancel-section"><button className="danger-button" disabled={blocked} onClick={() => setShowCancel(!showCancel)} aria-expanded={showCancel}>取消订单</button>{showCancel && <form onSubmit={event => { event.preventDefault(); if (!blocked) mutation.mutate({ path: 'cancel', body: { expectedVersion: order.version, reason: reason.trim() } }); }}>{access.amounts && paid && <p className="form-help">此订单已登记付款，取消后请在线下核对款项。</p>}<label>取消原因<input value={reason} onChange={event => setReason(event.target.value)} required disabled={mutation.isPending} /></label><button className="danger-button" disabled={blocked || !reason.trim()}>确认取消订单</button></form>}</section>}
     {access.delete && !readOnly && <section className="cancel-section"><button type="button" className="danger-button" disabled={blocked} aria-expanded={showDelete} onClick={() => setShowDelete(value => !value)}>删除订单</button>{showDelete && <form onSubmit={event => { event.preventDefault(); if (!blocked && deleteReason.trim() && window.confirm(`确认删除订单 #${order.orderNo}？将退出工作台和经营统计，恢复前仅可在已删除订单中查询。`)) mutation.mutate({ path: 'delete', body: { expectedVersion: order.version, reason: deleteReason.trim() } }); }}><label>删除原因<textarea value={deleteReason} maxLength={1000} required disabled={mutation.isPending} onChange={event => setDeleteReason(event.target.value)} /></label><button className="danger-button" disabled={blocked || !deleteReason.trim()}>确认删除订单</button></form>}</section>}
+    {orderContactAtBottom && (frontDeskView || access.productionView) && <section className="panel" aria-labelledby="order-contact-title">
+      <div className="section-heading"><h2 id="order-contact-title">客户与交接</h2></div>
+      <dl className={frontDeskView ? 'front-order-grid' : 'production-order-fields production-order-contact'}>{orderContactFields}</dl>
+      {orderCreatedTime}
+    </section>}
   </div>;
 }

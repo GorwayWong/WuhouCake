@@ -59,6 +59,8 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     await page.reload();
     const main = page.locator(`[data-order-id="${orderId}"]`), unspecified = page.locator('[data-order-id="30000000-0000-4000-8000-000000000003"]');
     await main.locator('.front-card-times').waitFor();
+    const removedCopy = /按取货日期显示订单|取货时段|准确时间见订单卡片/;
+    assert.doesNotMatch(await page.locator('#week-day-orders').innerText(), removedCopy);
     assert.equal(await main.locator('h3').innerText(), cake.name + ' · 另有 1 项');
     assert.equal(await main.locator('.order-summary-caption > span').count(), 0);
     assert.equal(await main.locator('.order-summary-meta').count(), 0);
@@ -82,6 +84,14 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await main.scrollIntoViewIfNeeded(); await page.screenshot({ path: `/private/tmp/wuhou-calendar-cards-${width}.png`, fullPage: true });
     }
+    await page.getByRole('button', { name: '展开本月日历' }).click();
+    await page.getByRole('region', { name: '月历', exact: true }).getByRole('button', { name: new RegExp(`^${date}`) }).click();
+    await main.waitFor();
+    const monthOrders = page.getByRole('region', { name: `${date} 当日订单`, exact: true });
+    assert.doesNotMatch(await monthOrders.innerText(), removedCopy);
+    assert.equal(await monthOrders.getByRole('region', { name: `${date} 取货时段 23:30 至次日 00:00`, exact: true }).locator('.order-summary-card').count(), 1);
+    await page.getByRole('button', { name: '切换周历工作台' }).click();
+    await main.waitFor();
     await page.locator('[data-control-label="订单状态"] .choice-trigger').click(); await page.getByRole('option', { name: '出胚', exact: true }).click();
     await page.locator('[data-control-label="付款状态"] .choice-trigger').click(); await page.getByRole('option', { name: '未付款', exact: true }).click();
     assert.equal(await page.locator('.order-summary-card:visible').count(), 1);

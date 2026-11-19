@@ -445,7 +445,9 @@ test('关闭被远端删除锁定的编辑器保留暂存图片，恢复原单�
 test('同页后台刷新被拒时隐藏已缓存的订单资料和编辑器', async () => {
   const { context, page } = await fixture();
   try {
-    await page.getByRole('heading', { name: '订单 #EDIT-RECOVERY' }).waitFor();
+    const title = page.getByRole('heading', { level: 1, name: '已有商品', exact: true });
+    await title.waitFor();
+    await page.getByText('订单 #EDIT-RECOVERY', { exact: true }).waitFor();
     await page.getByRole('button', { name: '编辑资料' }).click();
     await page.locator('#edit-customerName').fill('仅本机保存');
     await page.getByText('草稿已保存在本机。').waitFor();
@@ -454,8 +456,36 @@ test('同页后台刷新被拒时隐藏已缓存的订单资料和编辑器', as
     }));
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await page.getByText(/当前岗位|权限/).first().waitFor();
-    assert.equal(await page.getByRole('heading', { name: '订单 #EDIT-RECOVERY' }).count(), 0);
+    assert.equal(await title.count(), 0);
     assert.equal(await page.locator('#edit-customerName').count(), 0);
     assert.equal(await page.getByText('合成用户', { exact: true }).count(), 0);
+  } finally { await context.close(); }
+});
+
+test('整单编辑撤权后可以关闭并保留草稿，商品维护仍可用', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    const originalPermissions = model.permissions;
+    await page.getByRole('button', { name: '编辑资料', exact: true }).click();
+    await page.locator('#edit-customerName').fill('保留待核对资料');
+    await page.getByText('草稿已保存在本机。').waitFor();
+    await context.route(`**/api/orders/${orderId}/information`, route => {
+      model.permissions = originalPermissions.map(permission => permission === 'ORDER_EDIT' ? 'ORDER_ITEM_EDIT' : permission);
+      return route.fulfill({ status: 403, json: { success: false, code: 'FORBIDDEN' } });
+    });
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await page.getByText('当前岗位无法修改订单资料。已暂存的草稿会保留。', { exact: true }).waitFor();
+    assert.equal(await page.locator('#edit-customerName').count(), 0);
+    await page.getByRole('button', { name: '关闭编辑草稿', exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: '编辑资料', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '修改金额', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '编辑', exact: true }).isEnabled(), true);
+    assert.equal(await page.getByRole('button', { name: '添加商品', exact: true }).isEnabled(), true);
+
+    model.permissions = originalPermissions;
+    await page.reload();
+    await page.getByRole('button', { name: '编辑资料', exact: true }).click();
+    await page.getByRole('button', { name: '恢复草稿', exact: true }).click();
+    assert.equal(await page.locator('#edit-customerName').inputValue(), '保留待核对资料');
   } finally { await context.close(); }
 });

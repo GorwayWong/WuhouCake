@@ -47,6 +47,7 @@
 | `ORDER_READ` | 订单详情、日历、工作台、图片读取、SSE 订阅 |
 | `ORDER_CREATE` | 新建订单、文本规则解析和辅助识别 |
 | `ORDER_EDIT` | 修改订单信息、商品属性、增删商品 |
+| `ORDER_ITEM_EDIT` | 修改商品属性、增删商品 |
 | `ORDER_CANCEL` | 取消订单 |
 | `ORDER_PAYMENT_UPDATE` | 修改付款状态 |
 | `ORDER_PRODUCTION_UPDATE` | 制作流程操作 |
@@ -74,6 +75,8 @@
 未配置时，店长具有完整订单资料读取、订单业务操作和已删除查询权限；前厅主管、前厅店员及旧前厅岗位保留资料读取、录单、付款、取消、交接和已删除查询权限，默认不授予 `ORDER_PRODUCTION_UPDATE`，不能推进或回退工序、修改商品备齐或恢复已取消订单。兼任制作或店长时按权限并集计算，显式岗位权限覆盖机制保持不变；删除订单仅授予店长 `STORE_MANAGER`，旧 `MANAGER` 不自动视为店长。裱花主管、裱花师、烘焙师沿用制作组操作权限，但不授予 `ORDER_CUSTOMER_READ`、`ORDER_AMOUNT_READ`、`ORDER_PAYMENT_UPDATE`、`ORDER_BUSINESS_DETAILS_READ`、`ORDER_DELETE`、`ORDER_DELETED_READ`。制作组默认通过 `ORDER_PHONE_READ` 读取客户手机号，通过 `ORDER_ORDERING_DETAILS_READ` 读取订购人姓名及下单渠道。客户姓名、会员手机号、配送地址、金额与其他经营资料仍需各自权限。付款汇总、完整活动日志、财务查询和导出仍要求相关完整数据权限。兼任前厅或店长时取权限并集。
 
 制作人员可以通过 `GET /api/orders/{id}/notes` 阅读工作备注。此接口只返回 `NOTE`，忽略其他活动类型参数，需要 `ORDER_READ`；不返回订单创建或字段修改快照。制作、备注、图片等写操作仍使用各自操作权限。
+
+裱花师 `DECORATOR` 岗位授予的 `ORDER_EDIT` 按 `ORDER_ITEM_EDIT` 生效，已有岗位配置也遵循此规则。整单资料和金额修改接口 `PATCH /api/orders/{id}/information` 要求 `ORDER_EDIT`，兼任前厅或店长可从对应岗位获得。商品写入接口接受 `ORDER_EDIT` 或 `ORDER_ITEM_EDIT`，同时校验订单状态及报价权限。
 
 通过 `wuhoucake.authorization.job-permissions` 覆盖具体岗位的完整权限集合。非 `STORE_MANAGER` 岗位配置 `ORDER_DELETE` 会在启动时被拒绝；仅有 `SUPER_ADMIN` 身份不会获得订单删除权限。配置只影响列出的岗位，未列出岗位保留上述默认值；空集合表示该岗位不提供业务权限。多岗位按并集计算，因此只收窄一个兼任岗位不会撤销另一个岗位授予的权限。
 

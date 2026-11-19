@@ -630,6 +630,41 @@ class WorkflowManagementIT {
         var adminProfile = admin.data("GET", "/api/me", null);
         assertEquals(409, admin.raw("PATCH", "/api/admin/employees/" + admin.id, Map.of("expectedVersion", adminProfile.path("version").asLong(), "nickname", "店主", "jobRoles", List.of("FRONT_DESK_CLERK"))).statusCode());
     }
+    @Test void decoratorCanMaintainItemsAndProductionButNeedsAnotherJobToEditOrderInformation() throws Exception {
+        var input = new LinkedHashMap<>(create(a.id));
+        input.put("orderingMethod", "到店");
+        var order = a.data("POST", "/api/orders", input);
+        String path = "/api/orders/" + order.path("orderId").asText();
+        String firstItem = order.at("/items/0/itemId").asText();
+        var profile = b.data("GET", "/api/me", null);
+        String employee = "/api/admin/employees/" + b.id;
+        var decorator = admin.data("PATCH", employee, Map.of("expectedVersion", profile.path("version").asLong(),
+                "nickname", "裱花师", "jobRoles", List.of("DECORATOR")));
+
+        var denied = b.raw("PATCH", path + "/information", Map.of("expectedVersion", 0, "changes", Map.of("orderingMethod", "电话")));
+        assertEquals(403, denied.statusCode());
+        assertEquals("FORBIDDEN", json.readTree(denied.body()).path("code").asText());
+        var unchanged = b.data("GET", path, null);
+        assertEquals(0, unchanged.path("version").asLong());
+        assertEquals("到店", unchanged.path("orderingMethod").asText());
+
+        var renamed = b.data("PATCH", path, Map.of("expectedVersion", 0, "itemId", firstItem, "changes", Map.of("name", "改款蛋糕")));
+        assertEquals("改款蛋糕", renamed.at("/items/0/name").asText());
+        String extraItem = UUID.randomUUID().toString();
+        var added = b.data("POST", path + "/items", Map.of("expectedVersion", renamed.path("version").asLong(),
+                "item", Map.of("itemId", extraItem, "name", "补充商品", "quantity", 1)));
+        assertEquals(4, added.path("items").size());
+        var removed = b.data("POST", path + "/items/" + extraItem + "/remove", Map.of("expectedVersion", added.path("version").asLong()));
+        assertEquals(3, removed.path("items").size());
+        var produced = b.data("POST", path + "/production-actions", Map.of("expectedVersion", removed.path("version").asLong(), "action", "COMPLETE_BASE"));
+        assertEquals("LAYER", produced.path("status").asText());
+
+        admin.data("PATCH", employee, Map.of("expectedVersion", decorator.path("version").asLong(),
+                "nickname", "兼岗裱花师", "jobRoles", List.of("DECORATOR", "FRONT_DESK_CLERK")));
+        var edited = b.data("PATCH", path + "/information", Map.of("expectedVersion", produced.path("version").asLong(),
+                "changes", Map.of("orderingMethod", "电话")));
+        assertEquals("电话", edited.path("orderingMethod").asText());
+    }
     @Test void restoreActivityFailureRollsBackTheOrderVersionAndDeletion() throws Exception {
         String id = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
         String path = "/api/orders/" + id;
