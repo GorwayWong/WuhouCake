@@ -138,3 +138,46 @@ tests:
         exp_alerts:
           - exp_labels: {job: wuhou-pitr, severity: critical}
             exp_annotations: {summary: "午逅数据库备份与归档指标不可用"}
+
+  - interval: 1m
+    input_series:
+      - series: 'up{job="wuhou-worker",instance="worker"}'
+        values: '1 0 0 0 1 stale _ _ 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: WuhouWorkerUnavailableOrFailing
+      - eval_time: 3m
+        alertname: WuhouWorkerUnavailableOrFailing
+        exp_alerts:
+          - exp_labels: {job: wuhou-worker, instance: worker, severity: warning}
+            exp_annotations: {summary: "午逅图片端不可达或连续处理失败"}
+      - eval_time: 4m
+        alertname: WuhouWorkerUnavailableOrFailing
+      - eval_time: 7m
+        alertname: WuhouWorkerUnavailableOrFailing
+        exp_alerts:
+          - exp_labels: {job: wuhou-worker, severity: warning}
+            exp_annotations: {summary: "午逅图片端不可达或连续处理失败"}
+      - eval_time: 8m
+        alertname: WuhouWorkerUnavailableOrFailing
+
+  - interval: 1m
+    input_series:
+      - series: 'up{job="wuhou-worker",instance="worker"}'
+        values: '1+0x25'
+      - series: 'wuhou_image_worker_invalid_input_total{job="wuhou-worker",instance="worker"}'
+        values: '0+5x25'
+      - series: 'wuhou_image_worker_timeout_total{job="wuhou-worker",instance="worker"}'
+        values: '0 0 1 2 2+0x21'
+      - series: 'wuhou_image_worker_failed_total{job="wuhou-worker",instance="worker"}'
+        values: '0 0 0 0 0 1+0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: WuhouWorkerUnavailableOrFailing
+      - eval_time: 7m
+        alertname: WuhouWorkerUnavailableOrFailing
+        exp_alerts:
+          - exp_labels: {job: wuhou-worker, instance: worker, severity: warning}
+            exp_annotations: {summary: "午逅图片端不可达或连续处理失败"}
+      - eval_time: 20m
+        alertname: WuhouWorkerUnavailableOrFailing

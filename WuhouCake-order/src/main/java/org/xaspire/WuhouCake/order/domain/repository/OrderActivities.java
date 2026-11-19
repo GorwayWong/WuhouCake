@@ -11,6 +11,7 @@ public interface OrderActivities {
     String itemAdditionFingerprint(UUID orderId, UUID actorId, UUID requestId);
     OrderActivity findNote(UUID orderId, UUID actorId, UUID requestId);
     List<OrderActivity> recentItemNotes(UUID orderId);
+    List<OrderActivity> recentItemNotesForOrders(List<UUID> ids);
     List<OrderActivity> search(UUID orderId, UUID itemId, String type, int size, long offset);
     long count(UUID orderId, UUID itemId, String type);
 }

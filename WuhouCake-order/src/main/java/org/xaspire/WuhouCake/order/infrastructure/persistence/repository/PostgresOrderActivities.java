@@ -33,6 +33,10 @@ public final class PostgresOrderActivities implements OrderActivities {
         return row == null ? null : activity(row);
     }
     @Override public List<OrderActivity> recentItemNotes(UUID orderId) { return mapper.recentItemNotes(orderId.toString()).stream().map(this::activity).toList(); }
+    @Override public List<OrderActivity> recentItemNotesForOrders(List<UUID> ids) {
+        if (ids.isEmpty()) return List.of();
+        return mapper.recentItemNotesForOrders(ids.stream().map(UUID::toString).toList()).stream().map(this::activity).toList();
+    }
     @Override public List<OrderActivity> search(UUID orderId, UUID itemId, String type, int size, long offset) {
         return mapper.search(orderId.toString(), string(itemId), type, size, offset).stream().map(this::activity).toList();
     }

@@ -9,6 +9,6 @@ public final class ImageWorkerMain {
     public static void main(String[] args) throws IOException {
         try { ImageWorkerProtocol.success(System.out, ImageWorkerProtocol.process(System.in)); }
         catch (OrderFailure failure) { System.out.write(ImageWorkerProtocol.failure(failure.code())); }
-        catch (IOException | RuntimeException failure) { System.out.write(ImageWorkerProtocol.failure("INVALID_IMAGE")); }
+        catch (IOException | RuntimeException failure) { System.out.write(ImageWorkerProtocol.failure("IMAGE_PROCESSING_UNAVAILABLE")); }
     }
 }

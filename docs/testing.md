@@ -45,6 +45,39 @@ python3 docs/verification/image-isolation-probe.py --base http://127.0.0.1:18080
 
 本轮验收只使用确定性回归和少量并发请求。后续独立资源验收由专用环境执行，流程可参照上文。
 
+## 满额导出负载
+
+在专用 PostgreSQL 17 和 Redis 环境配置本页的集成连接参数，使用 Java 21 运行。测试绑定回环，使用随机 schema 和 Redis 键前缀。
+
+```sh
+./mvnw -pl WuhouCake-bootstrap -am -Pintegration verify \
+  '-Dit.test=OrderExportIT#measureFullExportWithConcurrentOrderCreationAndWorkbenchReads' \
+  -Dwuhou.export.load=true -Dfailsafe.failIfNoSpecifiedTests=false
+```
+
+测试使用五连接的 Hikari 池。每个经营 ZIP 含 100 笔合成订单，每单有两件商品、订单备注、商品备注和一张小图。写请求使用相邻日期，避免改变导出筛选结果。预热后交替执行各三轮无导出和单路持续导出，每轮 30 秒，每秒发送 4 次录单和 8 次工作台卡片读取。Failsafe XML 中的 `EXPORT_LOAD` 行记录每轮计数、耗时分位数、从首条 SQL 到事务提交的快照耗时、实际快照 SQL 数，以及每 50 毫秒采样的连接池等待。平时 CI 运行两种 ZIP 入口的 SQL 数与结果一致性断言。
+
+### 2026-11-19 隔离测量
+
+以下基线使用 `edbb8e0` 的逐单读取，复测使用批量读取。两次均运行于同一台 macOS ARM64 主机，PostgreSQL 17 和 Redis 运行在本机 Docker 中。延迟单位为毫秒，p50 和 p95 取三轮各自分位数的中位数，最大值取三轮中的最大值。
+
+| 版本与负载 | 指标 | 样本数 | p50 | p95 | 最大值 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 基线，无导出 | 录单 | 361 | 32.00 | 51.07 | 201.70 |
+| 基线，无导出 | 工作台读取 | 721 | 23.58 | 39.82 | 174.67 |
+| 基线，持续导出 | 录单 | 362 | 16.07 | 25.45 | 81.79 |
+| 基线，持续导出 | 工作台读取 | 722 | 10.05 | 18.30 | 89.45 |
+| 基线，持续导出 | ZIP 响应 | 119 | 735.17 | 849.14 | 1219.17 |
+| 基线，持续导出 | 快照事务 | 119 | 222.53 | 309.24 | 357.33 |
+| 批量读取，无导出 | 录单 | 361 | 32.57 | 48.49 | 135.88 |
+| 批量读取，无导出 | 工作台读取 | 721 | 24.49 | 37.10 | 123.37 |
+| 批量读取，持续导出 | 录单 | 361 | 17.91 | 40.75 | 406.32 |
+| 批量读取，持续导出 | 工作台读取 | 720 | 12.26 | 31.04 | 340.57 |
+| 批量读取，持续导出 | ZIP 响应 | 143 | 592.94 | 836.48 | 1517.99 |
+| 批量读取，持续导出 | 快照事务 | 143 | 20.60 | 39.40 | 227.40 |
+
+100 单快照 SQL 从 502 条降至 7 条。两次完整测量均无 HTTP 错误，复测的第二轮导出有三个等待采样点，峰值为两个请求，其余轮次未采到连接等待。持续导出采用前一份 ZIP 返回即请求下一份的策略，复测期间完成的 ZIP 更多，同时录单与工作台的尾延迟高于基线。快照耗时的下降可复现，端到端尾延迟仍受并发生成 ZIP 和本机资源调度影响。首轮探索复测有一次未分类的导出 HTTP 503，最终三轮未再出现。压测工具会区分业务错误码并对 `EXPORT_BUSY` 遵守 `Retry-After`。
+
 ## 隔离备份恢复
 
 使用 Java 21、Docker Compose、Python 3.11 及 OpenSSL，从仓库根目录执行。先用 Maven 构建 Spring Boot JAR。
@@ -83,3 +116,20 @@ node --test --test-name-pattern='首次登录|客户扫码响应丢失' \
 ```
 
 首次改密用例从录单深链接开始，验证首次登录的访问限制、当前密码错误后的重试，以及改密后使用新密码重新登录。扫码用例验证响应丢失后保留输入，并用原幂等键和原内容重试。部署环境的 HTTPS Cookie、反向代理、真实设备和外部模型可用性仍需在对应环境验收。
+
+
+### CI 浏览器验收
+
+从仓库根目录使用 Node.js 24、Java 21、Docker Compose 及 OpenSSL 执行。使用锁文件中的 Playwright 和配套 Chromium。
+
+```sh
+./mvnw -DskipTests package
+npm --prefix frontend ci
+cd frontend
+npx playwright install --only-shell chromium
+cd ..
+DRAFT_BROWSER_CHANNEL=headless-shell python3 -B docs/dev-ops/compose/test-browser-receipt.py \
+  --jar WuhouCake-bootstrap/target/WuhouCake-bootstrap-*.jar
+```
+
+该入口启动隔离 PostgreSQL、Redis、Spring Boot 和回环 Vite。真实扫码用例在后端已返回回执时断开浏览器响应，再验证跨刷新同键重试。其他用例通过模拟 API 覆盖撤权、录单草稿和套餐恢复。设置 `WUHOU_BROWSER_TRACE_DIR` 可保存 trace，CI 仅在任务失败时上传。

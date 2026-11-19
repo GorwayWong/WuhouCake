@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.*;
+import java.net.http.*;
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
@@ -59,6 +60,12 @@ class ImageWorkerTest {
                 assertEquals(24, result.width()); assertEquals(12, result.height());
                 assertNotNull(ImageIO.read(new ByteArrayInputStream(result.content())));
                 assertEquals("UNSUPPORTED_IMAGE_FORMAT", assertThrows(OrderFailure.class, () -> validator.validate(new byte[]{1,2,3}, "bad.jpg")).code());
+                try (var client = HttpClient.newHttpClient()) {
+                    var oversized = HttpRequest.newBuilder(endpoint(server)).POST(HttpRequest.BodyPublishers.ofByteArray(
+                            new byte[ImageWorkerProtocol.MAX_MESSAGE + 1])).build();
+                    assertEquals(422, client.send(oversized, HttpResponse.BodyHandlers.discarding()).statusCode());
+                }
+                assertCounters(server, 1, 2, 0, 0, 0);
             }
         }
     }
@@ -140,10 +147,26 @@ class ImageWorkerTest {
                     assertEquals(24, validator.validate(image, "after-crash.png").width());
                     assertEquals("IMAGE_PROCESSING_UNAVAILABLE", assertThrows(OrderFailure.class, () -> validator.validate(image, "oom.png")).code());
                     assertEquals(24, validator.validate(image, "after-oom.png").width());
+                    assertEquals("IMAGE_PROCESSING_UNAVAILABLE", assertThrows(OrderFailure.class,
+                            () -> validator.validate(image, "malformed.png")).code());
+                    assertCounters(server, 3, 0, 1, 3, 0);
                 }
             }
         } finally { Files.deleteIfExists(pidFile); }
     }
+    private static void assertCounters(ImageWorkerServer server, long success, long invalid, long timeout,
+                                       long failure, long busy) throws Exception {
+        try (var client = HttpClient.newHttpClient()) {
+            var request = HttpRequest.newBuilder(endpoint(server).resolve("/metrics")).build();
+            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode());
+            var expected = Map.of("admitted", success + invalid + timeout + failure, "success", success,
+                    "invalid_input", invalid, "timeout", timeout, "failed", failure, "rejected", busy);
+            expected.forEach((counter, value) -> assertTrue(response.body().lines().anyMatch(line ->
+                    line.equals("wuhou_image_worker_" + counter + "_total " + value)), response.body()));
+        }
+    }
+
     @Test void clientDeadlineIncludesResponseBodyAndDoesNotDecodeOnFailure() throws Exception {
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         var release = new CountDownLatch(1);
@@ -191,6 +214,10 @@ class ImageWorkerTest {
             if (filename.equals("hang.png")) {
                 Files.writeString(Path.of(args[0]), Long.toString(ProcessHandle.current().pid()));
                 while (true) { try { Thread.sleep(1000); } catch (InterruptedException ignored) { } }
+            }
+            if (filename.equals("malformed.png")) {
+                System.out.write(ImageWorkerProtocol.failure(""));
+                return;
             }
             if (filename.equals("crash.png")) System.exit(23);
             if (filename.equals("oom.png")) {

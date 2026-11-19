@@ -17,18 +17,26 @@ public interface OrderMapper {
             boolean removed, Instant createdAt, Instant updatedAt) { }
 
     @Select("SELECT nextval('cake_order_no_seq')") long nextNumber();
-    String SELECT_ORDER = "SELECT id::text, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
+    String ORDER_COLUMNS = "SELECT id::text, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
             + " created_by::text, created_at, confirmed_at, updated_at, credited_employee_id::text, credited_employee_number, credited_employee_name, requested_receive_at, paid_at,"
-            + " deleted_at, deleted_by::text, deleted_by_name, deletion_reason, ordering_method, original_amount_cents, member_amount_cents, payment_method, pricing_mode FROM cake_order WHERE id=CAST(#{id} AS uuid)";
+            + " deleted_at, deleted_by::text, deleted_by_name, deletion_reason, ordering_method, original_amount_cents, member_amount_cents, payment_method, pricing_mode";
+    String SELECT_ORDER = ORDER_COLUMNS + " FROM cake_order WHERE id=CAST(#{id} AS uuid)";
     @Select(SELECT_ORDER)
     Row find(String id);
+    @Select("<script>" + ORDER_COLUMNS + " FROM cake_order WHERE id IN "
+            + "<foreach collection='ids' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach></script>")
+    List<Row> findAll(@Param("ids") List<String> ids);
     @Select(SELECT_ORDER + " FOR UPDATE")
     Row lock(String id);
-    @Select("SELECT id::text, order_id::text, name, product_type, quantity, unit_price_cents, member_price_cents, attributes::text,"
-            + " production_status, current_stage_code, is_removed AS removed, created_at, updated_at FROM cake_order_item"
-            + " WHERE order_id=CAST(#{id} AS uuid) ORDER BY position NULLS LAST, created_at, id")
+    String SELECT_ITEMS = "SELECT id::text, order_id::text, name, product_type, quantity, unit_price_cents, member_price_cents, attributes::text,"
+            + " production_status, current_stage_code, is_removed AS removed, created_at, updated_at FROM cake_order_item";
+    @Select(SELECT_ITEMS + " WHERE order_id=CAST(#{id} AS uuid) ORDER BY position NULLS LAST, created_at, id")
     List<ItemRow> items(String id);
+    @Select("<script>" + SELECT_ITEMS + " WHERE order_id IN "
+            + "<foreach collection='ids' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>"
+            + " ORDER BY order_id, position NULLS LAST, created_at, id</script>")
+    List<ItemRow> itemsForOrders(@Param("ids") List<String> ids);
     @Insert("INSERT INTO cake_order (id, order_no, version, status, payment_status, current_stage_code, customer_name, customer_phone, member_phone, buyer_name,"
             + " fulfillment_type, delivery_address, requested_receive_date, planned_handoff_at, planned_finish_at, total_amount_cents,"
             + " created_by, created_at, confirmed_at, updated_at, credited_employee_id, credited_employee_number, credited_employee_name, requested_receive_at, paid_at, ordering_method, original_amount_cents, member_amount_cents, payment_method, pricing_mode) VALUES (CAST(#{id} AS uuid), #{orderNo}, #{version}, #{status}, #{paymentStatus}, #{currentStageCode},"

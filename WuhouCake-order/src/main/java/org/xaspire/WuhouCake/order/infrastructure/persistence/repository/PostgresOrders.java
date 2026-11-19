@@ -23,16 +23,29 @@ public final class PostgresOrders implements Orders {
     @Override public Optional<Order> find(UUID id) {
         return restore(id, mapper.find(id.toString()));
     }
+    @Override public List<Order> findAll(List<UUID> ids) {
+        if (ids.isEmpty()) return List.of();
+        var keys = ids.stream().map(UUID::toString).toList();
+        var orders = mapper.findAll(keys);
+        Map<String, List<OrderItem>> items = new HashMap<>();
+        for (var row : mapper.itemsForOrders(keys)) {
+            items.computeIfAbsent(row.orderId(), ignored -> new ArrayList<>()).add(item(row));
+        }
+        return orders.stream().map(row -> aggregate(row, items.getOrDefault(row.id(), List.of()))).toList();
+    }
     @Override public Optional<Order> lock(UUID id) { return restore(id, mapper.lock(id.toString())); }
     private Optional<Order> restore(UUID id, OrderMapper.Row row) {
         if (row == null) return Optional.empty();
         var items = mapper.items(id.toString()).stream().map(this::item).toList();
-        return Optional.of(new Order(id, row.orderNo(), row.version(), row.status(), row.paymentStatus(), row.currentStageCode(),
+        return Optional.of(aggregate(row, items));
+    }
+    private Order aggregate(OrderMapper.Row row, List<OrderItem> items) {
+        return new Order(UUID.fromString(row.id()), row.orderNo(), row.version(), row.status(), row.paymentStatus(), row.currentStageCode(),
                 new CustomerContact(row.customerName(), row.customerPhone(), row.memberPhone(), row.buyerName()),
                 new FulfillmentPlan(FulfillmentType.valueOf(row.fulfillmentType()), row.deliveryAddress(), row.requestedReceiveDate(), row.plannedHandoffAt(), row.plannedFinishAt(), row.requestedReceiveAt()),
                 row.totalAmountCents(), UUID.fromString(row.createdBy()), row.createdAt(), row.confirmedAt(), row.updatedAt(), items,
                 row.creditedEmployeeId() == null ? null : new Attribution(UUID.fromString(row.creditedEmployeeId()), row.creditedEmployeeNumber(), row.creditedEmployeeName()), row.paidAt(),
-                row.deletedAt() == null ? null : new OrderDeletion(row.deletedAt(), UUID.fromString(row.deletedBy()), row.deletedByName(), row.deletionReason()), row.orderingMethod(), row.originalAmountCents(), row.memberAmountCents(), row.paymentMethod(), row.pricingMode()));
+                row.deletedAt() == null ? null : new OrderDeletion(row.deletedAt(), UUID.fromString(row.deletedBy()), row.deletedByName(), row.deletionReason()), row.orderingMethod(), row.originalAmountCents(), row.memberAmountCents(), row.paymentMethod(), row.pricingMode());
     }
     @Override public void delete(Order order, long expectedVersion) {
         var row = row(order);

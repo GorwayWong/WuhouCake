@@ -20,8 +20,15 @@ public final class PostgresOrderExportQueries implements OrderExportQueries {
                 .stream().map(UUID::fromString).toList();
     }
     @Override public List<OrderActivity> orderNotes(UUID orderId) {
-        return activities.orderNotes(orderId.toString()).stream().map(row -> new OrderActivity(row.id(), orderId, null, row.type(), row.content(),
-                JsonSnapshot.object(json.read(row.details(), Map.class)), UUID.fromString(row.actorId()), row.actorNameSnapshot(), row.createdAt())).toList();
+        return activities.orderNotes(orderId.toString()).stream().map(this::note).toList();
+    }
+    @Override public List<OrderActivity> orderNotesForOrders(List<UUID> ids) {
+        if (ids.isEmpty()) return List.of();
+        return activities.orderNotesForOrders(ids.stream().map(UUID::toString).toList()).stream().map(this::note).toList();
+    }
+    private OrderActivity note(OrderActivityMapper.Row row) {
+        return new OrderActivity(row.id(), UUID.fromString(row.orderId()), null, row.type(), row.content(),
+                JsonSnapshot.object(json.read(row.details(), Map.class)), UUID.fromString(row.actorId()), row.actorNameSnapshot(), row.createdAt());
     }
     @Override public ContentSize contentSize(List<UUID> orderIds) {
         var size = queries.exportContentSize(orderIds.stream().map(UUID::toString).toList());

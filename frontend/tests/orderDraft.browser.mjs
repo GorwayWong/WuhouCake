@@ -1,3 +1,4 @@
+import { testBrowserChannel, closeTestContext, closeTestBrowser, openTestContext } from './browserTrace.mjs';
 import { cycleOrderDraft, openOrderDraft, pendingOrderDraft, savedOrderDraft, saveOrderDraftAndExit } from './orderBrowserFixture.mjs';
 import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
@@ -9,11 +10,11 @@ const engine = process.env.DRAFT_BROWSER_ENGINE || 'chromium';
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 const key = 'wuhou:order-draft:v1:alice';
 let browser;
-before(async () => { browser = await engines[engine].launch({ headless: true, ...(engine === 'chromium' ? { channel: process.env.DRAFT_BROWSER_CHANNEL || 'chrome' } : {}) }); });
-after(async () => { await browser?.close(); });
+before(async () => { browser = await engines[engine].launch({ headless: true, ...(engine === 'chromium' ? { channel: testBrowserChannel() } : {}) }); });
+after(async () => { await closeTestBrowser(browser); });
 
 async function fixture() {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
+  const context = await openTestContext(browser, { viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
   context.setDefaultTimeout(10000);
   await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
   const model = { account: 'alice', permitted: true, loseResponse: false, reject: false, orders: new Map(), requests: [],
@@ -24,7 +25,7 @@ async function fixture() {
     if (path === '/api/auth/csrf') return route.fulfill({ headers: { 'set-cookie': 'XSRF-TOKEN=test; Path=/' }, json: { success: true, data: { headerName: 'X-XSRF-TOKEN' } } });
     if (path === '/api/auth/refresh' || path === '/api/auth/login') return ok({ accessToken: testJwt('test-token'), expiresIn: 3600, passwordChangeRequired: false });
     if (path === '/api/auth/logout') return ok(null);
-    if (path === '/api/me') return ok({ accountId: model.account, nickname: model.account, employeeNumber: model.account, jobRoles: ['FRONT_DESK'], access: { permissions: model.permitted ? ['ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ', ...model.extraPermissions] : [], uiCapabilities: [] } });
+    if (path === '/api/me') return ok({ accountId: model.account, nickname: model.account, employeeNumber: model.account, jobRoles: ['FRONT_DESK'], access: { permissions: model.permitted ? ['ORDER_READ', 'ORDER_CREATE', 'ORDER_CUSTOMER_READ', 'ORDER_AMOUNT_READ', ...model.extraPermissions] : ['ORDER_READ'], uiCapabilities: [] } });
     if (path === '/api/orders/stream') return route.fulfill({ status: 503 });
     if (path === '/api/orders/calendar') return ok([]);
     if (path === '/api/orders/workbench/cards') return ok({ date: '2026-11-04', orders: [], nextCursor: null,
@@ -93,7 +94,7 @@ test('只粘贴原文可显式保存，重开时选择恢复', async () => {
     await openOrderDraft(page);
     assert.equal(await page.locator('#recognition-text').inputValue(), '微信原文：王女士生日蛋糕 🎂');
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('多商品、未完成金额、当前商品及手工标记随已保存草稿恢复', async () => {
   const { context, page } = await fixture();
@@ -115,7 +116,7 @@ test('多商品、未完成金额、当前商品及手工标记随已保存草�
     await page.evaluate(() => { location.hash = '#'; });
     await waitFor(() => page.locator('#customerName').count().then(n => n === 0));
     await openOrderDraft(page);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('响应丢失后重载，用原始载荷及相同标识重试，仅产生一单，成功清除草稿', async () => {
   const { context, page, model, errors } = await fixture();
@@ -135,7 +136,7 @@ test('响应丢失后重载，用原始载荷及相同标识重试，仅产生�
     assert.deepEqual(model.requests.map(request => request.id), [original.requestId, original.requestId]);
     assert.deepEqual(model.requests[1].body, original.pending);
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('录单响应体挂起后解除页面锁定，原提交可按相同键取回', async () => {
   const { context, page, model } = await fixture();
@@ -168,7 +169,7 @@ test('录单响应体挂起后解除页面锁定，原提交可按相同键取�
     assert.deepEqual(model.requests.map(request => request.id), [original.requestId, original.requestId]);
     assert.deepEqual(model.requests[1].body, original.pending);
     assert.equal(model.orders.size, 1);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('明确拒绝后解锁表单，草稿保持可编辑', async () => {
   const { context, page, model } = await fixture();
@@ -180,7 +181,7 @@ test('明确拒绝后解锁表单，草稿保持可编辑', async () => {
     await page.locator('#customerName').fill('拒绝后继续修改');
     await saveOrderDraftAndExit(page);
     assert.equal((await saved(page)).value.customerName, '拒绝后继续修改');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('跨标签页同时退出保存，旧版本须再次确认才能覆盖', async () => {
   const { context, page } = await fixture();
@@ -200,7 +201,7 @@ test('跨标签页同时退出保存，旧版本须再次确认才能覆盖', as
     await button(other, '保存草稿并退出').click();
     await other.getByRole('link', { name: '新建订单', exact: true }).waitFor();
     assert.equal((await saved(page)).value.customerName, winner === page ? '乙草稿' : '甲草稿');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('草稿写入失败时旧快照保留，恢复浏览器存储后可重试', async () => {
@@ -225,7 +226,7 @@ test('草稿写入失败时旧快照保留，恢复浏览器存储后可重试',
     await button(page, '保存草稿并退出').click();
     await page.getByRole('link', { name: '新建订单', exact: true }).waitFor();
     assert.equal((await saved(page)).value.customerName, '重试保存的新内容');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('登录过期保留当前页，主动退出可保存到原账号草稿', async () => {
@@ -247,7 +248,7 @@ test('登录过期保留当前页，主动退出可保存到原账号草稿', as
     await button(page, '保存草稿并退出').click();
     await page.getByRole('heading', { name: '员工登录' }).waitFor();
     assert.equal((await saved(page)).value.customerName, '过期前内容');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('不同员工及失去录单权限时不展示原账号草稿', async () => {
@@ -264,7 +265,7 @@ test('不同员工及失去录单权限时不展示原账号草稿', async () =>
     await page.getByText('当前岗位不显示接单信息。').waitFor();
     assert.equal(await page.getByRole('dialog').count(), 0);
     assert.equal((await saved(page)).value.customerName, 'alice 私有草稿');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('恢复草稿后登录过期，其他员工登录时不展示原草稿', async () => {
   const { context, page, model } = await fixture();
@@ -289,7 +290,7 @@ test('恢复草稿后登录过期，其他员工登录时不展示原草稿', as
     assert.equal(await page.locator('#customerName').inputValue(), '');
     assert.deepEqual(await page.evaluate(() => window.oldAccountDialogs), []);
     assert.equal((await saved(page)).value.customerName, 'Alice-private-customer');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('损坏草稿不会被默认表单覆盖，明确放弃后才清除', async () => {
   const { context, page } = await fixture();
@@ -302,7 +303,7 @@ test('损坏草稿不会被默认表单覆盖，明确放弃后才清除', async
     await page.getByRole('button', { name: '确认放弃', exact: true }).click();
     await page.locator('#customerName').waitFor();
     assert.equal(await saved(page), null);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('识别核对标记及手工字段保护跨恢复保留，再次识别不覆盖手工姓名', async () => {
   const { context, page } = await fixture();
@@ -328,7 +329,7 @@ test('识别核对标记及手工字段保护跨恢复保留，再次识别不�
     await page.getByRole('button', { name: '识别并填入', exact: true }).click();
     await waitFor(async () => !(await page.getByRole('button', { name: '识别并填入', exact: true }).isDisabled()));
     assert.equal(await page.locator('#customerName').inputValue(), '手工姓名');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('切后台及 pagehide 不覆盖已保存草稿，保留当前页面输入', async () => {
   const { context, page } = await fixture();
@@ -346,7 +347,7 @@ test('切后台及 pagehide 不覆盖已保存草稿，保留当前页面输入'
     assert.deepEqual(await saved(page), previous);
     assert.equal(await page.locator('#customerName').inputValue(), '只在当前页');
     assert.equal(await page.getByRole('dialog').count(), 0);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 async function selectTime(page, field, unit, value) {
@@ -392,7 +393,7 @@ test('时间字段位于客户信息前，手机两列、窄屏单列，日期�
         await page.screenshot({ path: process.env.DRAFT_SCREENSHOT.replace(/\.png$/, `-times-${width}.png`) });
       }
     }
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('取货日期、时刻和出品输入沿用原规则，恢复后同步提交，改日期清时刻并定位错误', async () => {
   const { context, page, model } = await fixture();
@@ -437,7 +438,7 @@ test('取货日期、时刻和出品输入沿用原规则，恢复后同步提�
     assert.equal(model.requests.length, 2);
     assert.equal(await page.locator('.date-time-field[data-field-name="requestedReceiveAt"]').evaluate(element => element.contains(document.activeElement)), true);
     assert.equal(await page.locator('.create-time-grid [data-invalid]').count() > 0, true);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('识别带入的取货和出品时间在顶部显示，草稿恢复保留时间及核对标记', async () => {
   const { context, page, model } = await fixture();
@@ -453,7 +454,7 @@ test('识别带入的取货和出品时间在顶部显示，草稿恢复保留�
     assert.equal(await page.locator('input[name="requestedReceiveAt"]').inputValue(), '2026-11-08T15:30');
     assert.equal(await page.locator('input[name="plannedFinishAt"]').inputValue(), '2026-11-08T13:00');
     assert.equal(await page.locator('.create-time-grid > label[data-recognition="true"]').count(), 2);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('移动端字段显示补年与时刻异常，同一原文在手改、撤销和换原文后均不重放', async () => {
@@ -518,7 +519,7 @@ test('移动端字段显示补年与时刻异常，同一原文在手改、撤�
     assert.equal(model.recognitionRequests.length, 5);
     assert.equal(model.recognitionRequests.at(-1), original);
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('移动端取货优先，同日仅日期清除自动时刻，撤销恢复且相同原文不重放', async () => {
@@ -557,7 +558,7 @@ test('移动端取货优先，同日仅日期清除自动时刻，撤销恢复�
     assert.equal(await fieldValue(page, 'requestedReceiveAt'), '2026-11-12T17:00');
     assert.equal(await page.getByRole('dialog').count(), 0);
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('出品自动随动、手动保留、刷新恢复及恢复自动，移动端无溢出', async () => {
@@ -585,7 +586,7 @@ test('出品自动随动、手动保留、刷新恢复及恢复自动，移动�
     assert.equal(await value('plannedFinishAt'), '');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('合法跨日出品不提醒，出品过晚时可一键修正', async () => {
@@ -621,7 +622,7 @@ test('合法跨日出品不提醒，出品过晚时可一键修正', async () =>
     await page.getByRole('button', { name: '今天', exact: true }).click();
     await warning.waitFor({ state: 'detached' });
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('历史订单编辑只展示取货和出品，保留原始差异，不改时间只提交电话', async () => {
@@ -657,7 +658,7 @@ test('历史订单编辑只展示取货和出品，保留原始差异，不改�
     await waitFor(() => Promise.resolve(patches.length === 1));
     assert.deepEqual(patches[0], { expectedVersion: 1, changes: { phone: '13900000000' } });
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 test('客户扫码响应丢失后用原请求重试，员工确认时暂存并核对重复单', async () => {
   const { context, page, model, errors } = await fixture();
@@ -732,7 +733,7 @@ test('客户扫码响应丢失后用原请求重试，员工确认时暂存并�
     await page.getByRole('link', { name: '查看正式订单' }).waitFor();
     assert.equal(confirmAttempts, 1);
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 
@@ -762,7 +763,7 @@ test('放弃待确认记录就地确认，删除失败可见且重试闭环，�
     await waitFor(async () => await pending(page) === null);
     assert.equal(await page.locator('#customerName').inputValue(), '');
     assert.equal(await page.locator('dialog[open]').count(), 0);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('恢复确认期间其他标签页更新，禁止删除新版本', async () => {
@@ -779,7 +780,7 @@ test('恢复确认期间其他标签页更新，禁止删除新版本', async ()
     await button(page, '确认放弃').click();
     await modal.getByRole('alert').filter({ hasText: '草稿未能删除' }).waitFor();
     assert.equal((await pending(page)).value.customerName, '其他标签页');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('已创建及结果未知草稿放弃仅清本机，关闭重入不沿用确认状态', async () => {
@@ -806,7 +807,7 @@ test('已创建及结果未知草稿放弃仅清本机，关闭重入不沿用�
       await page.locator('#customerName').waitFor();
       assert.equal(model.requests.length, 0);
     }
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 
@@ -844,5 +845,5 @@ test('另起新单后退出不保存，仍可恢复原来的订单草稿', async
     await start(); await button('继续填写').click();
     assert.equal(await name.inputValue(), '应保留的草稿');
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });

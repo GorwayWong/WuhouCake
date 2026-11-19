@@ -1,3 +1,4 @@
+import { openTestContext } from './browserTrace.mjs';
 import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
 export const orderId = '10000000-0000-4000-8000-000000000001';
@@ -69,7 +70,7 @@ export const visibleOrderFields = page => page.locator('.create-page form').eval
   Array.from(form.querySelectorAll('input[name], textarea[name]'), input => [input.name, input.value]));
 
 export async function createOrderFixture(browser, base) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
+  const context = await openTestContext(browser, { viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
   context.setDefaultTimeout(10000);
   await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
   const model = { account: 'alice', order: null, orders: new Map(), images: [], createCalls: [], uploads: [], failNames: new Set(), lostNames: new Set(), loseCreate: false,

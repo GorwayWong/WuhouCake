@@ -1,3 +1,4 @@
+import { testBrowserChannel, closeTestBrowser, openTestPage, openTestContext } from './browserTrace.mjs';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
@@ -36,9 +37,9 @@ async function complete(page) {
 }
 
 test('客户填单校验失败后可修改，响应丢失后重试始终使用原请求', async () => {
-  const browser = await chromium.launch({ headless: true, channel: process.env.DRAFT_BROWSER_CHANNEL || 'chrome' });
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
   try {
-    const context = await browser.newContext();
+    const context = await openTestContext(browser);
     let page = await context.newPage();
     const attempts = [];
     const path = '**/api/public/order-entries/retry';
@@ -91,13 +92,13 @@ test('客户填单校验失败后可修改，响应丢失后重试始终使用�
     await page.getByText(`填单编号：${receipt(2).submissionNo}`).waitFor();
     assert.ok(attempts[4].key);
     assert.notEqual(attempts[4].key, attempts[1].key);
-  } finally { await browser.close(); }
+  } finally { await closeTestBrowser(browser); }
 });
 
 test('扫码重试保留原键，入口检查超时或 503 后仍可恢复', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const page = await openTestPage(browser);
   const path = '**/api/public/order-entries/retry';
   const attempts = [];
   const held = Promise.withResolvers();
@@ -184,9 +185,9 @@ test('扫码重试保留原键，入口检查超时或 503 后仍可恢复', asy
 });
 
 test('浏览器存储不可用时，明确拒绝后保留输入，断线后以原请求重试', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const page = await openTestPage(browser);
   const attempts = [];
   await page.addInitScript(() => {
     const open = indexedDB.open.bind(indexedDB);
@@ -228,9 +229,9 @@ test('浏览器存储不可用时，明确拒绝后保留输入，断线后以�
 });
 
 test('已有扫码草稿时，待确认记录写入失败不会发送请求', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const context = await browser.newContext();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const context = await openTestContext(browser);
   const path = '**/api/public/order-entries/retry';
   let page = await context.newPage();
   const attempts = [];
@@ -278,9 +279,9 @@ test('已有扫码草稿时，待确认记录写入失败不会发送请求', as
 });
 
 test('旧版会话记录恢复后仍可用原请求取回回执', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const page = await openTestPage(browser);
   const path = '**/api/public/order-entries/retry';
   const legacy = { key: '20000000-0000-4000-8000-000000000088', content: {
     phone: '13800000000', memberPhone: null, address: null, fulfillmentType: 'PICKUP',
@@ -304,9 +305,9 @@ test('旧版会话记录恢复后仍可用原请求取回回执', async t => {
 });
 
 test('会话存储恢复读取后保留旧提交键，明确恢复原提交前不发送新请求', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const page = await openTestPage(browser);
   await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
   const path = '**/api/public/order-entries/retry';
   const legacy = { key: '20000000-0000-4000-8000-000000000088', content: {
@@ -358,7 +359,7 @@ test('会话存储恢复读取后保留旧提交键，明确恢复原提交前�
 });
 
 async function editableDraftWithUnreadableLegacy(browser, attempts) {
-  const page = await browser.newPage();
+  const page = await openTestPage(browser);
   await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
   const legacy = { key: '20000000-0000-4000-8000-000000000088', content: {
     phone: '13800000000', memberPhone: null, address: null, fulfillmentType: 'PICKUP',
@@ -394,8 +395,8 @@ async function editableDraftWithUnreadableLegacy(browser, attempts) {
 }
 
 test('放弃找回的旧扫码提交后恢复独立草稿，继续填写保留其余字段', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
   const attempts = [];
   const { page } = await editableDraftWithUnreadableLegacy(browser, attempts);
   await page.evaluate(() => { window.canReadLegacy = true; });
@@ -414,8 +415,8 @@ test('放弃找回的旧扫码提交后恢复独立草稿，继续填写保留�
 });
 
 test('旧会话键在 IndexedDB 写入期间恢复时停止新提交并保留可编辑草稿', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
   const attempts = [];
   const { page, legacy } = await editableDraftWithUnreadableLegacy(browser, attempts);
   await page.evaluate(() => {
@@ -441,9 +442,9 @@ test('旧会话键在 IndexedDB 写入期间恢复时停止新提交并保留可
 });
 
 test('另一标签页已经更换草稿时，仍可保留并重试旧版会话请求', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const context = await browser.newContext();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const context = await openTestContext(browser);
   const path = '**/api/public/order-entries/retry';
   const url = `${base}/#/fill/retry`;
   const attempts = [];
@@ -492,9 +493,9 @@ test('另一标签页已经更换草稿时，仍可保留并重试旧版会话�
 });
 
 test('明确拒绝的会话记录清理失败后，可在下次发送前清理原键', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const page = await browser.newPage();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const page = await openTestPage(browser);
   const attempts = [];
   const path = '**/api/public/order-entries/retry';
   await page.addInitScript(key => {
@@ -538,9 +539,9 @@ test('明确拒绝的会话记录清理失败后，可在下次发送前清理�
 });
 
 test('扫码未提交草稿跨标签页恢复，入口隔离并在24小时后淘汰', async t => {
-  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
-  t.after(() => browser.close());
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const context = await openTestContext(browser, { viewport: { width: 390, height: 844 } });
   await context.route('**/api/public/order-entries/*', route => route.fulfill({ json: { success: true, data: { ownerName: '客服' } } }));
   const first = await context.newPage();
   await first.goto(`${base}/#/fill/retry`);
@@ -571,9 +572,9 @@ test('扫码未提交草稿跨标签页恢复，入口隔离并在24小时后淘
 });
 
 test('待确认填单超过24小时后仍能跨标签页用同键和原内容确认', async t => {
-  const browser = await chromium.launch({ headless: true, channel: process.env.DRAFT_BROWSER_CHANNEL || 'chrome' });
-  t.after(() => browser.close());
-  const context = await browser.newContext();
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => closeTestBrowser(browser));
+  const context = await openTestContext(browser);
   await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
   const attempts = [];
   const path = '**/api/public/order-entries/retry';

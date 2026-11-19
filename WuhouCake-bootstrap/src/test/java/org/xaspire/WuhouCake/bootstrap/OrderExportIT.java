@@ -62,6 +62,7 @@ class OrderExportIT {
         registry.add("spring.flyway.default-schema", () -> SCHEMA); registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("management.endpoints.web.exposure.include", () -> "health,prometheus");
         registry.add("management.metrics.distribution.percentiles-histogram.http.server.requests", () -> "true");
+        registry.add("spring.datasource.hikari.maximum-pool-size", () -> 5);
         registry.add("spring.datasource.hikari.schema", () -> SCHEMA); registry.add("wuhoucake.identity.redis-namespace", () -> NAMESPACE);
     }
     @LocalServerPort int port;
@@ -71,6 +72,113 @@ class OrderExportIT {
     @Autowired StringRedisTemplate redis;
     @Autowired IdentityService identity;
     @Autowired Changes changes;
+    @Autowired ExportSnapshotMeasurements measurements;
+    @Autowired javax.sql.DataSource source;
+
+    private static final String LOAD_DATE = "2026-10-16";
+    private static final String LOAD_ZIP = "/api/admin/orders/exports/zip";
+    private static final Map<String, String> LOAD_FILTER = Map.of("from", LOAD_DATE, "to", "2026-10-17", "dateBasis", "RECEIVE");
+
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named = "wuhou.export.load", matches = "true")
+    void measureFullExportWithConcurrentOrderCreationAndWorkbenchReads() throws Exception {
+        var staff = staff();
+        seedExportLoad(staff);
+        var pool = source.unwrap(com.zaxxer.hikari.HikariDataSource.class).getHikariPoolMXBean();
+        staff.request("POST", "/api/orders", create("2026-10-17"));
+        staff.request("GET", "/api/orders/workbench/cards?date=" + LOAD_DATE, null);
+        var zip = staff.request("POST", LOAD_ZIP, LOAD_FILTER);
+        assertEquals(200, zip.statusCode(), text(zip));
+        assertEquals(100, entries(zip).size());
+        for (int round = 1; round <= 3; round++) {
+            exportLoadRound(staff, pool, round, false);
+            exportLoadRound(staff, pool, round, true);
+        }
+    }
+
+    private void seedExportLoad(Client staff) throws Exception {
+        byte[] png = picture("png");
+        for (int i = 0; i < 100; i++) {
+            var created = staff.request("POST", "/api/orders", create(LOAD_DATE));
+            assertEquals(201, created.statusCode(), text(created));
+            var order = data(created);
+            String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
+            assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("content", "整单备注")).statusCode());
+            assertEquals(201, staff.request("POST", "/api/orders/" + id + "/notes", Map.of("content", "商品备注", "itemId", item)).statusCode());
+            assertEquals(201, staff.upload(id, item, png, "reference.png").statusCode());
+        }
+    }
+
+    private void exportLoadRound(Client staff, com.zaxxer.hikari.HikariPoolMXBean pool, int round, boolean withExport) throws Exception {
+        var writes = new ConcurrentLinkedQueue<Long>();
+        var reads = new ConcurrentLinkedQueue<Long>();
+        var exports = new ConcurrentLinkedQueue<Long>();
+        var errors = new ConcurrentLinkedQueue<String>();
+        var peakPending = new AtomicInteger();
+        var pendingSamples = new AtomicInteger();
+        var busyExports = new AtomicInteger();
+        measurements.samples.clear();
+        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor();
+             var scheduler = Executors.newScheduledThreadPool(1)) {
+            var writeRate = scheduler.scheduleAtFixedRate(() -> workers.submit(() -> sample(writes, errors, "create", 201,
+                    () -> staff.request("POST", "/api/orders", create("2026-10-17")))), 0, 250, TimeUnit.MILLISECONDS);
+            var readRate = scheduler.scheduleAtFixedRate(() -> workers.submit(() -> sample(reads, errors, "workbench", 200,
+                    () -> staff.request("GET", "/api/orders/workbench/cards?date=" + LOAD_DATE, null))), 0, 125, TimeUnit.MILLISECONDS);
+            var pending = scheduler.scheduleAtFixedRate(() -> {
+                int waiting = pool.getThreadsAwaitingConnection();
+                peakPending.accumulateAndGet(waiting, Math::max);
+                if (waiting > 0) pendingSamples.incrementAndGet();
+            }, 0, 50, TimeUnit.MILLISECONDS);
+            if (withExport) workers.submit(() -> {
+                while (System.nanoTime() < end && errors.isEmpty()) {
+                    long started = System.nanoTime();
+                    try {
+                        var response = staff.request("POST", LOAD_ZIP, LOAD_FILTER);
+                        if (response.statusCode() == 200) exports.add(System.nanoTime() - started);
+                        else {
+                            String code = body(response).path("code").asText();
+                            if (response.statusCode() == 503 && code.equals("EXPORT_BUSY")) {
+                                busyExports.incrementAndGet();
+                                // The client may finish reading before the server releases export admission.
+                                TimeUnit.SECONDS.sleep(Long.parseLong(header(response, "Retry-After")));
+                            } else errors.add("export HTTP " + response.statusCode() + " " + code);
+                        }
+                    } catch (Exception failure) { errors.add("export " + failure.getClass().getSimpleName()); }
+                }
+            });
+            TimeUnit.NANOSECONDS.sleep(Math.max(0, end - System.nanoTime()));
+            writeRate.cancel(false); readRate.cancel(false); pending.cancel(false);
+        }
+        var snapshots = List.copyOf(measurements.samples);
+        System.out.printf(Locale.ROOT,
+                "EXPORT_LOAD round=%d export=%b create=[%s] read=[%s] zip=[%s] snapshot=[%s] sql=%s poolPeakWaiters=%d poolWaitingSamples=%d busyExports=%d errors=%s%n",
+                round, withExport, timings(writes), timings(reads), timings(exports), timings(snapshots.stream().map(ExportSnapshotMeasurements.Sample::elapsed).toList()),
+                snapshots.stream().map(ExportSnapshotMeasurements.Sample::statements).distinct().sorted().toList(),
+                peakPending.get(), pendingSamples.get(), busyExports.get(), errors);
+        assertTrue(errors.isEmpty(), errors.toString());
+        assertTrue(writes.size() >= 100 && reads.size() >= 200);
+        if (withExport) assertFalse(snapshots.isEmpty());
+    }
+
+    @FunctionalInterface private interface LoadRequest { HttpResponse<byte[]> run() throws Exception; }
+
+    private static void sample(Queue<Long> samples, Queue<String> errors, String name, int expected, LoadRequest request) {
+        long start = System.nanoTime();
+        try {
+            var response = request.run();
+            if (response.statusCode() != expected) errors.add(name + " HTTP " + response.statusCode());
+            else samples.add(System.nanoTime() - start);
+        } catch (Exception error) { errors.add(name + " " + error.getClass().getSimpleName()); }
+    }
+
+    private static String timings(Collection<Long> samples) {
+        if (samples.isEmpty()) return "n=0";
+        var sorted = samples.stream().sorted().toList();
+        int size = sorted.size();
+        return String.format(Locale.ROOT, "n=%d p50=%.2f p95=%.2f max=%.2f", size,
+                sorted.get((size - 1) / 2) / 1e6, sorted.get((int) Math.ceil(size * .95) - 1) / 1e6, sorted.getLast() / 1e6);
+    }
     @Autowired org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.OrderImageMaintenanceMapper maintenance;
     @Autowired OrderImageValidator validator;
     @Autowired org.xaspire.WuhouCake.order.application.service.OrderImageService uploads;
@@ -558,6 +666,44 @@ class OrderExportIT {
         assertEquals("PAID", data(staff.request("GET", "/api/orders/" + id, null)).path("paymentStatus").asText());
         assertEquals(0, exportCount());
     }
+    @Test void batchSnapshotsKeepSelectionOrderContentAndTransactionIsolation() throws Exception {
+        var staff = staff();
+        var later = data(staff.request("POST", "/api/orders", create("2026-10-02")));
+        var earlier = data(staff.request("POST", "/api/orders", create("2026-10-01")));
+        String id = earlier.path("orderId").asText(), active = earlier.at("/items/0/itemId").asText();
+        String removed = earlier.at("/items/1/itemId").asText(), path = "/api/orders/" + id;
+        assertEquals(201, staff.request("POST", path + "/notes", Map.of("content", "整单")).statusCode());
+        for (int i = 0; i < 4; i++) {
+            assertEquals(201, staff.request("POST", path + "/notes", Map.of("itemId", active, "content", "保留顺序 " + i)).statusCode());
+        }
+        assertEquals(201, staff.request("POST", path + "/notes", Map.of("itemId", removed, "content", "已移除商品")).statusCode());
+        byte[] png = picture("png");
+        var image = data(staff.upload(id, active, png, "before.png")).path("imageId").asText();
+        assertEquals(201, staff.upload(id, removed, png, "removed.png").statusCode());
+        assertEquals(200, staff.request("POST", path + "/items/" + removed + "/remove", Map.of("expectedVersion", 0)).statusCode());
+        var expected = snapshots.single(UUID.fromString(id)).getFirst();
+        assertEquals(List.of("整单", "保留顺序 3", "保留顺序 2", "保留顺序 1"),
+                expected.notes().stream().map(note -> note.content()).toList());
+        assertEquals(List.of(image), expected.images().stream().map(row -> row.imageId().toString()).toList());
+
+        try (var concurrent = Executors.newVirtualThreadPerTaskExecutor()) {
+            doAnswer(invocation -> {
+                assertEquals(1, concurrent.submit(() -> jdbc.update(
+                        "UPDATE cake_order_image SET is_removed=true WHERE id=?::uuid", image)).get(5, TimeUnit.SECONDS));
+                return invocation.callRealMethod();
+            }).when(images).listForOrders(anyList());
+            var filter = new OrderExportQueries.Filter(java.time.LocalDate.parse("2026-10-01"),
+                    java.time.LocalDate.parse("2026-10-03"), null, null, null);
+            var batch = snapshots.batch(filter);
+            assertEquals(List.of(id, later.path("orderId").asText()), batch.stream().map(row -> row.order().id().toString()).toList());
+            assertEquals(expected.notes(), batch.getFirst().notes());
+            assertEquals(expected.images(), batch.getFirst().images());
+            assertEquals(expected.order().activeItems().stream().map(item -> item.itemId()).toList(),
+                    batch.getFirst().order().activeItems().stream().map(item -> item.itemId()).toList());
+        }
+        assertTrue(snapshots.single(UUID.fromString(id)).getFirst().images().isEmpty());
+    }
+
     @Test void emptyInvalidAndOverLimitRequestsNeverCreateLogs() throws Exception {
         var staff = staff();
         var empty = staff.request("POST", "/api/orders/exports/zip", range()); assertEquals(400, empty.statusCode()); assertEquals("EXPORT_EMPTY", body(empty).path("code").asText());
@@ -645,12 +791,23 @@ class OrderExportIT {
     @Test void exactDateAndOrderLimitsExportEveryOrderWithoutTruncation() throws Exception {
         var staff = staff(); var expected = new ArrayList<String>();
         expected.add(filename(data(staff.request("POST", "/api/orders", create("2026-10-01")))));
+        var paths = List.of("/api/orders/exports/zip", LOAD_ZIP);
+        var oneOrder = Map.of("from", "2026-10-01", "to", "2026-10-02");
+        var counts = new HashMap<String, Integer>();
+        for (String path : paths) {
+            assertSnapshotQueries(staff, path, oneOrder, 1);
+            counts.put(path, measurements.samples.element().statements());
+        }
         for (int i = 1; i < 100; i++) expected.add(filename(data(staff.request("POST", "/api/orders", create("2026-11-11")))));
         staff.request("POST", "/api/orders", create("2026-11-12"));
         changes.events.clear(); var before = temporaryFiles();
         var exact = Map.of("from", "2026-10-01", "to", "2026-11-12");
-        var names = entries(staff.request("POST", "/api/orders/exports/zip", exact));
-        assertEquals(100, names.size()); assertEquals(new HashSet<>(expected), new HashSet<>(names));
+        // Each ZIP path has one snapshot; compare one order with the full 100-order range.
+        for (String path : paths) {
+            var full = assertSnapshotQueries(staff, path, exact, 100);
+            assertEquals(new HashSet<>(expected), new HashSet<>(full));
+            assertEquals(counts.get(path).intValue(), measurements.samples.element().statements(), path);
+        }
         assertEquals(0, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
         var longRange = staff.request("POST", "/api/orders/exports/zip", Map.of("from", "2026-10-01", "to", "2026-11-13"));
         assertEquals(400, longRange.statusCode()); assertEquals("EXPORT_LIMIT_EXCEEDED", body(longRange).path("code").asText());
@@ -659,6 +816,18 @@ class OrderExportIT {
         assertEquals(400, tooMany.statusCode()); assertEquals("EXPORT_LIMIT_EXCEEDED", body(tooMany).path("code").asText());
         assertEquals(0, exportCount()); assertTrue(changes.events.isEmpty()); assertEquals(before, temporaryFiles());
     }
+    private List<String> assertSnapshotQueries(Client staff, String path, Map<String, String> filter, int size) throws Exception {
+        measurements.samples.clear();
+        var response = staff.request("POST", path, filter);
+        assertEquals(200, response.statusCode(), text(response));
+        var names = entries(response);
+        assertEquals(size, names.size());
+        assertEquals(1, measurements.samples.size());
+        int count = measurements.samples.element().statements();
+        assertTrue(count > 0 && count <= 8, () -> path + " executed " + count + " snapshot statements");
+        return names;
+    }
+
     @Test void malformedExportFiltersReturnValidationErrorsWithoutFilesOrHistory() throws Exception {
         var staff = staff(); var before = temporaryFiles();
         for (var filters : List.of(Map.of("from", "2026-02-30", "to", "2026-03-01"),
@@ -1028,7 +1197,10 @@ class OrderExportIT {
             return paths.map(path -> path.getFileName().toString()).filter(name -> name.startsWith("wuhoucake-export-")).collect(java.util.stream.Collectors.toSet());
         }
     }
-    @TestConfiguration(proxyBeanMethods = false) static class EventsConfiguration { @Bean Changes changes() { return new Changes(); } }
+    @TestConfiguration(proxyBeanMethods = false) static class EventsConfiguration {
+        @Bean Changes changes() { return new Changes(); }
+        @Bean ExportSnapshotMeasurements exportSnapshotMeasurements() { return new ExportSnapshotMeasurements(); }
+    }
     static class Changes {
         final Queue<OrderChanged> events = new ConcurrentLinkedQueue<>();
         @TransactionalEventListener public void changed(OrderChanged event) { events.add(event); }

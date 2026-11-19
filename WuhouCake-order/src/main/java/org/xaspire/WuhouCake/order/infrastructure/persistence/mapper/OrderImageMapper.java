@@ -32,6 +32,10 @@ public interface OrderImageMapper {
     void insert(@Param("image") Row image, @Param("content") byte[] content);
     @Select("SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id=CAST(#{id} AS uuid) AND NOT is_removed ORDER BY uploaded_at, id")
     List<Row> list(String id);
+    @Select("<script>SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id IN "
+            + "<foreach collection='ids' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>"
+            + " AND NOT is_removed ORDER BY uploaded_at, id</script>")
+    List<Row> listForOrders(@Param("ids") List<String> ids);
     @Select("SELECT " + COLUMNS + " FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid) AND NOT is_removed")
     Row find(@Param("orderId") String orderId, @Param("imageId") String imageId);
     @Select("SELECT EXISTS(SELECT 1 FROM cake_order_image WHERE order_id=CAST(#{orderId} AS uuid) AND id=CAST(#{imageId} AS uuid))")

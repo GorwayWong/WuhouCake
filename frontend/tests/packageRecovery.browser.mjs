@@ -1,3 +1,4 @@
+import { testBrowserChannel, closeTestContext, closeTestBrowser } from './browserTrace.mjs';
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
@@ -6,8 +7,8 @@ import { createOrderFixture } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 let browser;
-before(async () => { browser = await chromium.launch({ channel: 'chrome', headless: true }); });
-after(async () => { await browser?.close(); });
+before(async () => { browser = await chromium.launch({ channel: testBrowserChannel(), headless: true }); });
+after(async () => { await closeTestBrowser(browser); });
 
 test('复制标签页的旧草稿版本不能覆盖或删除新版本', async () => {
   const fixture = await createOrderFixture(browser, base);
@@ -27,7 +28,7 @@ test('复制标签页的旧草稿版本不能覆盖或删除新版本', async ()
     assert.deepEqual([...result.states].sort(), ['fulfilled', 'rejected']);
     assert.equal(result.deletionRejected, true);
     assert.equal(result.stored.name, result.states[0] === 'fulfilled' ? '甲的新内容' : '乙的新内容');
-  } finally { await fixture.context.close(); }
+  } finally { await closeTestContext(fixture.context); }
 });
 
 test('七张套餐图片保存响应丢失后刷新，使用原文件和原幂等键确认且不重复创建', async () => {
@@ -80,7 +81,7 @@ test('七张套餐图片保存响应丢失后刷新，使用原文件和原幂�
     await page.getByRole('heading', { name: '套餐管理', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '确认原操作结果' }).count(), 0);
     assert.deepEqual(fixture.errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('套餐上传结果未知时，更新草稿成功后才能减少图片且新建键跨恢复保留', async () => {
@@ -148,7 +149,7 @@ test('套餐上传结果未知时，更新草稿成功后才能减少图片且�
     await page.getByText('套餐已保存，员工下单时即可选用。', { exact: true }).waitFor();
     assert.deepEqual(calls, [{ key: calls[0].key, multipart: true }, { key: calls[0].key, multipart: false }]);
     assert.deepEqual(fixture.errors, []);
-  } finally { gatewayFailure.resolve(); await context.close(); }
+  } finally { gatewayFailure.resolve(); await closeTestContext(context); }
 });
 
 async function resumeFailedUpload() {
@@ -213,7 +214,7 @@ test('套餐草稿移到共享槽时，删除旧副本失败会回滚写入并�
     await page.getByRole('button', { name: '新建套餐', exact: true }).first().click();
     await page.getByRole('button', { name: '继续填写', exact: true }).click();
     assert.equal(await page.locator('#package-name').inputValue(), '应保留的新输入');
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('恢复的套餐再次收到 413 后，刷新保留输入、图片及原创建键', async () => {
@@ -232,7 +233,7 @@ test('恢复的套餐再次收到 413 后，刷新保留输入、图片及原创
     await page.getByText('套餐已保存，员工下单时即可选用。', { exact: true }).waitFor();
     assert.ok(state.keys[0]);
     assert.deepEqual(state.keys, [state.keys[0], state.keys[0], state.keys[0]]);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('临时空间拒绝后可保存草稿，重开时可编辑且不误报待确认', async () => {
@@ -262,7 +263,7 @@ test('临时空间拒绝后可保存草稿，重开时可编辑且不误报待�
     assert.equal(await page.getByRole('button', { name: '确认原操作结果' }).count(), 0);
     assert.equal(await page.getByRole('button', { name: '保存套餐', exact: true }).isEnabled(), true);
     assert.deepEqual(fixture.errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test('删除已确认但本机清理失败时显示原因并保留重试，不产生未处理异常', async () => {
@@ -295,7 +296,7 @@ test('删除已确认但本机清理失败时显示原因并保留重试，不�
     await page.getByRole('button', { name: '确认原操作结果' }).click();
     await page.getByText('套餐已删除，已带入订单的商品不受影响。', { exact: true }).waitFor();
     assert.equal(deletes, 1); assert.deepEqual(fixture.errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 test("新建套餐恢复图片，放弃新输入保留旧稿，提交恢复稿后消费原版本", async () => {
@@ -348,5 +349,5 @@ test("新建套餐恢复图片，放弃新输入保留旧稿，提交恢复稿�
     assert.equal(await name.inputValue(), "");
     assert.equal(await page.getByRole("dialog").count(), 0);
     assert.deepEqual(fixture.errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });

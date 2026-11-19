@@ -1,3 +1,4 @@
+import { testBrowserChannel, closeTestContext, closeTestBrowser } from './browserTrace.mjs';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { after, before, test } from 'node:test';
@@ -9,8 +10,8 @@ const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
 const ok = (route, data) => route.fulfill({ json: { success: true, data } });
 const fail = (route, status, code) => route.fulfill({ status, json: { success: false, code } });
 let browser;
-before(async () => { browser = await chromium.launch({ headless: true, channel: 'chrome' }); });
-after(async () => { await browser?.close(); });
+before(async () => { browser = await chromium.launch({ headless: true, channel: testBrowserChannel() }); });
+after(async () => { await closeTestBrowser(browser); });
 
 test('共享 Cookie 换员工后旧标签页不重发订单修改且必须重新登录', async () => {
   const fixture = await createOrderFixture(browser, base);
@@ -74,7 +75,7 @@ test('共享 Cookie 换员工后旧标签页不重发订单修改且必须重新
     await savedByBob;
     assert.equal(model.order.customer.phone, '13900009999');
     assert.deepEqual(errors, []);
-  } finally { await context.close(); }
+  } finally { await closeTestContext(context); }
 });
 
 const submissionId = '20000000-0000-4000-8000-000000000001';
@@ -112,7 +113,7 @@ test('填单深链接等待账号权限，无权时不请求详情', async t => 
 async function submissionFixture(t) {
   const fixture = await createOrderFixture(browser, base);
   const { context, page, model } = fixture;
-  t.after(() => context.close());
+  t.after(() => closeTestContext(context));
   model.permissions.push('CUSTOMER_SUBMISSION_PROCESS', 'EMPLOYEE_DIRECTORY_READ');
   await context.route('**/api/employees/options**', route => ok(route, [{ accountId: ownerId, nickname: '合成员工', employeeNumber: 'T001', status: 'ACTIVE' }]));
   await page.clock.install();

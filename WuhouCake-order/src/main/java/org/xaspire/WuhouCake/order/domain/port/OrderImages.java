@@ -16,6 +16,7 @@ public interface OrderImages {
     void recordUpload(UUID orderId, UUID requestId, UUID imageId, String fingerprint);
     void insert(OrderImage image, byte[] content);
     List<OrderImage> list(UUID orderId);
+    List<OrderImage> listForOrders(List<UUID> ids);
     Optional<OrderImage> find(UUID orderId, UUID imageId);
     boolean contains(UUID orderId, UUID imageId);
     /** 按稳定 ID 读取原始内容，供已取得的导出快照使用；公开读取须先检查有效元数据。 */

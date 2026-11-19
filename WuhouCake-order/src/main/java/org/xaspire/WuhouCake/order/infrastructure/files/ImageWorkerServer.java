@@ -26,6 +26,7 @@ public final class ImageWorkerServer implements AutoCloseable {
     private final LongAdder requestsRejected = new LongAdder();
     private final LongAdder decoderSuccesses = new LongAdder();
     private final LongAdder decoderTimeouts = new LongAdder();
+    private final LongAdder invalidInputs = new LongAdder();
     private final LongAdder decoderFailures = new LongAdder();
     private final LongAdder childAbnormalExits = new LongAdder();
     private final LongAdder cleanupFailures = new LongAdder();
@@ -102,7 +103,6 @@ public final class ImageWorkerServer implements AutoCloseable {
             }
             if (remaining <= 0 || !child.waitFor(remaining, TimeUnit.NANOSECONDS)) {
                 outcome = "timeout";
-                decoderTimeouts.increment();
                 if (child != null) stopDecoder(child);
                 respond(exchange, 503, ImageWorkerProtocol.failure("IMAGE_PROCESSING_TIMEOUT"));
                 return;
@@ -114,17 +114,16 @@ public final class ImageWorkerServer implements AutoCloseable {
                 respond(exchange, 503, ImageWorkerProtocol.failure("IMAGE_PROCESSING_UNAVAILABLE"));
                 return;
             }
-            String code = ImageWorkerProtocol.failureCode(output);
+            String code = ImageWorkerProtocol.inspectResponse(output);
             exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
             // Closing the chunked response signals completion after cleanup and permit release.
             exchange.sendResponseHeaders(200, 0);
             Files.copy(output, exchange.getResponseBody());
-            if (code.isEmpty()) {
-                decoderSuccesses.increment();
-                outcome = "completed";
-            } else {
-                outcome = "rejected_image";
-            }
+            outcome = switch (code) {
+                case "" -> "completed";
+                case "INVALID_IMAGE", "UNSUPPORTED_IMAGE_FORMAT", "IMAGE_TOO_LARGE", "IMAGE_DIMENSIONS_EXCEEDED" -> "rejected_image";
+                default -> "unavailable";
+            };
         } catch (InterruptedException failure) {
             Thread.currentThread().interrupt();
             respond(exchange, 503, ImageWorkerProtocol.failure("IMAGE_PROCESSING_UNAVAILABLE"));
@@ -140,7 +139,12 @@ public final class ImageWorkerServer implements AutoCloseable {
                 deleteTemporary(output);
                 long elapsed = System.nanoTime() - started;
                 elapsedNanos.add(elapsed);
-                if (!outcome.equals("completed")) decoderFailures.increment();
+                switch (outcome) {
+                    case "completed" -> decoderSuccesses.increment();
+                    case "timeout" -> decoderTimeouts.increment();
+                    case "too_large", "rejected_image" -> invalidInputs.increment();
+                    default -> decoderFailures.increment();
+                }
                 System.getLogger(getClass().getName()).log(System.Logger.Level.INFO,
                         "image_processing outcome=" + outcome + " elapsed_ms=" + TimeUnit.NANOSECONDS.toMillis(elapsed));
             }
@@ -205,6 +209,7 @@ public final class ImageWorkerServer implements AutoCloseable {
                     + "wuhou_image_worker_rejected_total " + requestsRejected.sum() + "\n"
                     + "wuhou_image_worker_success_total " + decoderSuccesses.sum() + "\n"
                     + "wuhou_image_worker_timeout_total " + decoderTimeouts.sum() + "\n"
+                    + "wuhou_image_worker_invalid_input_total " + invalidInputs.sum() + "\n"
                     + "wuhou_image_worker_failed_total " + decoderFailures.sum() + "\n"
                     + "wuhou_image_worker_abnormal_exit_total " + childAbnormalExits.sum() + "\n"
                     + "wuhou_image_worker_cleanup_failed_total " + cleanupFailures.sum() + "\n"

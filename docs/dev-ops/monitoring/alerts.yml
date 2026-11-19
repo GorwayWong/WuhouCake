@@ -38,7 +38,9 @@ groups:
       - alert: WuhouWorkerUnavailableOrFailing
         expr: |
           up{job="wuhou-worker"} == 0
-          or increase(wuhou_image_worker_failed_total[10m]) + increase(wuhou_image_worker_timeout_total[10m]) >= 3
+          or absent(up{job="wuhou-worker"})
+          or increase(wuhou_image_worker_failed_total{job="wuhou-worker"}[10m])
+             + increase(wuhou_image_worker_timeout_total{job="wuhou-worker"}[10m]) >= 3
         for: 2m
         labels: {severity: warning}
         annotations: {summary: "午逅图片端不可达或连续处理失败"}

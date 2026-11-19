@@ -51,35 +51,59 @@ final class ImageWorkerProtocol {
         out.writeInt(VERSION); out.writeUTF(code);
         return bytes.toByteArray();
     }
-    static String failureCode(Path output) throws IOException {
+    static String inspectResponse(Path output) throws IOException {
         try (var input = new DataInputStream(Files.newInputStream(output))) {
-            if (input.readInt() != VERSION) throw new IOException("Invalid image protocol");
-            return input.readUTF();
+            String failure = readFailure(input);
+            if (failure.isEmpty()) {
+                readImageHeader(input);
+                // Check the last declared byte even if a file stream can seek past EOF.
+                input.skipNBytes(contentLength(input) - 1L);
+                input.readByte();
+            }
+            requireEnd(input);
+            return failure;
         }
     }
 
     static Checked response(byte[] bytes) throws IOException {
         var input = new DataInputStream(new ByteArrayInputStream(bytes));
-        if (input.readInt() != VERSION) throw new IOException("Invalid image protocol");
-        String failure = input.readUTF();
+        String failure = readFailure(input);
         if (!failure.isEmpty()) {
-            if (!List.of("INVALID_IMAGE", "UNSUPPORTED_IMAGE_FORMAT", "IMAGE_TOO_LARGE", "IMAGE_DIMENSIONS_EXCEEDED",
-                    "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE").contains(failure))
-                throw new IOException("Invalid image failure");
+            requireEnd(input);
             throw new OrderFailure(failure);
         }
+        var header = readImageHeader(input);
+        var result = new Checked(header.type(), header.filename(), header.width(), header.height(), content(input));
+        requireEnd(input);
+        return result;
+    }
+    private static String readFailure(DataInputStream input) throws IOException {
+        if (input.readInt() != VERSION) throw new IOException("Invalid image protocol");
+        String failure = input.readUTF();
+        if (!failure.isEmpty() && !List.of("INVALID_IMAGE", "UNSUPPORTED_IMAGE_FORMAT", "IMAGE_TOO_LARGE", "IMAGE_DIMENSIONS_EXCEEDED",
+                "IMAGE_PROCESSING_BUSY", "IMAGE_PROCESSING_TIMEOUT", "IMAGE_PROCESSING_UNAVAILABLE").contains(failure)) {
+            throw new IOException("Invalid image failure");
+        }
+        return failure;
+    }
+    private static ImageHeader readImageHeader(DataInputStream input) throws IOException {
         String type = input.readUTF(), name = input.readUTF();
         int width = input.readInt(), height = input.readInt();
         if ((!type.equals("image/jpeg") && !type.equals("image/png")) || name.length() > 255 || width < 1 || height < 1
                 || width > 1920 || height > 1920) throw new IOException("Invalid image result");
-        var result = new Checked(type, name, width, height, content(input));
-        if (input.read() != -1) throw new IOException("Trailing image result");
-        return result;
+        return new ImageHeader(type, name, width, height);
     }
-    private static byte[] content(DataInputStream input) throws IOException {
+    private record ImageHeader(String type, String filename, int width, int height) { }
+    private static void requireEnd(DataInputStream input) throws IOException {
+        if (input.read() != -1) throw new IOException("Trailing image result");
+    }
+    private static int contentLength(DataInputStream input) throws IOException {
         int length = input.readInt();
         if (length < 1 || length > IMAGE_BYTES) throw new IOException("Invalid image length");
-        byte[] bytes = new byte[length];
+        return length;
+    }
+    private static byte[] content(DataInputStream input) throws IOException {
+        byte[] bytes = new byte[contentLength(input)];
         input.readFully(bytes);
         return bytes;
     }

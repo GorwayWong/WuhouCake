@@ -28,6 +28,10 @@ public final class PostgresOrderImages implements OrderImages {
                 image.uploaderNameSnapshot(), image.uploadedAt(), image.processingVersion()), content);
     }
     @Override public List<OrderImage> list(UUID orderId) { return mapper.list(orderId.toString()).stream().map(PostgresOrderImages::image).toList(); }
+    @Override public List<OrderImage> listForOrders(List<UUID> ids) {
+        if (ids.isEmpty()) return List.of();
+        return mapper.listForOrders(ids.stream().map(UUID::toString).toList()).stream().map(PostgresOrderImages::image).toList();
+    }
     @Override public Optional<OrderImage> find(UUID orderId, UUID imageId) {
         return Optional.ofNullable(mapper.find(orderId.toString(), imageId.toString())).map(PostgresOrderImages::image);
     }

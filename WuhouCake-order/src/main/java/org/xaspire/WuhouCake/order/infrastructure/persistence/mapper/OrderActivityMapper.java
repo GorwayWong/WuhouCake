@@ -34,6 +34,15 @@ public interface OrderActivityMapper {
     @Select("SELECT " + COLUMNS + " FROM cake_order_activity WHERE order_id=CAST(#{orderId} AS uuid) AND item_id IS NULL"
             + " AND type='NOTE' ORDER BY created_at DESC, id DESC")
     List<Row> orderNotes(String orderId);
+    @Select("<script>SELECT " + COLUMNS + " FROM cake_order_activity WHERE order_id IN "
+            + "<foreach collection='ids' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>"
+            + " AND item_id IS NULL AND type='NOTE' ORDER BY created_at DESC, id DESC</script>")
+    List<Row> orderNotesForOrders(@Param("ids") List<String> ids);
+    @Select("<script>SELECT " + COLUMNS + " FROM (SELECT *, row_number() OVER (PARTITION BY order_id, item_id ORDER BY created_at DESC, id DESC) AS note_rank"
+            + " FROM cake_order_activity WHERE order_id IN "
+            + "<foreach collection='ids' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>"
+            + " AND item_id IS NOT NULL AND type='NOTE') AS notes WHERE note_rank &lt;= 3 ORDER BY created_at DESC, id DESC</script>")
+    List<Row> recentItemNotesForOrders(@Param("ids") List<String> ids);
     @Select("<script>SELECT " + COLUMNS + FILTER + " ORDER BY created_at DESC, id DESC LIMIT #{size} OFFSET #{offset}</script>")
     List<Row> search(@Param("orderId") String orderId, @Param("itemId") String itemId, @Param("type") String type,
             @Param("size") int size, @Param("offset") long offset);

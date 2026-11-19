@@ -13,6 +13,7 @@ public interface OrderExportQueries {
     /** 最多返回 EXPORT_ORDERS + 1 个 ID，以检测超限而不截断结果。 */
     List<UUID> select(Filter filter);
     List<OrderActivity> orderNotes(UUID orderId);
+    List<OrderActivity> orderNotesForOrders(List<UUID> ids);
     ContentSize contentSize(List<UUID> orderIds);
     record ContentSize(long bytes, long rows) { }
 
