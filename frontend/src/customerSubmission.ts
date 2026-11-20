@@ -9,7 +9,7 @@ import { exactYuan } from './money.ts';
 
 export interface SubmissionContent {
   phone: string; memberPhone: string | null; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string | null;
-  requestedReceiveAt: string; items: { itemId?: string; name: string; productType: string; quantity: number; attributes: Record<string, string> }[];
+  requestedReceiveAt: string; items: { itemId?: string; imageIds?: string[] | null; name: string; productType: string; quantity: number; attributes: Record<string, string> }[];
 }
 export interface SubmissionReview {
   content: SubmissionContent; prices: { unitPriceCents: number | null; memberPriceCents: number | null }[];
@@ -31,9 +31,10 @@ export interface SubmissionDuplicate {
 export interface SubmissionDetail { submission: Submission; duplicates: SubmissionDuplicate[]; duplicateCheckToken: string | null; activities: SubmissionActivity[] }
 export interface EntryLink { ownerId: string; ownerName: string; url: string; enabled: boolean }
 export interface SubmissionOrigin { submissionId: string; entryOwnerName: string; submittedAt: string; requestedReceiveAt: string }
+export type SubmissionItemDraft = ItemDraft & { imageIds?: string[] | null };
 export interface SubmissionDraft {
   phone: string; memberPhone: string; fulfillmentType: 'DELIVERY' | 'PICKUP'; address: string; requestedReceiveAt: string;
-  items: ItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode;
+  items: SubmissionItemDraft[]; totalAmount: string; creditedEmployeeId: string; plannedHandoffAt: string; plannedFinishAt: string; finishTimeMode?: FinishTimeMode;
   originalTime?: { requestedReceiveAt: string; plannedHandoffAt: string | null; plannedFinishAt: string | null; pickupTime: string };
 }
 export function localTime(instant: string | null): string {
@@ -91,6 +92,8 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
   const unchangedTime = staff && draft.originalTime?.pickupTime === draft.requestedReceiveAt;
   const requestedReceiveAt = unchangedTime ? draft.originalTime!.requestedReceiveAt : pickupAt;
   if (!draft.items.length || draft.items.length > 30) errors.items = '请保留 1–30 项商品。';
+  const imageCount = draft.items.reduce((count, item) => count + (item.imageIds?.length ?? 0), 0);
+  if (imageCount > 40) errors.items = '整单最多选用 40 张图片，请移除多余图片。';
   const items = draft.items.map((item, index) => {
     const result = itemInput(staff ? item : { ...item, unitPrice: '', memberPrice: '',
       attributes: { ...item.attributes, ...(item.productType === 'CAKE' ? { flavor: item.attributes.flavor.trim() || '原味动物奶油' } : {}) } });
@@ -100,12 +103,12 @@ export function submissionRequest(draft: SubmissionDraft, staff = false) {
     Object.entries(result.errors).forEach(([key, value]) => { errors[`items.${index}.${key}`] = value; });
     if (item.productType === 'CAKE' && !item.attributes.size.trim()) errors[`items.${index}.size`] = '请填写蛋糕尺寸。';
     Object.entries(item.attributes).forEach(([key, value]) => { if (value.length > (key === 'specification' ? 16000 : 2000)) errors[`items.${index}.${key}`] = key === 'specification' ? '最多填写 16000 个字符。' : '最多填写 2000 个字符。'; });
-    return result.item ? { ...result.item, ...(staff ? { itemId: item.key } : {}) } : null;
+    return result.item ? { ...result.item, ...((staff || imageCount > 0) ? { itemId: item.key } : {}), ...(item.imageIds ? { imageIds: item.imageIds } : {}) } : null;
   });
   const content: SubmissionContent = { phone: contactPhone, memberPhone, fulfillmentType: draft.fulfillmentType,
     address: draft.address.trim() || null, requestedReceiveAt,
     items: items.filter(item => item !== null).map(item => ({ name: item.name, productType: item.productType || 'CAKE', quantity: item.quantity,
-      attributes: item.attributes as Record<string, string>, ...(item.itemId ? { itemId: item.itemId } : {}) })) };
+      attributes: item.attributes as Record<string, string>, ...(item.itemId ? { itemId: item.itemId } : {}), ...(item.imageIds ? { imageIds: item.imageIds } : {}) })) };
   let totalAmountCents: number | null = null;
   if (staff) { try { totalAmountCents = moneyToCents(draft.totalAmount); } catch (error) { errors.totalAmount = (error as Error).message; } }
   const review: SubmissionReview = { content, totalAmountCents, creditedEmployeeId: draft.creditedEmployeeId || null,

@@ -135,11 +135,13 @@ test('空白必填项、无商品、非法数量与可选出品时间在提交�
   assert.ok(createOrderRequest(draft).errors['items.0.name']);
   draft.phone = '13800000000'; draft.address = '测试地址'; draft.items[0].name = '测试蛋糕';
   draft.plannedHandoffAt = '2026-10-14T10:00';
-  for (const quantity of ['', '0', '-1', '1.5', '1e2', '2147483648']) {
+  for (const quantity of ['0', '-1', '1.5', '1e2', '2147483648']) {
     draft.items[0].quantity = quantity;
     assert.ok(createOrderRequest(draft).errors['items.0.quantity']);
   }
-  draft.items[0].quantity = '1'; draft.plannedFinishAt = '2026-02-30T09:00';
+  draft.items[0].quantity = '';
+  assert.equal(createOrderRequest(draft).request?.items[0].quantity, 1);
+  draft.plannedFinishAt = '2026-02-30T09:00';
   assert.ok(createOrderRequest(draft).errors.plannedFinishAt);
   draft.plannedFinishAt = '2026-10-13T09:00';
   assert.equal(createOrderRequest(draft).request?.fulfillment.plannedFinishAt, '2026-10-13T09:00:00+08:00');

@@ -4,6 +4,7 @@ import java.time.*;
 import java.util.*;
 import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits;
 import org.xaspire.WuhouCake.order.domain.model.valobj.ProductCategories;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
@@ -13,14 +14,24 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
     public static final Set<String> ATTRIBUTES = Set.of("size", "base", "filling", "flavor", "message", "requirements", "specification");
     public static final Set<String> PRODUCT_TYPES = ProductCategories.TYPES;
     public record Product(String name, String productType, int quantity, Map<String, String> attributes,
-            UUID itemId) {
+            UUID itemId, List<UUID> imageIds) {
+        public Product(String name, String productType, int quantity, Map<String, String> attributes, UUID itemId) {
+            this(name, productType, quantity, attributes, itemId, null);
+        }
         public Product(String name, String productType, int quantity, Map<String, String> attributes) {
             this(name, productType, quantity, attributes, null);
         }
 
-        public Product withItemId(UUID id) { return new Product(name, productType, quantity, attributes, id); }
+        public Product withItemId(UUID id) { return new Product(name, productType, quantity, attributes, id, imageIds); }
+
+        public Product withImages(List<UUID> ids) { return new Product(name, productType, quantity, attributes, itemId, ids); }
 
         public Product {
+            if (imageIds != null) {
+                if (imageIds.size() > OrderFileLimits.IMAGES_PER_ITEM) throw new OrderFailure("ORDER_IMAGE_LIMIT_EXCEEDED");
+                if (imageIds.stream().anyMatch(Objects::isNull) || new HashSet<>(imageIds).size() != imageIds.size()) throw invalid();
+                imageIds = List.copyOf(imageIds);
+            }
             name = requiredText(name, 128);
             if (productType == null || !PRODUCT_TYPES.contains(ProductCategories.normalize(productType))) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
             productType = ProductCategories.normalize(productType);

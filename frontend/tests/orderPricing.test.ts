@@ -18,7 +18,9 @@ test('整单原价与会员价精确到分，零元会员价优先，支付方�
   assert.ok(createOrderRequest({ ...draft, paymentMethod: 'OTHER' }).errors.paymentMethod);
   assert.equal(effectiveOrderAmount(null, 0), 0);
   assert.equal(paymentMethodLabel(null, 'PAID'), '已付款（方式未记录）');
-  assert.equal(Object.keys(paymentMethods).length, 6);
+  assert.equal(Object.keys(paymentMethods).length, 8);
+  assert.equal(paymentMethodLabel('DOUYIN_GROUP_BUY'), '抖音团购');
+  assert.equal(paymentMethodLabel('MEITUAN_GROUP_BUY'), '美团团购');
 });
 test('原价会员价和支付方式随草稿恢复，旧草稿与旧待确认载荷保持原状', () => {
   const record = freshOrderDraft('alice', '2026-11-09'); record.revision = 'r'; record.updatedAt = '2026-11-08T00:00:00Z';

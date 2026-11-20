@@ -18,7 +18,7 @@ class OrderPricingTest {
                 null, null, original, member, method);
     }
     @Test void memberQuoteWinsIncludingZeroAndAllPaymentChannelsRecordServerTime() {
-        for (String method : List.of("UNIONPAY", "MEMBER_CARD", "BANK_TRANSFER", "SERVICE_WECHAT", "CASH")) {
+        for (String method : List.of("UNIONPAY", "MEMBER_CARD", "BANK_TRANSFER", "SERVICE_WECHAT", "CASH", "DOUYIN_GROUP_BUY", "MEITUAN_GROUP_BUY")) {
             var order = create(15800L, 12800L, method);
             assertEquals(12800L, order.totalAmountCents()); assertEquals(15800L, order.originalAmountCents());
             assertEquals(12800L, order.memberAmountCents()); assertEquals("PAID", order.paymentStatus());

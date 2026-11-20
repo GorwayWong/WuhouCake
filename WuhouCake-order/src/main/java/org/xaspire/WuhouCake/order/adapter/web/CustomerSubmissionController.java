@@ -20,6 +20,15 @@ public class CustomerSubmissionController {
         return ApiResponse.success(service.search(mine, status, keyword, page, size));
     }
     @GetMapping("/{id}") public ApiResponse<SubmissionViews.Detail> detail(@PathVariable UUID id) { return ApiResponse.success(service.detail(id)); }
+    @PostMapping(value = "/{id}/items/{item}/images/{image}", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<UUID> uploadImage(@PathVariable UUID id, @PathVariable UUID item, @PathVariable UUID image,
+            @RequestParam org.springframework.web.multipart.MultipartFile file) throws java.io.IOException {
+        return ApiResponse.success(service.stageStaffImage(id, item, image, OrderFileController.readUpload(file), file.getOriginalFilename()));
+    }
+    @GetMapping("/{id}/items/{item}/images/{image}")
+    public org.springframework.http.ResponseEntity<byte[]> image(@PathVariable UUID id, @PathVariable UUID item, @PathVariable UUID image) {
+        return PublicOrderEntryController.imageResponse(service.staffImage(id, item, image));
+    }
     @PatchMapping("/{id}") public ApiResponse<SubmissionViews.Detail> save(@PathVariable UUID id, @RequestBody SubmissionCommands.Save command) {
         return ApiResponse.success(service.save(id, command));
     }

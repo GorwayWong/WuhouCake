@@ -72,6 +72,9 @@ test('手机双人换图和改价备注自动合并，再次更新时可重新�
     await second.page.getByLabel('单价（元）', { exact: true }).fill('88');
     await second.page.getByLabel('特殊要求备注').fill('乙的备注');
     await second.page.getByRole('button', { name: '确认规格' }).click();
+    await second.page.getByLabel('原价合计（元）').fill('95');
+    await second.page.getByLabel('会员价合计（元）').fill('80');
+    await second.page.getByText(/商品原价合计 .*将采用填写金额/).waitFor();
     await upload(first, '甲第一次换图.png');
     await saveRemote(first.page);
     assert.notEqual(current().items[0].imageId, oldImage);
@@ -89,7 +92,11 @@ test('手机双人换图和改价备注自动合并，再次更新时可重新�
     await saveRemote(second.page);
     assert.equal(current().items[0].imageId, newest);
     assert.equal(current().items[0].attributes.specification, '乙的备注');
-    assert.equal(current().originalAmountCents, 8800);
+    assert.equal(current().originalAmountCents, 9500);
+    assert.equal(current().memberAmountCents, 8000);
+    await second.page.getByRole('button', { name: '编辑', exact: true }).click();
+    assert.equal(await second.page.getByLabel('原价合计（元）').inputValue(), '95.00');
+    assert.equal(await second.page.getByLabel('会员价合计（元）').inputValue(), '80.00');
     assert.deepEqual(first.errors.concat(second.errors), []);
   } finally { await session.close(); }
 });

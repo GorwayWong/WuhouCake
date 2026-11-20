@@ -54,8 +54,8 @@ public class SecurityConfiguration {
     SecurityFilterChain customerEntryEndpoints(HttpSecurity http, SecurityErrors errors) throws Exception {
         http.securityMatcher("/api/public/order-entries/**")
                 .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/public/order-entries/{token}").permitAll()
-                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/public/order-entries/{token}/submissions").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/public/order-entries/{token}", "/api/public/order-entries/{token}/items/{item}/images/{image}").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/public/order-entries/{token}/submissions", "/api/public/order-entries/{token}/items/{item}/images/{image}").permitAll()
                         .anyRequest().denyAll())
                 .csrf(AbstractHttpConfigurer::disable)
                 .exceptionHandling(config -> config.authenticationEntryPoint(errors).accessDeniedHandler(errors));
@@ -121,6 +121,8 @@ public class SecurityConfiguration {
             authorize.requestMatchers(GET, "/api/customer-submissions/pending-count").access(permissions(CUSTOMER_SUBMISSION_PROCESS));
             authorize.requestMatchers(POST, "/api/customer-submissions/entry").access(permissions(CUSTOMER_ENTRY_MANAGE));
             authorize.requestMatchers(GET, "/api/customer-submissions", "/api/customer-submissions/{id}").access(permissions(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(GET, "/api/customer-submissions/{id}/items/{item}/images/{image}").access(permissions(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
+            authorize.requestMatchers(POST, "/api/customer-submissions/{id}/items/{item}/images/{image}").access(permissions(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_IMAGE_UPLOAD));
             authorize.requestMatchers(PATCH, "/api/customer-submissions/{id}").access(permissions(CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
             authorize.requestMatchers(POST, "/api/customer-submissions/{id}/confirm").access(permissions(CUSTOMER_SUBMISSION_PROCESS, ORDER_CREATE, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ));
             authorize.requestMatchers(DELETE, "/api/customer-submissions/{id}").access(permissions(CUSTOMER_SUBMISSION_PROCESS));

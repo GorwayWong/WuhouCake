@@ -604,6 +604,23 @@ class WorkflowManagementIT {
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_RESTORED'", Integer.class));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));
     }
+    @Test void frontDeskClerkCanQueryOrdersAndViewTotals() throws Exception {
+        var order = b.data("POST", "/api/orders", create(b.id));
+        a.data("POST", "/api/orders", create(a.id));
+        var profile = a.data("GET", "/api/me", null);
+        admin.data("PATCH", "/api/admin/employees/" + a.id, Map.of("expectedVersion", profile.path("version").asLong(),
+                "nickname", "前厅店员", "jobRoles", List.of("FRONT_DESK_CLERK")));
+        a.login("A001", PASSWORD);
+        var me = a.data("GET", "/api/me", null);
+        assertEquals("STAFF", me.path("systemRole").asText());
+        assertTrue(me.at("/access/uiCapabilities").valueStream().anyMatch(value -> value.asText().equals("ORDER_MANAGEMENT")));
+        var report = a.data("GET", search("&creditedEmployeeId=" + b.id), null);
+        assertEquals(1, report.path("items").size());
+        assertEquals(order.path("orderId"), report.at("/items/0/orderId"));
+        assertEquals(1, report.at("/totals/orderCount").asInt());
+        assertEquals(52000, report.at("/totals/totalAmountCents").asLong());
+    }
+
     @Test void sixJobsProjectPhoneAndTimesAndOnlyStoreManagersAreAdministrators() throws Exception {
         var command = new LinkedHashMap<>(create(b.id));
         command.put("customer", Map.of("customerName", "隐私客户", "phone", "13900000000", "memberPhone", "13811112222", "buyerName", "隐私订购人"));

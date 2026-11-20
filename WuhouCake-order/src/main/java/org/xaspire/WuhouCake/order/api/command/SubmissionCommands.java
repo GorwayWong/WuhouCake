@@ -6,7 +6,11 @@ import java.util.*;
 public final class SubmissionCommands {
     private SubmissionCommands() { }
     public record Product(String name, String productType, int quantity, Map<String, String> attributes,
-            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) UUID itemId) {
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) UUID itemId,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) List<UUID> imageIds) {
+        public Product(String name, String productType, int quantity, Map<String, String> attributes, UUID itemId) {
+            this(name, productType, quantity, attributes, itemId, null);
+        }
         public Product(String name, String productType, int quantity, Map<String, String> attributes) {
             this(name, productType, quantity, attributes, null);
         }

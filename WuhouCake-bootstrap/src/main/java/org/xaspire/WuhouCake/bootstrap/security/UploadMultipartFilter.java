@@ -72,7 +72,8 @@ final class UploadMultipartFilter extends OncePerRequestFilter {
 
     private static HttpServletRequest parse(HttpServletRequest request, boolean packageUpload, Map<String, UploadPart> parts)
             throws IOException {
-        UUID queryItem = packageUpload ? null : queryItemId(request.getQueryString());
+        boolean submissionUpload = ImageUploadAdmissionFilter.isSubmission(request);
+        UUID queryItem = packageUpload || submissionUpload ? null : queryItemId(request.getQueryString());
         long maxBody = packageUpload ? PACKAGE_REQUEST_BYTES : ORDER_REQUEST_BYTES;
         if (request.getContentLengthLong() > maxBody) throw tooLarge("UPLOAD_REQUEST_TOO_LARGE", "上传请求超过大小上限");
         var grammar = new FileUpload();
@@ -90,7 +91,7 @@ final class UploadMultipartFilter extends OncePerRequestFilter {
         var imageIds = new HashSet<UUID>();
         boolean hasPart = stream.skipPreamble();
         while (hasPart) {
-            if (parts.size() >= (packageUpload ? PACKAGE_IMAGES + 1 : 2)) throw invalid();
+            if (parts.size() >= (packageUpload ? PACKAGE_IMAGES + 1 : submissionUpload ? 1 : 2)) throw invalid();
             var headers = grammar.getParsedHeaders(stream.readHeaders());
             String name = grammar.getFieldName(headers);
             String filename = grammar.getFileName(headers);
@@ -102,7 +103,7 @@ final class UploadMultipartFilter extends OncePerRequestFilter {
             if (packageUpload && name.equals("package")) {
                 parts.put(name, new UploadPart(name, filename, headers, readSmall(input, PACKAGE_JSON_BYTES,
                         "套餐 JSON 不得超过 256 KiB"), null, 0));
-            } else if (!packageUpload && name.equals("itemId") && filename == null) {
+            } else if (!packageUpload && !submissionUpload && name.equals("itemId") && filename == null) {
                 parts.put(name, new UploadPart(name, null, headers, readSmall(input, ITEM_ID_BYTES, "商品标识过长"), null, 0));
             } else {
                 if (filename == null || filename.isBlank()) throw invalid();
@@ -138,6 +139,10 @@ final class UploadMultipartFilter extends OncePerRequestFilter {
         body.transferTo(OutputStream.nullOutputStream());
         if (packageUpload) {
             if (!parts.containsKey("package")) throw invalid();
+            return new ParsedRequest(request, parts, null);
+        }
+        if (submissionUpload) {
+            if (!parts.containsKey("file")) throw invalid();
             return new ParsedRequest(request, parts, null);
         }
         var itemPart = parts.get("itemId");

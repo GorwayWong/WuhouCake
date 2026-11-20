@@ -28,8 +28,14 @@ public class CustomerEntryComposition {
         return new org.xaspire.WuhouCake.order.adapter.web.PublicOrderEntryController(service, json);
     }
     @Bean CustomerSubmissions customerSubmissions(CustomerSubmissionMapper mapper, JsonCodec json) { return new PostgresCustomerSubmissions(mapper, json); }
+    @Bean SubmissionImageService submissionImageService(org.springframework.jdbc.core.JdbcTemplate jdbc,
+            org.xaspire.WuhouCake.order.domain.port.OrderImages orders,
+            org.xaspire.WuhouCake.order.domain.port.OrderImageValidator validator, Clock clock) {
+        return new SubmissionImageService(new org.xaspire.WuhouCake.order.infrastructure.persistence.repository.PostgresSubmissionImages(jdbc),
+                orders, validator, clock);
+    }
     @Bean CustomerSubmissionService customerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders,
-            JsonCodec json, Clock clock, CustomerEntryProperties properties, org.xaspire.WuhouCake.audit.api.facade.AuditFacade audit, Environment environment) {
+            JsonCodec json, Clock clock, CustomerEntryProperties properties, org.xaspire.WuhouCake.audit.api.facade.AuditFacade audit, Environment environment, SubmissionImageService images) {
         var publicOrigin = properties.publicOrigin();
         if ("auto".equals(publicOrigin)) {
             if (!environment.matchesProfiles("dev") || environment.matchesProfiles("prod"))
@@ -40,7 +46,7 @@ public class CustomerEntryComposition {
         if ("http".equals(origin.getScheme()) && (environment.matchesProfiles("prod")
                 || !environment.matchesProfiles("dev") && !List.of("localhost", "127.0.0.1", "[::1]").contains(origin.getHost())))
             throw new IllegalArgumentException("Customer entry requires HTTPS in prod; non-local HTTP origins require the dev profile");
-        return new CustomerSubmissionService(submissions, identity, orders, json, clock, publicOrigin, audit);
+        return new CustomerSubmissionService(submissions, identity, orders, json, clock, publicOrigin, audit, images);
     }
     @Bean @org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication
     FilterRegistrationBean<CustomerEntryProtection> customerEntryProtection(StringRedisTemplate redis, CustomerEntryProperties properties,

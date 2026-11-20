@@ -36,7 +36,12 @@ public final class ImageUploadAdmissionFilter extends OncePerRequestFilter {
     static boolean matches(HttpServletRequest request) {
         String contentType = request.getContentType();
         return contentType != null && contentType.split(";", 2)[0].strip().equalsIgnoreCase("multipart/form-data")
-                && (isPackage(request) || request.getMethod().equals("POST") && path(request).matches("/api/orders/[^/]+/images"));
+                && (isPackage(request) || request.getMethod().equals("POST") && (path(request).matches("/api/orders/[^/]+/images")
+                    || isSubmission(request)));
+    }
+
+    static boolean isSubmission(HttpServletRequest request) {
+        return path(request).matches("/api/(public/order-entries|customer-submissions)/[^/]+/items/[^/]+/images/[^/]+");
     }
 
     static boolean isPackage(HttpServletRequest request) {

@@ -180,13 +180,15 @@ test('套餐表格在手机和桌面保持四列，多行规格可取消、确�
     await page.getByRole('button', { name: '确认规格' }).click();
     await page.locator('#package-name').fill('通用套餐'); await page.getByLabel('商品 1 的名称').fill('纸杯蛋糕');
     await page.getByLabel('商品 1 的数量').fill('2');
-    assert.match(await page.locator('.package-amount-preview').innerText(), /24.60/);
-    assert.equal(await page.locator('#package-original, #package-member').count(), 0);
+    await page.getByText('商品原价合计 ¥24.60', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '采用商品合计' }).click();
+    assert.equal(await page.locator('#package-original').inputValue(), '24.60');
+    await page.locator('#package-member').fill('22');
     await page.getByRole('button', { name: '保存套餐', exact: true }).click(); await until(() => Boolean(body));
     assert.deepEqual(body.items[0].attributes, { specification: '香草\n六只装' });
     assert.equal(body.items[0].productType, 'OTHER'); assert.equal(body.items[0].imageId, null);
     assert.equal(body.items[0].unitPriceCents, 1230); assert.equal(body.items[0].memberPriceCents, null);
-    assert.equal(body.originalAmountCents, 2460); assert.equal(body.memberAmountCents, null);
+    assert.equal(body.originalAmountCents, 2460); assert.equal(body.memberAmountCents, 2200);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
@@ -326,12 +328,12 @@ test('套餐按需加载、收起保留搜索与选择，带入时不能收起�
     const count = await page.locator('.order-create-products-heading .muted').textContent();
     await page.getByRole('button', { name: '再添加一份', exact: true }).click();
     await until(() => Boolean(pending)); pending(); pending = undefined;
-    await page.getByRole('dialog', { name: '确认带入套餐' }).getByText('合并到商品 1：2 → 4', { exact: false }).waitFor();
-    await page.getByRole('dialog').getByRole('button', { name: '取消' }).click();
+    await page.getByRole('region', { name: '确认带入套餐' }).getByText('合并到商品 1：2 → 4', { exact: false }).waitFor();
+    await page.getByRole('region', { name: '确认带入套餐' }).getByRole('button', { name: '取消' }).click();
     assert.equal(await page.locator('[id="items.0.quantity"]').inputValue(), '2');
     await page.getByRole('button', { name: '再添加一份', exact: true }).click();
     await until(() => Boolean(pending)); pending(); pending = undefined;
-    await page.getByRole('button', { name: '确认带入', exact: true }).click();
+    await page.getByRole('button', { name: '带入并采用建议金额', exact: true }).click();
     await until(() => Boolean(pending)); pending(); pending = undefined;
     await until(async () => await page.locator('[id="items.0.quantity"]').inputValue() === '4');
     assert.equal(await page.locator('#totalAmount').inputValue(), '200.00');

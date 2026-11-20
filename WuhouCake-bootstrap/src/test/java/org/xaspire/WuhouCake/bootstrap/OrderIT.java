@@ -1173,6 +1173,8 @@ class OrderIT {
         assertEquals(52, first.at("/operationalCounts/totalOrderCount").asInt());
         assertEquals(lastId, first.at("/focusedOrder/orderId").asText());
         assertEquals(firstId, first.at("/orders/0/orderId").asText());
+        assertEquals("13800000000", first.at("/orders/0/customerPhone").asText());
+        assertEquals("13800000000", first.at("/focusedOrder/customerPhone").asText());
         assertEquals("打开订单查看全文", first.at("/orders/0/firstItem/attributes/base").asText());
         assertEquals("备注", first.at("/orders/0/latestNote").asText());
         assertFalse(first.at("/orders/0").has("address"));
@@ -1185,6 +1187,55 @@ class OrderIT {
         var filtered = query(staff, path + "&status=COMPLETED");
         assertEquals(List.of(lastId), orderIds(filtered.path("orders")));
         assertEquals(52, filtered.at("/operationalCounts/totalOrderCount").asInt());
+        for (var permission : List.of(EmployeeAccess.Permission.ORDER_PHONE_READ, EmployeeAccess.Permission.ORDER_CUSTOMER_READ)) {
+            doReturn(EmployeeAccess.of(Set.of(EmployeeAccess.Permission.ORDER_READ, permission))).when(employeeAccess).access(any());
+            var allowed = query(staff, path + "&focusOrderId=" + lastId);
+            assertEquals("13800000000", allowed.at("/orders/0/customerPhone").asText());
+            assertEquals("13800000000", allowed.at("/focusedOrder/customerPhone").asText());
+        }
+        doReturn(EmployeeAccess.of(Set.of(EmployeeAccess.Permission.ORDER_READ))).when(employeeAccess).access(any());
+        var restricted = query(staff, path + "&focusOrderId=" + lastId);
+        assertTrue(restricted.at("/orders/0/customerPhone").isNull());
+        assertTrue(restricted.at("/focusedOrder/customerPhone").isNull());
+        reset(employeeAccess);
+    }
+
+    @Test void workbenchFiltersDetailStatusesBeforeCountingFocusingAndPaging() throws Exception {
+        var staff = staff();
+        jdbc.execute("""
+                INSERT INTO cake_order(id,order_no,status,fulfillment_type,payment_status,paid_at,delivery_address,
+                    customer_phone,requested_receive_date,created_by,created_at,confirmed_at,updated_at)
+                SELECT gen_random_uuid(),s || '-' || t || '-' || lpad(n::text,2,'0'),s,t,
+                    CASE WHEN n=52 THEN 'PAID' ELSE 'UNPAID' END,CASE WHEN n=52 THEN now() END,
+                    '测试地址','13800000000',DATE '2026-09-30',gen_random_uuid(),now(),now(),now()
+                FROM (VALUES ('WAITING_DELIVERY'),('COMPLETED')) statuses(s)
+                CROSS JOIN (VALUES ('DELIVERY'),('PICKUP')) types(t) CROSS JOIN generate_series(1,52) n
+                """);
+        String path = "/api/orders/workbench/cards?date=2026-09-30";
+        for (String status : List.of("WAITING_DELIVERY", "COMPLETED")) {
+            for (String type : List.of("DELIVERY", "PICKUP")) {
+                var expected = jdbc.queryForList("SELECT id::text FROM cake_order WHERE status=? AND fulfillment_type=?"
+                        + " AND payment_status='UNPAID' ORDER BY order_no", String.class, status, type);
+                String other = type.equals("DELIVERY") ? "PICKUP" : "DELIVERY";
+                String excluded = jdbc.queryForObject("SELECT id::text FROM cake_order WHERE status=? AND fulfillment_type=? LIMIT 1",
+                        String.class, status, other);
+                String filter = path + "&status=" + status + "&paymentStatus=UNPAID&fulfillmentType=";
+                var first = query(staff, filter + type + "&focusOrderId=" + excluded);
+                assertEquals(51, first.path("total").asInt());
+                String group = status.equals("COMPLETED") ? "completed" : "pending";
+                assertEquals(51, first.at("/groupCounts/" + group).asInt());
+                assertEquals(208, first.at("/operationalCounts/totalOrderCount").asInt());
+                assertTrue(first.path("focusedOrder").isNull());
+                assertEquals(expected.subList(0, 50), orderIds(first.path("orders")));
+                String cursor = first.path("nextCursor").asText();
+                var second = query(staff, filter + type + "&cursor=" + cursor);
+                assertEquals(expected.subList(50, 51), orderIds(second.path("orders")));
+                assertEquals(51, second.path("total").asInt());
+                assertTrue(second.path("nextCursor").isNull());
+                assertEquals(400, staff.request("GET", filter + other + "&cursor=" + cursor, null).status);
+            }
+        }
+        assertEquals(400, staff.request("GET", path + "&fulfillmentType=INVALID", null).status);
     }
 
     @Test void workloadWithMoreThanAQuarterGigabyteOfHistoricalAddressesStillReturnsABoundedPage() throws Exception {
@@ -1731,25 +1782,25 @@ class OrderIT {
     @Test void orderQuotesPaymentMethodsPersistAtomicallyAndDriveReceiptTotals() throws Exception {
         var staff = staff();
         var input = new LinkedHashMap<String, Object>(cakeOrder());
-        input.put("originalAmountCents", 15800); input.put("memberAmountCents", 12800); input.put("totalAmountCents", 12800); input.put("paymentMethod", "CASH");
+        input.put("originalAmountCents", 15800); input.put("memberAmountCents", 12800); input.put("totalAmountCents", 12800); input.put("paymentMethod", "DOUYIN_GROUP_BUY");
         String key = UUID.randomUUID().toString();
         var created = staff.request("POST", "/api/orders", input, key); assertEquals(201, created.status, created.body.toString());
         var first = created.body.path("data"); String id = first.path("orderId").asText();
         assertEquals(15800, first.path("originalAmountCents").asLong()); assertEquals(12800, first.path("memberAmountCents").asLong());
         assertEquals(12800, first.path("totalAmountCents").asLong()); assertEquals("PAID", first.path("paymentStatus").asText());
-        assertEquals("CASH", first.path("paymentMethod").asText()); assertEquals(0, first.path("version").asLong());
+        assertEquals("DOUYIN_GROUP_BUY", first.path("paymentMethod").asText()); assertEquals(0, first.path("version").asLong());
         String paidAt = first.path("paidAt").asText(); assertFalse(first.path("paidAt").isNull());
         assertEquals(first, staff.request("POST", "/api/orders", input, key).body.path("data"));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
         var stored = jdbc.queryForMap("SELECT original_amount_cents,member_amount_cents,total_amount_cents,payment_method FROM cake_order WHERE id=?::uuid", id);
-        assertEquals(15800L, stored.get("original_amount_cents")); assertEquals(12800L, stored.get("member_amount_cents")); assertEquals("CASH", stored.get("payment_method"));
-        var method = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID", "paymentMethod", "BANK_TRANSFER"));
+        assertEquals(15800L, stored.get("original_amount_cents")); assertEquals(12800L, stored.get("member_amount_cents")); assertEquals("DOUYIN_GROUP_BUY", stored.get("payment_method"));
+        var method = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID", "paymentMethod", "MEITUAN_GROUP_BUY"));
         assertEquals(200, method.status); assertEquals(paidAt, method.body.at("/data/paidAt").asText());
-        assertEquals("BANK_TRANSFER", query(staff, "/api/orders/" + id).path("paymentMethod").asText());
-        var same = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID", "paymentMethod", "BANK_TRANSFER"));
+        assertEquals("MEITUAN_GROUP_BUY", query(staff, "/api/orders/" + id).path("paymentMethod").asText());
+        var same = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID", "paymentMethod", "MEITUAN_GROUP_BUY"));
         assertEquals(1, same.body.at("/data/version").asLong());
         assertEquals(409, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "UNPAID", "paymentMethod", "UNPAID")).status);
-        assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "UNPAID", "paymentMethod", "CASH")).status);
+        assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "UNPAID", "paymentMethod", "DOUYIN_GROUP_BUY")).status);
         var original = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("originalAmountCents", 18000)));
         assertEquals(200, original.status); assertEquals(12800, original.body.at("/data/totalAmountCents").asLong()); assertEquals(paidAt, original.body.at("/data/paidAt").asText());
         var clearMember = new HashMap<String, Object>(); clearMember.put("memberAmountCents", null);
@@ -1768,7 +1819,7 @@ class OrderIT {
         assertEquals(18000, quote.body.at("/data/totalAmountCents").asLong());
         var zero = staff.request("PATCH", information, Map.of("expectedVersion", 4, "changes", Map.of("memberAmountCents", 0)));
         assertEquals(200, zero.status); assertEquals(0, zero.body.at("/data/totalAmountCents").asLong());
-        var recorded = staff.request("PATCH", payment, Map.of("expectedVersion", 5, "paymentStatus", "PAID", "paymentMethod", "CASH"));
+        var recorded = staff.request("PATCH", payment, Map.of("expectedVersion", 5, "paymentStatus", "PAID", "paymentMethod", "DOUYIN_GROUP_BUY"));
         assertEquals(200, recorded.status);
         String newDate = Instant.parse(recorded.body.at("/data/paidAt").asText()).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString();
         var receipt = query(staff, "/api/orders/workbench/receipt-summary?date=" + newDate);
@@ -1847,7 +1898,7 @@ class OrderIT {
         } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
     }
 
-    @Test void itemPricingMigrationLeavesHistoricalAmountsAndItemsUntouched() throws Exception {
+    @Test void pricingMigrationsPreserveHistoricalAmountsAndItems() throws Exception {
         String schema = "pricing_migration_" + UUID.randomUUID().toString().replace("-", "");
         try (var connection = Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
             var source = new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection, true);
@@ -1870,59 +1921,54 @@ class OrderIT {
             assertEquals(777L, legacy.queryForObject("SELECT total_amount_cents FROM cake_order", Long.class));
             assertEquals(999L, legacy.queryForObject("SELECT original_amount_cents FROM cake_order", Long.class));
             assertEquals(before, legacy.queryForList("SELECT * FROM cake_order_item"));
+            flyway.target("33").load().migrate(); connection.setSchema(schema);
+            var itemsBeforeQuoteMigration = legacy.queryForList("SELECT * FROM cake_order_item");
+            legacy.update("UPDATE cake_order SET pricing_mode = 'ITEM_SUM'");
+            var automatic = new LinkedHashMap<>(legacy.queryForMap("SELECT * FROM cake_order"));
+            automatic.put("pricing_mode", "MANUAL");
+            flyway.target("34").load().migrate(); connection.setSchema(schema);
+            assertEquals(automatic, legacy.queryForMap("SELECT * FROM cake_order"));
+            assertEquals(itemsBeforeQuoteMigration, legacy.queryForList("SELECT * FROM cake_order_item"));
         } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
     }
 
-    @Test void itemSumPricingPersistsRecalculatesAndRejectsPaidOrConflictingMutationsAtomically() throws Exception {
+    @Test void orderQuotePersistsIndependentlyOfItemsAndDrivesPaymentReports() throws Exception {
         var staff = staff(); var input = new LinkedHashMap<String, Object>(cakeOrder());
-        input.put("pricingMode", "ITEM_SUM"); input.put("paymentMethod", "UNPAID");
+        input.put("pricingMode", "MANUAL"); input.put("paymentMethod", "UNPAID");
+        input.put("originalAmountCents", 13000); input.put("memberAmountCents", 12000);
+        input.put("totalAmountCents", 12000);
         var created = staff.request("POST", "/api/orders", input);
         assertEquals(201, created.status, created.body.toString());
         var order = created.body.path("data"); String id = order.path("orderId").asText();
         String cakeId = idForName(order, "蛋糕");
-        assertEquals("ITEM_SUM", order.path("pricingMode").asText());
-        assertEquals(16000, order.path("originalAmountCents").asLong()); assertEquals(14000, order.path("totalAmountCents").asLong());
+        assertEquals("MANUAL", order.path("pricingMode").asText());
+        assertEquals(13000, order.path("originalAmountCents").asLong());
+        assertEquals(12000, order.path("totalAmountCents").asLong());
         assertEquals(order, query(staff, "/api/orders/" + id));
-        assertEquals("ITEM_SUM", jdbc.queryForObject("SELECT pricing_mode FROM cake_order WHERE id=?::uuid", String.class, id));
-        var revised = staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 0, Map.of("quantity", 2)));
+        var revised = staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 0, Map.of("quantity", 2, "referenceUnitPriceCents", 17000)));
         assertEquals(200, revised.status, revised.body.toString());
-        assertEquals(22000, query(staff, "/api/orders/" + id).path("totalAmountCents").asLong());
-        assertEquals("22000", query(staff, "/api/orders/workbench/payment-summary?date=2026-10-16").at("/unpaid/amountCents").asText());
-        assertEquals(id, query(staff, "/api/orders/calendar?from=2026-10-16&to=2026-10-17").at("/0/orderId").asText());
-        assertEquals("22000", query(staff, "/api/orders/workbench/payment-orders?date=2026-10-16&kind=SHIPPING_UNPAID").at("/orders/0/amountCents").asText());
+        assertEquals(12000, query(staff, "/api/orders/" + id).path("totalAmountCents").asLong());
+        assertEquals("12000", query(staff, "/api/orders/workbench/payment-summary?date=2026-10-16").at("/unpaid/amountCents").asText());
         assertEquals(409, staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 0, Map.of("quantity", 3))).status);
-        assertEquals(400, staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 1, "changes", Map.of("totalAmountCents", 1))).status);
         var paid = staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID", "paymentMethod", "CASH"));
         assertEquals(200, paid.status, paid.body.toString());
         String paidDate = Instant.parse(paid.body.at("/data/paidAt").asText()).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString();
-        assertEquals("22000", query(staff, "/api/orders/workbench/receipt-summary?date=" + paidDate).path("amountCents").asText());
-        var before = query(staff, "/api/orders/" + id);
-        long activityCount = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id);
-        var rejected = staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 2, Map.of("quantity", 3)));
-        assertEquals(409, rejected.status); assertEquals("ORDER_PAID_AMOUNT_LOCKED", rejected.body.path("code").asText());
-        assertEquals(before, query(staff, "/api/orders/" + id));
-        assertEquals(activityCount, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, id));
-        assertEquals(200, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 2, "paymentStatus", "UNPAID", "paymentMethod", "UNPAID")).status);
-        var missing = Map.of("name", "待报价点心", "productType", "OTHER", "quantity", 1, "attributes", Map.of("specification", "少糖"));
-        var added = staff.request("POST", "/api/orders/" + id + "/items", Map.of("expectedVersion", 3, "item", missing));
-        assertEquals(201, added.status, added.body.toString());
-        assertTrue(query(staff, "/api/orders/" + id).path("totalAmountCents").isNull());
-        assertEquals(409, staff.request("PATCH", "/api/orders/" + id + "/payment-status", Map.of("expectedVersion", 4, "paymentStatus", "PAID", "paymentMethod", "CASH")).status);
-        String missingId = idForName(added.body.path("data"), "待报价点心");
-        doThrow(new DataAccessResourceFailureException("activity unavailable")).when(activities).append(argThat(activity -> "ITEM_REMOVED".equals(activity.type())));
-        assertEquals(503, staff.request("POST", "/api/orders/" + id + "/items/" + missingId + "/remove", Map.of("expectedVersion", 4)).status);
-        reset(activities);
-        assertEquals(3, query(staff, "/api/orders/" + id).path("items").size());
-        assertTrue(query(staff, "/api/orders/" + id).path("totalAmountCents").isNull());
-        var removed = staff.request("POST", "/api/orders/" + id + "/items/" + missingId + "/remove", Map.of("expectedVersion", 4));
-        assertEquals(200, removed.status, removed.body.toString());
-        assertEquals(22000, query(staff, "/api/orders/" + id).path("totalAmountCents").asLong());
-        var legacyInput = new LinkedHashMap<String, Object>(cakeOrder()); legacyInput.put("totalAmountCents", 777);
-        var legacy = staff.request("POST", "/api/orders", legacyInput).body.path("data");
-        assertEquals("MANUAL", legacy.path("pricingMode").asText()); assertEquals(777, legacy.path("totalAmountCents").asLong());
-        String legacyId = legacy.path("orderId").asText();
-        assertEquals(200, staff.request("PATCH", "/api/orders/" + legacyId, patch(idForName(legacy, "蛋糕"), 0, Map.of("quantity", 2))).status);
-        assertEquals(777, query(staff, "/api/orders/" + legacyId).path("totalAmountCents").asLong());
+        assertEquals("12000", query(staff, "/api/orders/workbench/receipt-summary?date=" + paidDate).path("amountCents").asText());
+        assertEquals(200, staff.request("PATCH", "/api/orders/" + id, patch(cakeId, 2, Map.of("quantity", 3))).status);
+        var locked = staff.request("PATCH", "/api/orders/" + id + "/information", Map.of("expectedVersion", 3, "changes", Map.of("memberAmountCents", 10000)));
+        assertEquals(409, locked.status); assertEquals("ORDER_PAID_AMOUNT_LOCKED", locked.body.path("code").asText());
+        assertEquals(12000, query(staff, "/api/orders/" + id).path("totalAmountCents").asLong());
+
+        input.remove("originalAmountCents"); input.remove("memberAmountCents"); input.remove("totalAmountCents");
+        var unpriced = staff.request("POST", "/api/orders", input);
+        assertEquals(201, unpriced.status, unpriced.body.toString());
+        assertTrue(unpriced.body.at("/data/totalAmountCents").isNull());
+        String unpricedId = unpriced.body.at("/data/orderId").asText();
+        String path = "/api/orders/" + unpricedId;
+        var rejected = staff.request("PATCH", path + "/payment-status", Map.of("expectedVersion", 0, "paymentStatus", "PAID", "paymentMethod", "CASH"));
+        assertEquals(409, rejected.status); assertEquals("ORDER_QUOTE_INCOMPLETE", rejected.body.path("code").asText());
+        assertEquals(200, staff.request("PATCH", path + "/information", Map.of("expectedVersion", 0, "changes", Map.of("originalAmountCents", 0))).status);
+        assertEquals(200, staff.request("PATCH", path + "/payment-status", Map.of("expectedVersion", 1, "paymentStatus", "PAID", "paymentMethod", "CASH")).status);
     }
 
     private Client staff() throws Exception {

@@ -38,7 +38,7 @@ test('旧草稿报价独立提交，切换分类不改整单金额', async () =>
     const spec = page.locator('[id="items.0.specification"]');
     assert.equal(await spec.count(), 0);
     assert.equal(await page.locator('[id="items.0.requirements"]').inputValue(), '少冰');
-    await page.getByText('参考会员价：¥0.00', { exact: false }).waitFor();
+    assert.equal(await page.locator('[id="items.0.memberPrice"]').inputValue(), '0.00');
     assert.equal(await page.locator('[id="items.0.unitPrice"], [id="items.0.memberPrice"], [id="items.0.size"]').count(), 2);
     await chooseType(page, '蛋糕');
     assert.equal(await spec.count(), 0);
@@ -117,13 +117,13 @@ test('已付款草稿加购提示重新确认收款，取消不改草稿，确�
     await page.getByRole('option', { name: /加购套餐/ }).click();
     const add = page.getByRole('button', { name: '带入商品', exact: true });
     await add.click();
-    const dialog = page.getByRole('dialog', { name: '确认带入套餐' });
-    await dialog.getByText('成交金额变化后将改为未付，请核对收款。').waitFor();
+    const dialog = page.getByRole('region', { name: '确认带入套餐' });
+    await dialog.getByText('采用建议金额后将改为未付，请核对收款。').waitFor();
     await dialog.getByRole('button', { name: '取消' }).click();
     assert.equal((await saved()).value.paymentMethod, 'CASH');
     assert.equal((await saved()).value.totalAmount, '100');
     await add.click();
-    const confirm = dialog.getByRole('button', { name: '确认带入' });
+    const confirm = dialog.getByRole('button', { name: '带入并采用建议金额' });
     await confirm.click();
     await dialog.getByRole('alert').waitFor();
     assert.equal((await saved()).value.paymentMethod, 'CASH');
@@ -190,7 +190,7 @@ test('并发改分类保留最新制作要求与重新转换前的草稿', async
 });
 
 
-test('套餐仅追加新商品且成交额不变时直接带入', async () => {
+test('追加赠品时可保留已填写的整单金额', async () => {
   const { context, page, complete, saved } = await createOrderFixture(browser, base);
   try {
     const id = crypto.randomUUID();
@@ -201,12 +201,14 @@ test('套餐仅追加新商品且成交额不变时直接带入', async () => {
     } }));
     await complete();
     await page.locator('[id="items.0.unitPrice"]').fill('100');
+    await page.locator('#totalAmount').fill('100.00');
     await page.getByRole('button', { name: '导入套餐', exact: true }).click();
     await page.getByRole('button', { name: /选择套餐/ }).click();
     await page.getByRole('option', { name: /赠品套餐/ }).click();
     await page.getByRole('button', { name: '带入商品', exact: true }).click();
+    await page.getByRole('button', { name: '带入并保留金额' }).click();
     await page.getByText('已带入「赠品套餐」。', { exact: true }).waitFor();
-    assert.equal(await page.getByRole('dialog', { name: '确认带入套餐' }).count(), 0);
+    assert.equal(await page.getByRole('region', { name: '确认带入套餐' }).count(), 0);
     await cycleOrderDraft(page);
     assert.equal((await saved()).value.totalAmount, '100.00');
     assert.deepEqual((await saved()).value.items.map(item => item.name), ['蛋糕A', '赠品蜡烛']);

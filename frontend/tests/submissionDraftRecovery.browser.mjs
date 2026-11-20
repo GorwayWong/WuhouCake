@@ -115,3 +115,42 @@ test('填单被确认后，旧标签页放弃草稿不能删除另一标签页�
   assert.equal(await other.getByText('查看本机核对草稿', { exact: true }).count(), 0);
   assert.deepEqual(errors, []);
 });
+
+test('手机核单排除原图、补图并在重新打开时保留选择', async t => {
+  const browser = await chromium.launch({ headless: true, channel: 'chrome' });
+  t.after(() => browser.close());
+  const { context, page, model, errors } = await createOrderFixture(browser, base);
+  await page.setViewportSize({ width: 390, height: 844 });
+  model.permissions.push('CUSTOMER_SUBMISSION_PROCESS', 'ORDER_IMAGE_UPLOAD');
+  const photo = '20000000-0000-4000-8000-000000000071';
+  const source = { ...original, items: [{ ...original.items[0], imageIds: [photo] }] };
+  let submission = { id, status: 'PENDING', version: 0, ownerId: 'alice', ownerName: '客服',
+    createdAt: '2026-11-17T08:00:00Z', orderId: null, original: source, reviewed: null };
+  await context.route(`**/api/customer-submissions/${id}`, route => {
+    if (route.request().method() === 'PATCH') {
+      const patch = route.request().postDataJSON();
+      submission = { ...submission, version: submission.version + 1, reviewed: patch.review };
+    }
+    return route.fulfill({ json: { success: true, data: { submission, duplicates: [], duplicateCheckToken: null, activities: [] } } });
+  });
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=', 'base64');
+  let supplement;
+  await context.route(`**/api/customer-submissions/${id}/items/**`, route => {
+    if (route.request().method() === 'GET') return route.fulfill({ contentType: 'image/png', body: png });
+    supplement = route.request().url().split('/').at(-1);
+    return route.fulfill({ json: { success: true, data: supplement } });
+  });
+  await page.goto(`${base}/#/customer-submissions/${id}`);
+  await page.reload();
+  await page.getByRole('button', { name: '不采用', exact: true }).click();
+  await page.locator('.submission-item-images input[type=file]').setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: png });
+  await page.locator('.image-caption').getByText('客服补图 1', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '暂存核对结果' }).click();
+  await page.getByText('核对结果已保存。').waitFor();
+  assert.deepEqual(submission.original.items[0].imageIds, [photo]);
+  assert.deepEqual(submission.reviewed.content.items[0].imageIds, [supplement]);
+  await page.reload();
+  await page.getByRole('button', { name: '重新选用' }).waitFor();
+  await page.locator('.image-caption').getByText('客服补图 1', { exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});

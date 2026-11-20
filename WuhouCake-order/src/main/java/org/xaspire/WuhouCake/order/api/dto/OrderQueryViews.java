@@ -37,7 +37,7 @@ public final class OrderQueryViews {
     public record OperationalCounts(long totalOrderCount, long waitingDeliveryOrderCount) { }
     public record Card(UUID orderId, String orderNo, LocalDate calendarDate, String status,
             String paymentStatus, String fulfillmentType, Instant plannedHandoffAt, Instant plannedFinishAt,
-            long itemCount, long quantity, CardItem firstItem, String latestNote) { }
+            long itemCount, long quantity, CardItem firstItem, String latestNote, String customerPhone) { }
     public record CardItem(UUID itemId, String name, String productType, Map<String, Object> attributes) { }
     public record Workbench(LocalDate date, Metrics metrics, List<PendingOrder> pendingOrders) {
         public Workbench { pendingOrders = List.copyOf(pendingOrders); }

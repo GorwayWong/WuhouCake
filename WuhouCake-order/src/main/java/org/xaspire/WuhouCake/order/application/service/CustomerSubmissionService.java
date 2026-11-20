@@ -23,7 +23,9 @@ public class CustomerSubmissionService {
     private final CustomerSubmissions submissions; private final IdentityFacade identity; private final OrderService orders;
     private final JsonCodec json; private final Clock clock; private final String publicOrigin;
     private final AuditFacade audit;
-    public CustomerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders, JsonCodec json, Clock clock, String publicOrigin, AuditFacade audit) {
+    private final SubmissionImageService images;
+    public CustomerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders, JsonCodec json, Clock clock, String publicOrigin, AuditFacade audit, SubmissionImageService images) {
+        this.images = images;
         this.submissions = submissions; this.identity = identity; this.orders = orders; this.json = json; this.clock = clock;
         this.audit = audit;
         this.publicOrigin = publicOrigin.replaceAll("/+$", "");
@@ -61,14 +63,42 @@ public class CustomerSubmissionService {
         if (requestId == null || command == null) throw invalid();
         var entry = validEntry(token, true);
         var content = convert(command, CustomerSubmission.Content.class);
-        if (content.items().stream().anyMatch(item -> item.itemId() != null))
-            content = withProducts(content, content.items().stream().map(item -> item.withItemId(null)).toList());
-        // Keep the public fingerprint in the same shape as before staff item IDs.
+        boolean includesImages = content.items().stream().anyMatch(item -> item.imageIds() != null && !item.imageIds().isEmpty());
+        var itemIds = new HashSet<UUID>();
+        content = withProducts(content, content.items().stream().map(item -> {
+            if (!includesImages) return item.withImages(null).withItemId(null);
+            if (item.itemId() == null || !itemIds.add(item.itemId())) throw invalid();
+            return item;
+        }).toList());
+        // Preserve the historical no-image fingerprint for retries across upgrades.
         String current = fingerprint(convert(content, SubmissionCommands.Content.class));
-        String legacy = LegacySubmissionFingerprint.v26(command, content).map(this::fingerprint).orElse(null);
+        String legacy = !includesImages ? LegacySubmissionFingerprint.v26(command, content).map(this::fingerprint).orElse(null) : null;
         var submission = submissions.submit(entry, requestId, current, legacy, content, clock.instant());
+        if (includesImages) images.retain(entry.id(), submission.id(), content);
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
+    @Transactional public UUID stagePublicImage(String token, UUID item, UUID image, byte[] bytes, String filename) {
+        return images.stage(validEntry(token, true).id(), null, item, image, bytes, filename);
+    }
+
+    @Transactional(readOnly = true) public SubmissionViews.ImageContent publicImage(String token, UUID item, UUID image) {
+        var file = images.staged(validEntry(token, false).id(), item, image);
+        return new SubmissionViews.ImageContent(file.contentType(), file.content());
+    }
+
+    @Transactional public UUID stageStaffImage(UUID id, UUID item, UUID image, byte[] bytes, String filename) {
+        staff(ORDER_IMAGE_UPLOAD, CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ);
+        var submission = require(id, true);
+        submission.requirePending(submission.version());
+        return images.stage(null, id, item, image, bytes, filename);
+    }
+
+    @Transactional(readOnly = true) public SubmissionViews.ImageContent staffImage(UUID id, UUID item, UUID image) {
+        staff();
+        var file = images.submitted(id, item, image);
+        return new SubmissionViews.ImageContent(file.contentType(), file.content());
+    }
+
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {
         var me = staff();
         if (page < 1 || size < 1 || size > 50 || !Set.of("PENDING", "CONFIRMED", "ALL").contains(status)) throw invalid();
@@ -93,7 +123,9 @@ public class CustomerSubmissionService {
         var me = staff(); var submission = require(id, true); submission.requirePending(nonNegativeInteger(command.expectedVersion()));
         if (command.review() == null) throw invalid();
         var previous = submission.reviewed();
-        var review = reviewForWrite(command.review(), previous);
+        var review = reviewForWrite(command.review(), previous, submission.original());
+        if (review.content().items().stream().anyMatch(item -> item.imageIds() != null && !item.imageIds().isEmpty()))
+            images.retain(null, id, review.content());
         var pickup = review.plannedHandoffAt() == null ? review.content().requestedReceiveAt() : review.plannedHandoffAt();
         if (previous == null || !Objects.equals(review.plannedHandoffAt(), previous.plannedHandoffAt())
                 || !Objects.equals(review.content().requestedReceiveAt(), previous.content().requestedReceiveAt())
@@ -102,6 +134,8 @@ public class CustomerSubmissionService {
         }
         if (review.creditedEmployeeId() != null) identity.selectEmployee(review.creditedEmployeeId());
         if (Objects.equals(submission.reviewed(), review)) return view(submission, true);
+        if (previous != null && previous.content().items().stream().anyMatch(item -> item.imageIds() != null && !item.imageIds().isEmpty()))
+            images.releaseRemovedSupplements(id, previous.content(), review.content());
         var before = submission.reviewed() == null ? submission.original() : submission.reviewed().content();
         var details = new LinkedHashMap<String, Object>(); details.put("before", submission.reviewed() == null ? Map.of("content", CustomerSubmission.customerFields(before)) : reviewSnapshot(submission.reviewed()));
         details.put("after", reviewSnapshot(review)); details.put("customerFieldChanges", CustomerSubmission.differences(before, review.content()));
@@ -129,12 +163,17 @@ public class CustomerSubmissionService {
         var items = new ArrayList<OrderCommands.Item>();
         for (int i = 0; i < content.items().size(); i++) {
             var item = content.items().get(i); var price = review.prices().get(i);
-            items.add(new OrderCommands.Item(item.name(), item.productType(), item.quantity(), price.unitPriceCents(), price.memberPriceCents(), new LinkedHashMap<>(item.attributes())));
+            items.add(new OrderCommands.Item(item.name(), item.productType(), item.quantity(), price.unitPriceCents(), price.memberPriceCents(), new LinkedHashMap<>(item.attributes()),
+                    item.imageIds() == null || item.imageIds().isEmpty() ? null : UUID.randomUUID()));
         }
         var create = new OrderCommands.Create(new OrderCommands.Customer(null, content.phone(), content.memberPhone(), null),
                 new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), review.plannedFinishAt(), content.requestedReceiveAt()),
                 items, review.totalAmountCents(), review.creditedEmployeeId());
         var order = orders.createCustomer(create, new OrderCommands.Operator(me.accountId(), me.nickname()), id);
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).itemId() != null)
+                images.copyToOrder(id, content.items().get(i), order.orderId(), items.get(i).itemId(), me.accountId(), me.nickname());
+        }
         submissions.update(submission, review, "CONFIRMED", order.orderId(), clock.instant());
         submissions.markOrder(order.orderId(), submission);
         var confirmation = new LinkedHashMap<String, Object>();
@@ -192,7 +231,7 @@ public class CustomerSubmissionService {
                 "PENDING".equals(submission.status()) ? duplicateCheckToken(submission, duplicates) : null,
                 history ? submissions.activities(submission.id()).stream().map(a -> convert(a, SubmissionViews.Activity.class)).toList() : List.of());
     }
-    private CustomerSubmission.Review reviewForWrite(SubmissionCommands.Review command, CustomerSubmission.Review previous) {
+    private CustomerSubmission.Review reviewForWrite(SubmissionCommands.Review command, CustomerSubmission.Review previous, CustomerSubmission.Content original) {
         if (command.content() == null) throw invalid();
         var content = convert(command.content(), CustomerSubmission.Content.class);
         if (command.prices() != null && (command.prices().size() != content.items().size() || command.prices().stream().anyMatch(Objects::isNull)))
@@ -217,7 +256,13 @@ public class CustomerSubmissionService {
                 do { itemId = UUID.randomUUID(); } while (usedIds.contains(itemId) || byId.containsKey(itemId));
             }
             usedIds.add(itemId);
-            products.add(item.withItemId(itemId));
+            var product = item.withItemId(itemId);
+            if (product.imageIds() == null) {
+                var source = old == null ? original.items().stream().filter(row -> item.itemId() != null && item.itemId().equals(row.itemId()))
+                        .findFirst().orElse(null) : old.product();
+                if (source != null) product = product.withImages(source.imageIds());
+            }
+            products.add(product);
             prices.add(old == null ? new CustomerSubmission.Price(null, null) : old.price());
             if (old != null) retained.add(old);
         }

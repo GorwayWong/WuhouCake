@@ -1,5 +1,6 @@
 export const paymentMethods: Readonly<Record<string, string>> = {
-  UNIONPAY: '银联', MEMBER_CARD: '扣卡', BANK_TRANSFER: '对公转账', SERVICE_WECHAT: '客服微信', CASH: '现金', UNPAID: '未付',
+  UNIONPAY: '银联', MEMBER_CARD: '扣卡', BANK_TRANSFER: '对公转账', SERVICE_WECHAT: '客服微信', CASH: '现金',
+  DOUYIN_GROUP_BUY: '抖音团购', MEITUAN_GROUP_BUY: '美团团购', UNPAID: '未付',
 };
 export function effectiveOrderAmount(original: number | null, member: number | null): number | null { return member ?? original; }
 export function paymentMethodLabel(method: string | null | undefined, status: string | null): string {

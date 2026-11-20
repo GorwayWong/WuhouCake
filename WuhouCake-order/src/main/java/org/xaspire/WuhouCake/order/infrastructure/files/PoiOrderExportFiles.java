@@ -250,6 +250,7 @@ public final class PoiOrderExportFiles implements OrderExportFiles {
             case "CAKE_BASE" -> "出胚"; case "LAYER" -> "夹层"; case "FROSTING" -> "抹面"; case "DECORATING" -> "装饰";
             case "WAITING_DELIVERY" -> "待配送"; case "COMPLETED" -> "已配送"; case "CANCELLED" -> "已取消";
             case "UNIONPAY" -> "银联"; case "MEMBER_CARD" -> "扣卡"; case "BANK_TRANSFER" -> "对公转账"; case "SERVICE_WECHAT" -> "客服微信"; case "CASH" -> "现金";
+            case "DOUYIN_GROUP_BUY" -> "抖音团购"; case "MEITUAN_GROUP_BUY" -> "美团团购";
             case "PAID" -> "已付款"; case "UNPAID" -> "未付款";
             case "DELIVERY" -> "配送上门"; case "PICKUP" -> "门店自提";
 case "CAKE", "DONUT", "CUPCAKE", "BREAD", "DRINK", "OTHER", "TEA_BREAK", "COOKIE", "SNACK", "READY_BAKERY" -> ProductCategories.label(code);

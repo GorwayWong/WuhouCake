@@ -3,7 +3,6 @@ package org.xaspire.WuhouCake.order.application.service;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
-import org.xaspire.WuhouCake.order.domain.model.valobj.ItemPricing;
 import java.util.*;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionOperations;
@@ -67,13 +66,13 @@ public class OrderPackageService {
         manager();
         if (key == null) throw invalid();
         var items = normalize(command.items());
-        var totals = prices(items);
+        Long original = money(command.originalAmountCents()), member = money(command.memberAmountCents());
         UUID id = ids.nextId();
         String name = name(command.name());
         var prepared = prepareImages(packages.findCreation(key).orElse(null), items, uploads);
         return writes.execute(transaction -> {
             var me = manager();
-            var value = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), 0, clock.instant().truncatedTo(ChronoUnit.MICROS), null);
+            var value = new OrderPackages.Package(id, name, items, original, member, 0, clock.instant().truncatedTo(ChronoUnit.MICROS), null);
             if (!packages.create(value, key)) {
                 var previous = packages.findCreation(key).orElseThrow(() -> new OrderFailure("PACKAGE_NOT_FOUND"));
                 if (previous.deletedAt() != null) throw new OrderFailure("PACKAGE_NOT_FOUND");
@@ -93,13 +92,13 @@ public class OrderPackageService {
         if (command.expectedVersion() < 0) throw invalid();
         if (initial.version() != command.expectedVersion()) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var items = normalize(command.items());
-        var totals = prices(items);
+        Long original = money(command.originalAmountCents()), member = money(command.memberAmountCents());
         String name = name(command.name());
         var prepared = prepareImages(initial, items, uploads);
         return writes.execute(transaction -> {
             var me = manager(); var before = active(id);
             if (before.version() != command.expectedVersion()) throw new OrderFailure("CONCURRENT_MODIFICATION");
-            var after = new OrderPackages.Package(id, name, items, totals.original(), totals.member(), before.version() + 1, clock.instant().truncatedTo(ChronoUnit.MICROS), null);
+            var after = new OrderPackages.Package(id, name, items, original, member, before.version() + 1, clock.instant().truncatedTo(ChronoUnit.MICROS), null);
             if (!packages.update(after, command.expectedVersion())) throw new OrderFailure("CONCURRENT_MODIFICATION");
             writeImages(after, prepared, false);
             packages.cleanImages(id);
@@ -108,9 +107,6 @@ public class OrderPackageService {
         });
     }
     private String name(String value) { return requiredText(value == null ? null : value.strip(), 80); }
-    private ItemPricing.Totals prices(List<OrderPackages.Item> items) {
-        return ItemPricing.calculate(items.stream().map(item -> new ItemPricing.Quote(item.quantity(), item.unitPriceCents(), item.memberPriceCents())).toList());
-    }
     private Map<UUID, Prepared> prepareImages(OrderPackages.Package before, List<OrderPackages.Item> items, Map<UUID, Upload> uploads) {
         if (uploads.size() > PACKAGE_IMAGES) throw new OrderFailure("IMAGE_BATCH_TOO_LARGE");
         var itemByImage = new HashMap<UUID, OrderPackages.Item>();

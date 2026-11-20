@@ -9,6 +9,31 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, channel: 'chrome' }); });
 after(async () => { await browser?.close(); });
 
+test('按详情状态切换筛选后，列表只显示同名状态的订单', async () => {
+  const { context, page } = await createOrderFixture(browser, base);
+  const date = '2026-11-20';
+  const states = [
+    ['WAITING_DELIVERY', 'DELIVERY', '待配送'], ['WAITING_DELIVERY', 'PICKUP', '待自提'],
+    ['COMPLETED', 'DELIVERY', '已送达'], ['COMPLETED', 'PICKUP', '已自提'],
+  ];
+  const rows = states.map(([status, fulfillmentType, name], index) => ({
+    orderId: `10000000-0000-4000-8000-00000000000${index}`, orderNo: String(index),
+    status, fulfillmentType, paymentStatus: 'UNPAID', calendarDate: date, items: [{ name, quantity: 1 }],
+  }));
+  try {
+    await context.route('**/api/orders/workbench/cards?**', route =>
+      route.fulfill({ json: { success: true, data: workbenchCards(route.request(), rows) } }));
+    await page.goto(`${base}/#/?date=${date}`);
+    for (const [, , label] of states) {
+      await page.locator('[data-control-label="订单状态"] .choice-trigger').click();
+      await page.getByRole('option', { name: label, exact: true }).click();
+      await page.locator('.order-summary-card:visible .badges').getByText(label, { exact: true }).waitFor();
+      assert.equal(await page.locator('.order-summary-card').count(), 1);
+      assert.match(await page.locator('.timeline-partition-toggle').innerText(), /1 单/);
+    }
+  } finally { await context.close(); }
+});
+
 test('前台卡片精简、时间两列、创建高亮、筛选与详情往返，以及制作岗位原展示', async () => {
   const { context, page, model, complete, errors } = await createOrderFixture(browser, base);
   const extra = [];
@@ -65,7 +90,7 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     assert.equal(await main.locator('.order-summary-caption > span').count(), 0);
     assert.equal(await main.locator('.order-summary-meta').count(), 0);
     assert.equal(await main.locator('.order-summary-number').count(), 0);
-    assert.equal((await main.innerText()).includes('13800000000'), false);
+    assert.equal(await main.locator('.order-summary-heading .order-summary-phone').innerText(), '13800000000');
     assert.equal((await main.innerText()).includes('TEST-IMAGE'), false);
     assert.equal(await main.locator('.front-card-times dd').nth(0).innerText(), displayDate(date) + ' 23:45');
     assert.equal(await main.locator('.front-card-times dd').nth(1).innerText(), displayDate(prior) + ' 23:15');
@@ -114,10 +139,14 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     await page.reload(); await main.locator('.production-thumbnail').waitFor();
     assert.equal(await main.locator('.front-card-times').count(), 0);
     assert.match(await main.locator('.order-summary-caption > span').innerText(), /2 项 · 7 件/);
+    assert.equal(await main.locator('.order-summary-phone').innerText(), '13800000000');
     assert.equal(await main.locator('.order-summary-receive-time').count(), 0);
     assert.equal(await main.locator('.production-card-specifications').count(), 1);
     assert.match(await main.locator('.order-summary-number').innerText(), /TEST-IMAGE/);
     assert.equal(await main.locator('xpath=ancestor::section[contains(@class,"timeline-group")]').getAttribute('aria-label'), prior + ' 出品时间 23:15');
+    model.permissions = ['ORDER_READ'];
+    await page.reload(); await main.locator('.production-thumbnail').waitFor();
+    assert.equal(await main.locator('.order-summary-phone').count(), 0);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

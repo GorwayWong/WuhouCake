@@ -1,3 +1,4 @@
+import { PriceReference, draftPriceItems } from './PriceReference';
 import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
 import { firstItemFormError } from './productFormLayout';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -144,9 +145,9 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
     <fieldset className="create-fields" disabled={busy || unknownAddition}>
       <div className="create-item-heading product-form-heading"><h3>商品信息</h3><Field className="product-type-field" name="productType" label="商品类型" error={errors.productType}><ProductTypeSelect disabled={busy} {...props('productType')} value={draft.productType} onChange={value => change(changeItemDraft(draft, { productType: value }))} /></Field></div>
       <ProductFormFields type={draft.productType} prices={prices} renderField={field => {
-        const required = field === 'name' || field === 'quantity';
+        const required = field === 'name';
         if (field === 'name' || field === 'quantity' || field === 'unitPrice' || field === 'memberPrice') return <Field name={field} label={<ProductFieldLabel field={field} required={required} />} error={errors[field]}>
-          <input {...props(field)} autoFocus={field === 'name'} value={draft[field]} inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} maxLength={field === 'name' ? 128 : undefined} required={required} placeholder={field.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [field]: event.target.value }))} />
+          <input {...props(field)} autoFocus={field === 'name'} value={draft[field]} inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} maxLength={field === 'name' ? 128 : undefined} required={required} placeholder={field === 'quantity' ? '未填按 1 件' : field.endsWith('Price') ? '未填写' : undefined} onChange={event => change(changeItemDraft(draft, { [field]: event.target.value }))} />
         </Field>;
         const structured = !textSpecification(original?.attributes[field]) || !textSpecification((baseline || latest).items.find(item => item.itemId === itemId)?.attributes[field]);
         const stored = current?.attributes[field] ?? original?.attributes[field];
@@ -156,7 +157,10 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
         return <Field name={field} label={<ProductFieldLabel field={field} />} error={errors[field]}>{structured ? <span className="preserved-specification">{valueText(stored)}<small>此字段保留原值。</small></span> : (field === 'requirements' || field === 'filling' || field === 'specification') ? <textarea {...props(field)} rows={2} value={value || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} /> : <input {...props(field)} inputMode={field === 'size' ? 'decimal' : undefined} value={value || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} />}</Field>;
       }} />
 
-      {prices && <p className="form-help">{initial.pricingMode === 'ITEM_SUM' ? '保存后按商品单价和数量更新订单金额；已付款订单不能改变成交金额。' : '此历史订单保留手填整单金额，商品报价修改不会自动调整整单金额。'}</p>}
+      {prices && <PriceReference
+        items={[...latest.items.filter(item => item.itemId !== itemId), ...draftPriceItems([draft])]}
+        original={latest.originalAmountCents ?? (latest.memberAmountCents == null ? latest.totalAmountCents : null)}
+        member={latest.memberAmountCents ?? null} />}
       <ErrorNotice error={error} />
       {unavailable && <p className="notice" role="status">{itemId && !current ? '商品已移除，输入已保留。请取消编辑并核对订单。' : '订单状态已变，暂不能编辑。输入已保留，请核对状态。'}</p>}
       {(conflict || stale || needsConversionReview) && <div className="information-review">

@@ -4,6 +4,7 @@ import { ArrowRight, CheckCircle } from '@phosphor-icons/react';
 import { ApiError, readPublicOrderEntry, submitPublicOrder } from './api';
 import { ErrorNotice, Loading } from './ui';
 import { SubmissionFields } from './SubmissionFields';
+import { useSubmissionImagePending } from './SubmissionItemImages';
 import { draftFromSubmissionContent, newSubmissionDraft, submissionRequest, submissionDirty } from './customerSubmission';
 import { clearPendingSubmission, readPendingSubmission, storePendingSubmission } from './publicSubmissionStorage';
 import { focusFormField } from './formFocus';
@@ -21,7 +22,8 @@ type SavedPublicDraft = { value: SubmissionDraft; expiresAt?: number; pending?: 
 function submissionRejected(error: unknown) {
   return error instanceof ApiError && (
     (error.status === 400 && error.code === 'VALIDATION_FAILED')
-    || (error.status === 404 && error.code === 'ENTRY_UNAVAILABLE')
+    || (error.status === 404 && ['ENTRY_UNAVAILABLE', 'IMAGE_NOT_FOUND'].includes(error.code))
+    || (error.status === 409 && ['ORDER_IMAGE_LIMIT_EXCEEDED', 'ORDER_IMAGE_COUNT_EXCEEDED', 'ORDER_IMAGE_STORAGE_EXCEEDED'].includes(error.code))
     || (error.status === 413 && error.code === 'SUBMISSION_TOO_LARGE')
     || (error.status === 429 && error.code === 'SUBMISSION_THROTTLED')
   );
@@ -33,6 +35,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   const [pending, setPending] = useState(() => readPendingSubmission(token));
   const [draft, setDraft] = useState(() => pending ? draftFromSubmissionContent(pending.content) : newSubmissionDraft());
   const initial = useRef(draft);
+  const { pending: imagesPending, markPending } = useSubmissionImagePending();
   const slot = useRef<EditDraftSlot<SavedPublicDraft> | undefined>(undefined);
   const hasDurableDraft = useRef(false);
   const legacyOnly = useRef(Boolean(pending));
@@ -133,7 +136,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
   }
 
   const dirty = submissionDirty(draft, initial.current);
-  const atRisk = pending ? !stored || tabOnly : dirty && storage !== 'saved';
+  const atRisk = imagesPending || (pending ? !stored || tabOnly : dirty && storage !== 'saved');
   useEffect(() => {
     onLeaveGuard(() => Boolean(receipt) || !atRisk || window.confirm('填写内容尚未提交确认，离开将丢弃输入。确定离开吗？'));
     return () => onLeaveGuard(null);
@@ -215,7 +218,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
     </section> : <>
       <div className="customer-intro"><h1>填写预订信息</h1></div>
       <form ref={form} noValidate onSubmit={async event => {
-        event.preventDefault(); if (writing.current || !entry.data || unavailable) return;
+        event.preventDefault(); if (writing.current || imagesPending || !entry.data || unavailable) return;
         let request = pending;
         const retry = request !== null;
         if (!request) {
@@ -282,7 +285,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
             void client.invalidateQueries({ queryKey: entryKey, exact: true });
         } finally { writing.current = null; if (!controller.signal.aborted) setBusy(false); }
       }}>
-        <SubmissionFields draft={draft} onChange={edit} errors={errors} busy={busy || uncertain} />
+        <SubmissionFields draft={draft} onChange={edit} errors={errors} busy={busy || uncertain} imageScope={{ base: `/public/order-entries/${encodeURIComponent(token)}`, publicImage: true }} markImagePending={markPending} />
         {needsEntryCheck && entry.isFetching ? <p className="notice" role="status">正在检查填写入口…</p>
           : <ErrorNotice error={needsEntryCheck ? entry.error ?? error : error} retry={needsEntryCheck ? checkEntry : undefined} />}
         {submitNotSent && <p className="notice error" role="alert">本次未发送，填写内容仍在本页。请处理暂存问题后再提交。</p>}
@@ -324,7 +327,7 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
           </tbody></table>
           <p>注：超出标配数量以及其他款式蜡烛需另外购买♡</p>
         </section>
-        <div className="create-submit"><p className="form-help">提交后待客服确认</p>{uncertain && <button type="button" className="secondary" disabled={busy} onClick={abandon}>放弃重试</button>}<button className="primary" disabled={busy || !entry.data || unavailable}>{busy ? '正在提交…' : uncertain ? '重试提交' : '提交预订'}<ArrowRight /></button></div>
+        <div className="create-submit"><p className="form-help">{imagesPending ? '请完成上传或移除未上传的图片。' : '提交后待客服确认'}</p>{uncertain && <button type="button" className="secondary" disabled={busy} onClick={abandon}>放弃重试</button>}<button className="primary" disabled={busy || imagesPending || !entry.data || unavailable}>{busy ? '正在提交…' : uncertain ? '重试提交' : '提交预订'}<ArrowRight /></button></div>
       </form></>}
   </main>;
 }
