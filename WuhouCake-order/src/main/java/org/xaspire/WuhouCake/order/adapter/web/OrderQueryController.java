@@ -4,6 +4,8 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_AMOUNT_READ;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_CUSTOMER_READ;
+import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.ORDER_PHONE_READ;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.security.core.Authentication;
@@ -83,9 +85,12 @@ public class OrderQueryController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
             @RequestParam(required = false) String status, @RequestParam(required = false) String paymentStatus,
             @RequestParam(required = false) String cursor, @RequestParam(required = false) UUID focusOrderId,
+            @RequestParam(required = false) String fulfillmentType,
             Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
-        return ApiResponse.success(queries.cards(date, status, paymentStatus, cursor, focusOrderId, account.access().allows(ORDER_AMOUNT_READ)));
+        var access = account.access();
+        return ApiResponse.success(queries.cards(date, status, paymentStatus, fulfillmentType, cursor, focusOrderId,
+                access.allows(ORDER_AMOUNT_READ), access.allows(ORDER_PHONE_READ) || access.allows(ORDER_CUSTOMER_READ)));
     }
 
     @GetMapping("/workbench")

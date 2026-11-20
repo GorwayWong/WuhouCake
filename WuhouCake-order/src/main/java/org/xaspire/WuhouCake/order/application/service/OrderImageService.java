@@ -76,7 +76,7 @@ public class OrderImageService {
             return view(image);
         });
     }
-    private static String fingerprint(UUID itemId, String filename, byte[] content) {
+    static String fingerprint(UUID itemId, String filename, byte[] content) {
         try {
             var hash = java.security.MessageDigest.getInstance("SHA-256");
             hash.update((itemId + "\0" + filename + "\0").getBytes(java.nio.charset.StandardCharsets.UTF_8));

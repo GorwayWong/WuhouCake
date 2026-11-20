@@ -8,6 +8,7 @@ import org.xaspire.WuhouCake.order.api.command.SubmissionCommands;
 public final class SubmissionViews {
     private SubmissionViews() { }
     public record Entry(UUID ownerId, String ownerName, String url, boolean enabled) { }
+    public record ImageContent(String contentType, byte[] bytes) { }
     public record PublicEntry(String ownerName) { }
     public record Receipt(UUID submissionId, String submissionNo) { }
     public record Submission(UUID id, UUID entryId, UUID ownerId, String ownerName, long version, String status,

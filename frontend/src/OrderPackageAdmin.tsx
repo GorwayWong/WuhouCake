@@ -1,3 +1,5 @@
+import { PriceAmountHint, PriceReference, draftPriceItems } from './PriceReference';
+import { draftQuoteCents } from './orderForm';
 import { whenImageVisible } from './imagePreview';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -5,10 +7,10 @@ import { ArrowLeft, ImageSquare, Plus, Trash } from '@phosphor-icons/react';
 import { ApiError, creationResultUnknown, errorText, fetchPackageImage, readQuery, writeRequest, rejectedBeforeWrite } from './api';
 import { packageDraftTab, readPackageDraft, savePackageDraft, removePackageDraft, packageDraftStorageMessage, PackageDraftConflict, packageCreationSlot } from './packageDraftStorage';
 import type { PendingPackage, PackageDraftRecord } from './packageDraftStorage';
-import { newPackageItem, packageImagePath, packageRequest, packageSummary, packageReferenceTotals, packagePricingProblem, samePackageContent } from './orderPackages';
+import { newPackageItem, packageImagePath, packageRequest, packageSummary, samePackageContent } from './orderPackages';
 import type { OrderPackage, PackageBody, PackageRow } from './orderPackages';
 import type { Page } from './types';
-import { Empty, ErrorNotice, Loading, money } from './ui';
+import { Empty, ErrorNotice, Loading } from './ui';
 import { focusFormField } from './formFocus';
 import { time } from './dates';
 import { randomUUID } from './uuid';
@@ -314,7 +316,6 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
     setEditing(latest); setLatest(null); setChoices({}); setConflict(false); setErrors({}); setError(null);
     setMessage('已合并最新内容，请核对并保存。');
   }
-  const reference = packageReferenceTotals(items);
   const disabled = busy || Boolean(pending) || !restored;
   const inputProps = (field: string) => ({ name: field, id: `package-${field}`, 'aria-invalid': Boolean(errors[field]), 'aria-describedby': errors[field] ? `package-${field}-error` : undefined });
   const fieldError = (field: string) => errors[field] && <span className="field-error" id={`package-${field}-error`}>{errors[field]}</span>;
@@ -364,20 +365,20 @@ export function OrderPackageAdmin({ accountId, onDirtyChange, onWritingChange, o
                   {!item.unitPrice.trim() && !item.memberPrice.trim() && <small className="form-help">未报价</small>}
                   {fieldError(`items.${index}.unitPrice`)}{fieldError(`items.${index}.memberPrice`)}
                 </td>
-                <td><input {...inputProps(`items.${index}.quantity`)} aria-label={`商品 ${index + 1} 的数量`} value={item.quantity} inputMode="numeric" required onChange={event => updateItem(index, { quantity: event.target.value })} /></td>
+                <td><input {...inputProps(`items.${index}.quantity`)} aria-label={`商品 ${index + 1} 的数量`} value={item.quantity} inputMode="numeric" placeholder="未填按 1 件" onChange={event => updateItem(index, { quantity: event.target.value })} /></td>
               </tr>).flatMap((row, index) => [row, ...( ['image', 'name', 'quantity'].some(field => errors[`items.${index}.${field}`]) ?
                 [<tr key={`errors-${items[index].itemId}`}><td colSpan={4} className="package-row-errors">{['image', 'name', 'quantity'].map(field => <div key={field}>{fieldError(`items.${index}.${field}`)}</div>)}</td></tr>] : [])])}</tbody>
             </table>
             {fieldError('items')}<button type="button" className="secondary package-add-row" onClick={() => setItems([...items, newPackageItem()])}><Plus />添加商品</button>
           </section>
           <section className="panel create-group"><h2>套餐金额</h2>
-            {editing !== 'new' && packagePricingProblem(editing) && <p className="notice">{packagePricingProblem(editing)} 原售价：{money(editing.originalAmountCents)}；会员售价：{money(editing.memberAmountCents)}。保存后采用以下商品合计。</p>}
-            <dl className="package-amount-preview">
-              <div><dt>原价合计</dt><dd>{money(reference.original)}</dd></div>
-              <div><dt>会员合计</dt><dd>{money(reference.member)}</dd></div>
-            </dl>
-            {reference.invalid ? <p className="field-error">请核对商品数量和报价，合计不能超过金额上限。</p> : <p className="form-help">按商品单价 × 数量自动计算。{reference.unpriced} 项商品未报价。</p>}
-            {fieldError('original')}
+            <div className="create-grid order-pricing-fields">
+              <label>原价合计（元）<input {...inputProps('original')} inputMode="decimal" value={original} placeholder="未填写" onChange={event => { setOriginal(event.target.value); setErrors({}); }} />{fieldError('original')}<PriceAmountHint items={draftPriceItems(items)} kind="original" amount={draftQuoteCents(original)} /></label>
+              <label>会员价合计（元）<input {...inputProps('member')} inputMode="decimal" value={member} placeholder="未填写" onChange={event => { setMember(event.target.value); setErrors({}); }} />{fieldError('member')}<PriceAmountHint items={draftPriceItems(items)} kind="member" amount={draftQuoteCents(member)} /></label>
+            </div>
+            <p className="form-help">会员价留空时，套餐按原价带入订单。</p>
+            <PriceReference inlineAmounts items={draftPriceItems(items)} original={draftQuoteCents(original)} member={draftQuoteCents(member)}
+              useTotals={(nextOriginal, nextMember) => { if (nextOriginal !== undefined) setOriginal(nextOriginal); if (nextMember !== undefined) setMember(nextMember); }} />
 
           </section>
         </fieldset>

@@ -9,8 +9,6 @@ import type { OrderDraft } from './orderForm';
 import { saveWorkingDraftImageBatch, removeDraftImage, localImageError } from './draftImages';
 import type { ImageScope } from './draftImages';
 import { money } from './ui';
-import { effectiveOrderAmount } from './orderPayment';
-import { PackageDialog } from './PackageDialog';
 import type { Page } from './types';
 
 export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageScope, canUploadImages, onImageWritingChange, heading, actions }: {
@@ -29,11 +27,9 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
   const chosen = query.data?.items.find(value => value.id === selected);
   const latest = useRef({ getDraft, onChange, disabled }); latest.current = { getDraft, onChange, disabled };
   const [review, setReview] = useState<OrderPackage | null>(null);
-  const [missingOrder, setMissingOrder] = useState(''), [missingPackage, setMissingPackage] = useState('');
   const [reviewError, setReviewError] = useState('');
-  const needOrderPrice = draft.pricingMode !== 'ITEM_SUM' && !isEmptyPackageDraft(draft) && !draft.totalAmount.trim();
   let preview: ReturnType<typeof previewPackage> | undefined, previewError = '';
-  if (review) try { preview = previewPackage(draft, review, missingOrder, missingPackage); }
+  if (review) try { preview = previewPackage(draft, review); }
   catch (failure) { previewError = (failure as Error).message; }
   const active = useRef<AbortController | null>(null);
   const readKey = useRef<readonly string[] | null>(null);
@@ -65,26 +61,26 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       if (!applied) await Promise.all(entries.map((entry, index) => removeDraftImage(imageScope, entry.itemId, images[index].id)));
     }
     setReview(null); setAdded(current => [...current, value.id]);
-    setMessage(`已带入「${value.name}」。`);
+    setMessage(`已带入「${value.name}」的 ${value.items.length} 项商品。${!next.totalAmount.trim() && !next.memberAmount?.trim() ? '订单金额待补，可先录为未付。' : ''}`);
   }
   async function append() {
     if (!chosen || active.current || disabled) return;
+    setReview(null);
     const controller = new AbortController(); active.current = controller; setBusy(true); setError(null); setMessage('');
     const key = ['order-packages', 'detail', chosen.id]; readKey.current = key;
     let writing = false;
     try {
-      const value = await client.fetchQuery({ queryKey: key, queryFn: ({ signal }) => api<OrderPackage>(`/order-packages/${chosen.id}`, { signal }), staleTime: 0, gcTime: 0 });
+      const value = await client.fetchQuery({ queryKey: key, queryFn: ({ signal }) => readQuery<OrderPackage>(`/order-packages/${chosen.id}`, signal),
+        staleTime: 0, gcTime: 0, networkMode: 'always', retry: false });
       if (controller.signal.aborted || latest.current.disabled) return;
       const before = latest.current.getDraft();
       const empty = isEmptyPackageDraft(before);
-      const hasPrices = before.pricingMode === 'ITEM_SUM' || value.originalAmountCents !== null && (empty || Boolean(before.totalAmount.trim()));
-      const plan = hasPrices ? previewPackage(before, value) : null;
-      if (plan && !plan.resetPayment && plan.changes.every(change => !change.previousQuantity)
-        && (empty || effectiveOrderAmount(plan.original, plan.member) === effectiveOrderAmount(plan.beforeOriginal, plan.beforeMember))) {
+      const plan = previewPackage(before, value);
+      if (empty && !plan.resetPayment) {
         writing = true; onImageWritingChange(true);
         await apply(value, plan, before, controller);
       } else {
-        setMissingOrder(''); setMissingPackage(''); setReviewError(''); setReview(value);
+        setReviewError(''); setReview(value);
       }
     } catch (failure) { if (!controller.signal.aborted) {
       if (isCancelledError(failure)) setMessage('套餐内容已更新，当前录单内容已保留，请核对后重新带入。');
@@ -95,7 +91,7 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       if (active.current === controller) { active.current = null; readKey.current = null; setBusy(false); }
     }
   }
-  async function confirm() {
+  async function confirm(useSuggestedPrice: boolean) {
     if (!review || !preview || active.current || disabled) return;
     const before = latest.current.getDraft();
     if (before !== draft) { setReviewError('草稿已变化，请核对更新后的预览。'); return; }
@@ -109,10 +105,10 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       if (controller.signal.aborted) return;
       if (latest.current.getDraft() !== before) throw new Error('草稿已有变化，请核对更新后的预览。');
       if (current.version !== review.version || !samePackageContent(current, review)) {
-        setReview(current); setMissingPackage(''); setReviewError('套餐已更新，请核对新版内容后再次确认。');
+        setReview(current); setReviewError('套餐已更新，请核对新版内容后再次确认。');
         return;
       }
-      await apply(current, previewPackage(before, current, missingOrder, missingPackage), before, controller);
+      await apply(current, previewPackage(before, current, useSuggestedPrice), before, controller);
     } catch (failure) {
       if (controller.signal.aborted) return;
       if (failure instanceof ApiError && failure.status === 404 && failure.code === 'PACKAGE_NOT_FOUND') {
@@ -139,26 +135,28 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
       <label>选择套餐<Select label="选择套餐" value={selected} onChange={setSelected} disabled={disabled || busy || query.isPending}>
         <option value="">{query.isPending ? '正在读取…' : '选择套餐'}</option>{query.data?.items.map(value => <option key={value.id} value={value.id}>{value.name} · {value.items.length} 项</option>)}
       </Select></label><button type="button" className="secondary" disabled={disabled || busy || !chosen} onClick={() => void append()}>{busy ? '正在读取…' : added.includes(selected) ? '再添加一份' : '带入商品'}</button></div>
+    {message && <p role="status">{message}</p>}{(error || query.error) && <p className="field-error" role="alert">{errorText(error || query.error)}</p>}
     {chosen && <p className="package-summary">{chosen.items.length} 项商品：{packageSummary(chosen)}</p>}
     {query.data && query.data.total > 20 && <div className="package-actions"><button type="button" className="text-button" disabled={disabled || busy || page === 1} onClick={() => { setPage(page - 1); setSelected(''); }}>上一页</button><span>第 {page} 页，共 {query.data.total} 个套餐</span><button type="button" className="text-button" disabled={disabled || busy || page * 20 >= query.data.total} onClick={() => { setPage(page + 1); setSelected(''); }}>下一页</button></div>}
     {query.data?.total === 0 && <p className="muted">{search ? '没有匹配的套餐。' : '暂无套餐，请联系店长维护。'}</p>}
     <p className="form-help">带入商品数量、报价和特殊要求。名称、类型、商品说明、特殊要求及报价一致时合并数量。</p>
-    {message && <p role="status">{message}</p>}{(error || query.error) && <p className="field-error" role="alert">{errorText(error || query.error)}</p>}
-    </div>
-    {review && <PackageDialog title="确认带入套餐" busy={busy} onCancel={() => setReview(null)}>
+    {review && <section className="panel package-inline-review" aria-label="确认带入套餐" aria-busy={busy}>
       <p>「{review.name}」将带入 {review.items.length} 项商品。请核对合并结果和整单金额。</p>
-      {needOrderPrice && <label className="package-price-input">当前订单原价（元）<input inputMode="decimal" value={missingOrder} disabled={busy} onChange={e => setMissingOrder(e.target.value)} /></label>}
-      {draft.pricingMode !== 'ITEM_SUM' && review.originalAmountCents === null && <label className="package-price-input">此套餐原价（元）<input inputMode="decimal" value={missingPackage} disabled={busy} onChange={e => setMissingPackage(e.target.value)} /></label>}
       {preview && <><ul className="package-merge-list">{preview.changes.map((change, index) => <li key={index}>
         <strong>{change.name}</strong>{change.requirements && <span className="product-spec-text">特殊要求：{change.requirements}</span>}
         <span>{change.previousQuantity ? `合并到商品 ${change.index + 1}：${change.previousQuantity} → ${change.count}` : `新增 × ${change.count}`} · {change.image}</span>
       </li>)}</ul>
       <dl className="package-amount-preview"><div><dt>订单原价</dt><dd>{money(preview.beforeOriginal)} → <strong>{money(preview.original)}</strong></dd></div>
         <div><dt>订单会员价</dt><dd>{money(preview.beforeMember)} → <strong>{money(preview.member)}</strong></dd></div></dl></>}
-      {preview?.resetPayment && <p className="notice">成交金额变化后将改为未付，请核对收款。</p>}
+      {preview?.resetPayment && <p className="notice">采用建议金额后将改为未付，请核对收款。</p>}
       {(reviewError || previewError) && <p className="field-error" role="alert">{[reviewError, previewError].filter(Boolean).join(' ')}</p>}
-      <div className="package-actions"><button type="button" className="secondary" disabled={busy} onClick={() => setReview(null)}>取消</button>
-        <button type="button" className="primary" disabled={busy || disabled || !preview} onClick={() => void confirm()}>{busy ? '正在带入…' : '确认带入'}</button></div>
-    </PackageDialog>}
+      <div className="package-actions">
+        <button type="button" className="secondary" disabled={busy} onClick={() => setReview(null)}>取消</button>
+        <button type="button" className="primary" disabled={busy || disabled || !preview} onClick={() => void confirm(false)}>带入并保留金额</button>
+        <button type="button" className="secondary" disabled={busy || disabled || !preview || preview.original === null && preview.member === null}
+          onClick={() => void confirm(true)}>带入并采用建议金额</button>
+      </div>
+    </section>}
+    </div>
   </div>;
 }

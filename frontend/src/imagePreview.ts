@@ -8,9 +8,13 @@ export function imageFileError(file: File): string {
 
 // 每个可见图片拥有独立资源；订单切换和移除时终止读取并释放对象 URL。
 export function loadImagePreview(orderId: string, imageId: string, ready: (url: string) => void, failed: (error: unknown) => void): () => void {
+  return loadBlobPreview(signal => fetchOrderImage(orderId, imageId, signal), ready, failed);
+}
+
+export function loadBlobPreview(load: (signal: AbortSignal) => Promise<Blob>, ready: (url: string) => void, failed: (error: unknown) => void): () => void {
   const request = new AbortController();
   let url: string | undefined;
-  void fetchOrderImage(orderId, imageId, request.signal).then(blob => {
+  void load(request.signal).then(blob => {
     if (request.signal.aborted) return;
     url = URL.createObjectURL(blob);
     ready(url);

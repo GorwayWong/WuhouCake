@@ -7,6 +7,7 @@ import { Empty, ErrorNotice, Loading, money, statusNames } from './ui';
 import { EmployeeSelect } from './EmployeeSelect';
 import { Select } from './Select';
 import { SubmissionFields } from './SubmissionFields';
+import { SubmissionImageTile, useSubmissionImagePending } from './SubmissionItemImages';
 import { draftFromSubmission, submissionRequest, overdueSubmissionDate, searchSubmissionView, submissionListQuery } from './customerSubmission';
 import type { EntryLink, SubmissionContent, SubmissionDetail, SubmissionDuplicate, SubmissionOrigin, SubmissionReview, SubmissionListView, SubmissionDraft } from './customerSubmission';
 import { brandedQr } from './brandedQr';
@@ -32,6 +33,16 @@ function ContentSummary({ content, historical = false }: { content: SubmissionCo
     <ul>{content.items.map((item, index) => <li key={index}><strong>{item.name} × {item.quantity}</strong><p className="product-spec-text">{Object.entries(item.attributes).filter(([, value]) => value).map(([key, value]) => `${labels[key] || key}：${value}`).join('；')}</p></li>)}</ul>
   </div>;
 }
+function OriginalSubmissionImages({ submission }: { submission: SubmissionDetail['submission'] }) {
+  const items = submission.original.items.filter(item => item.itemId && item.imageIds?.length);
+  if (!items.length) return null;
+  return <details><summary>查看顾客原图</summary>{items.map(item => <div key={item.itemId}>
+    <p>{item.name} × {item.quantity}</p>
+    <ul className="image-grid">{item.imageIds!.map((image, photo) => <SubmissionImageTile key={image} item={item.itemId!} image={image}
+      scope={{ base: `/customer-submissions/${submission.id}` }} label={`顾客原图 ${photo + 1}`} />)}</ul>
+  </div>)}</details>;
+}
+
 export function SubmissionHistory({ data }: { data: SubmissionDetail }) {
   const names: Record<string, string> = { SUBMITTED: '用户填写', REVIEWED: '员工核对', CONFIRMED: '确认接单', DELETED: '移出待确认列表' };
   return <section className="panel"><h2>填写与处理记录</h2><ol className="activity-feed">{data.activities.map(activity => <li key={activity.id}><span className="activity-dot" /><div>
@@ -132,11 +143,11 @@ type SubmissionRead = { detail: SubmissionDetail; denied?: never } | { denied: A
 
 export function CustomerSubmissionDetail({ id, account, onDirtyChange, onWritingChange }: { id: string; account?: Account; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
   return <><a className="back-link" href="#/customer-submissions"><ArrowLeft />返回客户填单</a>{!account ? <Loading />
-    : canHandleSubmissions(account) ? <SubmissionDetailQuery key={`${account.accountId}:${id}`} accountId={account.accountId} id={id} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />
+    : canHandleSubmissions(account) ? <SubmissionDetailQuery key={`${account.accountId}:${id}`} accountId={account.accountId} canUpload={hasPermissions(account, 'ORDER_IMAGE_UPLOAD')} id={id} onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />
     : <Empty>当前账号不能查看客户填单。</Empty>}</>;
 }
 
-function SubmissionDetailQuery({ id, accountId, onDirtyChange, onWritingChange }: { id: string; accountId: string; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
+function SubmissionDetailQuery({ id, accountId, canUpload, onDirtyChange, onWritingChange }: { id: string; accountId: string; canUpload: boolean; onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void }) {
   const client = useQueryClient();
   const [showDraft, setShowDraft] = useState(true);
   const query = useQuery({ queryKey: ['customer-submission', id], gcTime: 0, refetchInterval: 15000,
@@ -157,19 +168,20 @@ function SubmissionDetailQuery({ id, accountId, onDirtyChange, onWritingChange }
   return <><ErrorNotice error={query.data?.denied ?? query.error} retry={() => void query.refetch()} />{detail
     ? showDraft ? <EditDraftRecovery<SavedReviewDraft> scope={JSON.stringify(['submission-review', accountId, id])}
         openStored={detail.submission.status !== 'PENDING'} onClose={() => setShowDraft(false)}>
-        {(draft, writer) => <SubmissionEditor initial={detail} latest={detail} recovered={draft} writer={writer}
+        {(draft, writer) => <SubmissionEditor initial={detail} latest={detail} recovered={draft} writer={writer} canUpload={canUpload}
           onDirtyChange={onDirtyChange} onWritingChange={onWritingChange} />}
       </EditDraftRecovery>
-      : <><section className="panel"><h2>客户原始填写</h2><ContentSummary content={detail.submission.original} />
+      : <><section className="panel"><h2>客户原始填写</h2><ContentSummary content={detail.submission.original} /><OriginalSubmissionImages submission={detail.submission} />
         <button type="button" className="secondary" onClick={() => setShowDraft(true)}>继续核对</button>
       </section><SubmissionHistory data={detail} /></>
     : query.isPending && <Loading />}</>;
 }
-function SubmissionEditor({ initial, latest, recovered, writer, onDirtyChange, onWritingChange }: {
-  initial: SubmissionDetail; latest: SubmissionDetail; recovered?: SavedReviewDraft; writer: EditDraftWriter<SavedReviewDraft>;
+function SubmissionEditor({ initial, latest, recovered, writer, canUpload, onDirtyChange, onWritingChange }: {
+  initial: SubmissionDetail; latest: SubmissionDetail; canUpload: boolean; recovered?: SavedReviewDraft; writer: EditDraftWriter<SavedReviewDraft>;
   onDirtyChange: (dirty: boolean) => void; onWritingChange: (busy: boolean) => void;
 }) {
   const client = useQueryClient();
+  const { pending: imagesPending, markPending } = useSubmissionImagePending();
   const [baseline, setBaseline] = useState(initial);
   const [version, setVersion] = useState(recovered?.version ?? initial.submission.version);
   const [basis, setBasis] = useState(() => recovered?.basis ?? draftFromSubmission(initial.submission));
@@ -242,7 +254,7 @@ function SubmissionEditor({ initial, latest, recovered, writer, onDirtyChange, o
     return true;
   };
   const act = async (action: 'save' | 'confirm' | 'delete') => {
-    if (writing.current || stale || reviewing || itemIdConflict || currentDetail()?.submission.status !== 'PENDING') return;
+    if (writing.current || imagesPending || stale || reviewing || itemIdConflict || currentDetail()?.submission.status !== 'PENDING') return;
     if (action === 'delete' && !window.confirm('将此填单移出待确认列表？原始内容和删除记录仍会保留。')) return;
     let body: unknown = { expectedVersion: version };
     const needsSave = action === 'save' || action === 'confirm' && (dirty || !submission.reviewed || Boolean(defaultEmployee && !submission.reviewed.creditedEmployeeId));
@@ -327,10 +339,10 @@ function SubmissionEditor({ initial, latest, recovered, writer, onDirtyChange, o
           onClick={applyReview}>核对后继续编辑</button>
       </div>}
     </div>}
-    <section className="panel"><h2>客户原始填写</h2><ContentSummary content={submission.original} /></section>
+    <section className="panel"><h2>客户原始填写</h2><ContentSummary content={submission.original} /><OriginalSubmissionImages submission={submission} /></section>
     {duplicates.length > 0 && editable && <section className="panel submission-warning" aria-label="疑似重复记录"><h2>疑似重复记录（{duplicates.length}）</h2><p>请核对以下同电话、同取货日的记录是否重复。</p><DuplicateRecords records={duplicates} />{requiresAcknowledgement && <label className="check-label"><input type="checkbox" checked={acknowledge === latest.duplicateCheckToken} disabled={busy || stale || dirty || creationResultUnknown(error)} onChange={e => setAcknowledge(e.target.checked ? latest.duplicateCheckToken : null)} />已核实，这是独立订单，继续接单。</label>}</section>}
     {displayed.orderId && <a className="primary" href={`#/orders/${displayed.orderId}`}>查看正式订单<ArrowRight /></a>}
-    {editable && <form ref={form} noValidate onSubmit={event => { event.preventDefault(); void act('save'); }}><h2>客服核对结果</h2>{reviewed?.plannedHandoffAt && Date.parse(reviewed.plannedHandoffAt) !== Date.parse(reviewed.content.requestedReceiveAt) && <p className="notice">历史时间不同，请核对：原到店取货时间 {businessTime(reviewed.plannedHandoffAt)}；原客户收货时间 {businessTime(reviewed.content.requestedReceiveAt)}。修改取货时间后两项将同步。</p>}<SubmissionFields staff draft={effectiveDraft} onChange={value => {
+    {editable && <form ref={form} noValidate onSubmit={event => { event.preventDefault(); void act('save'); }}><h2>客服核对结果</h2>{reviewed?.plannedHandoffAt && Date.parse(reviewed.plannedHandoffAt) !== Date.parse(reviewed.content.requestedReceiveAt) && <p className="notice">历史时间不同，请核对：原到店取货时间 {businessTime(reviewed.plannedHandoffAt)}；原客户收货时间 {businessTime(reviewed.content.requestedReceiveAt)}。修改取货时间后两项将同步。</p>}<SubmissionFields staff original={submission.original} imageScope={{ base: `/customer-submissions/${submission.id}`, allowUpload: canUpload }} markImagePending={markPending} draft={effectiveDraft} onChange={value => {
       const changedEmployee = value.creditedEmployeeId !== effectiveDraft.creditedEmployeeId;
       const chosen = employeeChosen || changedEmployee;
       const next = { ...value, creditedEmployeeId: changedEmployee ? value.creditedEmployeeId : draft.creditedEmployeeId };
@@ -343,7 +355,7 @@ function SubmissionEditor({ initial, latest, recovered, writer, onDirtyChange, o
         if (refreshed.submission.status !== 'PENDING' && !dirty && !copiedItems) accept(refreshed);
         setError(null);
       }).catch(() => {})}>核对最新结果</button></p>}
-      <div className="create-submit"><button className="text-button danger" type="button" disabled={busy || stale || reviewing || itemIdConflict} onClick={() => void act('delete')}>删除未确认填单</button><div className="actions"><button className="secondary" disabled={busy || stale || reviewing || itemIdConflict || creationResultUnknown(error)}>{activeAction === 'save' ? '正在暂存…' : '暂存核对结果'}</button><button type="button" className="primary" disabled={busy || stale || reviewing || itemIdConflict || creationResultUnknown(error) || Boolean(!dirty && reviewed && requiresAcknowledgement && acknowledge !== latest.duplicateCheckToken)} onClick={() => void act('confirm')}>{activeAction === 'confirm' ? '正在确认…' : '确认接单'}<ArrowRight /></button></div></div>
+      <div className="create-submit">{imagesPending && <p className="form-help">请完成上传或移除未上传的图片。</p>}<button className="text-button danger" type="button" disabled={busy || imagesPending || stale || reviewing || itemIdConflict} onClick={() => void act('delete')}>删除未确认填单</button><div className="actions"><button className="secondary" disabled={busy || imagesPending || stale || reviewing || itemIdConflict || creationResultUnknown(error)}>{activeAction === 'save' ? '正在暂存…' : '暂存核对结果'}</button><button type="button" className="primary" disabled={busy || imagesPending || stale || reviewing || itemIdConflict || creationResultUnknown(error) || Boolean(!dirty && reviewed && requiresAcknowledgement && acknowledge !== latest.duplicateCheckToken)} onClick={() => void act('confirm')}>{activeAction === 'confirm' ? '正在确认…' : '确认接单'}<ArrowRight /></button></div></div>
     </form>}
     {!editable && dirty && <details className="panel"><summary>查看本机核对草稿</summary>
       <label>本机核对草稿（可复制）<textarea readOnly value={submissionDraftText(draft)} rows={7} /></label>

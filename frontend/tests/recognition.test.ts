@@ -151,7 +151,8 @@ test('一次填入明确及疑义字段，默认来源明确，不造名称、�
   assert.equal(filled.feedback[feedbackKey('filling', item.key)].needsReview, true);
   assert.equal(filled.feedback[feedbackKey('base', item.key)].source, 'DEFAULT');
   const invalid = createOrderRequest(filled.draft);
-  assert(invalid.errors['items.0.name'] && invalid.errors['items.0.quantity']);
+  assert(invalid.errors['items.0.name']);
+  assert.equal(invalid.errors['items.0.quantity'], undefined);
 });
 test('录单识别保护手工电话、地址和取货时刻，仍带入有效金额', () => {
   const initial = newDraft('2026-10-16'), result = candidate();

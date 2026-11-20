@@ -48,7 +48,7 @@ public class ApiErrors {
             case "ORDER_ITEM_SPEC_TOO_LARGE" -> "当前商品规格过长，请精简后保存";
             case "ORDER_SPEC_TOO_LARGE" -> "订单内商品规格总量过大，请精简后保存";
             case "ORDER_FINISH_TOO_LATE" -> "出品时间须比取货时间至少提前 1 小时";
-            case "ORDER_QUOTE_INCOMPLETE" -> "商品报价未完整，请补齐单价后再登记付款";
+            case "ORDER_QUOTE_INCOMPLETE" -> "请填写订单金额后再登记付款";
             case "ORDER_PAID_AMOUNT_LOCKED" -> "已登记付款，请先撤销付款登记再改价";
             case "ORDER_DELETED" -> "订单已删除，请先由店长恢复后再修改";
             case "ORDER_DELETED_FORBIDDEN" -> "当前岗位不能访问已删除订单";

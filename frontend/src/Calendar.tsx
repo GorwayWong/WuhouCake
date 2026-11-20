@@ -5,7 +5,7 @@ import { readQuery } from './api';
 import { businessDate, calendarRange, today, weekStart, workbenchDate } from './dates';
 import type { Account, CalendarOrder, WorkbenchCards } from './types';
 import { ErrorNotice, Loading } from './ui';
-import { allCalendarFilters, calendarStatusOptions } from './calendarFilters';
+import { allCalendarFilters, calendarStatusCriteria, calendarStatusOptions } from './calendarFilters';
 import type { CalendarFilters } from './calendarFilters';
 import { exportOptions } from './exportFiles';
 import { DateInput } from './DateInput';
@@ -52,7 +52,9 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     initialPageParam: null as string | null,
     queryFn: ({ signal, pageParam }) => {
       const params = new URLSearchParams({ date: selected });
-      if (effectiveFilters.status) params.set('status', effectiveFilters.status);
+      const { status, fulfillmentType } = calendarStatusCriteria(effectiveFilters.status);
+      if (status) params.set('status', status);
+      if (fulfillmentType) params.set('fulfillmentType', fulfillmentType);
       if (effectiveFilters.paymentStatus) params.set('paymentStatus', effectiveFilters.paymentStatus);
       if (pageParam) params.set('cursor', pageParam);
       else if (focusOrderId) params.set('focusOrderId', focusOrderId);

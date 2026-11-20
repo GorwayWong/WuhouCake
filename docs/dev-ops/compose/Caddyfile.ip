@@ -27,7 +27,7 @@ https://{$PUBLIC_IP} {
   header X-Content-Type-Options nosniff
   header Referrer-Policy same-origin
   @orderUpload {
-    path /api/orders/*/images
+    path /api/orders/*/images /api/public/order-entries/*/items/*/images/* /api/customer-submissions/*/items/*/images/*
     method POST
     header Content-Type multipart/form-data*
   }

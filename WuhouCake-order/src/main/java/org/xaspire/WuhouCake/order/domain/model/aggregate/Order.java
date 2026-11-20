@@ -124,6 +124,7 @@ public final class Order {
         } else effective = money(total);
         var method = normalizePaymentMethod(paymentMethod);
         boolean paid = method != null && !method.equals("UNPAID");
+        if (paid && effective == null) throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
         return new Order(id, orderNo, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, effective,
                 actorId, now, now, now, items, creditedEmployee, paid ? now : null, null, orderingMethod, original, member, method);
     }
@@ -139,7 +140,7 @@ public final class Order {
         if (paid && totals.total() == null) throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
         return new Order(id, orderNo, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, totals.total(),
                 actorId, now, now, now, items, employee, paid ? now : null, null, orderingMethod,
-                totals.original(), totals.member(), payment, "ITEM_SUM");
+                totals.original(), totals.member(), payment, "MANUAL");
     }
     public String pricingMode() { return pricingMode; }
     private static ItemPricing.Totals totals(List<OrderItem> items) {
@@ -168,7 +169,7 @@ public final class Order {
     public String paymentMethod() { return paymentMethod; }
     private static String normalizePaymentMethod(String value) {
         if (value == null) return null;
-        if (!Set.of("UNIONPAY", "MEMBER_CARD", "BANK_TRANSFER", "SERVICE_WECHAT", "CASH", "UNPAID").contains(value)) throw invalid();
+        if (!Set.of("UNIONPAY", "MEMBER_CARD", "BANK_TRANSFER", "SERVICE_WECHAT", "CASH", "DOUYIN_GROUP_BUY", "MEITUAN_GROUP_BUY", "UNPAID").contains(value)) throw invalid();
         return value;
     }
     public String orderingMethod() { return orderingMethod; }
@@ -409,7 +410,9 @@ public final class Order {
         if (nextMethod == null) nextMethod = this.paymentStatus.equals(paymentStatus) ? paymentMethod
                 : paymentStatus.equals("UNPAID") ? (paymentMethod == null ? null : "UNPAID") : "UNPAID".equals(paymentMethod) ? null : paymentMethod;
         if (nextMethod != null && !paymentStatus.equals(nextMethod.equals("UNPAID") ? "UNPAID" : "PAID")) throw invalid();
-        if (pricingMode.equals("ITEM_SUM") && paymentStatus.equals("PAID") && totalAmountCents == null) throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
+        if (paymentStatus.equals("PAID") && totalAmountCents == null
+                && (pricingMode.equals("ITEM_SUM") || (method != null || paymentMethod != null) && !this.paymentStatus.equals(paymentStatus)))
+            throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
         if (this.paymentStatus.equals(paymentStatus) && Objects.equals(paymentMethod, nextMethod)) return Map.of();
         requireNextVersion();
         var before = new LinkedHashMap<String, Object>(); if (totalAmountCents != null) before.put("totalAmountCents", totalAmountCents); before.put("paymentStatus", this.paymentStatus); before.put("paidAt", paidAt == null ? null : paidAt.toString()); if (!Objects.equals(paymentMethod, nextMethod)) before.put("paymentMethod", paymentMethod);

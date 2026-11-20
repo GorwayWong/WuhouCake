@@ -1,3 +1,4 @@
+import { PriceReference } from './PriceReference';
 import type { OrderDetailRead } from './api';
 import type { ReactNode } from 'react';
 import { useEditImageSession } from './editImageSession';
@@ -532,7 +533,10 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     path: 'payment-status', method: 'PATCH',
     body: { expectedVersion: order.version, paymentStatus: paymentMethod === 'UNPAID' ? 'UNPAID' : 'PAID', paymentMethod },
   });
-  const paymentPanel = access.amounts && <section className="panel payment-panel"><div className="section-heading payment-heading"><h2>金额与付款</h2>{canEditInformation && order.pricingMode !== 'ITEM_SUM' && !paid && !editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'amount', order }); }}><NotePencil />修改金额</button>}</div>{editing?.kind === 'amount' && <div className="amount-editor">{informationEditor}</div>}<div><dl className="order-quoted-prices"><div><dt>原价</dt><dd>{money(order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null))}</dd></div><div><dt>会员价</dt><dd>{money(order.memberAmountCents ?? null)}</dd></div></dl><p className="muted">成交金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong>{order.paymentStatus === 'PAID' && <p className="form-help">付款时间：{order.paidAt ? businessTime(order.paidAt) : '历史付款时间未记录'}</p>}</div>{access.amounts && <Payment status={order.paymentStatus} />}<p>支付方式：{paymentMethodLabel(order.paymentMethod, order.paymentStatus)}</p>{paid && <div className="notice payment-lock">
+  const paymentPanel = access.amounts && <section className="panel payment-panel"><div className="section-heading payment-heading"><h2>金额与付款</h2>{canEditInformation && order.pricingMode !== 'ITEM_SUM' && !paid && !editing && <button className="secondary compact" disabled={blocked} onClick={() => { mutation.reset(); setMessage(''); setEditing({ kind: 'amount', order }); }}><NotePencil />修改金额</button>}</div>{editing?.kind === 'amount' && <div className="amount-editor">{informationEditor}</div>}<div><dl className="order-quoted-prices"><div><dt>原价</dt><dd>{money(order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null))}</dd></div><div><dt>会员价</dt><dd>{money(order.memberAmountCents ?? null)}</dd></div></dl><p className="muted">成交金额</p><strong className="order-amount">{money(order.totalAmountCents)}</strong>
+    {editing?.kind !== 'amount' && <PriceReference items={order.items}
+      original={order.originalAmountCents ?? (order.memberAmountCents == null ? order.totalAmountCents : null)}
+      member={order.memberAmountCents ?? null} />}{order.paymentStatus === 'PAID' && <p className="form-help">付款时间：{order.paidAt ? businessTime(order.paidAt) : '历史付款时间未记录'}</p>}</div>{access.amounts && <Payment status={order.paymentStatus} />}<p>支付方式：{paymentMethodLabel(order.paymentMethod, order.paymentStatus)}</p>{paid && <div className="notice payment-lock">
       <p>{order.status === 'CANCELLED' ? '此订单取消前已登记付款，请在线下核对款项。' : '已登记付款，请先撤销付款登记再改价。'}</p>
       {canRecordPayment && <button type="button" className="secondary" disabled={reversalBlocked} onClick={() => {
         if (window.confirm('撤销后订单将改为未付款，当前付款时间会清除。确定撤销付款登记？')) updatePayment('UNPAID');

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isEmptyPackageDraft, newPackageItem, packageRequest, packageReferenceTotals, previewPackage } from '../src/orderPackages.ts';
+import { isEmptyPackageDraft, newPackageItem, packageRequest, previewPackage } from '../src/orderPackages.ts';
 import type { OrderPackage, PackageItem } from '../src/orderPackages.ts';
 import { newDraft as newSumDraft, changeItemDraft, itemInput, migrateItemDraft, newItem } from '../src/orderForm.ts';
 
@@ -45,13 +45,13 @@ test('空名称但有参考图的商品不会被替换，缺价、零价与溢�
   const draft = newDraft('2026-11-11'), value = { ...template(), originalAmountCents: null, memberAmountCents: null };
   draft.items[0].images = [{ id: 'original', name: 'reference.png', type: 'image/png', size: 10 }];
   assert(!isEmptyPackageDraft(draft));
-  assert.throws(() => previewPackage(draft, value), /当前订单原价/);
-  assert.throws(() => previewPackage(draft, value, '0'), /此套餐原价/);
-  const filled = previewPackage(draft, value, '0', '0');
+  const filled = previewPackage(draft, value);
   assert.equal(filled.next.items[0].key, draft.items[0].key);
-  assert.equal(filled.next.totalAmount, '0.00');
+  assert.equal(filled.next.totalAmount, '');
   assert.equal(filled.next.memberAmount, '');
-  assert.throws(() => previewPackage({ ...draft, totalAmount: '90071992547409.91' }, template()), /累计金额过大/);
+  const overflow = previewPackage({ ...draft, totalAmount: '90071992547409.91' }, template());
+  assert.equal(overflow.next.totalAmount, '');
+  assert.equal(overflow.next.memberAmount, '');
   const existing = filled.next.items[1];
   assert.throws(() => previewPackage({ ...filled.next, items: [{ ...existing, quantity: '2147483647' }] }, template()), /数量超过上限/);
 });
@@ -63,7 +63,7 @@ test('套餐校验名称、数量和原价，套餐条目独立保存报价与�
   assert.equal(packageRequest('套餐', [row]).body?.originalAmountCents, null);
   for (const quantity of ['0', '-1', '1.2', '2147483648']) assert.ok(packageRequest('套餐', [{ ...row, quantity }], '10').errors['items.0.quantity']);
   assert.deepEqual(packageRequest(' 套餐 ', [row], '10.29', '0').body, {
-    name: '套餐', originalAmountCents: null, memberAmountCents: null,
+    name: '套餐', originalAmountCents: 1029, memberAmountCents: 0,
     items: [{ itemId: row.itemId, imageId: null, unitPriceCents: null, memberPriceCents: null, name: '纸杯蛋糕', productType: 'OTHER', quantity: 1, attributes: { specification: '香草\n六只装' } }],
   });
 });
@@ -81,18 +81,6 @@ test('旧草稿转换可重复执行，手动切换分类不会反向解析规�
   const cake = changeItemDraft(migrated, { productType: 'CAKE' });
   assert.equal(cake.attributes.specification, migrated.attributes.specification);
   assert.equal(cake.attributes.requirements, '少糖');
-});
-
-test('参考合计按数量加总，会员价回退单价，空报价和零价有区别', () => {
-  const rows = [
-    { ...newPackageItem(), unitPrice: '12.30', quantity: '3' },
-    { ...newPackageItem(), memberPrice: '5', quantity: '2' },
-    { ...newPackageItem(), unitPrice: '7', memberPrice: '0' },
-    newPackageItem(),
-  ];
-  assert.deepEqual(packageReferenceTotals(rows), { original: null, member: null, total: null, unpriced: 1, invalid: false });
-  assert.deepEqual(packageReferenceTotals([newPackageItem()]), { original: null, member: null, total: null, unpriced: 1, invalid: false });
-  assert.equal(packageReferenceTotals([{ ...newPackageItem(), unitPrice: '90071992547409.91', quantity: '2' }]).invalid, true);
 });
 
 test('套餐加购只在成交额改变时撤销付款，匹配商品的已有零价保留', () => {
@@ -114,4 +102,17 @@ test('套餐加购只在成交额改变时撤销付款，匹配商品的已有�
     const free = previewPackage(draft, { ...value, originalAmountCents: 0, memberAmountCents: null });
     assert.equal(free.next.paymentMethod, method);
   }
+});
+
+test('缺少套餐总价时保留空白，缺数量在保存和带入合并时按一件', () => {
+  const row = { ...newPackageItem(), name: '小卷', quantity: '', unitPrice: '6', memberPrice: '4' };
+  const saved = packageRequest('茶歇', [row]);
+  assert.equal(saved.body?.items[0].quantity, 1);
+  const value = { ...template(saved.body!.items), originalAmountCents: null, memberAmountCents: null };
+  const first = previewPackage(newDraft('2026-11-20'), value);
+  assert.equal(first.next.totalAmount, '');
+  assert.equal(first.next.memberAmount, '');
+  first.next.items[0].quantity = '';
+  const second = previewPackage(first.next, value, false);
+  assert.equal(second.next.items[0].quantity, '2');
 });

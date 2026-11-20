@@ -24,7 +24,7 @@ class CustomerSubmissionServiceTest {
     private final OrderService orders = mock(OrderService.class);
     private final UUID id = UUID.randomUUID(), owner = UUID.randomUUID(), candidate = UUID.randomUUID();
     private final CustomerSubmissionService service = new CustomerSubmissionService(store, identity, orders,
-            new JsonCodec(new ObjectMapper().findAndRegisterModules()), Clock.fixed(NOW, ZoneOffset.UTC), "https://example.test", mock(AuditFacade.class));
+            new JsonCodec(new ObjectMapper().findAndRegisterModules()), Clock.fixed(NOW, ZoneOffset.UTC), "https://example.test", mock(AuditFacade.class), mock(org.xaspire.WuhouCake.order.application.service.SubmissionImageService.class));
 
     @BeforeEach void setup() {
         when(identity.me()).thenReturn(new IdentityFacade.AccountView(owner, "0001", "客服", Set.of("FRONT_DESK"), "STAFF", "ACTIVE", false, 0, NOW, null, 0,

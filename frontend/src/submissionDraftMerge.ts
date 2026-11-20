@@ -1,21 +1,20 @@
 import { specificationFields } from './orderForm.ts';
-import type { ItemDraft } from './orderForm.ts';
-import type { SubmissionDraft } from './customerSubmission.ts';
+import type { SubmissionDraft, SubmissionItemDraft } from './customerSubmission.ts';
 
 export type ReviewChoice = 'local' | 'remote';
 type Conflict = { id: string; label: string; local: string; remote: string; copyOnly?: boolean };
 
 const fieldLabels = new Map<string, string>(specificationFields);
 
-function itemValue(item?: ItemDraft) {
+function itemValue(item?: SubmissionItemDraft) {
   if (!item) return null;
-  const { name, productType, quantity, unitPrice, memberPrice, attributes } = item;
-  return [name, productType, quantity, unitPrice, memberPrice, Object.entries(attributes).filter(([, value]) => value).sort(([left], [right]) => left.localeCompare(right))];
+  const { name, productType, quantity, unitPrice, memberPrice, attributes, imageIds } = item;
+  return [name, productType, quantity, unitPrice, memberPrice, imageIds ?? [], Object.entries(attributes).filter(([, value]) => value).sort(([left], [right]) => left.localeCompare(right))];
 }
 
-function itemText(item?: ItemDraft): string {
+function itemText(item?: SubmissionItemDraft): string {
   if (!item) return '已移除';
-  return [item.name, item.productType === 'CAKE' ? '蛋糕' : '其他商品', `数量：${item.quantity}`,
+  return [item.name, item.productType === 'CAKE' ? '蛋糕' : '其他商品', `数量：${item.quantity}`, ...(item.imageIds?.length ? [`参考图片：${item.imageIds.length} 张`] : []),
     ...(item.unitPrice ? [`原价：${item.unitPrice}`] : []), ...(item.memberPrice ? [`会员价：${item.memberPrice}`] : []),
     ...specificationFields.flatMap(([key, label]) => item.attributes[key] ? [`${label}：${item.attributes[key]}`] : []),
     ...Object.entries(item.attributes).flatMap(([key, value]) => value && !fieldLabels.has(key) ? [`${key}：${value}`] : [])].join('\n');

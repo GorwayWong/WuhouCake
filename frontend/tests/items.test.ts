@@ -41,7 +41,9 @@ test('其他商品规格可清空，旧价格不可改写，新增不提交商�
 
 test('数量限制与合法状态，禁止移除最后一件有效商品', () => {
   const draft = itemDraft(order.items[0]);
-  for (const value of ['', '0', '-1', '1.5', '2147483648', 'abc']) { draft.quantity = value; assert.ok(itemInput(draft).errors.quantity); }
+  for (const value of ['0', '-1', '1.5', '2147483648', 'abc']) { draft.quantity = value; assert.ok(itemInput(draft).errors.quantity); }
+  draft.quantity = '';
+  assert.equal(itemInput(draft).item?.quantity, 1);
   assert.equal(canRemoveItem(order, 'first'), true);
   assert.equal(canRemoveItem({ ...order, items: [order.items[0]] }, 'first'), false);
   assert.equal(canRemoveItem(order, 'missing'), false);

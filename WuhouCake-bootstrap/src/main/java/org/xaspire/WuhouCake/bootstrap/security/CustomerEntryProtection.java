@@ -25,16 +25,18 @@ public final class CustomerEntryProtection extends OncePerRequestFilter {
         this.redis = redis; this.properties = properties; this.errors = errors; this.clock = clock; this.namespace = namespace;
     }
     @Override protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !request.getMethod().equals("POST") || !request.getRequestURI().matches("/api/public/order-entries/[^/]+/submissions");
+        return !request.getMethod().equals("POST") || !request.getRequestURI().matches("/api/public/order-entries/[^/]+/(submissions|items/[^/]+/images/[^/]+)");
     }
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
         long seconds = clock.instant().getEpochSecond(); String ip = clientAddress(request, properties.trustedProxies());
-        String key = namespace + ":customer-entry:" + ip;
+        boolean image = !request.getRequestURI().endsWith("/submissions");
+        String key = namespace + (image ? ":customer-image:" : ":customer-entry:") + ip;
         try {
-            Long allowed = redis.execute(LIMIT, List.of(key + ":m:" + seconds / 60, key + ":h:" + seconds / 3600), properties.perMinute().toString(), properties.perHour().toString());
+            Long allowed = redis.execute(LIMIT, List.of(key + ":m:" + seconds / 60, key + ":h:" + seconds / 3600), image ? "30" : properties.perMinute().toString(), image ? "120" : properties.perHour().toString());
             if (allowed == null) { errors.write(response, 503, "SERVICE_UNAVAILABLE"); return; }
             if (allowed == 0) { response.setHeader("Retry-After", "60"); errors.write(response, 429, "SUBMISSION_THROTTLED"); return; }
         } catch (org.springframework.dao.DataAccessException failure) { errors.write(response, 503, "SERVICE_UNAVAILABLE"); return; }
+        if (image) { chain.doFilter(request, response); return; }
         byte[] body = request.getInputStream().readNBytes(properties.maxBodyBytes() + 1);
         if (body.length > properties.maxBodyBytes()) { errors.write(response, 413, "SUBMISSION_TOO_LARGE"); return; }
         chain.doFilter(new HttpServletRequestWrapper(request) {

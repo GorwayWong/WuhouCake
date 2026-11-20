@@ -99,12 +99,18 @@ export function changeItemDraft(draft: ItemDraft, changes: Partial<ItemDraft>, e
   return next;
 }
 export function newDraft(date: string): OrderDraft {
-  return { pricingMode: 'ITEM_SUM', orderingMethod: '', customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', explicitFulfillment: true, address: '',
+  return { pricingMode: 'MANUAL', orderingMethod: '', customerName: '', phone: '', memberPhone: '', buyerName: '', fulfillmentType: 'DELIVERY', explicitFulfillment: true, address: '',
     requestedReceiveDate: date, requestedReceiveAt: date, plannedHandoffAt: '', plannedFinishAt: '', finishTimeMode: 'AUTO', totalAmount: '', memberAmount: '', paymentMethod: 'UNPAID', items: [newItem()] };
 }
+export function draftQuantity(value: string): number {
+  if (!value.trim()) return 1;
+  if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 2147483647) throw new Error('数量须为 1–2147483647 之间的整数。');
+  return Number(value);
+}
+
 export function draftTotals(items: ItemDraft[]) {
   try {
-    return { ...itemTotals(items.map(item => ({ quantity: /^\d+$/.test(item.quantity) ? Number(item.quantity) : 0,
+    return { ...itemTotals(items.map(item => ({ quantity: draftQuantity(item.quantity),
       unitPriceCents: moneyToCents(item.unitPrice), memberPriceCents: moneyToCents(item.memberPrice) }))), invalid: false };
   } catch { return { original: null, member: null, total: null, unpriced: 0, invalid: true }; }
 }
@@ -117,7 +123,7 @@ export function moneyToCents(input: string): number | null {
   if (cents > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('金额过大，请核对后重新填写。');
   return Number(cents);
 }
-function draftQuoteCents(value: string): number | null {
+export function draftQuoteCents(value: string): number | null {
   try { return moneyToCents(value); } catch { return null; }
 }
 export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemInput | null; errors: Record<string, string> } {
@@ -126,8 +132,9 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
   else if (draft.name.length > 128) errors.name = '商品名称最多填写 128 个字符。';
   if (draft.productType.length > 32) errors.productType = '商品类型最多填写 32 个字符。';
   else if (!draft.productType.trim() || !Object.hasOwn(productTypes, normalizeProductType(draft.productType)) && draft.requiresTypeConfirmation) errors.productType = '请选择商品类型。';
-  const quantity = Number(draft.quantity);
-  if (!/^\d+$/.test(draft.quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 2147483647) errors.quantity = '数量须为 1–2147483647 之间的整数。';
+  let quantity = 1;
+  try { quantity = draftQuantity(draft.quantity); }
+  catch (error) { errors.quantity = (error as Error).message; }
   const type = normalizeProductType(draft.productType);
   const effective = type === 'OTHER' ? asOtherDraft(draft) : draft;
   const item: ItemInput = { name: draft.name.trim(), productType: type, quantity,
@@ -153,7 +160,13 @@ export function itemDraft(item: Item): ItemDraft {
 }
 export function canEditItems(order: Pick<Detail, 'status' | 'deletion' | 'deleted'>): boolean { return !order.deletion && !order.deleted && (productionStatuses.includes(order.status) || order.status === 'WAITING_DELIVERY'); }
 export function migrateOrderDraft(draft: OrderDraft): OrderDraft {
-  if (draft.pricingMode === 'ITEM_SUM') return draft;
+  if (draft.pricingMode === 'MANUAL') return draft;
+  if (draft.pricingMode === 'ITEM_SUM') {
+    const totals = draftTotals(draft.items);
+    return { ...draft, pricingMode: 'MANUAL',
+      totalAmount: totals.original === null ? '' : exactYuan(totals.original),
+      memberAmount: totals.member === null ? '' : exactYuan(totals.member) };
+  }
   return { ...draft, items: draft.items.map(migrateItemDraft) };
 }
 export function canRemoveItem(order: Detail, itemId: string): boolean { return canEditItems(order) && order.items.length > 1 && order.items.some(item => item.itemId === itemId); }
@@ -244,14 +257,13 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
   catch (error) { errors.requestedReceiveAt = (error as Error).message; }
   if (!validDate(draft.requestedReceiveDate)) errors.requestedReceiveDate = '请选择有效的取货日期。';
   if (!draft.items.length) errors.items = '订单至少需要一件商品。';
-  const sum = draft.pricingMode === 'ITEM_SUM', totals = draftTotals(draft.items);
-  const original = sum ? totals.original : amount(draft.totalAmount, 'totalAmount');
-  const member = sum ? totals.member : amount(draft.memberAmount || '', 'memberAmount');
+  const original = amount(draft.totalAmount, 'totalAmount');
+  const member = amount(draft.memberAmount || '', 'memberAmount');
   const method = draft.paymentMethod || 'UNPAID';
   if (!Object.hasOwn(paymentMethods, method)) errors.paymentMethod = '请选择有效的支付方式。';
-  if (sum && method !== 'UNPAID' && totals.total === null) errors.paymentMethod = '商品报价未完整，请补齐单价后再登记付款。';
+  if (method !== 'UNPAID' && effectiveOrderAmount(original, member) === null) errors.paymentMethod = '请填写订单金额后再登记付款。';
   const request: CreateOrderRequest = {
-    ...(draft.pricingMode ? { pricingMode: draft.pricingMode } : {}),
+    pricingMode: 'MANUAL',
     orderingMethod: text((draft.orderingMethod || '').trim(), 'orderingMethod', '下单方式', 80),
     customer: {
       customerName: text(draft.customerName, 'customerName', '客户姓名', 80),
@@ -270,16 +282,11 @@ export function createOrderRequest(draft: OrderDraft): { request: CreateOrderReq
     items: draft.items.map((item, index) => {
       const result = itemInput(item);
       for (const [field, error] of Object.entries(result.errors)) errors[`items.${index}.${field}`] = error;
-      const unit = draftQuoteCents(item.unitPrice), member = draftQuoteCents(item.memberPrice);
-      return result.item ? { ...result.item, itemId: item.key,
-        ...(unit !== null ? { referenceUnitPriceCents: unit } : {}),
-        ...(member !== null ? { referenceMemberPriceCents: member } : {}),
-      } : result.item!;
+      return result.item ? { ...result.item, itemId: item.key } : result.item!;
     }),
     originalAmountCents: original, memberAmountCents: member, paymentMethod: method,
     totalAmountCents: effectiveOrderAmount(original, member),
   };
-  if (sum && totals.invalid) errors.totalAmount = '请核对商品单价和数量，合计不能超过金额上限。';
   if (finishTooLate(receiveAt, request.fulfillment.plannedFinishAt)) errors.plannedFinishAt = finishLeadTimeMessage;
   return { request: Object.keys(errors).length ? null : request, errors };
 }

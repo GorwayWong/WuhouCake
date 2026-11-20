@@ -23,10 +23,11 @@ export function OrderSummaryCard({ order, view, account, newlyCreated = false, s
   const quantity = 'quantity' in order ? order.quantity : order.items.reduce((sum, item) => sum + item.quantity, 0);
   const note = 'firstItem' in order ? order.latestNote : latestOrderNote(order)?.content;
 
+  const phone = access.phone && 'firstItem' in order ? order.customerPhone?.trim() : null;
   const pickup = 'firstItem' in order ? order.plannedHandoffAt : pickupInstant(order);
   return <a ref={card} data-order-id={order.orderId} className={`order-summary-card compact-order-card ${access.productionView ? 'production-card' : ''}${newlyCreated ? ' is-new-order' : ''}`} href={calendarOrderHref(view, order.orderId)}>
     {newlyCreated && <span className="created-order-badge">刚刚创建</span>}
-    <div className="order-summary-title">{access.productionView && <ProductionThumbnail orderId={order.orderId} itemId={first?.itemId} />}<div className="order-summary-caption"><h3>{first?.name || `订单 #${order.orderNo}`}{!access.productionView && itemCount > 1 && <span className="order-summary-more"> · 另有 {itemCount - 1} 项</span>}</h3>{access.productionView && <span>{itemCount} 项 · {quantity} 件{itemCount > 1 ? ` · 另有 ${itemCount - 1} 项` : ''}</span>}</div><CaretRight aria-hidden="true" /></div>
+    <div className="order-summary-title">{access.productionView && <ProductionThumbnail orderId={order.orderId} itemId={first?.itemId} />}<div className="order-summary-caption"><div className="order-summary-heading"><h3>{first?.name || `订单 #${order.orderNo}`}{!access.productionView && itemCount > 1 && <span className="order-summary-more"> · 另有 {itemCount - 1} 项</span>}</h3>{phone && <span className="order-summary-phone" aria-label={`联系电话 ${phone}`}>{phone}</span>}</div>{access.productionView && <span>{itemCount} 项 · {quantity} 件{itemCount > 1 ? ` · 另有 ${itemCount - 1} 项` : ''}</span>}</div><CaretRight aria-hidden="true" /></div>
     {access.productionView ? <>
       <dl className="production-card-specifications">{productionCardFields(first ?? undefined).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
       <div className="order-summary-meta"><span className="order-summary-number">#{order.orderNo}</span>

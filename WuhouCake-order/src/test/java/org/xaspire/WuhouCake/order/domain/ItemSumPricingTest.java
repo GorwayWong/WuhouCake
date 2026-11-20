@@ -24,12 +24,13 @@ class ItemSumPricingTest {
         var cake = item("CAKE", 2, 1001L, 900L); var other = item("OTHER", 3, 301L, null);
         var order = order("UNPAID", cake, other);
         assertEquals(2905L, order.originalAmountCents()); assertEquals(2703L, order.memberAmountCents());
-        assertEquals(2703L, order.totalAmountCents()); assertEquals("ITEM_SUM", order.pricingMode());
+        assertEquals(2703L, order.totalAmountCents()); assertEquals("MANUAL", order.pricingMode());
         order.reviseItem(cake.itemId(), Map.of("quantity", 3), NOW.plusSeconds(1));
-        assertEquals(3603L, order.totalAmountCents());
-        order.removeItem(other.itemId(), NOW.plusSeconds(2)); assertEquals(2700L, order.totalAmountCents());
-        order.addItem(item("OTHER", 2, 200L, null), NOW.plusSeconds(3)); assertEquals(3100L, order.totalAmountCents());
-        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("totalAmountCents", 1), NOW));
+        assertEquals(2703L, order.totalAmountCents());
+        order.removeItem(other.itemId(), NOW.plusSeconds(2)); assertEquals(2703L, order.totalAmountCents());
+        order.addItem(item("OTHER", 2, 200L, null), NOW.plusSeconds(3)); assertEquals(2703L, order.totalAmountCents());
+        order.reviseInformation(Map.of("originalAmountCents", 2500, "memberAmountCents", 2000), NOW);
+        assertEquals(2000L, order.totalAmountCents());
     }
     @Test void absentPricesRemainAbsentAndZeroIsPayable() {
         var priced = item("OTHER", 2, 100L, null); var missing = item("CAKE", 1, null, null);
@@ -37,22 +38,25 @@ class ItemSumPricingTest {
         assertNull(order.originalAmountCents()); assertNull(order.memberAmountCents()); assertNull(order.totalAmountCents());
         assertEquals("ORDER_QUOTE_INCOMPLETE", assertThrows(OrderFailure.class, () -> order.changePaymentStatus("PAID", "CASH", NOW)).getMessage());
         assertThrows(OrderFailure.class, () -> order("CASH", missing));
-        order.reviseItem(missing.itemId(), Map.of("memberPriceCents", 0), NOW);
-        assertNull(order.originalAmountCents()); assertEquals(200L, order.totalAmountCents());
+        order.reviseItem(missing.itemId(), Map.of("referenceMemberPriceCents", 0), NOW);
+        assertNull(order.originalAmountCents()); assertNull(order.totalAmountCents());
+        order.reviseInformation(Map.of("memberAmountCents", 200), NOW);
+        order.changePaymentStatus("PAID", "CASH", NOW);
+        assertEquals("PAID", order.paymentStatus());
         assertNull(order("UNPAID", priced).memberAmountCents());
         assertEquals(0L, order("CASH", item("OTHER", 2, 100L, 0L)).totalAmountCents());
     }
-    @Test void paidItemMutationsFailBeforeAnyStateChangeButSameEffectiveAmountIsAllowed() {
+    @Test void paidQuoteStaysFixedWhenItemsChange() {
         var cake = item("CAKE", 2, 100L, 80L); var other = item("OTHER", 1, 200L, null);
-        var order = order("CASH", cake, other); var before = order.activeItems();
-        assertThrows(OrderFailure.class, () -> order.reviseItem(cake.itemId(), Map.of("quantity", 3), NOW));
-        assertThrows(OrderFailure.class, () -> order.removeItem(other.itemId(), NOW));
-        assertThrows(OrderFailure.class, () -> order.addItem(item("OTHER", 1, 1L, null), NOW));
-        assertEquals(before, order.activeItems()); assertEquals(0, order.version()); assertEquals(360L, order.totalAmountCents());
-        order.reviseItem(cake.itemId(), Map.of("unitPriceCents", 120), NOW); assertEquals(360L, order.totalAmountCents());
-        assertEquals(440L, order.originalAmountCents());
+        var order = order("CASH", cake, other);
+        order.reviseItem(cake.itemId(), Map.of("quantity", 3), NOW);
+        order.removeItem(other.itemId(), NOW);
+        order.addItem(item("OTHER", 1, 1L, null), NOW);
+        assertEquals(360L, order.totalAmountCents());
+        assertThrows(OrderFailure.class, () -> order.reviseInformation(Map.of("memberAmountCents", 100), NOW));
         order.changePaymentStatus("UNPAID", "UNPAID", NOW);
-        order.removeItem(other.itemId(), NOW); assertEquals(160L, order.totalAmountCents());
+        order.reviseInformation(Map.of("memberAmountCents", 100), NOW);
+        assertEquals(100L, order.totalAmountCents());
     }
     @Test void rejectsFractionalNegativeAndOverflowValues() {
         for (Object value : List.of(-1, new BigDecimal("1.001"), 1.0, Long.MAX_VALUE))

@@ -57,6 +57,92 @@ class CustomerSubmissionIT {
     @AfterAll void cleanup() { reset(store, auditOperations); clearRedis(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE"); }
     private void clearRedis() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
+    @Test void customerAndStaffPhotosStayWithTheirProductsAcrossReviewAndConfirmation() throws Exception {
+        var manager = admin();
+        var staff = employee(manager, "0002", "FRONT_DESK");
+        var visitor = new Client();
+        String token = entry(staff), otherToken = entry(manager);
+        String entryPath = "/api/public/order-entries/" + token;
+        UUID firstItem = UUID.randomUUID(), secondItem = UUID.randomUUID();
+        UUID rejectedPhoto = UUID.randomUUID(), secondPhoto = UUID.randomUUID(), replacement = UUID.randomUUID();
+        byte[] photo = picture(0x7850ff);
+        byte[] otherPhoto = picture(0x607018);
+        byte[] newPhoto = picture(0xffa940);
+        String originalPath = entryPath + photoPath(firstItem, rejectedPhoto);
+        assertEquals(200, visitor.upload(originalPath, photo).statusCode());
+        assertEquals(200, visitor.upload(originalPath, photo).statusCode());
+        assertEquals(200, visitor.image(originalPath).statusCode());
+        assertEquals(404, visitor.image("/api/public/order-entries/" + otherToken + photoPath(firstItem, rejectedPhoto)).statusCode());
+        assertEquals(404, visitor.image(entryPath + photoPath(secondItem, rejectedPhoto)).statusCode());
+        assertEquals(200, visitor.upload(entryPath + photoPath(secondItem, secondPhoto), otherPhoto).statusCode());
+        assertTrue(visitor.upload(entryPath + photoPath(firstItem, UUID.randomUUID()), new byte[] {1, 2, 3}).statusCode() >= 400);
+
+        var input = json.valueToTree(content("13800000000", "2026-11-02T18:00:00+08:00"));
+        ((ObjectNode) input.at("/items/0")).put("itemId", firstItem.toString()).putArray("imageIds").add(rejectedPhoto.toString());
+        ((ObjectNode) input.at("/items/1")).put("itemId", secondItem.toString()).putArray("imageIds").add(secondPhoto.toString());
+        UUID key = UUID.randomUUID();
+        String id = submit(token, input, key).at("/data/submissionId").asText();
+        assertEquals(id, submit(token, input, key).at("/data/submissionId").asText());
+        assertEquals(404, visitor.image(originalPath).statusCode());
+        String submission = "/api/customer-submissions/" + id, supplement = submission + photoPath(firstItem, replacement);
+        assertEquals(401, visitor.image(submission + photoPath(firstItem, rejectedPhoto)).statusCode());
+        var decorator = employee(manager, "0003", "DECORATOR");
+        assertEquals(403, decorator.image(submission + photoPath(firstItem, rejectedPhoto)).statusCode());
+        assertEquals(200, staff.upload(supplement, newPhoto).statusCode());
+        byte[][] selectedBytes = {staff.image(supplement).body(), staff.image(submission + photoPath(secondItem, secondPhoto)).body()};
+        var detail = staff.data("GET", submission, null);
+        assertEquals(rejectedPhoto.toString(), detail.at("/submission/original/items/0/imageIds/0").asText());
+
+        var selected = input.deepCopy();
+        var tooMany = ((ObjectNode) selected.at("/items/0")).putArray("imageIds");
+        for (int i = 0; i < 6; i++) tooMany.add(UUID.randomUUID().toString());
+        assertEquals(409, staff.request("PATCH", submission, Map.of("expectedVersion", 0, "review", review(selected, staff.id, 12300))).status);
+        ((ObjectNode) selected.at("/items/0")).putArray("imageIds").add(secondPhoto.toString());
+        assertEquals(404, staff.request("PATCH", submission, Map.of("expectedVersion", 0, "review", review(selected, staff.id, 12300))).status);
+        ((ObjectNode) selected.at("/items/0")).putArray("imageIds").add(replacement.toString());
+        staff.data("PATCH", submission, Map.of("expectedVersion", 0, "review", review(selected, staff.id, 12300)));
+        assertEquals(409, staff.request("PATCH", submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300))).status);
+        detail = manager.data("GET", submission, null);
+        assertEquals(replacement.toString(), detail.at("/submission/reviewed/content/items/0/imageIds/0").asText());
+        doThrow(new DataAccessResourceFailureException("log offline")).when(store).append(any(), eq("CONFIRMED"), any(), anyString(), anyMap(), any());
+        assertEquals(503, staff.request("POST", submission + "/confirm", Map.of("expectedVersion", 1)).status);
+        assertEquals(0L, count("cake_order"));
+        assertEquals(0L, count("cake_order_image"));
+        reset(store);
+        String order = staff.data("POST", submission + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText();
+        assertEquals(order, staff.data("POST", submission + "/confirm", Map.of("expectedVersion", 1)).at("/submission/orderId").asText());
+        var items = staff.data("GET", "/api/orders/" + order, null).path("items");
+        var images = decorator.data("GET", "/api/orders/" + order + "/images", null);
+        assertEquals(2, images.size());
+        for (int i = 0; i < 2; i++) {
+            String item = items.get(i).path("itemId").asText();
+            var image = java.util.stream.StreamSupport.stream(images.spliterator(), false)
+                    .filter(row -> row.path("itemId").asText().equals(item)).findFirst().orElseThrow();
+            var finalPhoto = decorator.image("/api/orders/" + order + "/images/" + image.path("imageId").asText());
+            assertEquals(200, finalPhoto.statusCode());
+            assertArrayEquals(selectedBytes[i], finalPhoto.body());
+        }
+        assertEquals(200, staff.image(submission + photoPath(firstItem, rejectedPhoto)).statusCode());
+        assertEquals(1L, count("cake_order"));
+        assertEquals(2L, count("cake_order_image"));
+    }
+
+    private static String photoPath(UUID item, UUID image) { return "/items/" + item + "/images/" + image; }
+
+    private static byte[] picture(int color) throws Exception {
+        var output = new java.io.ByteArrayOutputStream();
+        var image = new java.awt.image.BufferedImage(40, 40, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        try {
+            graphics.setColor(new java.awt.Color(color));
+            graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+        } finally {
+            graphics.dispose();
+        }
+        javax.imageio.ImageIO.write(image, "png", output);
+        return output.toByteArray();
+    }
+
     @Test void deletedCustomerOrderRetainsTheSubmissionAndItsIdempotentReceipt() throws Exception {
         var staff = admin(); String token = entry(staff); UUID key = UUID.randomUUID();
         var input = content("13800000000", "2026-11-02T18:00:00+08:00");
@@ -898,6 +984,23 @@ class CustomerSubmissionIT {
     final class Client {
         final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         final HttpClient http = HttpClient.newBuilder().cookieHandler(cookies).build(); String token; String id;
+        private HttpRequest.Builder binaryRequest(String path) {
+            var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).timeout(java.time.Duration.ofSeconds(20));
+            if (token != null) request.header("Authorization", "Bearer " + token);
+            return request;
+        }
+        HttpResponse<byte[]> image(String path) throws Exception {
+            return http.send(binaryRequest(path).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+        }
+        HttpResponse<byte[]> upload(String path, byte[] photo) throws Exception {
+            String boundary = "customer-photo-test";
+            var head = ("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"style.png\"\r\n"
+                    + "Content-Type: image/png\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            var tail = ("\r\n--" + boundary + "--\r\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            var request = binaryRequest(path).header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                    .POST(HttpRequest.BodyPublishers.ofByteArrays(List.of(head, photo, tail))).build();
+            return http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        }
         void login(String number, String password) throws Exception { token = data("POST", "/api/auth/login", Map.of("employeeNumber", number, "password", password)).path("accessToken").asText(); }
         JsonNode data(String method, String path, Object body) throws Exception { var result = request(method, path, body); assertTrue(result.status >= 200 && result.status < 300, result.body.toString()); return result.body.path("data"); }
         Result request(String method, String path, Object body) throws Exception { return request(method, path, body, null); }

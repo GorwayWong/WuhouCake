@@ -95,7 +95,7 @@ export function errorText(error: unknown): string {
     SUBMISSION_ITEM_ID_CONFLICT: '无法安全关联历史报价，输入已保留。请读取最新填单后重新核对商品。',
     SUBMISSION_PRICES_INVALID: '商品数量与报价行不一致，请重新读取并保存核对结果。',
     ORDER_FINISH_TOO_LATE: '出品时间须比取货时间至少提前 1 小时。',
-    ORDER_QUOTE_INCOMPLETE: '商品报价未完整，请补齐单价后再登记付款。',
+    ORDER_QUOTE_INCOMPLETE: '请填写订单金额后再登记付款。',
     ORDER_PAID_AMOUNT_LOCKED: '已登记付款，请先撤销付款登记再改价。',
     SUBMISSION_REVIEW_REQUIRED: '请先保存核对结果，再确认接单。',
     SUBMISSION_FORBIDDEN: '仅前台和管理人员可以处理客户填单。',
@@ -306,12 +306,13 @@ async function reserveImageRead(signal: AbortSignal): Promise<void> {
   });
 }
 
-export async function fetchPackageImage(path: string, signal: AbortSignal) {
+export async function fetchPackageImage(path: string, signal: AbortSignal, publicImage = false) {
   return withRequestDeadline(signal, 'READ_TIMEOUT', async signal => {
     await reserveImageRead(signal);
     try {
       signal.throwIfAborted();
-      const response = await authenticatedFetch(path, { signal });
+      const response = publicImage ? await fetch(`/api${path}`, { credentials: 'omit', cache: 'no-store', signal })
+        : await authenticatedFetch(path, { signal });
       if (!response.ok) return await decode<never>(response);
       return await response.blob();
     } finally {
@@ -342,6 +343,13 @@ export async function submitPublicOrder(token: string, key: string, content: Sub
       || receipt.submissionNo !== `F${receipt.submissionId}`)
     throw new ApiError(502, 'SUBMISSION_RECEIPT_INVALID');
   return receipt;
+}
+export function uploadSubmissionImage(path: string, file: File, signal: AbortSignal, publicImage: boolean) {
+  const body = new FormData();
+  body.append('file', file);
+  if (!publicImage) return writeRequest<string>(path, { method: 'POST', body, signal });
+  return withRequestDeadline(signal, 'SUBMISSION_TIMEOUT', async signal =>
+    decode<string>(await fetch(`/api${path}`, { method: 'POST', credentials: 'omit', cache: 'no-store', body, signal })), 60_000);
 }
 export async function uploadOrderImage(orderId: string, file: File, itemId: string, signal?: AbortSignal, requestId?: string): Promise<OrderImage> {
   const body = new FormData();

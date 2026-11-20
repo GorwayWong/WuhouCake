@@ -606,3 +606,51 @@ test('待确认填单超过24小时后仍能跨标签页用同键和原内容确
   assert.ok(attempts[0].key);
   assert.equal(await readPending(second), null);
 });
+
+test('手机填单按商品恢复已上传图片，上传失败可重试并沿用原图片 ID', async t => {
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => browser.close());
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  const path = '**/api/public/order-entries/photos';
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=', 'base64');
+  const uploads = [];
+  let submitted;
+  await context.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '测试客服' } } }));
+  await context.route(path + '/items/**', route => {
+    if (route.request().method() === 'GET') return route.fulfill({ contentType: 'image/png', body: png });
+    const parts = route.request().url().split('/');
+    const id = parts.at(-1), item = parts.at(-3);
+    uploads.push({ id, item });
+    if (uploads.length === 1) return route.fulfill({ status: 503, json: { success: false, code: 'IMAGE_PROCESSING_BUSY' } });
+    return route.fulfill({ json: { success: true, data: id } });
+  });
+  await context.route(path + '/submissions', route => {
+    submitted = route.request().postDataJSON();
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(9) } });
+  });
+  await page.goto(`${base}/#/fill/photos`);
+  await complete(page);
+  const submit = page.getByRole('button', { name: '提交预订', exact: true });
+  const attach = index => page.locator('.submission-item-images input[type=file]').nth(index)
+    .setInputFiles({ name: `style-${index}.png`, mimeType: 'image/png', buffer: png });
+  await attach(0);
+  await page.getByRole('button', { name: '重试上传' }).waitFor();
+  assert.equal(await submit.isDisabled(), true);
+  await page.getByRole('button', { name: '重试上传' }).click();
+  await page.getByText('1 / 5 张').first().waitFor();
+  assert.deepEqual(uploads[0], uploads[1]);
+  await page.getByRole('button', { name: '添加商品' }).click();
+  await page.locator('[id="items.1.size"]').fill('8');
+  await attach(1);
+  await page.getByText('1 / 5 张').nth(1).waitFor();
+  await page.getByText(/已保存在本机/).first().waitFor();
+  await page.reload();
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  await page.getByText('1 / 5 张').nth(1).waitFor();
+  await submit.click();
+  await page.getByRole('heading', { name: '已提交，待客服确认' }).waitFor();
+  assert.deepEqual(submitted.items.map(item => [item.itemId, item.imageIds]), [
+    [uploads[1].item, [uploads[1].id]], [uploads[2].item, [uploads[2].id]],
+  ]);
+});

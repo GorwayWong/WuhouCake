@@ -321,6 +321,8 @@ test("新建套餐恢复图片，放弃新输入保留旧稿，提交恢复稿�
     await page.getByRole("heading", { name: "套餐管理", exact: true }).waitFor();
     await start();
     await name.fill("旧草稿");
+    await page.getByLabel("原价合计（元）").fill("1000");
+    await page.getByLabel("会员价合计（元）").fill("900");
     await page.getByLabel("商品 1 的图片", { exact: true }).setInputFiles({ name: "kept.png", mimeType: "image/png", buffer: png });
     await back(); await page.getByRole("dialog", { name: "保存草稿？" }).waitFor({ timeout: 3500 });
     await page.keyboard.press("Escape");
@@ -340,6 +342,8 @@ test("新建套餐恢复图片，放弃新输入保留旧稿，提交恢复稿�
     await page.reload();
     await start(); await button("继续填写").click();
     assert.equal(await name.inputValue(), "覆盖后的草稿");
+    assert.equal(await page.getByLabel("原价合计（元）").inputValue(), "1000");
+    assert.equal(await page.getByLabel("会员价合计（元）").inputValue(), "900");
     await page.getByLabel("商品 1 的名称", { exact: true }).fill("测试商品");
     await button("保存套餐").click();
     await page.getByText("套餐已保存，员工下单时即可选用。", { exact: true }).waitFor();

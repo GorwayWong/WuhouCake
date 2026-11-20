@@ -38,7 +38,7 @@
 
 ## 操作权限
 
-`ORDER_PHONE_READ` 仅允许在订单详情及返回详情的写响应中读取完整联系电话。`ORDER_ORDERING_DETAILS_READ` 允许在订单详情及返回详情的写响应中读取订购人姓名和下单渠道。`ORDER_DELETE` 仅允许店长 `STORE_MANAGER` 带原因删除订单；`ORDER_DELETED_READ` 允许读取、导出已删除订单。恢复需要同时具有 `ORDER_DELETE` 和 `ORDER_DELETED_READ`。删除权限不由取消权限推定。
+`ORDER_PHONE_READ` 允许在订单详情、返回详情的写响应及日历时间轴订单卡读取完整联系电话。日历时间轴也接受 `ORDER_CUSTOMER_READ`。`ORDER_ORDERING_DETAILS_READ` 允许在订单详情及返回详情的写响应中读取订购人姓名和下单渠道。`ORDER_DELETE` 仅允许店长 `STORE_MANAGER` 带原因删除订单；`ORDER_DELETED_READ` 允许读取、导出已删除订单。恢复需要同时具有 `ORDER_DELETE` 和 `ORDER_DELETED_READ`。删除权限不由取消权限推定。
 
 业务 HTTP 接口按请求方法和路径显式授权，未映射的接口或方法返回拒绝。匿名访问受保护接口返回 401；已登录但权限不足返回 403 `FORBIDDEN`。已匹配接口的业务错误继续使用现有错误契约。
 
@@ -72,7 +72,7 @@
 
 ## 岗位权限配置
 
-未配置时，店长具有完整订单资料读取、订单业务操作和已删除查询权限；前厅主管、前厅店员及旧前厅岗位保留资料读取、录单、付款、取消、交接和已删除查询权限，默认不授予 `ORDER_PRODUCTION_UPDATE`，不能推进或回退工序、修改商品备齐或恢复已取消订单。兼任制作或店长时按权限并集计算，显式岗位权限覆盖机制保持不变；删除订单仅授予店长 `STORE_MANAGER`，旧 `MANAGER` 不自动视为店长。裱花主管、裱花师、烘焙师沿用制作组操作权限，但不授予 `ORDER_CUSTOMER_READ`、`ORDER_AMOUNT_READ`、`ORDER_PAYMENT_UPDATE`、`ORDER_BUSINESS_DETAILS_READ`、`ORDER_DELETE`、`ORDER_DELETED_READ`。制作组默认通过 `ORDER_PHONE_READ` 读取客户手机号，通过 `ORDER_ORDERING_DETAILS_READ` 读取订购人姓名及下单渠道。客户姓名、会员手机号、配送地址、金额与其他经营资料仍需各自权限。付款汇总、完整活动日志、财务查询和导出仍要求相关完整数据权限。兼任前厅或店长时取权限并集。
+未配置时，店长具有完整订单资料读取、订单业务操作和已删除查询权限；前厅主管、前厅店员及旧前厅岗位均可从工作台进入“订单查询与统计”，按条件查看全店订单明细和汇总。这些岗位保留资料读取、录单、付款、取消、交接和已删除查询权限，默认不授予 `ORDER_PRODUCTION_UPDATE`，不能推进或回退工序、修改商品备齐或恢复已取消订单。兼任制作或店长时按权限并集计算，显式岗位权限覆盖机制保持不变；删除订单仅授予店长 `STORE_MANAGER`，旧 `MANAGER` 不自动视为店长。裱花主管、裱花师、烘焙师沿用制作组操作权限，但不授予 `ORDER_CUSTOMER_READ`、`ORDER_AMOUNT_READ`、`ORDER_PAYMENT_UPDATE`、`ORDER_BUSINESS_DETAILS_READ`、`ORDER_DELETE`、`ORDER_DELETED_READ`。制作组默认通过 `ORDER_PHONE_READ` 读取客户手机号，通过 `ORDER_ORDERING_DETAILS_READ` 读取订购人姓名及下单渠道。客户姓名、会员手机号、配送地址、金额与其他经营资料仍需各自权限。付款汇总、完整活动日志、财务查询和导出仍要求相关完整数据权限。兼任前厅或店长时取权限并集。
 
 制作人员可以通过 `GET /api/orders/{id}/notes` 阅读工作备注。此接口只返回 `NOTE`，忽略其他活动类型参数，需要 `ORDER_READ`；不返回订单创建或字段修改快照。制作、备注、图片等写操作仍使用各自操作权限。
 

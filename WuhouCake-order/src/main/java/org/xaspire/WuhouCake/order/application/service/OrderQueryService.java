@@ -168,18 +168,19 @@ public class OrderQueryService {
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public OrderQueryViews.WorkbenchCards cards(LocalDate date, String status, String paymentStatus,
-            String cursor, UUID focusOrderId, boolean showPayment) {
+            String fulfillmentType, String cursor, UUID focusOrderId, boolean showPayment, boolean showPhone) {
         if (!productionDate(date)
                 || status != null && !org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.ORDER_STATUSES.contains(status)
+                || fulfillmentType != null && !Set.of("DELIVERY", "PICKUP").contains(fulfillmentType)
                 || paymentStatus != null && !Set.of("PAID", "UNPAID").contains(paymentStatus)) throw invalid();
         if (paymentStatus != null && !showPayment) throw new OrderFailure("FORBIDDEN");
 
-        var filter = new OrderQueries.CardFilter(date, status, paymentStatus);
+        var filter = new OrderQueries.CardFilter(date, status, paymentStatus, fulfillmentType);
         var rows = queries.cards(filter, cardPosition(filter, cursor), null, CARD_PAGE_SIZE + 1);
-        var visible = rows.stream().limit(CARD_PAGE_SIZE).map(row -> card(row, date, showPayment)).toList();
+        var visible = rows.stream().limit(CARD_PAGE_SIZE).map(row -> card(row, date, showPayment, showPhone)).toList();
         var focus = focusOrderId == null || cursor != null || visible.stream().anyMatch(row -> row.orderId().equals(focusOrderId))
                 ? null : queries.cards(filter, null, focusOrderId, 1).stream().findFirst()
-                        .map(row -> card(row, date, showPayment)).orElse(null);
+                        .map(row -> card(row, date, showPayment, showPhone)).orElse(null);
         var counts = queries.cardCounts(filter);
         var groups = Map.of("pending", counts.pending(), "completed", counts.completed(),
                 "cancelled", counts.cancelled(), "unknown", counts.unknown());
@@ -189,11 +190,11 @@ public class OrderQueryService {
                 new OrderQueryViews.OperationalCounts(counts.totalOrderCount(), counts.waitingDeliveryOrderCount()));
     }
 
-    private static OrderQueryViews.Card card(OrderQueries.Card row, LocalDate date, boolean showPayment) {
+    private static OrderQueryViews.Card card(OrderQueries.Card row, LocalDate date, boolean showPayment, boolean showPhone) {
         var first = row.firstItemId() == null ? null : new OrderQueryViews.CardItem(row.firstItemId(), row.firstItemName(),
                 row.firstProductType(), row.firstAttributes());
         return new OrderQueryViews.Card(row.orderId(), row.orderNo(), date, row.status(), showPayment ? row.paymentStatus() : null,
-                row.fulfillmentType(), row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(), first, row.latestNote());
+                row.fulfillmentType(), row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(), first, row.latestNote(), showPhone ? row.customerPhone() : null);
     }
 
     private static String encodePosition(OrderQueries.CardFilter filter, OrderQueries.Card row) {
@@ -215,7 +216,8 @@ public class OrderQueryService {
     }
 
     private static String cursorScope(OrderQueries.CardFilter filter) {
-        return filter.date() + "|" + Objects.toString(filter.status(), "") + "|" + Objects.toString(filter.paymentStatus(), "");
+        return filter.date() + "|" + Objects.toString(filter.status(), "") + "|" + Objects.toString(filter.paymentStatus(), "")
+                + (filter.fulfillmentType() == null ? "" : "|" + filter.fulfillmentType());
     }
 
     private List<OrderQueryViews.PendingOrder> pendingViews(List<OrderQueries.PendingOrder> orders) {

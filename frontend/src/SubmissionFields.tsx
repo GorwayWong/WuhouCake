@@ -10,19 +10,25 @@ import { changeItemDraft, newItem } from './orderForm';
 import { productTypeLabel } from './productTypes';
 import type { SubmissionDraft } from './customerSubmission';
 import type { ProductFormField } from './productFormLayout';
-import type { ItemDraft } from './orderForm';
+import { useRef } from 'react';
+import { SubmissionItemImages } from './SubmissionItemImages';
+import type { SubmissionImageScope } from './SubmissionItemImages';
+import type { SubmissionContent, SubmissionItemDraft } from './customerSubmission';
 
-export function SubmissionFields({ draft, onChange, errors, busy, staff = false }: {
+export function SubmissionFields({ draft, onChange, errors, busy, staff = false, imageScope, original, markImagePending }: {
   draft: SubmissionDraft; onChange: (value: SubmissionDraft) => void; errors: Record<string, string>; busy: boolean; staff?: boolean;
+  imageScope: SubmissionImageScope; original?: SubmissionContent; markImagePending: (item: string, active: boolean) => void;
 }) {
+  const latest = useRef({ draft, onChange });
+  latest.current = { draft, onChange };
   const customerRows: ProductFormField[][] = [['size', 'quantity'], ['base', 'flavor'], ['filling'], ['message'], ['requirements']];
   const customerLabels: Partial<Record<ProductFormField, string>> = { size: '尺寸（寸）', base: '内胚', flavor: '奶油', filling: '夹心馅料', requirements: '其他要求' };
   const hints: Partial<Record<ProductFormField, string>> = { base: '（不填默认原味）', flavor: '（不填默认原味动物奶油）', filling: '（不填默认芒果）' };
-  const label = (field: ProductFormField, required: boolean) => staff ? <ProductFieldLabel field={field} required={required} /> : <>{customerLabels[field] || (field === 'quantity' ? '数量' : '祝福语')}{required && ' *'}{hints[field] && <small className="specification-default-hint">{hints[field]}</small>}</>;
+  const label = (field: ProductFormField, required: boolean) => staff ? <ProductFieldLabel field={field} required={required} /> : <>{customerLabels[field] || (field === 'quantity' ? '数量' : field === 'name' ? '商品名称' : field === 'specification' ? '商品说明' : '祝福语')}{required && ' *'}{hints[field] && <small className="specification-default-hint">{hints[field]}</small>}</>;
   const props = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': errors[name] ? name + '-error' : undefined });
   const issue = (name: string) => errors[name] && <span className="field-error" id={name + '-error'}>{errors[name]}</span>;
-  const updateItem = (index: number, patch: Partial<ItemDraft>, specification?: string) => onChange({ ...draft,
-    items: draft.items.map((item, i) => i === index ? changeItemDraft(item, patch, specification) : item) });
+  const updateItem = (index: number, patch: Partial<SubmissionItemDraft>, specification?: string) => onChange({ ...draft,
+    items: draft.items.map((item, i) => i === index ? { ...item, ...changeItemDraft(item, patch, specification) } : item) });
   return <fieldset className="create-fields submission-fields" disabled={busy}>
     <section className="panel create-group"><h2>收货信息</h2><div className="create-grid">
       <label>联系电话 *<input {...props('phone')} type="tel" autoComplete="tel" value={draft.phone} maxLength={32} required onChange={e => onChange({ ...draft, phone: e.target.value })} />{issue('phone')}</label>
@@ -34,17 +40,25 @@ export function SubmissionFields({ draft, onChange, errors, busy, staff = false 
     <section className="panel create-group"><div className="section-heading"><h2>商品信息</h2><span className="muted">{draft.items.length} 项商品</span></div>
       {draft.items.map((item, index) => <div className="create-item" key={item.key}>
         <div className="create-item-heading product-form-heading"><h3>商品 {index + 1}</h3>
-          {staff && <label className="product-type-field" htmlFor={`items.${index}.productType`}><span className="form-field-heading">商品类型 *</span><ProductTypeSelect {...props(`items.${index}.productType`)} value={item.productType} disabled={busy} required onChange={value => {
-            const next = changeItemDraft(item, { productType: value, name: item.name === productTypeLabel(item.productType) ? productTypeLabel(value) : item.name });
-            onChange({ ...draft, items: draft.items.map((other, i) => i === index ? next : other) });
-          }} />{issue(`items.${index}.productType`)}</label>}
+          <label className="product-type-field" htmlFor={`items.${index}.productType`}><span className="form-field-heading">商品类型 *</span><ProductTypeSelect {...props(`items.${index}.productType`)} value={item.productType} disabled={busy} required onChange={value => {
+            const defaultName = !staff && value === 'OTHER' ? '' : productTypeLabel(value);
+            const name = !item.name.trim() || item.name === productTypeLabel(item.productType) ? defaultName : item.name;
+            const next = changeItemDraft(item, { productType: value, name });
+            onChange({ ...draft, items: draft.items.map((other, i) => i === index ? { ...item, ...next } : other) });
+          }} />{issue(`items.${index}.productType`)}</label>
           <button type="button" className="text-button danger" disabled={busy || draft.items.length === 1} onClick={() => onChange({ ...draft, items: draft.items.filter((_, i) => i !== index) })}><Trash />移除商品 {index + 1}</button>
         </div>
-        <ProductFormFields type={item.productType} rows={staff ? undefined : customerRows} renderField={field => {
-          const name = `items.${index}.${field}`, required = field === 'name' || field === 'quantity' || field === 'size';
-          if (field === 'name' || field === 'quantity' || field === 'unitPrice' || field === 'memberPrice') return <label htmlFor={name}><span className="form-field-heading">{label(field, required)}</span><input {...props(name)} maxLength={field === 'name' ? 128 : undefined} inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} required={required} onChange={event => updateItem(index, { [field]: event.target.value })} />{issue(name)}</label>;
+        <ProductFormFields type={item.productType} rows={staff ? undefined : item.productType === 'OTHER' ? [['name', 'quantity'], ['specification'], ['requirements']] : customerRows} renderField={field => {
+          const name = `items.${index}.${field}`, required = field === 'name' || field === 'size';
+          if (field === 'name' || field === 'quantity' || field === 'unitPrice' || field === 'memberPrice') return <label htmlFor={name}><span className="form-field-heading">{label(field, required)}</span><input {...props(name)} maxLength={field === 'name' ? 128 : undefined} inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={item[field]} placeholder={field === 'quantity' ? '未填按 1 件' : undefined} required={required} onChange={event => updateItem(index, { [field]: event.target.value })} />{issue(name)}</label>;
           return <label htmlFor={name}><span className="form-field-heading">{label(field, required)}</span>{(field === 'requirements' || field === 'filling' || field === 'specification') ? <textarea {...props(name)} maxLength={field === 'specification' ? 16000 : 2000} rows={2} value={item.attributes[field] || ''} onChange={event => updateItem(index, { attributes: { ...item.attributes, [field]: event.target.value } }, field)} /> : <input {...props(name)} inputMode={field === 'size' ? 'decimal' : undefined} maxLength={2000} required={required} value={item.attributes[field] || ''} onChange={event => updateItem(index, { attributes: { ...item.attributes, [field]: event.target.value } }, field)} />}{issue(name)}{!staff && field === 'filling' && <span className="form-help">可换火龙果、草莓、奥利奥碎、黄油脆片、脆啵啵、马蹄爆爆珠，也可混搭，最多三种。</span>}</label>;
         }} />
+        <SubmissionItemImages scope={imageScope} item={item.key} selected={item.imageIds || []}
+          originals={original?.items.find(row => row.itemId === item.key)?.imageIds || []} markPending={markImagePending}
+          setSelected={update => {
+            const current = latest.current.draft;
+            latest.current.onChange({ ...current, items: current.items.map(row => row.key === item.key ? { ...row, imageIds: update(row.imageIds || []) } : row) });
+          }} />
       </div>)}
       <button type="button" className="secondary" disabled={busy || draft.items.length >= 30} onClick={() => onChange({ ...draft, items: [...draft.items, { ...newItem(), name: '蛋糕' }] })}><Plus />添加商品</button>{issue('items')}
     </section>

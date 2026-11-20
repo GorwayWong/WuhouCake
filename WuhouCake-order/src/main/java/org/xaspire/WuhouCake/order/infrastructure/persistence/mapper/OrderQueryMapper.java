@@ -121,7 +121,7 @@ public interface OrderQueryMapper {
             long totalOrderCount, long waitingDeliveryOrderCount) { }
     record CardRow(String orderId, String orderNo, String status, String paymentStatus, String fulfillmentType,
             Instant pickupAt, Instant plannedFinishAt, long itemCount, long quantity, String firstItemId, String firstItemName,
-            String firstProductType, String firstAttributes, String latestNote) { }
+            String firstProductType, String firstAttributes, String latestNote, String customerPhone) { }
 
     @Select("WITH selected AS MATERIALIZED (SELECT id FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date} LIMIT 101),"
             + " live_items AS (SELECT i.id,i.order_id,octet_length(i.attributes::text)+octet_length(i.name)+256 AS bytes"
@@ -139,7 +139,8 @@ public interface OrderQueryMapper {
             + " ORDER BY a.created_at DESC,a.id DESC LIMIT 1) n) END AS bytes FROM selected")
     WorkbenchBudgetRow workbenchBudget(LocalDate date);
 
-    String CARD_MATCH = " COALESCE(o.status=#{filter.status},true) AND COALESCE(o.payment_status=#{filter.paymentStatus},true)";
+    String CARD_MATCH = " COALESCE(o.status=#{filter.status},true) AND COALESCE(o.payment_status=#{filter.paymentStatus},true)"
+            + " AND COALESCE(o.fulfillment_type=#{filter.fulfillmentType},true)";
     String CARD_DAY = " FROM cake_order o WHERE o.deleted_at IS NULL AND " + ORDER_PICKUP_DATE + "=#{filter.date}";
     String PENDING_STATUSES = "('CAKE_BASE','LAYER','FROSTING','DECORATING','WAITING_DELIVERY')";
     @Select("WITH daily AS (SELECT o.status,o.fulfillment_type,(" + CARD_MATCH + ") AS matches" + CARD_DAY + ")"
@@ -152,7 +153,7 @@ public interface OrderQueryMapper {
     CardCountsRow cardCounts(@Param("filter") CardFilter filter);
 
     String CARD_PICKUP_SORT = "COALESCE(" + ORDER_PICKUP_AT + ",'infinity'::timestamptz)";
-    @Select("<script>WITH selected AS MATERIALIZED (SELECT o.id,o.order_no,o.status,o.payment_status,o.fulfillment_type,"
+    @Select("<script>WITH selected AS MATERIALIZED (SELECT o.id,o.order_no,o.status,o.payment_status,o.fulfillment_type,o.customer_phone,"
             + ORDER_PICKUP_AT + " AS pickup_at,o.planned_finish_at" + CARD_DAY + " AND " + CARD_MATCH
             + "<if test='onlyOrder != null'> AND o.id=CAST(#{onlyOrder} AS uuid)</if>"
             + "<if test='after != null'> AND (" + CARD_PICKUP_SORT + ",o.order_no,o.id)"
@@ -161,7 +162,7 @@ public interface OrderQueryMapper {
             + " SELECT o.id::text AS order_id,o.order_no,o.status,o.payment_status,o.fulfillment_type,o.pickup_at,o.planned_finish_at,"
             + " counts.item_count,counts.quantity,first_item.id::text AS first_item_id,first_item.name AS first_item_name,"
             + " first_item.product_type AS first_product_type,COALESCE(preview.attributes,'{}'::jsonb)::text AS first_attributes,"
-            + " CASE WHEN note.content IS NULL OR octet_length(note.content)&lt;=4096 THEN note.content ELSE '打开订单查看全文' END AS latest_note"
+            + " CASE WHEN note.content IS NULL OR octet_length(note.content)&lt;=4096 THEN note.content ELSE '打开订单查看全文' END AS latest_note,o.customer_phone"
             + " FROM selected o"
             + " CROSS JOIN LATERAL (SELECT count(*) AS item_count,COALESCE(sum(quantity),0) AS quantity"
             + " FROM cake_order_item WHERE order_id=o.id AND NOT is_removed) counts"

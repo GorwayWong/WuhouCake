@@ -31,6 +31,7 @@ export interface WorkbenchCard extends Omit<OrderStatus, 'currentStageCode'> {
   orderId: string; orderNo: string; calendarDate: string; fulfillmentType: string;
   plannedHandoffAt: string | null; plannedFinishAt: string | null; itemCount: number; quantity: number;
   firstItem: Pick<Item, 'itemId' | 'name' | 'productType' | 'attributes'> | null;
+  customerPhone: string | null;
   latestNote: string | null;
 }
 export interface WorkbenchCards {

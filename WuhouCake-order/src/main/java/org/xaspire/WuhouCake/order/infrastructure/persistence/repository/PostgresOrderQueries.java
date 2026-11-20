@@ -57,7 +57,7 @@ public final class PostgresOrderQueries implements OrderQueries {
                 row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(),
                 row.firstItemId() == null ? null : UUID.fromString(row.firstItemId()), row.firstItemName(), row.firstProductType(),
                 CakeSpecifications.effective(row.firstProductType(), JsonSnapshot.object(json.read(row.firstAttributes(), Map.class))),
-                row.latestNote())).toList();
+                row.latestNote(), row.customerPhone())).toList();
     }
 
     @Override public long countScheduledProduction(Instant from, Instant to, Set<String> stages) {
