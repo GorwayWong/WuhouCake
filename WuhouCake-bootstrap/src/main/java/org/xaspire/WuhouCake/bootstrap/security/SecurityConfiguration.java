@@ -2,6 +2,7 @@ package org.xaspire.WuhouCake.bootstrap.security;
 
 import jakarta.servlet.DispatcherType;
 import java.util.ArrayList;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -104,7 +105,7 @@ public class SecurityConfiguration {
             authorize.requestMatchers(POST, "/api/orders/{id}/production-actions").access(permissions(ORDER_PRODUCTION_UPDATE));
             authorize.requestMatchers(PATCH, "/api/orders/{id}/items/{itemId}/production-status").access(permissions(ORDER_PRODUCTION_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/fulfillment-actions").access(permissions(ORDER_FULFILLMENT_UPDATE));
-            authorize.requestMatchers(POST, "/api/orders/{id}/cancel").access(permissions(ORDER_CANCEL));
+            authorize.requestMatchers(POST, "/api/orders/{id}/cancel").access(orderCancellation());
             authorize.requestMatchers(POST, "/api/orders/{id}/delete", "/api/orders/{id}/restore").access(permissions(ORDER_DELETE, ORDER_DELETED_READ));
             authorize.requestMatchers(POST, "/api/orders/{id}/restart").access(permissions(ORDER_CANCEL, ORDER_PRODUCTION_UPDATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/notes").access(permissions(ORDER_NOTE_CREATE));
@@ -156,6 +157,12 @@ public class SecurityConfiguration {
                     && (account.jobRoles().contains("MANAGER") || account.jobRoles().contains("STORE_MANAGER") || !write && account.access().allows(ORDER_CREATE));
             return new AuthorizationDecision(current.isAuthenticated() && allowed);
         };
+    }
+    private static AuthorizationManager<RequestAuthorizationContext> orderCancellation() {
+        return AuthorizationManagers.allOf(permissions(ORDER_CANCEL),
+                (authentication, context) -> new AuthorizationDecision(
+                        authentication.get().getDetails() instanceof IdentityFacade.AccountView account
+                                && !account.jobRoles().equals(Set.of("DECORATOR"))));
     }
     private static void stateless(HttpSecurity http) throws Exception {
         http.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));

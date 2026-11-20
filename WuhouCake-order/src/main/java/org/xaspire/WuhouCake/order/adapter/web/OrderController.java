@@ -99,6 +99,11 @@ public class OrderController {
     @PostMapping("/{id}/fulfillment-actions")
     public ApiResponse<OrderViews.Detail> fulfillmentAction(@PathVariable UUID id, @Valid @RequestBody OrderCommands.FulfillmentAction command,
             Authentication authentication) {
+        var account = (IdentityFacade.AccountView) authentication.getDetails();
+        if (account.jobRoles().equals(Set.of("DECORATOR"))
+                && ("COMPLETE_DELIVERY".equals(command.action()) || "CONFIRM_PICKUP".equals(command.action()))) {
+            throw new AccessDeniedException("Single-job decorators cannot confirm fulfillment");
+        }
         return visible(orders.fulfillmentAction(id, command, operator(authentication)), authentication);
     }
     @PostMapping("/{id}/cancel")

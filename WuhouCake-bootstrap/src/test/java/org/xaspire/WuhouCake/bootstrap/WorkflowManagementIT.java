@@ -672,6 +672,82 @@ class WorkflowManagementIT {
                 "changes", Map.of("orderingMethod", "电话")));
         assertEquals("电话", edited.path("orderingMethod").asText());
     }
+    @Test void singleJobDecoratorCanRestartButNeedsAnotherJobToCancel() throws Exception {
+        var order = a.data("POST", "/api/orders", create(a.id));
+        String path = "/api/orders/" + order.path("orderId").asText();
+        String employee = "/api/admin/employees/" + b.id;
+        var profile = b.data("GET", "/api/me", null);
+        profile = admin.data("PATCH", employee, Map.of("expectedVersion", profile.path("version").asLong(),
+                "nickname", "裱花师", "jobRoles", List.of("DECORATOR")));
+
+        var cancel = Map.of("expectedVersion", order.path("version").asLong(), "reason", "合成取消");
+        var denied = b.raw("POST", path + "/cancel", cancel);
+        assertEquals(403, denied.statusCode());
+        assertEquals("FORBIDDEN", json.readTree(denied.body()).path("code").asText());
+        var cancelled = a.data("POST", path + "/cancel", cancel);
+        assertEquals("CANCELLED", cancelled.path("status").asText());
+        var restart = Map.of("expectedVersion", cancelled.path("version").asLong());
+        assertEquals(403, a.raw("POST", path + "/restart", restart).statusCode());
+        var restarted = b.data("POST", path + "/restart", restart);
+        assertEquals("CAKE_BASE", restarted.path("status").asText());
+
+        for (String otherRole : List.of("FRONT_DESK_CLERK", "STORE_MANAGER")) {
+            profile = admin.data("PATCH", employee, Map.of("expectedVersion", profile.path("version").asLong(),
+                    "nickname", "兼岗裱花师", "jobRoles", List.of("DECORATOR", otherRole)));
+            b.login("B001", PASSWORD);
+            cancelled = b.data("POST", path + "/cancel",
+                    Map.of("expectedVersion", restarted.path("version").asLong(), "reason", "合成取消"));
+            assertEquals("CANCELLED", cancelled.path("status").asText());
+            restarted = b.data("POST", path + "/restart", Map.of("expectedVersion", cancelled.path("version").asLong()));
+            assertEquals("CAKE_BASE", restarted.path("status").asText());
+        }
+    }
+    @Test void singleJobDecoratorCannotConfirmFulfillmentButCanReopenAndRollBack() throws Exception {
+        String employee = "/api/admin/employees/" + b.id;
+        var profile = b.data("GET", "/api/me", null);
+        profile = admin.data("PATCH", employee, Map.of("expectedVersion", profile.path("version").asLong(),
+                "nickname", "裱花师", "jobRoles", List.of("DECORATOR")));
+        var waiting = new LinkedHashMap<String, JsonNode>();
+        for (String type : List.of("PICKUP", "DELIVERY")) {
+            String confirm = type.equals("PICKUP") ? "CONFIRM_PICKUP" : "COMPLETE_DELIVERY";
+            var input = new LinkedHashMap<>(create(a.id));
+            if (type.equals("DELIVERY")) input.put("fulfillment", Map.of("type", type, "address", "合成配送地址",
+                    "requestedReceiveDate", "2026-10-17", "plannedHandoffAt", "2026-10-17T14:00:00+08:00"));
+            var order = a.data("POST", "/api/orders", input);
+            String path = "/api/orders/" + order.path("orderId").asText();
+            for (String action : List.of("COMPLETE_BASE", "COMPLETE_LAYER", "COMPLETE_FROSTING")) {
+                order = b.data("POST", path + "/production-actions", Map.of("expectedVersion", order.path("version").asLong(), "action", action));
+            }
+            for (var item : order.path("items")) {
+                order = b.data("PATCH", path + "/items/" + item.path("itemId").asText() + "/production-status",
+                        Map.of("expectedVersion", order.path("version").asLong(), "completed", true));
+            }
+            order = b.data("POST", path + "/production-actions", Map.of("expectedVersion", order.path("version").asLong(), "action", "COMPLETE_DECORATION"));
+            var confirmation = Map.of("expectedVersion", order.path("version").asLong(), "action", confirm);
+            assertEquals(403, b.raw("POST", path + "/fulfillment-actions", confirmation).statusCode());
+            order = a.data("POST", path + "/fulfillment-actions", confirmation);
+            assertEquals("COMPLETED", order.path("status").asText());
+            order = b.data("POST", path + "/fulfillment-actions",
+                    Map.of("expectedVersion", order.path("version").asLong(), "action", "ROLLBACK_FULFILLMENT"));
+            assertEquals("WAITING_DELIVERY", order.path("status").asText());
+            order = b.data("POST", path + "/production-actions", Map.of("expectedVersion", order.path("version").asLong(), "action", "REOPEN_PRODUCTION"));
+            assertEquals("DECORATING", order.path("status").asText());
+            waiting.put(confirm, b.data("POST", path + "/production-actions",
+                    Map.of("expectedVersion", order.path("version").asLong(), "action", "COMPLETE_DECORATION")));
+        }
+        for (String otherRole : List.of("FRONT_DESK_CLERK", "STORE_MANAGER")) {
+            profile = admin.data("PATCH", employee, Map.of("expectedVersion", profile.path("version").asLong(),
+                    "nickname", "兼岗裱花师", "jobRoles", List.of("DECORATOR", otherRole)));
+            b.login("B001", PASSWORD);
+            for (var entry : waiting.entrySet()) {
+                var order = entry.getValue();
+                String path = "/api/orders/" + order.path("orderId").asText() + "/fulfillment-actions";
+                var completed = b.data("POST", path, Map.of("expectedVersion", order.path("version").asLong(), "action", entry.getKey()));
+                assertEquals("COMPLETED", completed.path("status").asText());
+                entry.setValue(b.data("POST", path, Map.of("expectedVersion", completed.path("version").asLong(), "action", "ROLLBACK_FULFILLMENT")));
+            }
+        }
+    }
     @Test void restoreActivityFailureRollsBackTheOrderVersionAndDeletion() throws Exception {
         String id = a.data("POST", "/api/orders", create(a.id)).path("orderId").asText();
         String path = "/api/orders/" + id;

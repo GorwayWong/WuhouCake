@@ -21,4 +21,8 @@ test('上海跨年与设备时区独立，纯日期不发生跨日偏移', () =>
   assert.equal(businessTime('2026-12-31T16:00:00Z', now), '01/01 00:00');
   assert.equal(businessTime('2026-12-31T15:59:00Z', now), '2026/12/31 23:59');
   assert.equal(businessDate('2026-12-31', now), '2026/12/31');
+  assert.equal(businessDate('2027-01-01', now, 'chinese'), '1月1日');
+  assert.equal(businessTime('2026-12-31T16:00:00Z', now, 'chinese'), '1月1日 00:00');
+  assert.equal(businessTime('2026-12-31T15:59:00Z', now, 'chinese'), '2026年12月31日 23:59');
+  assert.equal(businessTime(null, now, 'chinese'), '未填写');
 });

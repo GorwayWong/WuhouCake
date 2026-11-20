@@ -7,6 +7,7 @@ import { paymentMethods, paymentMethodLabel } from './orderPayment';
 import { fulfillmentStatusName } from './orderStates';
 import { pickupInstant, pickupDate, pickupTimeLabel } from './orderTimes';
 import { orderHref } from './routes';
+import { readCalendarView } from './calendarView';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, Cake, CheckCircle, Clock, NotePencil, ListBullets, Plus, Stack, Trash, Truck, XCircle } from '@phosphor-icons/react';
@@ -140,6 +141,9 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const client = useQueryClient();
   const access = orderAccess(account);
   const detail = useOrderDetail(id);
+  const isDecorator = account?.jobRoles.includes('DECORATOR') ?? false;
+  const isSingleJobDecorator = isDecorator && account?.jobRoles.length === 1;
+  const [returnAfterDecoration, setReturnAfterDecoration] = useState(false);
   const [note, setNote] = useState('');
   const [selectedProductId, setSelectedProductId] = useState('');
   const previousProducts = useRef<{ orderId: string; items: { key: string }[] }>({ orderId: id, items: [] });
@@ -225,7 +229,8 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
   const [exportWriting, setExportWriting] = useState(false);
   const imageDraftChange = useCallback((dirty: boolean) => setImageDraft(dirty), []);
   const editorDirtyChange = useCallback((dirty: boolean) => setEditorDirty(dirty), []);
-  useEffect(() => { onEditDirtyChange(Boolean(note.trim() || memoryNotes.length || deleteReason.trim()) || imageDraft || editorDirty); return () => onEditDirtyChange(false); }, [note, memoryNotes.length, deleteReason, imageDraft, editorDirty, onEditDirtyChange]);
+  const editDirty = Boolean(note.trim() || memoryNotes.length || deleteReason.trim()) || imageDraft || editorDirty;
+  useEffect(() => { onEditDirtyChange(editDirty); return () => onEditDirtyChange(false); }, [editDirty, onEditDirtyChange]);
   const imageWritingChange = useCallback((pending: boolean) => { setImageWriting(pending); }, [onWritingChange]);
   const exportWritingChange = useCallback((pending: boolean) => { setExportWriting(pending); }, [onWritingChange]);
   const page = useRef<object | null>(null);
@@ -309,6 +314,8 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       if (variables.path === 'delete') { setDeleteReason(''); setShowDelete(false); setMessage('订单已删除，可在已删除订单中查询。'); }
       if (variables.path === 'restore') setMessage('订单已恢复。');
       await synchronize(client, id);
+      if (context.page === page.current && isSingleJobDecorator && variables.path === 'production-actions'
+        && action === 'COMPLETE_DECORATION' && updated?.status === 'WAITING_DELIVERY') setReturnAfterDecoration(true);
     },
     onError: async (error, variables, context) => {
       const sessionError = error instanceof ApiError && (error.status === 401 || error.status === 403);
@@ -344,7 +351,17 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       if (variables.noteRequest) noteSending.current = false;
     },
   });
-  useEffect(() => { onWritingChange(mutation.isPending || imageWriting || exportWriting || discardingImages); }, [mutation.isPending, imageWriting, exportWriting, discardingImages, onWritingChange]);
+  const writing = mutation.isPending || imageWriting || exportWriting || discardingImages;
+  useEffect(() => { onWritingChange(writing); }, [writing, onWritingChange]);
+  const canReturnAfterDecoration = isSingleJobDecorator && !editDirty && !editing && !reason.trim()
+    && detail.data?.status === 'WAITING_DELIVERY' && !detail.data.deleted && !detail.data.deletion;
+  useEffect(() => {
+    if (!returnAfterDecoration || writing) return;
+    setReturnAfterDecoration(false);
+    if (canReturnAfterDecoration && returnToCalendar && readCalendarView(returnToCalendar)) {
+      window.location.hash = returnToCalendar;
+    }
+  }, [returnAfterDecoration, writing, canReturnAfterDecoration, returnToCalendar]);
   const fromProduction = returnToCalendar?.startsWith('#/production-query');
   const returnHref = returnToOrders ? '#/admin/orders'
     : fromProduction || returnToCalendar?.startsWith('#/payment-orders?') ? returnToCalendar : null;
@@ -439,11 +456,10 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
     if (window.confirm(`${previous.label}？${impact}`)) mutation.mutate({ path: previous.path, body: { expectedVersion: order.version, ...(previous.action ? { action: previous.action } : {}) } });
   };
   const frontDeskView = access.customer && access.business;
-  const isDecorator = account.jobRoles.includes('DECORATOR');
-  const isSingleJobDecorator = isDecorator && account.jobRoles.length === 1;
+  const scheduledPickup = pickupInstant(order.fulfillment);
   const orderTimeFields = <>
-    <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{pickupInstant(order.fulfillment) ? businessTime(pickupInstant(order.fulfillment)!) : `${businessDate(pickupDate(order.fulfillment))} · 时刻待定`}</dd></div>
-    <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt) : '待定'}</dd></div>
+    <div className="detail-business-time"><dt>{pickupTimeLabel(order.fulfillment.type)}</dt><dd>{scheduledPickup ? businessTime(scheduledPickup, undefined, 'chinese') : `${businessDate(pickupDate(order.fulfillment), undefined, 'chinese')} · 时刻待定`}</dd></div>
+    <div className="detail-business-time"><dt>出品时间</dt><dd>{order.fulfillment.plannedFinishAt ? businessTime(order.fulfillment.plannedFinishAt, undefined, 'chinese') : '待定'}</dd></div>
   </>;
   const handoffField = <div><dt>交接方式</dt><dd>{order.fulfillment.type === 'PICKUP' ? '门店自提' : '配送上门'}</dd></div>;
   const orderContactFields = frontDeskView ? <>
@@ -560,7 +576,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
             mutateAction(production, 'production-actions');
           }}>{actionNames[production]}<ArrowRight /></button>
         )}
-        {fulfillment && hasPermissions(account, 'ORDER_FULFILLMENT_UPDATE') && <button className="primary" disabled={blocked} onClick={() => mutateAction(fulfillment, 'fulfillment-actions')}>{actionNames[fulfillment]}<ArrowRight /></button>}
+        {fulfillment && !isSingleJobDecorator && hasPermissions(account, 'ORDER_FULFILLMENT_UPDATE') && <button className="primary" disabled={blocked} onClick={() => mutateAction(fulfillment, 'fulfillment-actions')}>{actionNames[fulfillment]}<ArrowRight /></button>}
       </div>
       {production === 'COMPLETE_DECORATION' && canUpdateProduction && incompleteItems.length > 0 && (
         <p className="form-help" role="status">还有 {incompleteItems.length} 项商品未完成</p>

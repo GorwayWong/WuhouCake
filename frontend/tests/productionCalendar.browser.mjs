@@ -181,6 +181,9 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
     const contacts = page.getByRole('region', { name: '客户与交接', exact: true });
     const checkContacts = async fields => {
       assert.deepEqual(await information.locator('dt').allTextContents(), ['到店自提时间', '出品时间']);
+      const times = await information.locator('dd').allTextContents();
+      assert.match(times[0], /^(?:2026年)?11月5日 · 时刻待定$/);
+      assert.match(times[1], /^(?:2026年)?11月5日 16:10$/);
       assert.deepEqual(await contacts.locator('dt').allTextContents(), fields);
       assert.equal(await contacts.locator('a[href="tel:13800000000"]').count(), 1);
       assert.ok(await contacts.evaluate(section => section === section.parentElement.lastElementChild));
@@ -277,6 +280,91 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
     await images.getByText('图片已上传。', { exact: true }).waitFor();
     assert.ok(model.images.some(image => image.filename === 'retry.png'));
     assert.equal(await removeSavedImage.count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('单岗裱花师完成装饰后回原工作台，有未发布备注时留在详情，兼岗继续交接', async () => {
+  const { context, page, model, errors } = await createOrderFixture(browser, base);
+  try {
+    const businessPermissions = model.permissions;
+    const decoratorPermissions = ['ORDER_READ', 'ORDER_PRODUCTION_UPDATE', 'ORDER_FULFILLMENT_UPDATE', 'ORDER_NOTE_CREATE'];
+    let roles = ['DECORATOR'];
+    model.permissions = decoratorPermissions;
+    await context.route('**/api/me', route => route.fulfill({ json: { success: true, data: {
+      accountId: model.account, nickname: '测试裱花师', jobRoles: roles, access: { permissions: model.permissions, uiCapabilities: [] },
+    } } }));
+    await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
+    model.order = { orderId, orderNo: 'TEST-RETURN', version: 0, status: 'DECORATING',
+      fulfillment: { type: 'DELIVERY', requestedReceiveDate: date, address: '合成配送地址' },
+      createdAt: '2026-11-04T08:00:00Z', paymentStatus: 'UNPAID',
+      items: [{ itemId: crypto.randomUUID(), name: '草莓蛋糕', productType: 'CAKE', quantity: 1,
+        attributes: {}, productionStatus: 'COMPLETED', recentNotes: [] }],
+    };
+    let fail = true;
+    await context.route(`**/api/orders/${orderId}/production-actions`, route => {
+      const { action, expectedVersion } = route.request().postDataJSON();
+      assert.equal(action, 'COMPLETE_DECORATION');
+      assert.equal(expectedVersion, model.order.version);
+      if (fail) return route.fulfill({ status: 503, json: { success: false, code: 'SERVICE_UNAVAILABLE' } });
+      model.order = { ...model.order, status: 'WAITING_DELIVERY', version: expectedVersion + 1 };
+      return route.fulfill({ json: { success: true, data: model.order } });
+    });
+    const calendar = '#/?date=2026-11-04&view=month&month=2026-11&expanded=1';
+    const detail = `#/orders/${orderId}?${new URLSearchParams({ from: calendar })}`;
+    const open = async () => {
+      await page.goto('about:blank');
+      await page.goto(base + detail);
+      await page.getByRole('list', { name: '整单状态进度' }).waitFor();
+    };
+    const finish = page.getByRole('button', { name: '完成装饰', exact: true });
+    const reopen = page.getByRole('button', { name: '退回装饰', exact: true });
+    await open();
+    await finish.click();
+    await page.getByRole('alert').filter({ hasText: /服务|稍后/ }).waitFor();
+    assert.equal(new URL(page.url()).hash, detail);
+    fail = false;
+    await page.locator('.note-panel summary').click();
+    const note = page.getByRole('textbox', { name: '备注内容' });
+    await note.fill('还没发布的工作备注');
+    await finish.click();
+    await page.getByText('完成装饰已确认').waitFor();
+    await reopen.waitFor();
+    assert.equal(new URL(page.url()).hash, detail);
+    assert.equal(await note.inputValue(), '还没发布的工作备注');
+    assert.equal(await page.getByRole('button', { name: '确认送达', exact: true }).count(), 0);
+    await note.fill('');
+    model.order.status = 'DECORATING';
+    await open();
+    await finish.click();
+    await page.waitForURL(url => url.hash === calendar);
+
+    for (const [type, confirmation, rollback] of [
+      ['DELIVERY', '确认送达', '退回待配送'], ['PICKUP', '确认自提', '退回待自提'],
+    ]) {
+      model.order.fulfillment.type = type;
+      model.order.status = 'WAITING_DELIVERY';
+      await open();
+      await reopen.waitFor();
+      assert.equal(await page.getByRole('button', { name: confirmation, exact: true }).count(), 0);
+      model.order.status = 'COMPLETED';
+      await open();
+      await page.getByRole('button', { name: rollback, exact: true }).waitFor();
+    }
+    model.permissions = [...businessPermissions, ...decoratorPermissions];
+    for (const [otherRole, type, confirmation] of [
+      ['FRONT_DESK_CLERK', 'DELIVERY', '确认送达'], ['STORE_MANAGER', 'PICKUP', '确认自提'],
+    ]) {
+      roles = ['DECORATOR', otherRole];
+      model.order.fulfillment.type = type;
+      model.order.status = 'DECORATING';
+      await open();
+      await finish.click();
+      await page.getByRole('button', { name: confirmation, exact: true }).waitFor();
+      assert.equal(new URL(page.url()).hash, detail);
+    }
     assert.deepEqual(errors, []);
   } finally {
     await context.close();

@@ -48,10 +48,10 @@
 | `ORDER_CREATE` | 新建订单、文本规则解析和辅助识别 |
 | `ORDER_EDIT` | 修改订单信息、商品属性、增删商品 |
 | `ORDER_ITEM_EDIT` | 修改商品属性、增删商品 |
-| `ORDER_CANCEL` | 取消订单 |
+| `ORDER_CANCEL` | 取消订单（单岗裱花师除外）；恢复至出胚还需 `ORDER_PRODUCTION_UPDATE` |
 | `ORDER_PAYMENT_UPDATE` | 修改付款状态 |
 | `ORDER_PRODUCTION_UPDATE` | 制作流程操作 |
-| `ORDER_FULFILLMENT_UPDATE` | 自提和配送流程操作 |
+| `ORDER_FULFILLMENT_UPDATE` | 自提和配送流程操作（单岗裱花师可退回交接） |
 | `ORDER_NOTE_CREATE` | 添加工作备注 |
 | `ORDER_IMAGE_UPLOAD` / `ORDER_IMAGE_DELETE` | 上传 / 删除图片 |
 | `ORDER_CUSTOMER_READ` | 客户姓名、联系方式、地址等结构化资料；读取客户填单来源还需要 `ORDER_READ` |
@@ -77,6 +77,10 @@
 制作人员可以通过 `GET /api/orders/{id}/notes` 阅读工作备注。此接口只返回 `NOTE`，忽略其他活动类型参数，需要 `ORDER_READ`；不返回订单创建或字段修改快照。制作、备注、图片等写操作仍使用各自操作权限。
 
 裱花师 `DECORATOR` 岗位不授予 `ORDER_EDIT` 或 `ORDER_ITEM_EDIT`，显式岗位配置也遵循此限制。单岗裱花师可以按制作权限标记商品完成。兼岗员工仍可通过其他岗位取得商品维护权限。商品写入接口接受 `ORDER_EDIT` 或 `ORDER_ITEM_EDIT`，同时校验订单状态及报价权限。
+
+取消订单接口拒绝仅担任裱花师的账号。兼岗账号按合并后的 `ORDER_CANCEL` 授权。恢复已取消订单至出胚需要同时具有 `ORDER_CANCEL` 和 `ORDER_PRODUCTION_UPDATE`，默认授权下单岗裱花师可以恢复。
+
+单岗裱花师不能确认送达或确认自提。退回交接仍使用 `ORDER_FULFILLMENT_UPDATE`，退回装饰仍使用 `ORDER_PRODUCTION_UPDATE`。
 
 通过 `wuhoucake.authorization.job-permissions` 覆盖具体岗位的完整权限集合。非 `STORE_MANAGER` 岗位配置 `ORDER_DELETE` 会在启动时被拒绝；仅有 `SUPER_ADMIN` 身份不会获得订单删除权限。配置只影响列出的岗位，未列出岗位保留上述默认值；空集合表示该岗位不提供业务权限。多岗位按并集计算，因此只收窄一个兼任岗位不会撤销另一个岗位授予的权限。
 

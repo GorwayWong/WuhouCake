@@ -34,8 +34,10 @@ export function time(value: string | null, full = false): string {
   }).format(new Date(value));
 }
 
+type BusinessDateFormat = 'slash' | 'chinese';
+
 /** 业务日期按上海时区显示；省略年份不改变原日期值。 */
-export function businessDate(value: string | null | undefined, now = new Date()): string {
+export function businessDate(value: string | null | undefined, now = new Date(), format: BusinessDateFormat = 'slash'): string {
   if (!value) return '未填写';
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
   const date = new Date(dateOnly ? `${value}T12:00:00+08:00` : value);
@@ -43,10 +45,11 @@ export function businessDate(value: string | null | undefined, now = new Date())
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
   const part = (type: string) => parts.find(value => value.type === type)!.value;
   const year = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric' }).format(now);
+  if (format === 'chinese') return `${part('year') === year ? '' : `${part('year')}年`}${Number(part('month'))}月${Number(part('day'))}日`;
   return `${part('year') === year ? '' : `${part('year')}/`}${part('month')}/${part('day')}`;
 }
 
-export function businessTime(value: string | null | undefined, now = new Date()): string {
-  const date = businessDate(value, now);
+export function businessTime(value: string | null | undefined, now = new Date(), format: BusinessDateFormat = 'slash'): string {
+  const date = businessDate(value, now, format);
   return date === '未填写' ? date : `${date} ${time(value!)}`;
 }
