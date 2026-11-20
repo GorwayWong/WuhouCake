@@ -485,7 +485,8 @@ class WorkflowManagementIT {
             var rejected = admin.raw("POST", restartPath, restart);
             assertEquals(409, rejected.statusCode());
             assertEquals("ORDER_DELETED", json.readTree(rejected.body()).path("code").asText());
-            assertEquals(200, a.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+            assertEquals(403, a.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+            assertEquals(200, admin.raw("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
         }
         assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));
         assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_DELETED'", Integer.class));

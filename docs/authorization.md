@@ -59,7 +59,7 @@
 | `ORDER_BUSINESS_DETAILS_READ` | 订单及商品创建时间、订单创建者、确认时间和下单员工归属 |
 | `ORDER_ACTIVITY_READ` | 完整订单活动记录；另需 `ORDER_READ` 及客户、金额、业务资料读取权限 |
 | `ORDER_MANAGEMENT_READ` | 订单查询与统计；另需客户、金额、业务资料读取权限 |
-| `ORDER_EXPORT` | 单单 Excel、批量 ZIP；另需客户、金额、业务资料读取权限。查询结果导出还需 `ORDER_MANAGEMENT_READ` |
+| `ORDER_EXPORT` | 单笔 XLSX、批量 ZIP，另需客户、金额、业务资料读取权限。单笔 XLSX 还需店长岗位，查询结果导出还需 `ORDER_MANAGEMENT_READ` |
 | `CUSTOMER_SUBMISSION_PROCESS` | 客户填单查询、核对、删除；查询和保存还需两项敏感数据读取权限，确认转单还需 `ORDER_CREATE` |
 | `CUSTOMER_ENTRY_MANAGE` | 查看和管理本人二维码入口 |
 | `CUSTOMER_ENTRY_MANAGE_ALL` | 在具备入口管理权限的前提下，管理其他员工已有入口；不改变入口创建的现有约束 |

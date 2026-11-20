@@ -43,7 +43,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 | GET /api/orders/{id}/images | 图片元数据，不读取二进制 |
 | GET /api/orders/{id}/images/{imageId} | 认证图片内容 |
 | DELETE /api/orders/{id}/images/{imageId} | 软移除图片 |
-| POST /api/orders/{id}/exports/xlsx | 导出已保存单单，无请求体 |
+| POST /api/orders/{id}/exports/xlsx | 导出已保存的单笔订单，无请求体，需店长岗位及订单导出和相关资料读取权限 |
 | POST /api/orders/exports/zip | from/to、可选 status/fulfillmentType/paymentStatus |
 | POST /api/orders/recognition/parse | text，规则识别，不调用模型 |
 | POST /api/orders/recognition/assist | text、allowExternalProcessing，可选语义补充 |

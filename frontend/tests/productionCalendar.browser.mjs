@@ -262,7 +262,9 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await page.getByRole('button', { name: '确认自提' }).waitFor();
       await page.getByRole('heading', { name: '金额与付款' }).waitFor();
       await supplement.waitFor();
-      for (const entry of [cancelOrder, downloadOrder, reversePayment]) assert.ok(await entry.isEnabled());
+      for (const entry of [cancelOrder, reversePayment]) assert.ok(await entry.isEnabled());
+      if (otherRole === 'STORE_MANAGER') assert.ok(await downloadOrder.isEnabled());
+      else assert.equal(await downloadOrder.count(), 0);
       await products.getByText('原单价', { exact: true }).waitFor();
       await uploadHelp.waitFor();
       await images.getByRole('button', { name: '移除图片：历史款式.png' }).waitFor();

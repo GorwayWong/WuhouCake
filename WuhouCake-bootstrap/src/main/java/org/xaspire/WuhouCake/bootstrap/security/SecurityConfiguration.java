@@ -111,7 +111,12 @@ public class SecurityConfiguration {
             authorize.requestMatchers(POST, "/api/orders/{id}/notes").access(permissions(ORDER_NOTE_CREATE));
             authorize.requestMatchers(POST, "/api/orders/{id}/images").access(permissions(ORDER_IMAGE_UPLOAD));
             authorize.requestMatchers(DELETE, "/api/orders/{id}/images/{imageId}").access(permissions(ORDER_IMAGE_DELETE));
-            authorize.requestMatchers(POST, "/api/orders/{id}/exports/xlsx", "/api/orders/exports/zip").access(permissions(ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ));
+            var orderExport = permissions(ORDER_EXPORT, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ, ORDER_BUSINESS_DETAILS_READ);
+            authorize.requestMatchers(POST, "/api/orders/{id}/exports/xlsx").access(AuthorizationManagers.allOf(orderExport,
+                    (authentication, context) -> new AuthorizationDecision(
+                            authentication.get().getDetails() instanceof IdentityFacade.AccountView account
+                                    && account.jobRoles().contains("STORE_MANAGER"))));
+            authorize.requestMatchers(POST, "/api/orders/exports/zip").access(orderExport);
             authorize.requestMatchers(GET, "/api/customer-submissions/entry").access(permissions(CUSTOMER_ENTRY_MANAGE));
             authorize.requestMatchers(GET, "/api/customer-submissions/pending-count").access(permissions(CUSTOMER_SUBMISSION_PROCESS));
             authorize.requestMatchers(POST, "/api/customer-submissions/entry").access(permissions(CUSTOMER_ENTRY_MANAGE));

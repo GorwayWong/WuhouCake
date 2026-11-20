@@ -200,7 +200,7 @@ class OrderExportIT {
     private void clearSessions() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
 
     @Test void exportsPlaceLegacyPricesInSpecsWithoutWritingNewProductPrices() throws Exception {
-        var staff = staff(); var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
+        var staff = staff(); var manager = manager(); var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
         String cakeId = UUID.randomUUID().toString(), drinkId = UUID.randomUUID().toString();
         ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(0)).put("itemId", cakeId).put("memberPriceCents", 9000);
         ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(1)).put("itemId", drinkId).put("productType", "DRINK").put("unitPriceCents", 2300).put("memberPriceCents", 0);
@@ -222,7 +222,7 @@ class OrderExportIT {
         assertEquals(400, ignored.statusCode(), text(ignored));
         assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class));
         assertEquals(12000L, jdbc.queryForObject("SELECT unit_price_cents FROM cake_order_item WHERE id=?::uuid", Long.class, cakeId));
-        var single = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, single.statusCode(), text(single));
+        var single = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, single.statusCode(), text(single));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(single.body()))) { assertHistoricalSpecs(book, 2, 4); }
         var batch = staff.request("POST", "/api/orders/exports/zip", range()); assertEquals(200, batch.statusCode(), text(batch));
         try (var zip = new ZipInputStream(new ByteArrayInputStream(batch.body()))) {
@@ -259,7 +259,7 @@ class OrderExportIT {
     }
 
     @Test void stableItemIdentifiersAndImageRetriesKeepOwnershipAndFiveImagesPerItem() throws Exception {
-        var staff = staff(); var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
+        var staff = staff(); var manager = manager(); var input = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(create("2026-10-16"));
         String first = UUID.randomUUID().toString(), second = UUID.randomUUID().toString();
         ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(0)).put("itemId", first);
         ((com.fasterxml.jackson.databind.node.ObjectNode) input.withArray("items").get(1)).put("itemId", second);
@@ -294,14 +294,14 @@ class OrderExportIT {
         assertEquals(10, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
         assertEquals(imageId, data(staff.upload(id, first, png, "same.png", uploadId)).path("imageId").asText());
         assertEquals(409, staff.upload(id, second, png, "sixth.png").statusCode());
-        assertEquals(200, staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+        assertEquals(200, manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
         assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + imageId, null).statusCode());
         assertEquals(409, staff.upload(id, first, png, "same.png", uploadId).statusCode());
         assertEquals(201, staff.upload(id, first, png, "replacement.png").statusCode());
     }
 
     @Test void uploadsMetadataContentAndSingleExportHaveAuthenticatedImmutableHistory() throws Exception {
-        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var staff = staff(); var manager = manager(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
         var png = picture("png"); var jpeg = picture("jpeg");
         var upload = staff.upload(id, null, png, "../fake.exe"); assertEquals(201, upload.statusCode(), text(upload));
@@ -332,7 +332,7 @@ class OrderExportIT {
         staff.request("POST", "/api/orders/" + id + "/notes", Map.of("itemId", item, "content", "商品备注"));
         var before = data(staff.request("GET", "/api/orders/" + id, null)); changes.events.clear();
         var tempBefore = temporaryFiles();
-        var exported = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        var exported = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         assertEquals(200, exported.statusCode(), text(exported)); assertEquals("no-store", header(exported, "Cache-Control"));
         assertTrue(header(exported, "Content-Type").contains("spreadsheetml")); assertTrue(header(exported, "Content-Disposition").startsWith("attachment;"));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(exported.body()))) {
@@ -542,20 +542,20 @@ class OrderExportIT {
     }
 
     @Test void removedItemImageIsRetainedButExcludedFromFutureExports() throws Exception {
-        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var staff = staff(); var manager = manager(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
         var image = data(staff.upload(id, item, picture("png"), "x.png"));
         assertEquals(200, staff.request("POST", "/api/orders/" + id + "/items/" + item + "/remove", Map.of("expectedVersion", 0)).statusCode());
         assertEquals(404, staff.upload(id, item, picture("png"), "x.png").statusCode());
         assertEquals(1, data(staff.request("GET", "/api/orders/" + id + "/images", null)).size());
         assertEquals(200, staff.request("GET", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
-        var response = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, response.statusCode(), text(response));
+        var response = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, response.statusCode(), text(response));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
             assertTrue(book.getAllPictures().isEmpty()); assertEquals(2, book.getSheet("商品明细").getPhysicalNumberOfRows());
         }
     }
     @Test void imageRemovalIsScopedIdempotentReleasesQuotaAndPreservesSnapshots() throws Exception {
-        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var staff = staff(); var manager = manager(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(), item = order.at("/items/0/itemId").asText();
         var png = picture("png"); var image = data(staff.upload(id, item, png, "cake.png"));
         String imageId = image.path("imageId").asText(), path = "/api/orders/" + id + "/images/" + imageId;
@@ -581,7 +581,7 @@ class OrderExportIT {
         assertEquals(imageId, log.at("/details/imageId").asText()); assertEquals("cake.png", log.at("/details/filename").asText());
         assertEquals(item, log.path("itemId").asText()); assertEquals(staff.accountId, log.path("actorId").asText());
         assertFalse(log.path("createdAt").asText().isEmpty());
-        var exported = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        var exported = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(exported.body()))) { assertEquals(4, book.getAllPictures().size()); }
         assertEquals(201, staff.upload(id, null, png, "replacement.png").statusCode());
         assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
@@ -603,18 +603,18 @@ class OrderExportIT {
         assertEquals(order, data(staff.request("GET", "/api/orders/" + id, null)));
     }
     @Test void exportSnapshotKeepsItsImageWhenRemovedDuringGeneration() throws Exception {
-        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
+        var staff = staff(); var manager = manager(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16"))); String id = order.path("orderId").asText();
         var image = data(staff.upload(id, null, picture("png"), "snapshot.png"));
         doAnswer(invocation -> {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + image.path("imageId").asText(), null).statusCode());
             return invocation.callRealMethod();
         }).when(files).generate(any(), anyString(), eq(false), any());
-        var response = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        var response = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         assertEquals(200, response.statusCode(), text(response));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) { assertEquals(1, book.getAllPictures().size()); }
         reset(files);
-        var next = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        var next = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(next.body()))) { assertTrue(book.getAllPictures().isEmpty()); }
     }
     @Test void batchFiltersDatesAndBusinessConditionsWithoutCreatingActivity() throws Exception {
@@ -635,7 +635,7 @@ class OrderExportIT {
         filtered = new LinkedHashMap<>(range()); filtered.put("fulfillmentType", "PICKUP"); assertEquals(List.of(filename(b)), entries(staff.request("POST", "/api/orders/exports/zip", filtered)));
     }
     @Test void activityUnavailableDoesNotBlockExportAndGenerationFailureDeletesFiles() throws Exception {
-        var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));
+        var staff = staff(); var manager = manager(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01")));
         staff.request("POST", "/api/orders", create("2026-10-02"));
         var before = temporaryFiles();
         doThrow(new DataAccessResourceFailureException("test log unavailable")).when(activities).append(any());
@@ -643,11 +643,11 @@ class OrderExportIT {
         assertEquals(0, exportCount()); assertEquals(before, temporaryFiles()); reset(activities);
         String id = a.path("orderId").asText(); staff.upload(id, null, picture("png"), "x.png");
         doThrow(new DataAccessResourceFailureException("test image unavailable")).when(images).content(any(), any());
-        assertEquals(503, staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+        assertEquals(503, manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
         assertEquals(0, exportCount()); assertEquals(before, temporaryFiles());
     }
     @Test void snapshotsStayConsistentAcrossConcurrentChangesWithoutHoldingGenerationTransaction() throws Exception {
-        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-01"))); String id = order.path("orderId").asText();
+        var staff = staff(); var manager = manager(); var order = data(staff.request("POST", "/api/orders", create("2026-10-01"))); String id = order.path("orderId").asText();
         doAnswer(invocation -> {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             jdbc.update("UPDATE cake_order SET version=version+1, payment_status='PAID', updated_at=now() WHERE id=?::uuid", id);
@@ -655,7 +655,7 @@ class OrderExportIT {
         }).when(files).generate(any(), anyString(), eq(false), any());
         doAnswer(invocation -> { assertTrue(TransactionSynchronizationManager.isActualTransactionActive()); return invocation.callRealMethod(); })
                 .when(activities).append(argThat(activity -> activity.type().equals("ORDER_EXPORTED")));
-        var result = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, result.statusCode(), text(result));
+        var result = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null); assertEquals(200, result.statusCode(), text(result));
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(result.body()))) {
             boolean found = false;
             for (var row : book.getSheet("订单信息")) if (row.getCell(0).getStringCellValue().equals("付款状态")) {
@@ -718,10 +718,10 @@ class OrderExportIT {
         assertEquals("EXPORT_LIMIT_EXCEEDED", body(tooMany).path("code").asText()); assertEquals(0, exportCount());
     }
     @Test void textAndRowBudgetsRejectBeforeMaterializingLargeSnapshots() throws Exception {
-        var staff = staff(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01"))); String id = a.path("orderId").asText();
+        var staff = staff(); var manager = manager(); var a = data(staff.request("POST", "/api/orders", create("2026-10-01"))); String id = a.path("orderId").asText();
         jdbc.update("INSERT INTO cake_order_activity(order_id,type,content,actor_id,actor_name_snapshot,created_at)"
                 + " VALUES (?::uuid,'NOTE',repeat('字',2800000),?::uuid,'员工',now())", id, staff.accountId);
-        var hugeText = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        var hugeText = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         assertEquals(413, hugeText.statusCode()); assertEquals("EXPORT_CONTENT_TOO_LARGE", body(hugeText).path("code").asText());
         jdbc.update("DELETE FROM cake_order_activity WHERE type='NOTE'");
         jdbc.update("INSERT INTO cake_order_activity(order_id,type,content,actor_id,actor_name_snapshot,created_at)"
@@ -731,12 +731,12 @@ class OrderExportIT {
         assertEquals(0, exportCount());
     }
     @Test void noteMetadataAndDetailsCountTowardsTextBudget() throws Exception {
-        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-01")));
+        var staff = staff(); var manager = manager(); var order = data(staff.request("POST", "/api/orders", create("2026-10-01")));
         String id = order.path("orderId").asText(); var before = temporaryFiles();
         jdbc.update("INSERT INTO cake_order_activity(order_id,type,content,actor_id,actor_name_snapshot,created_at)"
                 + " SELECT ?::uuid,'NOTE',repeat('x',850),?::uuid,repeat('😀',40),now() FROM generate_series(1,9000)", id, staff.accountId);
         assertTrue(jdbc.queryForObject("SELECT sum(octet_length(content)) FROM cake_order_activity WHERE type='NOTE'", Long.class) < 8L * 1024 * 1024);
-        var metadata = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        var metadata = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         assertEquals(413, metadata.statusCode()); assertEquals("EXPORT_CONTENT_TOO_LARGE", body(metadata).path("code").asText());
         jdbc.update("DELETE FROM cake_order_activity WHERE type='NOTE'");
         jdbc.update("INSERT INTO cake_order_activity(order_id,item_id,type,content,details,actor_id,actor_name_snapshot,created_at)"
@@ -959,7 +959,7 @@ class OrderExportIT {
         } finally { root.detachAppender(logs); logs.stop(); logger.setLevel(previous); reset(streams, activities); }
     }
     @Test void immutableImageCopyDoesNotHoldMetadataTransactionAndMissingContentCancelsDownload() throws Exception {
-        var staff = staff();
+        var staff = staff(); var manager = manager();
         var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         UUID id = UUID.fromString(order.path("orderId").asText());
         UUID image = UUID.fromString(data(staff.upload(id.toString(), null, picture("png"), "captured.png")).path("imageId").asText());
@@ -969,7 +969,7 @@ class OrderExportIT {
             return invocation.callRealMethod();
         }).when(images).content(id, image);
         var path = "/api/orders/" + id + "/exports/xlsx";
-        var copied = staff.request("POST", path, null);
+        var copied = manager.request("POST", path, null);
         assertEquals(200, copied.statusCode(), text(copied));
         try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(copied.body()))) {
             assertEquals(1, workbook.getAllPictures().size());
@@ -978,7 +978,7 @@ class OrderExportIT {
             jdbc.update("DELETE FROM cake_order_image WHERE id=?", image);
             return invocation.callRealMethod();
         }).when(images).content(id, image);
-        var missing = staff.request("POST", path, null);
+        var missing = manager.request("POST", path, null);
         assertEquals(404, missing.statusCode(), text(missing));
         assertEquals("IMAGE_NOT_FOUND", body(missing).path("code").asText());
         assertEquals("", header(missing, "Content-Disposition"));
@@ -986,7 +986,7 @@ class OrderExportIT {
     }
 
     @Test void unauthorizedDownloadDoesNotCompeteForAnActiveExport() throws Exception {
-        var staff = staff();
+        var staff = staff(); var manager = manager();
         var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         var path = "/api/orders/" + order.path("orderId").asText() + "/exports/xlsx";
         var entered = new CountDownLatch(1);
@@ -997,17 +997,18 @@ class OrderExportIT {
             return invocation.callRealMethod();
         }).when(files).generate(any(), anyString(), eq(false), any());
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            var active = executor.submit(() -> staff.request("POST", path, null));
+            var active = executor.submit(() -> manager.request("POST", path, null));
             try {
                 assertTrue(entered.await(5, TimeUnit.SECONDS));
                 assertEquals(401, new Client().request("POST", path, null).statusCode());
-                var busy = staff.request("POST", path, null);
+                assertEquals(403, staff.request("POST", path, null).statusCode());
+                var busy = manager.request("POST", path, null);
                 assertEquals(503, busy.statusCode(), text(busy));
                 assertEquals("EXPORT_BUSY", body(busy).path("code").asText());
             } finally { resume.countDown(); }
             assertEquals(200, active.get(10, TimeUnit.SECONDS).statusCode());
         }
-        assertEquals(200, staff.request("POST", path, null).statusCode());
+        assertEquals(200, manager.request("POST", path, null).statusCode());
     }
 
     @Test void prometheusExposesBoundedInfrastructureMetricsOnLoopback() throws Exception {
@@ -1035,7 +1036,7 @@ class OrderExportIT {
     }
 
     @Test void legacyMetadataSnapshotDoesNotStageBytesAndRecompressionBeforeCopyCancelsExport() throws Exception {
-        var staff = staff();
+        var staff = staff(); var manager = manager();
         var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText();
         String image = data(staff.upload(id, null, picture("png"), "before.png")).path("imageId").asText();
@@ -1052,7 +1053,7 @@ class OrderExportIT {
             assertEquals(1, maintenance.replace(image, recompressed, "image/jpeg", "after.jpg", recompressed.length, 12, 6));
             return invocation.callRealMethod();
         }).when(files).generate(any(), anyString(), eq(false), any());
-        var result = staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
+        var result = manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null);
         assertEquals(409, result.statusCode(), text(result));
         assertEquals("EXPORT_IMAGE_CHANGED", body(result).path("code").asText());
         assertEquals("", header(result, "Content-Disposition"));
@@ -1074,7 +1075,7 @@ class OrderExportIT {
         assertEquals(before, temporaryFiles());
     }
     @Test void imageMetadataAndBytesStayInOneSnapshotDuringHistoricalRecompression() throws Exception {
-        var staff = staff(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
+        var staff = staff(); var manager = manager(); var order = data(staff.request("POST", "/api/orders", create("2026-10-16")));
         String id = order.path("orderId").asText(); byte[] png = picture("png"), jpeg = picture("jpeg");
         String image = data(staff.upload(id, null, png, "snapshot.png")).path("imageId").asText();
         byte[] original = Arrays.copyOf(png, png.length + 4096);
@@ -1088,7 +1089,7 @@ class OrderExportIT {
             return invocation.callRealMethod();
         }).when(images).content(UUID.fromString(id), UUID.fromString(image));
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            var exported = executor.submit(() -> staff.request("POST", "/api/orders/" + id + "/exports/xlsx", null));
+            var exported = executor.submit(() -> manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null));
             try {
                 assertTrue(readStarted.await(10, TimeUnit.SECONDS));
                 assertEquals(1, maintenance.replace(image, jpeg, "image/jpeg", "snapshot.jpg", jpeg.length, 12, 6));
@@ -1179,6 +1180,11 @@ class OrderExportIT {
         assertEquals(201, response.statusCode(), text(response)); var provisioned = data(response);
         var staff = new Client(); staff.accountId = provisioned.at("/account/accountId").asText();
         String temporary = provisioned.path("temporaryPassword").asText(); staff.login("0002", temporary); staff.changePassword(temporary); staff.login("0002", PASSWORD); return staff;
+    }
+    private Client manager() throws Exception {
+        var manager = new Client();
+        manager.login("0001", PASSWORD);
+        return manager;
     }
     private JsonNode body(HttpResponse<byte[]> response) throws IOException { return json.readTree(response.body()); }
     private JsonNode data(HttpResponse<byte[]> response) throws IOException { return body(response).path("data"); }

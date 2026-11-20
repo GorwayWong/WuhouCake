@@ -703,7 +703,7 @@ export function OrderDetail({ account, id, returnToCalendar, returnToOrders = fa
       <div><dt>会员手机</dt><dd>{order.customer?.memberPhone || '未填写'}</dd></div>
       <div><dt>订购人姓名</dt><dd>{order.customer?.buyerName || '未填写'}</dd></div>
     </dl></details>}
-    {access.export && <SingleOrderExport orderId={id} orderNo={order.orderNo} blocked={busy} onPendingChange={exportWritingChange} />}
+    {access.export && account.jobRoles.includes('STORE_MANAGER') && <SingleOrderExport orderId={id} orderNo={order.orderNo} blocked={busy} onPendingChange={exportWritingChange} />}
     {order.status === 'CANCELLED' && <Empty>{access.history ? '订单已取消，历史记录保留。' : '订单已取消，制作资料保留。'}</Empty>}
     {!frontDeskView && paymentPanel}
     {access.history && <details className="panel operation-history" aria-label="操作记录"><summary>操作记录</summary><div className="section-heading"><h2><ListBullets />最近操作记录</h2><a className="text-button" href={orderHref(id, returnToCalendar, undefined, true)}>全部操作记录<ArrowRight /></a></div><ActivityFeed id={id} items={order.items} preview /></details>}
