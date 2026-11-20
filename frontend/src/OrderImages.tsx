@@ -11,7 +11,7 @@ import { synchronize } from './realtime';
 import type { Detail, OrderImage } from './types';
 import { ErrorNotice } from './ui';
 
-function ImageTile({ image, scope, blocked, remove, productionView }: { image: OrderImage; scope: string; blocked: boolean; remove: () => void; productionView?: boolean }) {
+function ImageTile({ image, scope, blocked, remove, productionView }: { image: OrderImage; scope: string; blocked: boolean; remove?: () => void; productionView?: boolean }) {
   const [url, setUrl] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
@@ -23,7 +23,7 @@ function ImageTile({ image, scope, blocked, remove, productionView }: { image: O
   }, [image.orderId, image.imageId, attempt]);
   return <li className="reference-image" ref={tile}>
     {url ? <button className="image-thumbnail" aria-label={`查看大图：${image.filename}`} onClick={() => dialog.current?.showModal()}><img src={url} alt={image.filename} /></button> : <div className="image-placeholder">{error ? <><span>{errorText(error)}</span><button className="text-button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></> : '正在读取图片…'}</div>}
-    <div className="image-caption"><strong className="image-scope">{scope}</strong><span className="image-filename" title={image.filename}>{image.filename}</span>{!productionView && <span>{image.uploaderNameSnapshot} · <time dateTime={image.uploadedAt}>{time(image.uploadedAt, true)}</time></span>}<button className="text-button danger" disabled={blocked} aria-label={`移除图片：${image.filename}`} onClick={remove}><Trash />移除</button></div>
+    <div className="image-caption"><strong className="image-scope">{scope}</strong><span className="image-filename" title={image.filename}>{image.filename}</span>{!productionView && <span>{image.uploaderNameSnapshot} · <time dateTime={image.uploadedAt}>{time(image.uploadedAt, true)}</time></span>}{remove && <button className="text-button danger" disabled={blocked} aria-label={`移除图片：${image.filename}`} onClick={remove}><Trash />移除</button>}</div>
     <dialog ref={dialog} className="image-dialog" aria-label={`参考图片：${image.filename}`} onClick={event => { if (event.target === dialog.current) dialog.current.close(); }}>
       <div className="image-dialog-heading"><div><strong>{scope}</strong><p>{image.filename}{!productionView && ` · ${image.uploaderNameSnapshot} · ${time(image.uploadedAt, true)}`}</p></div><button className="icon-button" aria-label="关闭大图" onClick={() => dialog.current?.close()}><X size={24} /></button></div>
       {url && <img src={url} alt={image.filename} />}
@@ -44,9 +44,9 @@ function QueuedImageTile({ image, busy, retry, remove }: { image: QueuedImage; b
 }
 
 export interface EditImageActions { hasImages: () => boolean; validate: () => Promise<void>; commit: (order: Detail) => Promise<void>; discard: () => Promise<void> }
-export function OrderImages({ order, itemId, accountId, canUpload, canDelete, blocked, onDraftChange, onWritingChange, productionView = false, compact = false, ownerSession, editSession, editActions, recover }: {
+export function OrderImages({ order, itemId, accountId, canUpload, canDelete, blocked, onDraftChange, onWritingChange, productionView = false, hideImageManagement = false, compact = false, ownerSession, editSession, editActions, recover }: {
   ownerSession?: string; recover?: (session: string) => void; editSession?: string; editActions?: { current: EditImageActions | null };
-  compact?: boolean; productionView?: boolean; order: Detail; itemId?: string; accountId: string; canUpload: boolean; canDelete: boolean;
+  compact?: boolean; productionView?: boolean; hideImageManagement?: boolean; order: Detail; itemId?: string; accountId: string; canUpload: boolean; canDelete: boolean;
   blocked: boolean; onDraftChange: (dirty: boolean) => void; onWritingChange: (pending: boolean) => void;
 }) {
   const client = useQueryClient(), id = order.orderId;
@@ -171,9 +171,9 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
     catch { setError('本机待上传图片未能移除，请重试。'); }
   }
   return <section id="order-reference-images" tabIndex={-1} className={`${compact ? '' : 'panel '}reference-images`} aria-labelledby="reference-images-title">
-    <div className="section-heading"><h2 id="reference-images-title"><Images />{compact ? '图片' : productionView ? '款式图片' : '参考图片'}</h2><div className="item-heading-actions"><span className="muted">{currentImages.length} / 5 张{currentQueue.length > 0 && ` · ${currentQueue.length} 张待上传`}{currentStaged.length > 0 && ` · ${currentStaged.length} 张待保存`}</span>{canUpload && <button type="button" className="secondary compact" disabled={busy || !ownerSession || Boolean(manifestError) || !product || count >= 5 || !query.data || !local.data || !staged.data} onClick={() => input.current?.click()}><Plus />添加图片</button>}</div></div>
-    <p className="form-help">{product ? `商品 ${order.items.indexOf(product) + 1} · ${product.name}` : '暂无商品'} · 每商品最多 5 张，JPG / PNG，每张不超过 5 MiB。</p>
-    <input className="sr-only" tabIndex={-1} aria-label="选择当前商品图片" ref={input} type="file" multiple accept="image/jpeg,image/png,.jpg,.jpeg,.png" disabled={busy || !canUpload} onChange={event => void select(Array.from(event.target.files || []))} />
+    <div className="section-heading"><h2 id="reference-images-title"><Images />{compact ? '图片' : productionView ? '款式图片' : '参考图片'}</h2><div className="item-heading-actions"><span className="muted">{currentImages.length} / 5 张{currentQueue.length > 0 && ` · ${currentQueue.length} 张待上传`}{currentStaged.length > 0 && ` · ${currentStaged.length} 张待保存`}</span>{!hideImageManagement && canUpload && <button type="button" className="secondary compact" disabled={busy || !ownerSession || Boolean(manifestError) || !product || count >= 5 || !query.data || !local.data || !staged.data} onClick={() => input.current?.click()}><Plus />添加图片</button>}</div></div>
+    {!hideImageManagement && <p className="form-help">{product ? `商品 ${order.items.indexOf(product) + 1} · ${product.name}` : '暂无商品'} · 每商品最多 5 张，JPG / PNG，每张不超过 5 MiB。</p>}
+    {!hideImageManagement && <input className="sr-only" tabIndex={-1} aria-label="选择当前商品图片" ref={input} type="file" multiple accept="image/jpeg,image/png,.jpg,.jpeg,.png" disabled={busy || !canUpload} onChange={event => void select(Array.from(event.target.files || []))} />}
     <ErrorNotice error={query.error} retry={() => void query.refetch()} />
     {local.error && <p className="notice error" role="alert">本机待上传图片无法读取。<button type="button" className="text-button" onClick={() => void local.refetch()}>重试读取</button></p>}
     {editSession && currentStaged.length > 0 && <p className="form-help">保存修改后上传图片。</p>}
@@ -195,13 +195,13 @@ export function OrderImages({ order, itemId, accountId, canUpload, canDelete, bl
           {query.isPending ? '正在读取图片…' : currentStaged.length ? '以上图片尚未保存。' : '该商品暂无款式图片。'}
         </p>
       </div>
-    ) : <ul className="image-grid">{currentImages.map(image => <ImageTile key={image.imageId} image={image} scope={product?.name || '商品图片'} blocked={busy || Boolean(editSession) || !canDelete} productionView={productionView} remove={() => void remove(image)} />)}{currentQueue.map(image => {
+    ) : <ul className="image-grid">{currentImages.map(image => <ImageTile key={image.imageId} image={image} scope={product?.name || '商品图片'} blocked={busy || Boolean(editSession) || !canDelete} productionView={productionView} remove={hideImageManagement ? undefined : () => void remove(image)} />)}{currentQueue.map(image => {
       const sameEdit = Boolean(editSession && image.requestId === scope?.requestId);
       return <QueuedImageTile key={image.key} image={image} busy={busy || Boolean(editSession && !sameEdit) || !canUpload}
         retry={() => void upload([image], sameEdit)} remove={() => void removeLocal(image)} />;
     })}</ul>}
-    {currentImages.length >= 5 && <p className="form-help">该商品已达上限，移除到 5 张以下可继续添加。历史图片保留。</p>}
-    {history.length > 0 && <div className="historical-images"><h3>历史图片</h3><p className="form-help">未关联商品或原商品已移除的图片。</p><ul className="image-grid">{history.map(image => <ImageTile key={image.imageId} image={image} scope={image.itemId ? '已移除商品' : '整单历史图片'} blocked={busy || Boolean(editSession) || !canDelete} productionView={productionView} remove={() => void remove(image)} />)}</ul></div>}
+    {!hideImageManagement && currentImages.length >= 5 && <p className="form-help">该商品已达上限，移除到 5 张以下可继续添加。历史图片保留。</p>}
+    {history.length > 0 && <div className="historical-images"><h3>历史图片</h3><p className="form-help">未关联商品或原商品已移除的图片。</p><ul className="image-grid">{history.map(image => <ImageTile key={image.imageId} image={image} scope={image.itemId ? '已移除商品' : '整单历史图片'} blocked={busy || Boolean(editSession) || !canDelete} productionView={productionView} remove={hideImageManagement ? undefined : () => void remove(image)} />)}</ul></div>}
     {orphanQueue.length > 0 && <div className="notice error"><p>以下待上传图片的商品已移除，请核对后移除本机图片。</p><ul className="image-grid">{orphanQueue.map(image => <QueuedImageTile key={image.key} image={image} busy={busy} retry={() => void upload([image])} remove={() => void removeLocal(image)} />)}</ul></div>}
     {selected.filter(row => !order.items.some(item => item.itemId === row.itemId)).map(row => <div key={row.key} className="notice error"><p>暂存图片对应的商品已移除，请移除这张本机图片。</p><QueuedImageTile image={row} busy={busy} remove={() => void removeLocal(row)} /></div>)}
     {saving && <p className="form-help" role="status">正在保存图片，请稍候…</p>}

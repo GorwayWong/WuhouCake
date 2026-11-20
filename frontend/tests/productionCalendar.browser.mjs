@@ -141,7 +141,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
 });
 
 test('手机与桌面详情共用六节点，师傅切换商品可核对规格、要求和对应图片', async () => {
-  const { context, page, model, errors } = await createOrderFixture(browser, base);
+  const { context, page, model, select, errors } = await createOrderFixture(browser, base);
   try {
     const originalPermissions = model.permissions;
     let roles = ['DECORATOR'];
@@ -151,17 +151,22 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     const cake = { itemId: crypto.randomUUID(), name: '草莓蛋糕', productType: 'CAKE', quantity: 1,
       attributes: { size: '8', base: '原味', filling: '芒果、奥利奥碎、黄油脆片', flavor: '动物奶油', message: '生日快乐', requirements: '请把文字写在蛋糕正中'.repeat(20) },
-      productionStatus: 'COMPLETED', recentNotes: [] };
+      unitPriceCents: 18800, memberPriceCents: 16900, productionStatus: 'COMPLETED', recentNotes: [] };
     const cookies = { itemId: crypto.randomUUID(), name: '手工饼干', productType: 'COOKIE', quantity: 3,
       attributes: { specification: '每盒六片', requirements: '分袋装' }, productionStatus: 'IN_PROGRESS', recentNotes: [] };
     model.order = { orderId, orderNo: 'TEST-SIX', version: 4, status: 'DECORATING', currentStageCode: null,
       customer: { customerName: '测试客户', phone: '13800000000', buyerName: '测试订购人' }, orderingMethod: '到店',
       fulfillment: { type: 'PICKUP', address: '合成取货地址', requestedReceiveDate: date, plannedFinishAt: date + 'T16:10:00+08:00' },
       createdAt: '2026-11-04T08:00:00Z',
-      items: [cake, cookies], paymentStatus: 'UNPAID' };
+      items: [cake, cookies], pricingMode: 'ITEM_SUM', paymentStatus: 'PAID', paymentMethod: 'CASH',
+      paidAt: '2026-11-04T08:01:00Z', totalAmountCents: 16900 };
     model.images = [cake, cookies].map(item => ({ imageId: crypto.randomUUID(), orderId, itemId: item.itemId,
       filename: item.name + '.png', contentType: 'image/png' }));
-    model.permissions = ['ORDER_READ', 'ORDER_PRODUCTION_UPDATE', 'ORDER_FULFILLMENT_UPDATE', 'ORDER_PHONE_READ', 'ORDER_ORDERING_DETAILS_READ'];
+    model.images.push({ ...model.images[0], imageId: crypto.randomUUID(), itemId: null, filename: '历史款式.png' });
+    const decoratorPermissions = ['ORDER_READ', 'ORDER_PRODUCTION_UPDATE', 'ORDER_FULFILLMENT_UPDATE',
+      'ORDER_PHONE_READ', 'ORDER_ORDERING_DETAILS_READ', 'ORDER_IMAGE_UPLOAD', 'ORDER_IMAGE_DELETE',
+      'ORDER_CANCEL', 'ORDER_EXPORT', 'ORDER_ACTIVITY_READ', 'ORDER_NOTE_CREATE'];
+    model.permissions = decoratorPermissions;
     const open = async () => {
       await page.goto('about:blank');
       await page.goto(base + '/#/orders/' + orderId);
@@ -181,6 +186,15 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       assert.ok(await contacts.evaluate(section => section === section.parentElement.lastElementChild));
     };
     const products = page.getByRole('region', { name: '商品资料' });
+    const images = products.getByRole('region', { name: '图片', exact: true });
+    const addImage = images.getByRole('button', { name: '添加图片', exact: true });
+    const uploadHelp = images.getByText(/每商品最多 5 张，JPG/);
+    const removeSavedImage = images.getByRole('button', { name: /^移除图片：/ });
+    const currentImageTile = images.locator('.image-grid').first().locator('.reference-image');
+    const cancelOrder = page.getByRole('button', { name: '取消订单', exact: true });
+    const downloadOrder = page.getByRole('button', { name: '下载 XLSX', exact: true });
+    const reversePayment = page.getByRole('button', { name: '撤销付款登记', exact: true });
+    const supplement = page.getByText('补充资料', { exact: true });
     const checkProductFields = async (editable, baseLabel) => {
       for (const name of ['添加商品', '编辑', '移除']) {
         const action = products.getByRole('button', { name, exact: true });
@@ -207,11 +221,18 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await checkProductFields(false, '蛋糕胚口味');
       assert.ok(await products.getByRole('checkbox', { name: '草莓蛋糕制作完成' }).isEnabled());
       await products.getByText(cake.attributes.requirements, { exact: true }).waitFor();
-      await products.locator('.reference-image').scrollIntoViewIfNeeded();
-      await products.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).waitFor();
+      await currentImageTile.scrollIntoViewIfNeeded();
+      assert.equal(await addImage.count(), 0);
+      assert.equal(await uploadHelp.count(), 0);
+      assert.equal(await removeSavedImage.count(), 0);
+      assert.equal(await products.getByText('原单价', { exact: true }).count(), 0);
+      await images.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).click();
+      const preview = images.getByRole('dialog', { name: '参考图片：草莓蛋糕.png' });
+      await preview.getByRole('img', { name: '草莓蛋糕.png' }).waitFor();
+      await preview.getByRole('button', { name: '关闭大图' }).click();
       await page.getByRole('button', { name: '下一个商品' }).click();
       await products.getByText('每盒六片', { exact: true }).waitFor();
-      await products.locator('.reference-image').scrollIntoViewIfNeeded();
+      await currentImageTile.scrollIntoViewIfNeeded();
       await products.getByRole('button', { name: '查看大图：手工饼干.png' }).waitFor();
       assert.equal(await products.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).count(), 0);
       await page.getByRole('button', { name: '完成装饰' }).click();
@@ -219,11 +240,14 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await unfinished.getByRole('button', { name: '第 2 个商品 · 手工饼干' }).waitFor();
       await unfinished.getByRole('button', { name: '关闭' }).click();
       assert.equal(await page.getByRole('heading', { name: '金额与付款' }).count(), 0);
+      for (const entry of [cancelOrder, downloadOrder, reversePayment, supplement]) assert.equal(await entry.count(), 0);
+      await page.locator('.note-panel summary').click();
+      await page.getByRole('button', { name: '发布备注', exact: true }).waitFor();
     }
     model.order.status = 'WAITING_DELIVERY';
-    roles = ['DECORATOR', 'FRONT_DESK_CLERK'];
-    model.permissions = [...originalPermissions, 'ORDER_FULFILLMENT_UPDATE'];
-    for (const width of [390, 1280]) {
+    model.permissions = [...originalPermissions, ...decoratorPermissions, 'ORDER_PAYMENT_UPDATE'];
+    for (const [width, otherRole] of [[390, 'FRONT_DESK_CLERK'], [1280, 'STORE_MANAGER']]) {
+      roles = ['DECORATOR', otherRole];
       await page.setViewportSize({ width, height: 900 });
       await open();
       await checkProgress();
@@ -234,7 +258,25 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '待自提');
       await page.getByRole('button', { name: '确认自提' }).waitFor();
       await page.getByRole('heading', { name: '金额与付款' }).waitFor();
+      await supplement.waitFor();
+      for (const entry of [cancelOrder, downloadOrder, reversePayment]) assert.ok(await entry.isEnabled());
+      await products.getByText('原单价', { exact: true }).waitFor();
+      await uploadHelp.waitFor();
+      await images.getByRole('button', { name: '移除图片：历史款式.png' }).waitFor();
+      for (const button of await removeSavedImage.all()) assert.ok(await button.isEnabled());
+      await addImage.waitFor();
     }
+    model.failNames.add('retry.png');
+    await select(['retry.png']);
+    await images.getByText('仍有图片上传未完成', { exact: false }).waitFor();
+    model.failNames.clear();
+    roles = ['DECORATOR'];
+    model.permissions = decoratorPermissions;
+    await open();
+    await images.getByRole('button', { name: '重试上传', exact: true }).click();
+    await images.getByText('图片已上传。', { exact: true }).waitFor();
+    assert.ok(model.images.some(image => image.filename === 'retry.png'));
+    assert.equal(await removeSavedImage.count(), 0);
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
