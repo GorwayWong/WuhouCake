@@ -3,10 +3,13 @@ package org.xaspire.WuhouCake.bootstrap.configuration;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.xaspire.WuhouCake.audit.api.facade.AuditFacade;
 import org.xaspire.WuhouCake.identity.api.facade.IdentityFacade;
 import org.xaspire.WuhouCake.order.application.service.CustomerSubmissionService;
 import org.xaspire.WuhouCake.order.application.service.OrderService;
+import org.xaspire.WuhouCake.order.domain.port.OrderImages;
+import org.xaspire.WuhouCake.order.domain.port.OrderImageValidator;
 import org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.CustomerSubmissionMapper;
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
 
@@ -20,6 +23,9 @@ class CustomerEntryCompositionTest {
             .withBean(JsonCodec.class, () -> mock(JsonCodec.class))
             .withBean(IdentityFacade.class, () -> mock(IdentityFacade.class))
             .withBean(OrderService.class, () -> mock(OrderService.class))
+            .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+            .withBean(OrderImages.class, () -> mock(OrderImages.class))
+            .withBean(OrderImageValidator.class, () -> mock(OrderImageValidator.class))
             .withBean(AuditFacade.class, () -> mock(AuditFacade.class))
             .withBean(Clock.class, Clock::systemUTC);
 
