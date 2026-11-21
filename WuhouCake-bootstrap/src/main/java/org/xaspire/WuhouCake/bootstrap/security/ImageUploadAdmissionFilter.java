@@ -58,12 +58,13 @@ public final class ImageUploadAdmissionFilter extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
         boolean packageUpload = isPackage(request);
         var admission = packageUpload ? packages : orders;
+        String kind = packageUpload ? "package" : path(request).startsWith("/api/public/") ? "public_submission"
+                : isSubmission(request) ? "staff_submission" : "order";
         if (!(packageUpload ? admission.tryAcquire() : acquireOrderUpload())) {
-            metrics.counter("wuhou.uploads.rejected", "kind", packageUpload ? "package" : "order").increment();
+            metrics.counter("wuhou.uploads.rejected", "kind", kind).increment();
             unavailable(response, "IMAGE_PROCESSING_BUSY", "图片正在处理中，请稍后重试");
             return;
         }
-        String kind = packageUpload ? "package" : "order";
         long bytes = packageUpload ? UploadMultipartFilter.PACKAGE_REQUEST_BYTES : UploadMultipartFilter.ORDER_REQUEST_BYTES;
         boolean completed = false;
         try (var space = scratch == null ? null : scratch.reserve(bytes)) {

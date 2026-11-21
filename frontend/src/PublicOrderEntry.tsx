@@ -272,10 +272,13 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
           }
         } catch (failure) {
           if (controller.signal.aborted) return;
-          if (!retry && submissionRejected(failure)) {
+          const imageUnavailable = failure instanceof ApiError && failure.status === 404 && failure.code === 'IMAGE_NOT_FOUND';
+          if (imageUnavailable || !retry && submissionRejected(failure)) {
             const sessionCleared = clearSession(request.key);
             rejectedSessionKey.current = sessionCleared ? undefined : request.key;
-            const editable = durable !== 'saved' || await persist({ value: draft, expiresAt: Date.now() + draftLifetime }) !== 'unavailable';
+            legacyOnly.current = false;
+            const editable = !(imageUnavailable || durable === 'saved')
+              || await persist({ value: draft, expiresAt: Date.now() + draftLifetime }) !== 'unavailable';
             if (controller.signal.aborted) return;
             setPending(null); setStored(false); setTabOnly(false);
             setCleanupFailed(!editable || !sessionCleared);
@@ -286,7 +289,9 @@ export function PublicOrderEntry({ token, onLeaveGuard }: { token: string; onLea
         } finally { writing.current = null; if (!controller.signal.aborted) setBusy(false); }
       }}>
         <SubmissionFields draft={draft} onChange={edit} errors={errors} busy={busy || uncertain} imageScope={{ base: `/public/order-entries/${encodeURIComponent(token)}`, publicImage: true }} markImagePending={markPending} />
-        {needsEntryCheck && entry.isFetching ? <p className="notice" role="status">正在检查填写入口…</p>
+        {!uncertain && error instanceof ApiError && error.code === 'IMAGE_NOT_FOUND'
+          ? <p className="notice error" role="alert">部分参考图片已失效。请移除读取失败的图片，按需重新上传后提交。</p>
+          : needsEntryCheck && entry.isFetching ? <p className="notice" role="status">正在检查填写入口…</p>
           : <ErrorNotice error={needsEntryCheck ? entry.error ?? error : error} retry={needsEntryCheck ? checkEntry : undefined} />}
         {submitNotSent && <p className="notice error" role="alert">本次未发送，填写内容仍在本页。请处理暂存问题后再提交。</p>}
         {restoreSession && !pending && <div className="notice error" role="alert">

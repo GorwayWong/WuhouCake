@@ -93,7 +93,7 @@ class OrderServiceTest {
         assertEquals(submissionId.toString(), logged.getValue().details().get("submissionId"));
     }
     @Test void itemAndPaymentChangesPublishTheirCommittedVersions() {
-        var order = loaded(); var itemId = order.activeItems().getFirst().itemId();
+        var order = loaded(10000L); var itemId = order.activeItems().getFirst().itemId();
         service.revise(order.id(), new OrderCommands.Revise(0, itemId, Map.of("quantity", 2)), operator);
         verify(events).publishEvent(new OrderChanged(order.id(), itemId, OrderChanged.Type.ITEM_CHANGED, 1, order.orderNo()));
         service.changePaymentStatus(order.id(), new OrderCommands.PaymentStatus(1, "PAID"), operator);
@@ -221,13 +221,16 @@ class OrderServiceTest {
         verify(orders, never()).reviseItem(any(), anyLong(), any()); verifyNoInteractions(activities, events);
     }
     @Test void activityFailurePreventsPublication() {
-        var order = loaded(); doThrow(new IllegalStateException("unavailable")).when(activities).append(any());
+        var order = loaded(10000L); doThrow(new IllegalStateException("unavailable")).when(activities).append(any());
         assertThrows(IllegalStateException.class, () -> service.note(order.id(), new OrderCommands.Note(null, "备注"), operator));
         assertThrows(IllegalStateException.class, () -> service.changePaymentStatus(order.id(), new OrderCommands.PaymentStatus(0, "PAID"), operator));
         verifyNoInteractions(events);
     }
     private Order loaded() {
-        var order = order(); when(orders.find(order.id())).thenReturn(Optional.of(order)); return order;
+        return loaded(null);
+    }
+    private Order loaded(Long amount) {
+        var order = order(amount); when(orders.find(order.id())).thenReturn(Optional.of(order)); return order;
     }
     @Test void fulfillmentPersistsStatusAndRecordsActorActionAndNotification() {
         var order = loaded(); finishProduction(order);
@@ -243,7 +246,7 @@ class OrderServiceTest {
         verify(events).publishEvent(new OrderChanged(order.id(), null, OrderChanged.Type.ORDER_FULFILLMENT_CHANGED, 6, order.orderNo()));
     }
     @Test void cancellationRecordsTrimmedReasonAndPreservesPaymentStageAndNotes() {
-        var order = loaded(); order.changePaymentStatus("PAID", NOW); order.applyProductionAction("COMPLETE_BASE", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
+        var order = loaded(10000L); order.changePaymentStatus("PAID", NOW); order.applyProductionAction("COMPLETE_BASE", NOW); order.applyProductionAction("COMPLETE_LAYER", NOW);
         var itemId = order.activeItems().getFirst().itemId(); var items = order.activeItems();
         when(activities.recentItemNotes(order.id())).thenReturn(List.of(OrderActivity.append(order.id(), itemId, "NOTE", "已有备注", Map.of(),
                 new Actor(operator.accountId(), operator.nickname()), NOW)));
@@ -259,7 +262,7 @@ class OrderServiceTest {
     }
     @Test void terminalOrdersStillAllowNotesAndPaymentCorrection() {
         for (boolean completed : List.of(false, true)) {
-            var order = loaded();
+            var order = loaded(10000L);
             if (completed) {
                 finishProduction(order); order.applyFulfillmentAction("CONFIRM_PICKUP", NOW);
             } else order.cancel("取消", NOW);
@@ -303,7 +306,7 @@ class OrderServiceTest {
         verify(orders).changeStatus(ready, 5); verifyNoInteractions(events);
     }
     @Test void restartingCancelledOrderPersistsItemResetAndAuditsOneVersionedChange() {
-        var order = loaded(); var item = order.activeItems().getFirst();
+        var order = loaded(10000L); var item = order.activeItems().getFirst();
         order.applyProductionAction("COMPLETE_BASE", NOW); order.completeSimpleItem(item.itemId(), true, NOW);
         order.changePaymentStatus("PAID", NOW); order.cancel("客户取消", NOW); var expected = order.version();
         var result = service.restartCancelled(order.id(), new OrderCommands.Restart(expected), operator);
@@ -334,8 +337,11 @@ class OrderServiceTest {
         order.applyProductionAction("COMPLETE_DECORATION", NOW);
     }
     private Order order() {
+        return order(null);
+    }
+    private Order order(Long amount) {
         return Order.create(UUID.randomUUID(), "0000001", new CustomerContact(null, "13800000000", null, null),
                 new FulfillmentPlan(FulfillmentType.PICKUP, null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
-                null, List.of(OrderItem.create(UUID.randomUUID(), "蛋糕", null, 1, null, null, Map.of(), NOW)), operator.accountId(), NOW);
+                amount, List.of(OrderItem.create(UUID.randomUUID(), "蛋糕", null, 1, null, null, Map.of(), NOW)), operator.accountId(), NOW);
     }
 }

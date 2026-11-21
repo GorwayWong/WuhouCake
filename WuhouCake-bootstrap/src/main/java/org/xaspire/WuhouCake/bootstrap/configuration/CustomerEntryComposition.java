@@ -34,6 +34,9 @@ public class CustomerEntryComposition {
         return new SubmissionImageService(new org.xaspire.WuhouCake.order.infrastructure.persistence.repository.PostgresSubmissionImages(jdbc),
                 orders, validator, clock);
     }
+    @Bean SubmissionImageMaintenance submissionImageMaintenance(SubmissionImageService images, io.micrometer.core.instrument.MeterRegistry metrics) {
+        return new SubmissionImageMaintenance(images, metrics);
+    }
     @Bean CustomerSubmissionService customerSubmissionService(CustomerSubmissions submissions, IdentityFacade identity, OrderService orders,
             JsonCodec json, Clock clock, CustomerEntryProperties properties, org.xaspire.WuhouCake.audit.api.facade.AuditFacade audit, Environment environment, SubmissionImageService images) {
         var publicOrigin = properties.publicOrigin();

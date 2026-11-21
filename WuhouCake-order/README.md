@@ -94,7 +94,7 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 - 数量为 1–2147483647 的整数；订单与套餐金额为 0–9007199254740991 的整数分，超限、小数或负数返回 400 VALIDATION_FAILED。空值与 0 不同；汇总金额以精确整数分字符串返回。
 - 商品类别为 `CAKE`（蛋糕）和 `OTHER`（其他）。V27 统一旧非蛋糕类别，将其业务属性整理进多行规格；所有历史套餐行转为其他。活动日志不重写。
 - 新建订单可选传 `referenceUnitPriceCents` 与 `referenceMemberPriceCents` 保存参考报价，要求金额读取权限。`pricingMode` 缺省或为 `MANUAL` 时整单原价和会员价独立填写。兼容旧 `ITEM_SUM` 创建请求，创建时计算一次并将结果保存为手填金额。旧创建请求的幂等指纹保持兼容。V28 将旧草稿恢复生成的固定格式报价从备注迁入商品报价列。详情与导出仅向有金额权限的员工显示报价。
-- productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling/flavor 缺失、null、空字符串或纯空白时，写入和读取均使用原味/芒果/原味奶油；明确填写的值保留。历史读取不写库，以后保存时写入默认值；客户填单及核对复用相同默认值。新建、追加及明确修改的蛋糕 size 只接受正数、最多两位小数、整数部分最多九位，存为无单位数值文本；非法值返回 400。旧规格可读，未改尺寸时不会因旧尺寸异常阻止其他字段更正。
+- productType 省略时默认 CAKE，去空格并转为大写。attributes 保留未知规格；CAKE 的 base/filling/flavor 缺失、null、空字符串或纯空白时，写入和读取均使用原味/芒果/原味奶油；明确填写的值保留。历史读取不写库，以后保存时写入默认值；客户填单及核对复用相同默认值。新建、追加及明确修改的蛋糕 `size` 使用自由文本，仅移除首尾空白。统计和筛选按文本精确匹配，例如 `8`、`8.00` 和 `8寸` 分别统计。旧规格可继续读取。
 - 商品分类统一为 CAKE、TEA_BREAK、COOKIE、SNACK、DRINK、READY_BAKERY。V22 归并订单商品、套餐、待确认核对数据中的旧分类，保留 attributes、原始填单和历史快照。写入时归一化 DONUT/CUPCAKE/OTHER→TEA_BREAK、BREAD→READY_BAKERY；未知历史类型保留读取。蛋糕统计仍只统计 CAKE。
 - 时间以 ISO 8601 带偏移输入、UTC 输出，界面统一为取货与出品。取货为客户或配送员从门店取走商品的时间。前端出品默认取货前一小时，手动值保持并可恢复自动；接口的 plannedFinishAt 接收最终安排，允许空值。
 - 公开字段名不变。新建以 plannedHandoffAt 优先，缺失回退 requestedReceiveAt，写入时同步两者和北京时间 requestedReceiveDate。PATCH 明确修改取货时间时同步旧收货字段；传 null 可清除时刻，日期仍必填。历史订单查询优先 plannedHandoffAt，再回退 requestedReceiveAt 和 requestedReceiveDate；日历、工作台、经营查询 RECEIVE、出货汇总和日期导出使用同一有效取货日期。无关编辑不回填，来源记录及审计保留原值。客户填单 Review 的 plannedFinishAt 为可空出品时间。
@@ -148,7 +148,7 @@ V18 为 V17 的增量迁移，保留既有商品和创建时间并初始化版�
 
 查询返回整段范围的 totals、sizes、employees，分页仅影响 items。尺寸按相同文本分组，各组订单数分别去重，混合尺寸订单会进入多组，不可相加；员工按稳定账号分组，显示最近录单的归属快照，历史未归属独立成组。金额仅求已填写约定金额，按手动付款标记分列，并单列未填金额订单数；不按尺寸分摊整单金额，本阶段提供员工业绩汇总，不计算提成。
 
-`GET /api/admin/orders/export` 使用相同业务条件及可重复读快照，返回“统计”“尺寸统计”“员工业绩”“订单明细”“商品明细”五张 XLSX 表。最多 10,000 单、50,000 项商品。订单商品描述和商品明细各限 8 MiB，商品规格与历史价格说明计入商品明细限额。长规格分段写入商品续行，数量仅在首行填写。超限返回 REPORT_LIMIT_EXCEEDED。默认排除取消单；includeCancelled=true 包含，status=CANCELLED 明确只看取消。约定总额不是实收或提成；JSON 金额汇总/明细用整数分字符串保留精度。导出数量为可计算的数值单元格，工号/订单号等为文本，不执行输入公式；表头冻结并支持筛选。
+`GET /api/admin/orders/export` 使用相同业务条件及可重复读快照，返回“统计”“尺寸统计”“员工业绩”“订单明细”“商品明细”五张 XLSX 表。最多 10,000 单、50,000 项商品。订单商品描述和商品明细各限 8 MiB，商品规格与历史价格说明计入商品明细限额。长规格、尺寸和订单商品描述可分段写入续行，数量与金额仅在首行填写。超限返回 REPORT_LIMIT_EXCEEDED。默认排除取消单；includeCancelled=true 包含，status=CANCELLED 明确只看取消。约定总额不是实收或提成；JSON 金额汇总/明细用整数分字符串保留精度。导出数量为可计算的数值单元格，工号/订单号等为文本，不执行输入公式；表头冻结并支持筛选。
 
 SSE 使用带 Bearer 的 Fetch，先发送 ready/data={}，提交成功后发送 order.changed，载荷为 orderId、itemId、changeType、version、orderNo，不携带客户联系方式。资料迁日、备注和图片同版本通知都触发 REST 重取；不能用版本相同丢弃通知。读取和导出不推送。前端保留本次在线期间最近 20 张订单的更新提示，重连通过 REST 补齐数据，完整操作仍以订单日志为准。
 
@@ -226,19 +226,19 @@ DASHSCOPE_API_KEY 仅通过服务端受限配置注入；普通 .env 文件不�
 
 `POST /api/orders` 新增可选 `originalAmountCents`、`memberAmountCents`、`paymentMethod`。金额为整数分，会员价非 null 时优先（包括 0），否则采用原价，成交金额继续通过 `totalAmountCents` 返回并用于汇总；同时传入不一致的成交金额会被拒绝。旧客户端仅传 `totalAmountCents` 仍可创建订单。
 
-方式为 `UNIONPAY`、`MEMBER_CARD`、`BANK_TRANSFER`、`SERVICE_WECHAT`、`CASH`、`UNPAID`。省略时沿用未付默认值；指定非未付方式需付款操作权限，创建事务内同时保存已付款和服务器时间。未对接实际支付通道。
+方式为 `UNIONPAY`、`MEMBER_CARD`、`BANK_TRANSFER`、`SERVICE_WECHAT`、`CASH`、`DOUYIN_GROUP_BUY`（抖音团购）、`MEITUAN_GROUP_BUY`（美团团购）、`UNPAID`。省略时沿用未付默认值；指定非未付方式需付款操作权限，创建事务内同时保存已付款和服务器时间。未对接实际支付通道。
 
-`PATCH /api/orders/{id}/information` 可更正双报价，服务端重新计算成交金额；修改金额不改付款状态或付款时间。`PATCH /api/orders/{id}/payment-status` 支持同时传 `paymentMethod`，状态与方式必须一致；已付只改方式保留原付款时间。两类写入沿用 `expectedVersion` 与审计，创建沿用幂等标识。V26 新增可空列，不回填历史订单渠道或报价。
+`PATCH /api/orders/{id}/information` 可更正双报价，服务端重新计算成交金额；修改金额不改付款状态或付款时间。`PATCH /api/orders/{id}/payment-status` 支持同时传 `paymentMethod`，状态与方式必须一致。登记为已付款需要成交金额，零元是有效金额。已付款时只改方式保留原付款时间。两类写入沿用 `expectedVersion` 与审计，创建沿用幂等标识。V26 新增可空列，不回填历史订单渠道或报价。
 
 
 ### 商品修改与备注重试
 
-订单编辑权限允许在待交接状态修改、追加或移除商品。涉及制作内容的修改和商品增删会原子退回装饰并记录状态变更。修改后的商品需要重新备齐，新增商品为未备齐，其他商品保留完成状态。相同值和仅提交商品参考报价字段（`referenceUnitPriceCents`、`referenceMemberPriceCents`）的修改不退回。参考报价字段要求金额权限，`null` 清除对应报价；汇总模式同时重算成交额，历史手填模式不重算。已交付和已取消订单禁止修改商品。
+订单编辑权限允许在待交接状态修改、追加或移除商品。涉及制作内容的修改和商品增删会原子退回装饰并记录状态变更。修改后的商品需要重新备齐，新增商品为未备齐，其他商品保留完成状态。相同值和仅提交商品参考报价字段（`referenceUnitPriceCents`、`referenceMemberPriceCents`）的修改不退回。参考报价字段要求金额权限，`null` 清除对应报价。商品编辑保留整单原价、会员价和成交额。已交付和已取消订单禁止修改商品。
 
 `POST /api/orders/{id}/notes` 接受可选 UUID 请求头 `Idempotency-Key`。同员工、订单和标识使用相同备注对象及正文重试时返回原备注，变更对象或正文返回 `409 IDEMPOTENCY_KEY_CONFLICT`。标识随备注保存，重复请求不发布更新通知。订单被删除期间拒绝写入，已发布的备注和标识继续保留。旧客户端省略该请求头时沿用原发布行为。
 
-## 商品汇总计价
+## 历史商品汇总计价兼容
 
 V31 为已有订单设置 `MANUAL`，不推算或分摊历史报价。V34 将自动合计订单切换为手填金额模式，保留原价、会员价和成交金额。新订单通过 `referenceUnitPriceCents`／`referenceMemberPriceCents` 保存可选的整数分单价。金额上限为 9007199254740991 分，数量为正 32 位整数，乘法与加法均检查溢出。
 
-汇总模式不允许通过资料接口直接修改整单金额。付款时缺少成交报价返回 `409 ORDER_QUOTE_INCOMPLETE`；已付款商品变更影响成交额返回 `409 ORDER_PAID_AMOUNT_LOCKED`。原价未填但会员单价已填的商品，其成交报价完整，原价合计仍为空。日历与生产列表保留原有字段；配送与收款报表继续读取持久化的 `totalAmountCents`，不在各页面重复计价。
+旧客户端传 `ITEM_SUM` 新建订单时，服务端按商品计算一次报价，保存为 `MANUAL`。只有会员单价的商品可参与成交额合计，原价合计为空。后续通过资料接口修改整单报价，已付款订单须先撤销付款登记。登记付款时缺少成交额返回 `409 ORDER_QUOTE_INCOMPLETE`。配送与收款报表读取持久化的 `totalAmountCents`。

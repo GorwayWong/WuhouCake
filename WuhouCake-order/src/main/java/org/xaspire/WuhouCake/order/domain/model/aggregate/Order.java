@@ -410,8 +410,7 @@ public final class Order {
         if (nextMethod == null) nextMethod = this.paymentStatus.equals(paymentStatus) ? paymentMethod
                 : paymentStatus.equals("UNPAID") ? (paymentMethod == null ? null : "UNPAID") : "UNPAID".equals(paymentMethod) ? null : paymentMethod;
         if (nextMethod != null && !paymentStatus.equals(nextMethod.equals("UNPAID") ? "UNPAID" : "PAID")) throw invalid();
-        if (paymentStatus.equals("PAID") && totalAmountCents == null
-                && (pricingMode.equals("ITEM_SUM") || (method != null || paymentMethod != null) && !this.paymentStatus.equals(paymentStatus)))
+        if (paymentStatus.equals("PAID") && !this.paymentStatus.equals(paymentStatus) && totalAmountCents == null)
             throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
         if (this.paymentStatus.equals(paymentStatus) && Objects.equals(paymentMethod, nextMethod)) return Map.of();
         requireNextVersion();

@@ -10,6 +10,16 @@ class ImageUploadAdmissionTest {
     private static MockHttpServletRequest upload(String path) {
         var request = new MockHttpServletRequest("POST", path); request.setContentType("multipart/form-data; boundary=test"); return request;
     }
+    @Test void recordsPublicAndStaffSubmissionUploadsSeparately() throws Exception {
+        var meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        var filter = new ImageUploadAdmissionFilter(new ObjectMapper(), meters);
+        filter.doFilter(upload("/api/public/order-entries/token/items/item/images/photo"), new MockHttpServletResponse(),
+                (request, response) -> ((jakarta.servlet.http.HttpServletResponse) response).setStatus(201));
+        filter.doFilter(upload("/api/customer-submissions/submission/items/item/images/photo"), new MockHttpServletResponse(),
+                (request, response) -> ((jakarta.servlet.http.HttpServletResponse) response).setStatus(409));
+        assertEquals(1.0, meters.get("wuhou.uploads.succeeded").tag("kind", "public_submission").counter().count());
+        assertEquals(1.0, meters.get("wuhou.uploads.rejected").tag("kind", "staff_submission").counter().count());
+    }
     @Test void packageUploadRejectionIsImmediateAndLeavesTheOrderUploadLaneAvailable() throws Exception {
         var filter = new ImageUploadAdmissionFilter(new ObjectMapper(), new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         var entered = new CountDownLatch(1); var release = new CountDownLatch(1);

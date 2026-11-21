@@ -36,6 +36,11 @@ public final class PostgresSubmissionImages implements SubmissionImages {
                 """, Integer.class, submissionId, Timestamp.from(now));
     }
 
+    @Override public void lockEntryUploads(UUID entryId) {
+        jdbc.queryForObject("SELECT 1 FROM pg_advisory_xact_lock(hashtextextended('submission-image-upload:' || CAST(? AS text), 0))",
+                Integer.class, entryId);
+    }
+
     @Override public int stagedEntryCount(UUID entryId, Instant now) {
         return jdbc.queryForObject("""
                 SELECT count(*) FROM customer_submission_image WHERE entry_id=? AND submission_id IS NULL AND expires_at>?
@@ -75,10 +80,19 @@ public final class PostgresSubmissionImages implements SubmissionImages {
                 id, itemId, owner, Timestamp.from(now)).stream().findFirst().orElse(null);
     }
 
-    @Override public void purgeExpired(Instant now) {
-        jdbc.update("""
+    @Override public int purgeExpired(Instant now) {
+        return jdbc.update("""
                 DELETE FROM customer_submission_image WHERE expires_at<=? AND id IN (
-                    SELECT id FROM customer_submission_image WHERE expires_at<=? ORDER BY expires_at LIMIT 500)
+                    SELECT id FROM customer_submission_image WHERE expires_at<=? ORDER BY expires_at,id
+                    LIMIT 500 FOR UPDATE SKIP LOCKED)
                 """, Timestamp.from(now), Timestamp.from(now));
+    }
+
+    @Override public StagingStats stagingStats(Instant now) {
+        return jdbc.queryForObject("""
+                SELECT count(*), COALESCE(sum(octet_length(content)), 0),
+                    count(*) FILTER (WHERE expires_at <= ?)
+                FROM customer_submission_image WHERE expires_at IS NOT NULL
+                """, (rs, row) -> new StagingStats(rs.getLong(1), rs.getLong(2), rs.getLong(3)), Timestamp.from(now));
     }
 }

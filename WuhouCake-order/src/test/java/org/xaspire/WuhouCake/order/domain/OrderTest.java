@@ -105,11 +105,14 @@ class OrderTest {
         assertEquals(order.createdAt(), order.confirmedAt());
     }
     @Test void paymentCorrectionRecordsValuesWithoutChangingItemsAndIdenticalPaymentIsANoop() {
-        var first = item("蛋糕", Map.of()); var second = item("预制品", Map.of()); var order = order(first, second);
+        var first = item("蛋糕", Map.of()); var second = item("预制品", Map.of());
+        var order = order(FulfillmentType.PICKUP, 10000L, first, second);
         var change = order.changePaymentStatus("PAID", NOW.plusSeconds(1));
         assertEquals("UNPAID", ((Map<?, ?>) change.get("before")).get("paymentStatus"));
         assertNull(((Map<?, ?>) change.get("before")).get("paidAt"));
-        assertEquals(Map.of("paymentStatus", "PAID", "paidAt", NOW.plusSeconds(1).toString()), change.get("after"));
+        assertEquals("PAID", ((Map<?, ?>) change.get("after")).get("paymentStatus"));
+        assertEquals(NOW.plusSeconds(1).toString(), ((Map<?, ?>) change.get("after")).get("paidAt"));
+        assertEquals(10000L, order.totalAmountCents());
         assertEquals(NOW.plusSeconds(1), order.paidAt());
         assertEquals(1, order.version()); assertEquals(NOW.plusSeconds(1), order.updatedAt());
         assertEquals(first, order.requireActiveItem(first.itemId())); assertEquals(second, order.requireActiveItem(second.itemId()));
@@ -246,7 +249,7 @@ class OrderTest {
     }
     @Test void everyNonterminalStateCanCancelWithoutChangingPaymentItemsOrStage() {
         for (var state : List.of("CAKE_BASE", "LAYER", "FROSTING", "DECORATING", "WAITING_DELIVERY")) {
-            var order = orderAt(state, FulfillmentType.DELIVERY, item("蛋糕", Map.of()));
+            var order = orderAt(state, FulfillmentType.DELIVERY, 10000L, item("蛋糕", Map.of()));
             order.changePaymentStatus("PAID", NOW);
             assertEquals(state, order.status()); var version = order.version(); var items = order.activeItems(); var stage = order.currentStageCode();
             var changed = order.cancel(" 客户确认取消 ", NOW.plusSeconds(5));
@@ -266,7 +269,7 @@ class OrderTest {
         }
     }
     @Test void cancellationRequiresAReasonAndCompletedOrdersCannotCancel() {
-        var order = order(item("蛋糕", Map.of()));
+        var order = order(FulfillmentType.PICKUP, 10000L, item("蛋糕", Map.of()));
         for (var reason : Arrays.asList(null, "", " \t "))
             assertEquals("VALIDATION_FAILED", assertThrows(OrderFailure.class, () -> order.cancel(reason, NOW.plusSeconds(1))).code());
         assertEquals("CAKE_BASE", order.status()); assertEquals(0, order.version()); assertEquals(NOW, order.updatedAt());
@@ -513,7 +516,7 @@ class OrderTest {
     }
     @Test void everyFulfillmentBranchRollsBackOneStepAndOnlyWaitingProductionResetsItems() {
         for (var type : FulfillmentType.values()) {
-            var cake = item("蛋糕", Map.of("size", "8")); var order = order(type, cake);
+            var cake = item("蛋糕", Map.of("size", "8")); var order = order(type, 10000L, cake);
             order.changePaymentStatus("PAID", NOW);
             order.applyProductionAction("COMPLETE_BASE", NOW); finishProduction(order, NOW);
             order.applyFulfillmentAction(type == FulfillmentType.DELIVERY ? "COMPLETE_DELIVERY" : "CONFIRM_PICKUP", NOW);
@@ -545,7 +548,8 @@ class OrderTest {
         }
     }
     @Test void cancellationRestartKeepsIdentityPaymentAndBusinessValuesAndRejectsDirectProductionBypass() {
-        var cake = item("蛋糕", Map.of("size", "6")); var removed = item("已移除", Map.of()); var order = order(cake, removed);
+        var cake = item("蛋糕", Map.of("size", "6")); var removed = item("已移除", Map.of());
+        var order = order(FulfillmentType.PICKUP, 10000L, cake, removed);
         order.removeItem(removed.itemId(), NOW); order.changePaymentStatus("PAID", NOW);
         order.applyProductionAction("COMPLETE_BASE", NOW); finishProduction(order, NOW);
         assertThrows(OrderFailure.class, () -> order.restartCancelled(NOW));
@@ -576,7 +580,10 @@ class OrderTest {
         }
     }
     private static Order orderAt(String status, FulfillmentType type, OrderItem... items) {
-        var order = order(type, items);
+        return orderAt(status, type, null, items);
+    }
+    private static Order orderAt(String status, FulfillmentType type, Long amount, OrderItem... items) {
+        var order = order(type, amount, items);
         switch (status) {
             case "CAKE_BASE" -> { }
             case "LAYER" -> order.applyProductionAction("COMPLETE_BASE", NOW);
@@ -606,8 +613,11 @@ class OrderTest {
         order.applyProductionAction("COMPLETE_DECORATION", now);
     }
     private static Order order(FulfillmentType type, OrderItem... items) {
+        return order(type, null, items);
+    }
+    private static Order order(FulfillmentType type, Long amount, OrderItem... items) {
         return Order.create(UUID.randomUUID(), "0000001", new CustomerContact("客户", "13800000000", null, null),
                 new FulfillmentPlan(type, type == FulfillmentType.DELIVERY ? "示例地址" : null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
-                null, List.of(items), UUID.randomUUID(), NOW);
+                amount, List.of(items), UUID.randomUUID(), NOW);
     }
 }

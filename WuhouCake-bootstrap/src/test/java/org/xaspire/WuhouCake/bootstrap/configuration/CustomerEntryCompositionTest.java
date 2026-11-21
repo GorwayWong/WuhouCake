@@ -27,6 +27,7 @@ class CustomerEntryCompositionTest {
             .withBean(OrderImages.class, () -> mock(OrderImages.class))
             .withBean(OrderImageValidator.class, () -> mock(OrderImageValidator.class))
             .withBean(AuditFacade.class, () -> mock(AuditFacade.class))
+            .withBean(io.micrometer.core.instrument.MeterRegistry.class, io.micrometer.core.instrument.simple.SimpleMeterRegistry::new)
             .withBean(Clock.class, Clock::systemUTC);
 
     private ApplicationContextRunner origin(String value, String... profiles) {

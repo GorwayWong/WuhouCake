@@ -145,6 +145,24 @@ test('手机核单排除原图、补图并在重新打开时保留选择', async
   await page.getByRole('button', { name: '不采用', exact: true }).click();
   await page.locator('.submission-item-images input[type=file]').setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: png });
   await page.locator('.image-caption').getByText('客服补图 1', { exact: true }).waitFor();
+  await page.getByText('草稿已保存在本机。').waitFor();
+  const remotePhoto = '20000000-0000-4000-8000-000000000072';
+  submission = { ...submission, version: 1, reviewed: {
+    content: { ...source, items: [{ ...source.items[0], imageIds: [remotePhoto] }] },
+    totalAmountCents: null, creditedEmployeeId: null, plannedHandoffAt: null,
+    plannedFinishAt: null, prices: [{ unitPriceCents: null, memberPriceCents: null }],
+  } };
+  await page.reload();
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  await page.getByRole('button', { name: '核对同事改动' }).click();
+  const localPreview = page.getByRole('button', { name: '查看我的参考图片 1' });
+  const remotePreview = page.getByRole('button', { name: '查看最新参考图片 1' });
+  await page.getByRole('group', { name: '我的参考图片', exact: true }).scrollIntoViewIfNeeded();
+  await localPreview.waitFor();
+  await page.getByRole('group', { name: '最新参考图片', exact: true }).scrollIntoViewIfNeeded();
+  await remotePreview.waitFor();
+  await page.getByRole('radio', { name: '采用我的输入' }).check();
+  await page.getByRole('button', { name: '核对后继续编辑' }).click();
   await page.getByRole('button', { name: '暂存核对结果' }).click();
   await page.getByText('核对结果已保存。').waitFor();
   assert.deepEqual(submission.original.items[0].imageIds, [photo]);

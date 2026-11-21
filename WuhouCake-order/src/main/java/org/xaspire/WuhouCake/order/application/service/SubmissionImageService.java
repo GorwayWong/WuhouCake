@@ -4,7 +4,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.UUID;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImage;
@@ -24,6 +23,7 @@ public class SubmissionImageService {
     }
 
     public UUID stage(UUID entry, UUID submission, UUID item, UUID id, byte[] bytes, String filename) {
+        if (entry != null) staged.lockEntryUploads(entry);
         var now = clock.instant();
         var fingerprint = OrderImageService.fingerprint(item, filename, bytes);
         if (staged.matchesUpload(id, item, entry, submission, now, fingerprint)) return id;
@@ -87,6 +87,7 @@ public class SubmissionImageService {
         }
     }
 
-    @Scheduled(fixedDelay = 600_000)
-    public void purgeExpired() { staged.purgeExpired(clock.instant()); }
+    public int purgeExpired() { return staged.purgeExpired(clock.instant()); }
+
+    public SubmissionImages.StagingStats stagingStats() { return staged.stagingStats(clock.instant()); }
 }

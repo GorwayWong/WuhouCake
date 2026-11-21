@@ -13,7 +13,9 @@ docker compose exec -T image-worker wget -qO- http://127.0.0.1:8091/metrics
 | --- | --- |
 | `jvm_memory_*`、`tomcat_*`、`hikaricp_connections_*` | JVM 内存、Tomcat 线程、连接池与等待 |
 | `http_server_requests_seconds_bucket` | 应用端 HTTP 延迟分布。分别用 `histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{job="wuhou-app"}[5m])))` 和 0.99 计算 P95/P99 |
-| `wuhou_uploads_active`、`wuhou_uploads_{succeeded,rejected,failed}_total` | 按 order/package 统计通过鉴权的 multipart 请求。rejected 包含入口 BUSY 和 4xx，failed 包含 5xx 及中断。按成功、拒绝、失败三类增量求占比 |
+| `wuhou_uploads_active`、`wuhou_uploads_{succeeded,rejected,failed}_total` | 活跃量按 order/package 上传通道统计。结果计数按 `kind` 区分 `order`、`package`、`public_submission`、`staff_submission`。rejected 包含上传准入 BUSY 和 4xx，failed 包含处理阶段 5xx 及中断 |
+| `wuhou_submission_images_staged`、`wuhou_submission_images_staged_bytes`、`wuhou_submission_images_staged_expired` | 每轮清理后采集数据库暂存总张数、逻辑字节数和已过期张数。多实例共用同一数据库时，用各实例的最大值观察容量 |
+| `wuhou_submission_images_cleanup_{deleted,failed}_total` | 累计删除的图片张数和失败的维护轮次。每轮最多删除 500 张，调度间隔为上轮结束后 10 分钟 |
 | `wuhou_image_worker_active`、`wuhou_image_worker_{admitted,rejected,success,invalid_input,failed,timeout}_total` | Worker 并发和准入。已准入请求各计一次成功、无效输入、内部故障或超时。忙碌单独计为准入拒绝 |
 | `wuhou_files_{active,rejected_total}`、`wuhou_exports_{requests,timeouts}_total` | 图片下载和导出准入。导出生成期限或文件传输期限超时各计一次，客户端断开单独处理 |
 | `wuhou_sse_connections`、`wuhou_sse_queue_overflows_total` | 活动 SSE 连接和队列溢出 |

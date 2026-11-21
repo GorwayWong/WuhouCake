@@ -654,3 +654,47 @@ test('手机填单按商品恢复已上传图片，上传失败可重试并沿�
     [uploads[1].item, [uploads[1].id]], [uploads[2].item, [uploads[2].id]],
   ]);
 });
+
+test('图片过期的待确认请求恢复为可编辑草稿并可重新提交', async t => {
+  const browser = await chromium.launch({ headless: true, channel: testBrowserChannel() });
+  t.after(() => browser.close());
+  const context = await openTestContext(browser);
+  const page = await context.newPage();
+  const path = '**/api/public/order-entries/retry';
+  const attempts = [];
+  let expired = false;
+  await context.route(path, route => route.fulfill({ json: { success: true, data: { ownerName: '测试客服' } } }));
+  await context.route(path + '/items/**', route => {
+    if (route.request().method() === 'POST') return route.fulfill({ json: { success: true, data: route.request().url().split('/').at(-1) } });
+    return expired ? route.fulfill({ status: 404 }) : route.fulfill({ contentType: 'image/png', body: png });
+  });
+  await context.route(path + '/submissions', route => {
+    attempts.push({ key: route.request().headers()['idempotency-key'], content: route.request().postDataJSON() });
+    if (attempts.length === 1) return route.abort('failed');
+    if (attempts.length === 2) return route.fulfill({ status: 404, json: { success: false, code: 'IMAGE_NOT_FOUND' } });
+    return route.fulfill({ status: 201, json: { success: true, data: receipt(10) } });
+  });
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=', 'base64');
+  await page.goto(`${base}/#/fill/retry`);
+  await complete(page);
+  await page.locator('.submission-item-images input[type=file]').setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: png });
+  await page.getByText('1 / 5 张').waitFor();
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  await page.getByRole('button', { name: '重试提交', exact: true }).waitFor();
+  expired = true;
+  await page.reload();
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  await page.getByRole('button', { name: '重试提交', exact: true }).click();
+  await page.getByText(/部分参考图片已失效/).waitFor();
+  assert.deepEqual(attempts[0], attempts[1]);
+  assert.equal(await readPending(page), null);
+  assert.equal(await page.locator('#phone').isEditable(), true);
+  await page.reload();
+  await page.getByRole('button', { name: '恢复草稿' }).click();
+  assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+  await page.getByRole('button', { name: '移除', exact: true }).click();
+  await page.getByRole('button', { name: '提交预订', exact: true }).click();
+  await page.getByRole('heading', { name: '已提交，待客服确认' }).waitFor();
+  assert.notEqual(attempts[2].key, attempts[0].key);
+  assert.deepEqual(attempts[2].content.items[0].imageIds ?? [], []);
+});

@@ -50,12 +50,103 @@ class CustomerSubmissionIT {
     @MockitoSpyBean Operations auditOperations;
     @Autowired DataSource dataSource;
     @Autowired PlatformTransactionManager transactions;
+    @Autowired org.xaspire.WuhouCake.order.application.service.CustomerSubmissionService customerSubmissions;
+    @Autowired org.xaspire.WuhouCake.bootstrap.configuration.SubmissionImageMaintenance imageMaintenance;
+    @Autowired io.micrometer.core.instrument.MeterRegistry meters;
     @BeforeEach void clean() {
         reset(store, auditOperations); jdbc.execute("TRUNCATE customer_order_entry,customer_order_submission,customer_submission_activity,cake_order,identity_account,audit_operation CASCADE");
         clearRedis();
     }
     @AfterAll void cleanup() { reset(store, auditOperations); clearRedis(); jdbc.execute("DROP SCHEMA " + SCHEMA + " CASCADE"); }
     private void clearRedis() { var keys = redis.keys(NAMESPACE + ":*"); if (keys != null && !keys.isEmpty()) redis.delete(keys); }
+
+    @Test void textSizesParticipateInNewSubmissionFingerprints() throws Exception {
+        String token = entry(admin());
+        var key = UUID.randomUUID();
+        var input = json.createObjectNode().put("phone", "13800000000").put("fulfillmentType", "PICKUP")
+                .put("requestedReceiveAt", "2026-11-02T19:00:00+08:00");
+        var attributes = input.putArray("items").addObject().put("name", "蛋糕").put("quantity", 1)
+                .put("productType", "CAKE").putObject("attributes");
+        attributes.put("size", "8");
+        String id = submit(token, input, key).at("/data/submissionId").asText();
+        assertEquals(2, jdbc.queryForObject("SELECT fingerprint_version FROM customer_order_submission WHERE id=?::uuid", Integer.class, id));
+        attributes.put("size", " 8 ");
+        assertEquals(id, submit(token, input, key).at("/data/submissionId").asText());
+        attributes.put("size", "8.00");
+        var conflict = new Client().request("POST", submitPath(token), input, key.toString());
+        assertEquals(409, conflict.status);
+        assertEquals("IDEMPOTENCY_KEY_CONFLICT", conflict.body.path("code").asText());
+        assertEquals(1, count("customer_order_submission"));
+    }
+
+    @Test void entryUploadLimitIsAtomicAcrossTransactions() throws Exception {
+        String token = entry(admin());
+        UUID entry = jdbc.queryForObject("SELECT id FROM customer_order_entry WHERE token=?", UUID.class, token);
+        byte[] photo = picture(0x7850ff);
+        jdbc.update("""
+                INSERT INTO customer_submission_image(id,item_id,entry_id,expires_at,filename,content_type,width,height,content,fingerprint)
+                SELECT gen_random_uuid(),gen_random_uuid(),?,now()+interval '1 hour','test.png','image/png',40,40,?,'seed'
+                FROM generate_series(1,199)
+                """, entry, photo);
+        var firstStaged = new CountDownLatch(1);
+        var commitFirst = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            UUID firstId = UUID.randomUUID();
+            var first = pool.submit(() -> new TransactionTemplate(transactions).execute(transaction -> {
+                var staged = customerSubmissions.stagePublicImage(token, UUID.randomUUID(), firstId, photo, "test.png");
+                firstStaged.countDown();
+                try {
+                    if (!commitFirst.await(10, TimeUnit.SECONDS)) throw new AssertionError("first upload was not released");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+                return staged;
+            }));
+            try {
+                assertTrue(firstStaged.await(10, TimeUnit.SECONDS));
+                var second = pool.submit(() -> assertThrows(org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure.class,
+                        () -> customerSubmissions.stagePublicImage(token, UUID.randomUUID(), UUID.randomUUID(), photo, "test.png")).code());
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                boolean waiting = false;
+                while (!waiting && !second.isDone() && System.nanoTime() < deadline) {
+                    waiting = Boolean.TRUE.equals(jdbc.queryForObject(
+                            "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted)", Boolean.class));
+                    if (!waiting) Thread.sleep(20);
+                }
+                assertTrue(waiting, "second upload should wait for the entry quota lock");
+                commitFirst.countDown();
+                assertEquals(firstId, first.get(5, TimeUnit.SECONDS));
+                assertEquals("IMAGE_PROCESSING_BUSY", second.get(5, TimeUnit.SECONDS));
+                assertEquals(200, count("customer_submission_image"));
+            } finally {
+                commitFirst.countDown();
+            }
+        }
+    }
+
+    @Test void cleanupPublishesDeletedRowsAndCurrentStagedCapacity() throws Exception {
+        String token = entry(admin());
+        UUID entry = jdbc.queryForObject("SELECT id FROM customer_order_entry WHERE token=?", UUID.class, token);
+        byte[] photo = picture(0x7850ff);
+        jdbc.update("""
+                INSERT INTO customer_submission_image(id,item_id,entry_id,expires_at,filename,content_type,width,height,content,fingerprint)
+                SELECT gen_random_uuid(),gen_random_uuid(),?,expires,'test.png','image/png',40,40,?,'seed'
+                FROM (SELECT now()-interval '1 hour' AS expires FROM generate_series(1,501)
+                      UNION ALL SELECT now()+interval '1 hour') AS staged
+                """, entry, photo);
+        var deleted = meters.get("wuhou.submission.images.cleanup.deleted").counter();
+        double previous = deleted.count();
+        imageMaintenance.clean();
+        assertEquals(500.0, deleted.count() - previous);
+        assertEquals(2.0, meters.get("wuhou.submission.images.staged").gauge().value());
+        assertEquals(1.0, meters.get("wuhou.submission.images.staged.expired").gauge().value());
+        assertEquals(2.0 * photo.length, meters.get("wuhou.submission.images.staged.bytes").gauge().value());
+        imageMaintenance.clean();
+        assertEquals(501.0, deleted.count() - previous);
+        assertEquals(1.0, meters.get("wuhou.submission.images.staged").gauge().value());
+        assertEquals(0.0, meters.get("wuhou.submission.images.staged.expired").gauge().value());
+    }
 
     @Test void customerAndStaffPhotosStayWithTheirProductsAcrossReviewAndConfirmation() throws Exception {
         var manager = admin();
@@ -80,6 +171,18 @@ class CustomerSubmissionIT {
         var input = json.valueToTree(content("13800000000", "2026-11-02T18:00:00+08:00"));
         ((ObjectNode) input.at("/items/0")).put("itemId", firstItem.toString()).putArray("imageIds").add(rejectedPhoto.toString());
         ((ObjectNode) input.at("/items/1")).put("itemId", secondItem.toString()).putArray("imageIds").add(secondPhoto.toString());
+        UUID expiredPhoto = UUID.randomUUID();
+        assertEquals(200, visitor.upload(entryPath + photoPath(secondItem, expiredPhoto), otherPhoto).statusCode());
+        jdbc.update("UPDATE customer_submission_image SET expires_at=now()-interval '1 minute' WHERE id=?", expiredPhoto);
+        var expiredInput = input.deepCopy();
+        ((ObjectNode) expiredInput.at("/items/1")).putArray("imageIds").add(expiredPhoto.toString());
+        var rejected = visitor.request("POST", submitPath(token), expiredInput, UUID.randomUUID().toString());
+        assertEquals(404, rejected.status);
+        assertEquals("IMAGE_NOT_FOUND", rejected.body.path("code").asText());
+        assertEquals(0, count("customer_order_submission"));
+        assertEquals(0, count("customer_submission_activity"));
+        assertEquals(200, visitor.image(originalPath).statusCode());
+
         UUID key = UUID.randomUUID();
         String id = submit(token, input, key).at("/data/submissionId").asText();
         assertEquals(id, submit(token, input, key).at("/data/submissionId").asText());
@@ -305,7 +408,14 @@ class CustomerSubmissionIT {
             jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,original_phone,requested_date,status,created_at,updated_at)"
                             + " VALUES(?,?,?,'合成客服',?,?,?::jsonb,'13800000000',DATE '2026-11-02','PENDING',now(),now())",
                     id, entryId, owner, requestId, fingerprint, fixture.path("original").toString());
-            flyway.target("29").load().migrate();
+            flyway.target("37").load().migrate();
+            UUID exactId = UUID.randomUUID();
+            jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,original_phone,requested_date,status,created_at,updated_at)"
+                            + " VALUES(?,?,?,'合成客服',?,?,?::jsonb,'13800000000',DATE '2026-11-02','PENDING',now(),now())",
+                    exactId, entryId, owner, UUID.randomUUID(), fingerprint, fixture.path("original").toString());
+            flyway.target("38").load().migrate();
+            assertEquals(1, jdbc.queryForObject("SELECT fingerprint_version FROM " + schema + ".customer_order_submission WHERE id=?", Integer.class, id));
+            assertEquals(2, jdbc.queryForObject("SELECT fingerprint_version FROM " + schema + ".customer_order_submission WHERE id=?", Integer.class, exactId));
             jdbc.update("INSERT INTO customer_order_submission SELECT * FROM " + schema + ".customer_order_submission WHERE id=?", id);
         } finally { jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); }
         jdbc.update("INSERT INTO customer_submission_activity(submission_id,type,actor_type,actor_name,details,created_at) VALUES(?,'SUBMITTED','CUSTOMER','合成客户','{}'::jsonb,now())", id);

@@ -381,6 +381,30 @@ class WorkflowManagementIT {
         assertEquals("0", data.at("/employees/0/unpaidAmountCents").asText()); assertEquals(1, data.at("/employees/0/missingAmountOrders").asInt());
         assertEquals(1, data.at("/totals/missingAmountOrders").asInt());
     }
+    @Test void longCakeSizeExportsInFullWithoutRepeatingQuantities() throws Exception {
+        String dimension = "8".repeat(32_766) + "🎂加高";
+        var input = new LinkedHashMap<>(create(a.id));
+        input.put("items", List.of(Map.of("name", "蛋糕", "productType", "CAKE", "quantity", 2,
+                "attributes", Map.of("size", dimension))));
+        var order = a.data("POST", "/api/orders", input);
+        assertEquals(dimension, order.at("/items/0/attributes/size").asText());
+        var response = admin.raw("GET", search("").replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, response.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
+            var sizes = book.getSheet("尺寸统计");
+            var details = book.getSheet("商品明细");
+            var orders = book.getSheet("订单明细");
+            assertEquals(dimension, sizes.getRow(1).getCell(0).getStringCellValue() + sizes.getRow(2).getCell(0).getStringCellValue());
+            assertEquals(dimension, details.getRow(1).getCell(4).getStringCellValue() + details.getRow(2).getCell(4).getStringCellValue());
+            assertEquals("蛋糕 ×2（" + dimension + "）", orders.getRow(1).getCell(12).getStringCellValue()
+                    + orders.getRow(2).getCell(12).getStringCellValue());
+            assertEquals(2.0, sizes.getRow(1).getCell(2).getNumericCellValue());
+            assertEquals(2.0, details.getRow(1).getCell(3).getNumericCellValue());
+            assertEquals("", details.getRow(2).getCell(3).getStringCellValue());
+            assertEquals("", orders.getRow(2).getCell(11).getStringCellValue());
+        }
+    }
+
     @Test void createdDateUsesBeijingBoundariesAndKeepsAllReportSheetsOnTheSameFilter() throws Exception {
         var first = a.data("POST", "/api/orders", create(a.id));
         var second = a.data("POST", "/api/orders", create(b.id));

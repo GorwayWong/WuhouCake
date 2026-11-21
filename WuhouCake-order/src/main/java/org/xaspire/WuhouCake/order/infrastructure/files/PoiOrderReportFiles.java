@@ -28,8 +28,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
 
     @Override public byte[] generate(Filter filter, List<Row> rows, Totals totals, List<SizeSummary> sizes, List<EmployeeSummary> employees,
             List<ProductRow> products, Runnable checkDeadline) {
-        if (rows.stream().mapToLong(r -> r.products() == null ? 0 : r.products().getBytes(StandardCharsets.UTF_8).length).sum() > MAX_TEXT_BYTES
-                || rows.stream().anyMatch(r -> r.products() != null && r.products().length() > MAX_CELL_CHARS))
+        if (rows.stream().mapToLong(r -> r.products() == null ? 0 : r.products().getBytes(StandardCharsets.UTF_8).length).sum() > MAX_TEXT_BYTES)
             throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
         var specifications = new ArrayList<String>(products.size());
         long textBytes = 0;
@@ -38,7 +37,8 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             String specification = CakeSpecifications.historicalSpecification(product.specification(), product.unitPriceCents(), product.memberPriceCents());
             specifications.add(specification);
             textBytes += specification.getBytes(StandardCharsets.UTF_8).length;
-            for (String value : new String[]{product.name(), product.size(), product.flavor(), product.base(), product.filling(), product.message(), product.requirements()}) {
+            if (product.size() != null) textBytes += product.size().getBytes(StandardCharsets.UTF_8).length;
+            for (String value : new String[]{product.name(), product.flavor(), product.base(), product.filling(), product.message(), product.requirements()}) {
                 if (value == null) continue;
                 if (value.length() > MAX_CELL_CHARS) throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
                 textBytes += value.getBytes(StandardCharsets.UTF_8).length;
@@ -54,7 +54,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             var summary = book.createSheet("统计");
             row(summary, "日期口径", filter.allUnpaid() ? "所有历史未付款" : filter.dateBasis().equals("CREATED") ? "录单日期（北京时间）" : "取货日期"); row(summary, "开始日期", filter.from()); row(summary, "结束日期（含当天）", filter.to() == null ? "不限日期" : filter.to().minusDays(1));
             row(summary, "订单状态", label(filter.status())); row(summary, "付款状态", label(filter.paymentStatus())); row(summary, "交接方式", label(filter.fulfillmentType()));
-            row(summary, "蛋糕尺寸", filter.size()); row(summary, "归属员工 ID", filter.creditedEmployeeId());
+            rowWithLongText(summary, 1, "蛋糕尺寸", filter.size()); row(summary, "归属员工 ID", filter.creditedEmployeeId());
             row(summary, "仅未归属", filter.unassigned()); row(summary, "包含已取消", filter.includeCancelled()); row(summary, "搜索", filter.keyword());
             row(summary, "商品名称", filter.productName());
             row(summary, "下单方式", filter.orderingMethod());
@@ -67,7 +67,10 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             row(summary, "统计说明", "付款状态由员工手动标记；金额不等于实收。尺寸按填写文本精确匹配，尺寸和商品名称只统计匹配商品，不分摊整单金额。尺寸订单数为各组去重，混合尺寸订单会进入多组，不可相加。员工业绩按账号合并，名称为最近录单的归属快照；本表用于业绩核对。");
             var sizeSheet = book.createSheet("尺寸统计");
             heading(sizeSheet, header, "蛋糕尺寸", "涉及订单数（组内去重）", "蛋糕件数");
-            for (var r : sizes) row(sizeSheet, r.size() == null ? "尺寸未填写" : r.size(), r.orderCount(), r.cakeQuantity());
+            for (var r : sizes) {
+                checkDeadline.run();
+                rowWithLongText(sizeSheet, 0, r.size() == null ? "尺寸未填写" : r.size(), r.orderCount(), r.cakeQuantity());
+            }
             var employeeSheet = book.createSheet("员工业绩");
             heading(employeeSheet, header, "归属工号", "归属员工（最近录单快照）", "订单数", "匹配商品件数", "蛋糕件数", "已填写约定金额（元）", "标记已付款约定金额（元）", "标记未付款约定金额（元）", "未填写金额订单数", "归属员工 ID");
             for (var r : employees) row(employeeSheet, r.employeeNumber(), r.employeeName() == null ? "未归属" : r.employeeName(), r.orderCount(), r.matchingQuantity(), r.cakeQuantity(),
@@ -76,7 +79,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             heading(sheet, header, "订单号", "取货日期", "状态", "付款", "客户", "电话", "归属工号", "归属员工", "创建员工 ID", "订单约定金额（元）", "匹配商品件数", "蛋糕件数", "匹配商品");
             for (var r : rows) {
                 checkDeadline.run();
-                row(sheet, r.orderNo(), r.receiveDate(), label(r.status()), label(r.paymentStatus()), r.customerName(), r.phone(), r.employeeNumber(),
+                rowWithLongText(sheet, 12, r.orderNo(), r.receiveDate(), label(r.status()), label(r.paymentStatus()), r.customerName(), r.phone(), r.employeeNumber(),
                     r.employeeName() == null ? "未归属" : r.employeeName(), r.createdBy(), r.totalAmountCents() == null ? "" : BigDecimal.valueOf(r.totalAmountCents()).movePointLeft(2).toPlainString(),
                     r.matchingQuantity(), r.cakeQuantity(), r.products());
             }
@@ -115,12 +118,10 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
     private static void productRows(Sheet sheet, ProductRow product, String specification, CellStyle wrap) {
         int start = 0, part = 1;
         do {
-            if (sheet.getLastRowNum() + 1 >= SpreadsheetVersion.EXCEL2007.getMaxRows())
-                throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
             int end = specificationEnd(specification, start);
             String text = specification.substring(start, end);
             var detail = part == 1
-                    ? row(sheet, product.orderNo(), product.name(), ProductCategories.label(product.productType()), product.quantity(),
+                    ? rowWithLongText(sheet, 4, product.orderNo(), product.name(), ProductCategories.label(product.productType()), product.quantity(),
                             product.size(), product.flavor(), product.base(), product.filling(), product.message(), product.requirements(), text)
                     : row(sheet, product.orderNo(), product.name() + "（续 " + part + "）", "", null, "", "", "", "", "", "", text);
             detail.getCell(SPEC_COLUMN).setCellStyle(wrap);
@@ -129,6 +130,27 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             start = end;
             part++;
         } while (start < specification.length());
+    }
+
+    private static org.apache.poi.ss.usermodel.Row rowWithLongText(Sheet sheet, int column, Object... values) {
+        if (!(values[column] instanceof String text) || text.length() <= MAX_CELL_CHARS) return row(sheet, values);
+        int end = cellEnd(text, 0);
+        values[column] = text.substring(0, end);
+        var first = row(sheet, values);
+        while (end < text.length()) {
+            int start = end;
+            end = cellEnd(text, start);
+            var continuation = new Object[column + 1];
+            if (column > 0) continuation[0] = values[0];
+            continuation[column] = text.substring(start, end);
+            row(sheet, continuation);
+        }
+        return first;
+    }
+
+    private static int cellEnd(String text, int start) {
+        int end = Math.min(text.length(), start + MAX_CELL_CHARS);
+        return end < text.length() && Character.isHighSurrogate(text.charAt(end - 1)) ? end - 1 : end;
     }
 
     private static int specificationEnd(String text, int start) {
@@ -148,7 +170,9 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                 Map.entry("PAID", "已付款"), Map.entry("UNPAID", "未付款"), Map.entry("PICKUP", "自提"), Map.entry("DELIVERY", "配送")).getOrDefault(value, value);
     }
     private static org.apache.poi.ss.usermodel.Row row(Sheet sheet, Object... values) {
-        var row = sheet.createRow(sheet.getLastRowNum() + 1);
+        int index = sheet.getLastRowNum() + 1;
+        if (index >= SpreadsheetVersion.EXCEL2007.getMaxRows()) throw new OrderFailure("REPORT_LIMIT_EXCEEDED");
+        var row = sheet.createRow(index);
         for (int i = 0; i < values.length; i++) {
             String text = values[i] == null ? "" : String.valueOf(values[i]);
             var cell = row.createCell(i);

@@ -326,6 +326,16 @@ function SubmissionEditor({ initial, latest, recovered, writer, canUpload, onDir
           <legend>{conflict.label}</legend>
           <label>我的输入<textarea readOnly value={conflict.local || '未填写'} rows={3} /></label>
           <label>最新内容<textarea readOnly value={conflict.remote || '未填写'} rows={3} /></label>
+          {conflict.images && (['local', 'remote'] as const).map(side => {
+            const images = conflict.images!;
+            const label = side === 'local' ? '我的参考图片' : '最新参考图片';
+            return <div key={side} role="group" aria-label={label}>
+              <strong>{label}</strong>
+              {images[side].length ? <ul className="image-grid">{images[side].map((image, index) =>
+                <SubmissionImageTile key={image} scope={{ base: `/customer-submissions/${submission.id}` }} item={images.item} image={image}
+                  label={`${label} ${index + 1}`} />)}</ul> : <p>无参考图片</p>}
+            </div>;
+          })}
           {conflict.copyOnly ? <label><input type="checkbox" checked={choices[conflict.id] === 'remote'}
             onChange={event => choose(conflict.id, event.target.checked ? 'remote' : undefined)} />
             用最新商品继续，保留本地商品供复制</label>

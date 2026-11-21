@@ -12,7 +12,7 @@ public interface CustomerSubmissionMapper {
     record Row(String id, String entryId, String ownerId, String ownerName, long version, String status,
             String original, String reviewed, String orderId, Instant createdAt, Instant updatedAt) { }
     record ActivityRow(long id, String type, String actorType, String actorId, String actorName, String details, Instant createdAt) { }
-    record Claim(String id, String fingerprint) { }
+    record Claim(String id, String fingerprint, int fingerprintVersion) { }
     record DuplicateRow(String kind, String id, long version, String status, String orderNo, String phone,
             LocalDate requestedReceiveDate, Instant requestedReceiveAt, String items, Long totalAmountCents,
             String handledBy, Instant createdAt) { }
@@ -27,13 +27,13 @@ public interface CustomerSubmissionMapper {
     @Insert("INSERT INTO customer_order_entry(id,owner_id,owner_name,token,enabled) VALUES(CAST(#{id} AS uuid),CAST(#{ownerId} AS uuid),#{ownerName},#{token},#{enabled})"
             + " ON CONFLICT(owner_id) DO UPDATE SET owner_name=EXCLUDED.owner_name,token=EXCLUDED.token,enabled=EXCLUDED.enabled")
     void saveEntry(EntryRow row);
-    @Insert("INSERT INTO customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,original_phone,requested_date,status,created_at,updated_at)"
-            + " VALUES(CAST(#{id} AS uuid),CAST(#{entryId} AS uuid),CAST(#{ownerId} AS uuid),#{ownerName},CAST(#{requestId} AS uuid),#{fingerprint},CAST(#{original} AS jsonb),#{phone},#{date},'PENDING',#{now},#{now})"
+    @Insert("INSERT INTO customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,fingerprint_version,original,original_phone,requested_date,status,created_at,updated_at)"
+            + " VALUES(CAST(#{id} AS uuid),CAST(#{entryId} AS uuid),CAST(#{ownerId} AS uuid),#{ownerName},CAST(#{requestId} AS uuid),#{fingerprint},2,CAST(#{original} AS jsonb),#{phone},#{date},'PENDING',#{now},#{now})"
             + " ON CONFLICT(entry_id,request_id) DO NOTHING")
     int insert(@Param("id") String id, @Param("entryId") String entryId, @Param("ownerId") String ownerId, @Param("ownerName") String ownerName,
             @Param("requestId") String requestId, @Param("fingerprint") String fingerprint, @Param("original") String original,
             @Param("phone") String phone, @Param("date") LocalDate date, @Param("now") Instant now);
-    @Select("SELECT id::text,fingerprint FROM customer_order_submission WHERE entry_id=CAST(#{entry} AS uuid) AND request_id=CAST(#{request} AS uuid)")
+    @Select("SELECT id::text,fingerprint,fingerprint_version FROM customer_order_submission WHERE entry_id=CAST(#{entry} AS uuid) AND request_id=CAST(#{request} AS uuid)")
     Claim claim(@Param("entry") String entry, @Param("request") String request);
     @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE id=CAST(#{id} AS uuid) AND status<>'PURGED'") Row find(String id);
     @Select("SELECT " + COLUMNS + " FROM customer_order_submission WHERE id=CAST(#{id} AS uuid) AND status<>'PURGED' FOR UPDATE") Row lock(String id);

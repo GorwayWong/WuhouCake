@@ -2,7 +2,10 @@ import { specificationFields } from './orderForm.ts';
 import type { SubmissionDraft, SubmissionItemDraft } from './customerSubmission.ts';
 
 export type ReviewChoice = 'local' | 'remote';
-type Conflict = { id: string; label: string; local: string; remote: string; copyOnly?: boolean };
+type Conflict = {
+  id: string; label: string; local: string; remote: string; copyOnly?: boolean;
+  images?: { item: string; local: string[]; remote: string[] };
+};
 
 const fieldLabels = new Map<string, string>(specificationFields);
 
@@ -78,6 +81,11 @@ export function mergeSubmissionDraft(base: SubmissionDraft, local: SubmissionDra
       const original = before.get(key), localItem = mine.get(key), remoteItem = theirs.get(key);
       const useLocal = choose(`item:${key}`, original?.name ?? remoteItem?.name ?? localItem?.name ?? '商品',
         itemValue(original), itemValue(localItem), itemValue(remoteItem), itemText(localItem), itemText(remoteItem));
+      const conflict = conflicts.at(-1);
+      const localImages = localItem?.imageIds ?? [], remoteImages = remoteItem?.imageIds ?? [];
+      if (conflict?.id === `item:${key}` && !equal(localImages, remoteImages)) {
+        conflict.images = { item: key, local: localImages, remote: remoteImages };
+      }
       const selected = useLocal ? localItem : remoteItem;
       return selected ? [selected] : [];
     });
