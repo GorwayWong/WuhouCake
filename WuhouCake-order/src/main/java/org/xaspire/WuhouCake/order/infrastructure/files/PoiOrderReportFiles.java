@@ -54,20 +54,20 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             var summary = book.createSheet("统计");
             row(summary, "日期口径", filter.allUnpaid() ? "所有历史未付款" : filter.dateBasis().equals("CREATED") ? "录单日期（北京时间）" : "取货日期"); row(summary, "开始日期", filter.from()); row(summary, "结束日期（含当天）", filter.to() == null ? "不限日期" : filter.to().minusDays(1));
             row(summary, "订单状态", label(filter.status())); row(summary, "付款状态", label(filter.paymentStatus())); row(summary, "交接方式", label(filter.fulfillmentType()));
-            row(summary, "蛋糕尺寸（寸）", filter.size()); row(summary, "归属员工 ID", filter.creditedEmployeeId());
+            row(summary, "蛋糕尺寸", filter.size()); row(summary, "归属员工 ID", filter.creditedEmployeeId());
             row(summary, "仅未归属", filter.unassigned()); row(summary, "包含已取消", filter.includeCancelled()); row(summary, "搜索", filter.keyword());
             row(summary, "商品名称", filter.productName());
             row(summary, "下单方式", filter.orderingMethod());
             row(summary, "订单数", totals.orderCount()); row(summary, "匹配商品件数", totals.matchingQuantity()); row(summary, "蛋糕件数", totals.cakeQuantity());
-            row(summary, "尺寸待核对蛋糕件数", totals.unclassifiedCakeQuantity());
+            row(summary, "尺寸未填写蛋糕件数", totals.unclassifiedCakeQuantity());
             row(summary, "匹配订单已填写的约定总额（元）", yuan(totals.totalAmountCents()));
             row(summary, "标记已付款订单约定金额（元）", yuan(totals.paidAmountCents()));
             row(summary, "标记未付款订单约定金额（元）", yuan(totals.unpaidAmountCents()));
             row(summary, "未填写金额订单数", totals.missingAmountOrders());
-            row(summary, "统计说明", "付款状态由员工手动标记；金额不等于实收。尺寸和商品名称只统计匹配商品，不分摊整单金额。尺寸订单数为各组去重，混合尺寸订单会进入多组，不可相加。员工业绩按账号合并，名称为最近录单的归属快照；本表用于业绩核对。");
+            row(summary, "统计说明", "付款状态由员工手动标记；金额不等于实收。尺寸按填写文本精确匹配，尺寸和商品名称只统计匹配商品，不分摊整单金额。尺寸订单数为各组去重，混合尺寸订单会进入多组，不可相加。员工业绩按账号合并，名称为最近录单的归属快照；本表用于业绩核对。");
             var sizeSheet = book.createSheet("尺寸统计");
-            heading(sizeSheet, header, "蛋糕尺寸（寸）", "涉及订单数（组内去重）", "蛋糕件数");
-            for (var r : sizes) row(sizeSheet, r.size() == null ? "尺寸待核对" : r.size(), r.orderCount(), r.cakeQuantity());
+            heading(sizeSheet, header, "蛋糕尺寸", "涉及订单数（组内去重）", "蛋糕件数");
+            for (var r : sizes) row(sizeSheet, r.size() == null ? "尺寸未填写" : r.size(), r.orderCount(), r.cakeQuantity());
             var employeeSheet = book.createSheet("员工业绩");
             heading(employeeSheet, header, "归属工号", "归属员工（最近录单快照）", "订单数", "匹配商品件数", "蛋糕件数", "已填写约定金额（元）", "标记已付款约定金额（元）", "标记未付款约定金额（元）", "未填写金额订单数", "归属员工 ID");
             for (var r : employees) row(employeeSheet, r.employeeNumber(), r.employeeName() == null ? "未归属" : r.employeeName(), r.orderCount(), r.matchingQuantity(), r.cakeQuantity(),
@@ -81,7 +81,7 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                     r.matchingQuantity(), r.cakeQuantity(), r.products());
             }
             var productSheet = book.createSheet("商品明细");
-            heading(productSheet, header, "订单号", "商品名称", "商品类型", "数量", "尺寸原值（寸）", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "规格");
+            heading(productSheet, header, "订单号", "商品名称", "商品类型", "数量", "尺寸原值", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "规格");
             var wrap = book.createCellStyle();
             wrap.setWrapText(true);
             for (int i = 0; i < products.size(); i++) {

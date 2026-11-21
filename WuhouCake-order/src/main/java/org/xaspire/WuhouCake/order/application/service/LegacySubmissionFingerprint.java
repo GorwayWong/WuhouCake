@@ -1,5 +1,6 @@
 package org.xaspire.WuhouCake.order.application.service;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Map;
@@ -7,8 +8,8 @@ import java.util.Optional;
 import java.util.TreeMap;
 import org.xaspire.WuhouCake.order.api.command.SubmissionCommands;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
-import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
+import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.optionalText;
 
 /** Reconstructs the anonymous submit fingerprint input used at migration V26 (dfe432a). */
@@ -16,6 +17,14 @@ final class LegacySubmissionFingerprint {
     private static final Map<String, String> CAKE_DEFAULTS = Map.of("base", "原味", "filling", "芒果", "flavor", "原味奶油");
 
     private LegacySubmissionFingerprint() { }
+
+    private static String legacySize(String value) {
+        if (value == null) return null;
+        if (!value.matches("[0-9]{1,9}(?:\\.[0-9]{1,2})?")) throw invalid();
+        var number = new BigDecimal(value);
+        if (number.signum() <= 0) throw invalid();
+        return number.stripTrailingZeros().toPlainString();
+    }
 
     static Optional<SubmissionCommands.Content> v26(SubmissionCommands.Content raw, CustomerSubmission.Content validated) {
         var items = new ArrayList<SubmissionCommands.Product>();
@@ -36,7 +45,7 @@ final class LegacySubmissionFingerprint {
                     if (text != null) attributes.put(key, text);
                 });
                 if ("CAKE".equals(type)) {
-                    attributes.put("size", CakeSpecifications.size(attributes.get("size")));
+                    attributes.put("size", legacySize(attributes.get("size")));
                     CAKE_DEFAULTS.forEach(attributes::putIfAbsent);
                 }
             } catch (OrderFailure outsideV26Contract) {

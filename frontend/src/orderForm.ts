@@ -5,7 +5,7 @@ import { productionStatuses } from './orderStates.ts';
 import { pickupInstant, pickupDate, defaultFinishTime, finishTooLate, finishLeadTimeMessage } from './orderTimes.ts';
 import type { FinishTimeMode } from './orderTimes.ts';
 import type { CreateOrderRequest, Detail, InformationChanges, InformationRequest, Item, ItemChangeRequest, ItemInput } from './types';
-import { cakeDefaults, numericSize } from './productRules.ts';
+import { cakeDefaults } from './productRules.ts';
 import type { CakeDefaultField } from './productRules.ts';
 import { orderingMethodError } from './orderingMethod.ts';
 import type { DraftImage } from './draftImages.ts';
@@ -126,7 +126,7 @@ export function moneyToCents(input: string): number | null {
 export function draftQuoteCents(value: string): number | null {
   try { return moneyToCents(value); } catch { return null; }
 }
-export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemInput | null; errors: Record<string, string> } {
+export function itemInput(draft: ItemDraft): { item: ItemInput | null; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
   if (!draft.name.trim()) errors.name = '请填写商品名称。';
   else if (draft.name.length > 128) errors.name = '商品名称最多填写 128 个字符。';
@@ -147,7 +147,6 @@ export function itemInput(draft: ItemDraft, validateSize = true): { item: ItemIn
   }
   if (item.productType?.toUpperCase() === 'CAKE') {
     for (const [key, value] of Object.entries(cakeDefaults)) item.attributes[key] ||= value;
-    if (validateSize && draft.attributes.size.trim()) { try { item.attributes.size = numericSize(draft.attributes.size); } catch (error) { errors.size = (error as Error).message; } }
   }
   return { item: Object.keys(errors).length ? null : item, errors };
 }
@@ -185,7 +184,7 @@ export function itemChangeRequest(original: Detail, itemId: string, draft: ItemD
   if (conversionNeedsReview(conversionSource || before, current, draft, before.productType))
     return { request: null, errors: { specification: '商品规格已更新，请基于最新商品重新转换。' } };
   const initial = itemDraft(before);
-  const result = itemInput(draft, draft.attributes.size !== initial.attributes.size || draft.productType !== initial.productType);
+  const result = itemInput(draft);
   if (!result.item) return { request: null, errors: result.errors };
   const changes: ItemChangeRequest['changes'] = {};
   for (const field of ['name', 'productType', 'quantity'] as const) {

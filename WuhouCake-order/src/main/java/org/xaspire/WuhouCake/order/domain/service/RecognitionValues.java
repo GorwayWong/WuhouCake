@@ -102,13 +102,6 @@ public final class RecognitionValues {
         if (!value.matches("(?:\\+?86)?1[3-9]\\d{9}|0\\d{9,11}")) throw new IllegalArgumentException("电话号码无效或存在多个号码");
         return value.startsWith("+86") ? value.substring(3) : value.startsWith("86") && value.length() == 13 ? value.substring(2) : value;
     }
-    public static String size(String text) {
-        String value = text.strip().replaceFirst("(?:英寸|寸)$", "").strip();
-        if (!value.matches("[0-9]{1,9}(?:\\.[0-9]{1,2})?")) throw new IllegalArgumentException("尺寸需要单个正数，最多两位小数、九位整数");
-        var number = new BigDecimal(value);
-        if (number.signum() <= 0 || value.length() > 32) throw new IllegalArgumentException("尺寸需要人工核对");
-        return number.stripTrailingZeros().toPlainString();
-    }
     public static String quantity(String text) {
         String value = text.strip().replaceFirst("(?:个|只|份|盒)$", "").strip();
         var chinese = Map.of("一", "1", "二", "2", "两", "2", "三", "3", "四", "4", "五", "5", "六", "6", "七", "7", "八", "8", "九", "9");

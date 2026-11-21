@@ -1,7 +1,6 @@
 import { changePickupTime, changeFinishTime, finishMode, restoreAutomaticFinish } from './orderTimes.ts';
 import type { OrderDraft, ItemDraft } from './orderForm.ts';
 import { moneyToCents, storeTime, validDate, newItem, asOtherDraft } from './orderForm.ts';
-import { normalizeSize } from './productRules.ts';
 import { normalizeProductType, productTypes } from './productTypes.ts';
 import { randomUUID } from './uuid.ts';
 import { visibleSpecification } from './specificationText.ts';
@@ -12,7 +11,7 @@ export const recognitionLabels: Record<string, string> = {
   customerName: '客户姓名', phone: '联系电话', memberPhone: '会员手机', buyerName: '订购人姓名',
   fulfillmentType: '交接方式', address: '配送地址', requestedReceiveDate: '取货日期', requestedReceiveAt: '取货时间',
   plannedHandoffAt: '取货时间', plannedFinishAt: '出品时间', totalAmountCents: '约定总金额（元）',
-  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '商品说明', size: '尺寸（寸）', flavor: '奶油', base: '蛋糕胚',
+  name: '商品名称', productType: '商品类型', quantity: '数量', specification: '商品说明', size: '尺寸', flavor: '奶油', base: '蛋糕胚',
   filling: '夹馅', message: '祝福语', requirements: '其他要求', unitPriceCents: '商品单价（元）', memberPriceCents: '会员单价（元）',
 };
 const rootFields = new Set(['customerName', 'phone', 'memberPhone', 'buyerName', 'fulfillmentType', 'address', 'requestedReceiveDate', 'requestedReceiveAt', 'plannedHandoffAt', 'plannedFinishAt', 'totalAmountCents']);
@@ -35,7 +34,6 @@ export function validateCandidate(field: string, value: string): string {
     if (!Object.hasOwn(productTypes, type)) throw new Error('请选择商品类型。');
     return type;
   }
-  if (field === 'size') return normalizeSize(text);
   if (field === 'quantity' && (!/^\d+$/.test(text) || BigInt(text) < 1n || BigInt(text) > 2147483647n)) throw new Error('数量需要有效正整数。');
   if (field === 'requestedReceiveDate' && !validDate(text)) throw new Error('需要带年份的有效取货日期。');
   if (field === 'requestedReceiveAt' || field === 'plannedHandoffAt' || field === 'plannedFinishAt') storeTime(text);

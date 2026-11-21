@@ -36,15 +36,18 @@ public record CustomerSubmission(UUID id, UUID entryId, UUID ownerId, String own
             if (productType == null || !PRODUCT_TYPES.contains(ProductCategories.normalize(productType))) throw new OrderFailure("SUBMISSION_PRODUCT_TYPE_INVALID");
             productType = ProductCategories.normalize(productType);
             if (quantity < 1) throw new OrderFailure("SUBMISSION_QUANTITY_INVALID");
+            boolean cake = "CAKE".equals(productType);
             var values = new TreeMap<String, String>();
             if (attributes != null) attributes.forEach((key, value) -> {
                 if (!ATTRIBUTES.contains(key)) throw invalid();
-                String text = optionalText(value, key.equals("specification") ? 16000 : 2000); if (text != null) values.put(key, text);
+                String text = key.equals("size") && cake
+                        ? CakeSpecifications.size(value) : optionalText(value, key.equals("specification") ? 16000 : 2000);
+                if (key.equals("size") && value != null && value.length() > 2000) throw invalid();
+                if (text != null) values.put(key, text);
             });
-            if ("CAKE".equals(productType)) {
-                String size = CakeSpecifications.size(values.get("size"));
-                if (size == null) throw new OrderFailure("SUBMISSION_CAKE_SIZE_REQUIRED");
-                values.put("size", size); CakeSpecifications.DEFAULTS.forEach(values::putIfAbsent);
+            if (cake) {
+                if (!values.containsKey("size")) throw new OrderFailure("SUBMISSION_CAKE_SIZE_REQUIRED");
+                CakeSpecifications.DEFAULTS.forEach(values::putIfAbsent);
             }
             if ("OTHER".equals(productType)) {
                 var merged = CakeSpecifications.other(new LinkedHashMap<>(values));

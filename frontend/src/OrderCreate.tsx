@@ -125,9 +125,6 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
     else if (selection !== activeItem?.key) setPendingTarget({});
   };
   const updateItem = (key: string, changes: Partial<ItemDraft>, editedSpecification?: string) => {
-    if (editedSpecification === 'size' && changes.attributes && !/^[0-9]{0,9}(?:\.[0-9]{0,2})?$/.test(changes.attributes.size)) {
-      setErrors({ [`items.${draft.items.findIndex(item => item.key === key)}.size`]: '尺寸只能填写数字，最多两位小数。' }); return;
-    }
     change({ ...draft, items: draft.items.map(item => item.key === key ? changeItemDraft(item, changes, editedSpecification) : item) });
   };
   const inputProps = (name: string) => ({ id: name, name, 'aria-invalid': Boolean(errors[name]), 'aria-describedby': [
@@ -204,7 +201,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
                 <input {...inputProps(name)} type="text" inputMode={field === 'quantity' ? 'numeric' : field.endsWith('Price') ? 'decimal' : undefined} value={activeItem[field]} onChange={event => updateItem(activeItem.key, { [field]: event.target.value })} required={required} maxLength={field === 'name' ? 128 : undefined} placeholder={field === 'quantity' ? '未填按 1 件' : field.endsWith('Price') ? '未填写' : undefined} />
               </Field>;
               return <Field label={<ProductFieldLabel field={field} />} name={name} error={errors[name]}>
-                {(field === 'requirements' || field === 'filling') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} inputMode={field === 'size' ? 'decimal' : undefined} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
+                {(field === 'requirements' || field === 'filling') ? <textarea {...inputProps(name)} rows={2} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} /> : <input {...inputProps(name)} value={activeItem.attributes[field] || ''} onChange={event => updateItem(activeItem.key, { attributes: { ...activeItem.attributes, [field]: event.target.value } }, field)} />}
               </Field>;
             }} />
           </div>}

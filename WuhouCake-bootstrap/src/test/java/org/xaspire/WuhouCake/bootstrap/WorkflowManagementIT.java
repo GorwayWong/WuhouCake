@@ -79,16 +79,20 @@ class WorkflowManagementIT {
         var all = admin.data("GET", search(""), null);
         assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(all.at("/items/0/productTypes"), Set.class));
         assertEquals(1, all.at("/totals/orderCount").asLong()); assertEquals(9, all.at("/totals/matchingQuantity").asLong()); assertEquals(3, all.at("/totals/cakeQuantity").asLong());
-        assertEquals(2, all.path("sizes").size()); assertEquals("8", all.at("/sizes/0/size").asText());
-        assertEquals(2, all.at("/sizes/0/cakeQuantity").asInt()); assertEquals(1, all.at("/sizes/0/orderCount").asInt());
-        assertEquals("10", all.at("/sizes/1/size").asText()); assertEquals(1, all.at("/sizes/1/cakeQuantity").asInt());
+        assertEquals(2, all.path("sizes").size());
+        var counts = new HashMap<String, Integer>();
+        all.path("sizes").forEach(group -> {
+            assertEquals(1, group.path("orderCount").asInt());
+            counts.put(group.path("size").asText(), group.path("cakeQuantity").asInt());
+        });
+        assertEquals(Map.of("8", 2, "10", 1), counts);
         assertEquals(1, all.path("employees").size()); assertEquals("52000", all.at("/employees/0/totalAmountCents").asText());
-        var filtered = admin.data("GET", search("&sizeInches=8.00&creditedEmployeeId=" + b.id), null);
+        var filtered = admin.data("GET", search("&sizeInches=8&creditedEmployeeId=" + b.id), null);
         assertEquals(1, filtered.at("/totals/orderCount").asInt()); assertEquals(2, filtered.at("/totals/matchingQuantity").asInt()); assertEquals(2, filtered.at("/totals/cakeQuantity").asInt());
         assertEquals(id, filtered.at("/items/0/orderId").asText());
         assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(filtered.at("/items/0/productTypes"), Set.class));
         long before = jdbc.queryForObject("SELECT count(*) FROM cake_order_activity", Long.class);
-        var response = admin.raw("GET", search("&sizeInches=8.00&creditedEmployeeId=" + b.id).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        var response = admin.raw("GET", search("&sizeInches=8&creditedEmployeeId=" + b.id).replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
         assertEquals(200, response.statusCode());
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
             assertEquals(2, book.getSheet("订单明细").getPhysicalNumberOfRows());
@@ -260,23 +264,54 @@ class WorkflowManagementIT {
         assertEquals(1, admin.data("GET", deleted + "&productName=" + java.net.URLEncoder.encode("八寸", java.nio.charset.StandardCharsets.UTF_8), null).at("/totals/orderCount").asInt());
         assertEquals(0, admin.data("GET", deleted + suffix, null).at("/totals/orderCount").asInt());
     }
-    @Test void abnormalHistoricalSizesRemainReadableAndCannotBreakFiltering() throws Exception {
-        var order = a.data("POST", "/api/orders", create(b.id)); String item = null;
-        for (var product : order.path("items")) if (product.path("name").asText().equals("八寸蛋糕")) item = product.path("itemId").asText();
-        assertNotNull(item);
-        for (String size : List.of("abc", "{\"tiers\":[8]}", "null", "\"8寸\"", "\"8.0\"", "\"8.001\"", "\"8.000000\"")) {
-            String encoded = size.equals("abc") ? "\"abc\"" : size;
-            jdbc.update("UPDATE cake_order_item SET attributes=jsonb_build_object('size',?::jsonb) WHERE id=?::uuid", encoded, item);
+    @Test void sizesUseExactTextInGroupingFilteringAndExport() throws Exception {
+        String doubleTier = "6+8寸双层";
+        var body = new LinkedHashMap<>(create(b.id));
+        body.put("items", java.util.stream.IntStream.range(0, 6).mapToObj(index -> Map.of(
+                "name", "合成蛋糕 " + index, "productType", "CAKE", "quantity", index + 1,
+                "attributes", Map.of("size", List.of("8", "8.00", "8寸", " " + doubleTier + "　", doubleTier, "　").get(index))))
+                .toList());
+        var order = a.data("POST", "/api/orders", body);
+        assertEquals(doubleTier, order.at("/items/3/attributes/size").asText());
+        assertEquals("8.00", order.at("/items/1/attributes/size").asText());
+        var result = admin.data("GET", search(""), null);
+        assertEquals(6, result.at("/totals/unclassifiedCakeQuantity").asInt());
+        var counts = new HashMap<String, Integer>();
+        result.path("sizes").forEach(row -> {
+            assertEquals(1, row.path("orderCount").asInt());
+            counts.put(row.path("size").isNull() ? null : row.path("size").asText(), row.path("cakeQuantity").asInt());
+        });
+        assertEquals(6, counts.remove(null));
+        assertEquals(Map.of("8", 1, "8.00", 2, "8寸", 3, doubleTier, 9), counts);
+        for (var group : counts.entrySet()) {
+            String filter = "&sizeInches=" + java.net.URLEncoder.encode(group.getKey(), java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(group.getValue(), admin.data("GET", search(filter), null).at("/totals/cakeQuantity").asInt());
+        }
+        String path = search("&sizeInches=" + java.net.URLEncoder.encode(doubleTier, java.nio.charset.StandardCharsets.UTF_8));
+        var download = admin.raw("GET", path.replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
+        assertEquals(200, download.statusCode());
+        try (var book = new XSSFWorkbook(new ByteArrayInputStream(download.body()))) {
+            assertEquals(doubleTier, book.getSheet("尺寸统计").getRow(1).getCell(0).getStringCellValue());
+            assertEquals(9d, book.getSheet("尺寸统计").getRow(1).getCell(2).getNumericCellValue());
+            var products = book.getSheet("商品明细");
+            assertEquals(3, products.getPhysicalNumberOfRows());
+            assertEquals(doubleTier, products.getRow(1).getCell(4).getStringCellValue());
+            assertEquals(doubleTier, products.getRow(2).getCell(4).getStringCellValue());
+        }
+    }
+    @Test void historicalSizeValuesRemainReadableAndUseExactFiltering() throws Exception {
+        var order = a.data("POST", "/api/orders", create(b.id));
+        String id = order.path("orderId").asText();
+        String item = order.at("/items/0/itemId").asText();
+        var samples = List.of("\"abc\"", "{\"tiers\":[8]}", "null", "\"8寸\"", "\"8.0\"", "\"8.001\"", "\"8.000000\"", "\"　 \"", "8");
+        for (String size : samples) {
+            jdbc.update("UPDATE cake_order_item SET attributes=jsonb_build_object('size',?::jsonb) WHERE id=?::uuid", size, item);
             var value = admin.data("GET", search("&sizeInches=8"), null);
-            assertEquals(size.equals("\"8寸\"") || size.equals("\"8.0\"") || size.equals("\"8.000000\"") ? 2 : 0, value.at("/totals/cakeQuantity").asInt());
-            var detail = a.data("GET", "/api/orders/" + order.path("orderId").asText(), null);
-            for (var product : detail.path("items")) if (product.path("itemId").asText().equals(item)) assertEquals("原味", product.at("/attributes/base").asText());
+            assertEquals(size.equals("8") ? 2 : 0, value.at("/totals/cakeQuantity").asInt());
+            var detail = a.data("GET", "/api/orders/" + id, null);
+            assertEquals(json.readTree(size), detail.at("/items/0/attributes/size"));
+            assertEquals("原味", detail.at("/items/0/attributes/base").asText());
         }
-        for (String size : List.of("abc", "8寸", "0", "-1", "8.001")) {
-            var body = new LinkedHashMap<>(create(b.id)); body.put("items", List.of(Map.of("name", "无效尺寸", "quantity", 1, "attributes", Map.of("size", size))));
-            assertEquals(400, a.raw("POST", "/api/orders", body).statusCode());
-        }
-        assertEquals(1, admin.data("GET", search(""), null).at("/totals/orderCount").asInt());
     }
     @Test void ownershipChangesRecordRealActorAndArchivedEmployeeKeepsHistoricalAttribution() throws Exception {
         var order = b.data("POST", "/api/orders", create(b.id)); String id = order.path("orderId").asText();
@@ -314,7 +349,7 @@ class WorkflowManagementIT {
         var order = a.data("POST", "/api/orders", create(a.id));
         a.data("POST", "/api/orders/" + order.path("orderId").asText() + "/cancel", Map.of("expectedVersion", 0, "reason", "合成"));
         assertEquals(1, a.data("GET", "/api/orders/workbench?date=2026-10-17", null).path("pendingOrders").size());
-        for (String suffix : List.of("&sizeInches=abc", "&sizeInches=0", "&status=UNKNOWN", "&paymentStatus=no", "&creditedEmployeeId=bad", "&page=0", "&size=0", "&size=101", "&includeCancelled=bad"))
+        for (String suffix : List.of("&status=UNKNOWN", "&paymentStatus=no", "&creditedEmployeeId=bad", "&page=0", "&size=0", "&size=101", "&includeCancelled=bad"))
             assertEquals(400, admin.raw("GET", search(suffix), null).statusCode(), suffix);
         assertEquals(400, admin.raw("GET", "/api/admin/orders?from=2026-02-30&to=2026-11-01", null).statusCode());
         assertEquals(400, admin.raw("GET", "/api/admin/orders?from=2026-11-01&to=2026-10-01", null).statusCode());
@@ -804,7 +839,7 @@ class WorkflowManagementIT {
     private Map<String, Object> create(String employee) {
         return Map.of("customer", Map.of("customerName", "合成客户", "phone", "13900000000"), "creditedEmployeeId", employee,
                 "fulfillment", Map.of("type", "PICKUP", "requestedReceiveDate", "2026-10-17", "plannedHandoffAt", "2026-10-17T14:00:00+08:00"), "totalAmountCents", 52000,
-                "items", List.of(Map.of("name", "八寸蛋糕", "productType", "CAKE", "quantity", 2, "attributes", Map.of("size", "8.00", "base", " ")),
+                "items", List.of(Map.of("name", "八寸蛋糕", "productType", "CAKE", "quantity", 2, "attributes", Map.of("size", "8", "base", " ")),
                         Map.of("name", "十寸蛋糕", "productType", "CAKE", "quantity", 1, "attributes", Map.of("size", "10")), Map.of("name", "杯子蛋糕", "productType", "CUPCAKE", "quantity", 6)));
     }
     private Browser employee(String number, String name) throws Exception {

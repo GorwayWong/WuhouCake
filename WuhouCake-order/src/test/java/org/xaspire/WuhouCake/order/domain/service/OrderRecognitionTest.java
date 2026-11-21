@@ -13,9 +13,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OrderRecognitionTest {
     @ParameterizedTest @ValueSource(strings = {"规格（寸）", "规格(寸)", "尺寸", "蛋糕尺寸"})
-    void sizeLabelsShareTheSameNumericFieldAndDoNotInferAProductType(String label) throws Exception {
-        var fields = recognition().parse(label + "：6").items().getFirst().fields();
-        assertEquals("6", fields.get("size").value()); assertNull(fields.get("specification").value());
+    void sizeLabelsShareTheSameTextFieldAndDoNotInferAProductType(String label) throws Exception {
+        var fields = recognition().parse(label + "： 6+8寸双层　").items().getFirst().fields();
+        assertEquals("6+8寸双层", fields.get("size").value()); assertNull(fields.get("specification").value());
         assertNull(fields.get("productType").value());
     }
     @Test void newSizeLabelsDoNotChangeOrdinarySpecificationsOrMixProductFields() throws Exception {
@@ -76,12 +76,16 @@ class OrderRecognitionTest {
         assertThrows(IllegalArgumentException.class, () -> parser.parse(" "));
         assertThrows(IllegalArgumentException.class, () -> parser.parse("字".repeat(12001)));
     }
-    @Test void invalidSizePrecisionRangesSignsAndHeightNeverBecomeUsableSizes() throws Exception {
-        for (String value : List.of("尺寸：8.123寸", "尺寸：1234567890寸", "商品：-8寸蛋糕", "商品：负8寸蛋糕", "商品：−8寸蛋糕", "商品：6-8寸蛋糕", "商品：4寸高蛋糕")) {
-            var field = recognition().parse(value).items().getFirst().fields().get("size");
-            assertNull(field.value(), value); assertTrue(field.needsReview(), value);
-        }
-        assertEquals("8.25", recognition().parse("尺寸：8.25寸").items().getFirst().fields().get("size").value());
+    @Test void onlyLabeledSizeIsCopiedAndQuantityStillRequiresReviewForAmbiguousInput() throws Exception {
+        var item = recognition().parse("商品名称：8寸生日蛋糕\n其他要求：做成6-8寸").items().getFirst().fields();
+        assertEquals("8寸生日蛋糕", item.get("name").value());
+        assertNull(item.get("size").value());
+        assertNull(recognition().parse("商品1：生日蛋糕\n8寸蛋糕").items().getFirst().fields().get("size").value());
+        assertEquals("心形  20×15cm，", recognition().parse("尺寸：　心形  20×15cm，  ").items().getFirst().fields().get("size").value());
+        var labeled = recognition().parse("商品1：双层蛋糕 尺寸：上层6寸；下层8寸；数量：2").items().getFirst().fields();
+        assertEquals("双层蛋糕", labeled.get("name").value());
+        assertEquals("上层6寸；下层8寸", labeled.get("size").value());
+        assertEquals("2", labeled.get("quantity").value());
         for (String value : List.of("商品：8寸蛋糕-2个", "商品：8寸蛋糕配餐具10份", "商品：8寸蛋糕12.5个")) {
             var field = recognition().parse(value).items().getFirst().fields().get("quantity");
             assertNull(field.value(), value); assertTrue(field.needsReview(), value);
@@ -92,7 +96,7 @@ class OrderRecognitionTest {
         var result = recognition().parse("【蛋糕预定单】\n收货日期：2026-09-30\n交接时间：10:00\n交接时间：11:00\n尺寸：4寸-6寸");
         assertNull(result.fields().get("plannedHandoffAt").value());
         assertTrue(result.fields().get("plannedHandoffAt").needsReview());
-        assertNull(result.items().getFirst().fields().get("size").value());
+        assertEquals("4寸-6寸", result.items().getFirst().fields().get("size").value());
     }
     @Test void templateTimeAndNoticeDoNotPolluteOtherFields() throws Exception {
         var parser = recognition();
@@ -119,7 +123,7 @@ class OrderRecognitionTest {
         assertNull(order.fields().get("memberPhone").value());
         assertEquals(1, order.items().size());
         var cake = order.items().getFirst().fields();
-        assertEquals("8", cake.get("size").value());
+        assertEquals("8寸", cake.get("size").value());
         assertEquals("芒果、脆啵啵、奥利奥", cake.get("filling").value());
         assertNull(cake.get("quantity").value());
         assertEquals("要10份蛋糕叉碟", cake.get("requirements").value());

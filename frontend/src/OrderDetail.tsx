@@ -127,7 +127,7 @@ function ProductionProductFields({ item, completion }: { item: Detail['items'][n
   const fields = Object.fromEntries(productionFields(item));
   return <dl className="production-order-fields production-product-fields">
     <div className="wide"><dt>商品名称</dt><dd className="detail-product-name-row"><strong>{item.name}</strong>{completion}</dd></div>
-    {cake && <div className="product-making-field"><dt>尺寸</dt><dd>{fields['尺寸'] || '无'}</dd></div>}
+    {cake && <div className="product-making-field"><dt>尺寸</dt><dd className="product-spec-text">{fields['尺寸'] || '无'}</dd></div>}
     <div className="product-making-field"><dt>数量</dt><dd>{item.quantity}</dd></div>
     {cake && <>
       <div className="product-making-field"><dt>夹馅</dt><dd>{fields['夹心'] || '无'}</dd></div>

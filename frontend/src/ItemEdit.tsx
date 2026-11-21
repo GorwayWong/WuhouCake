@@ -82,7 +82,6 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
     conversionSource: itemBasis(source), value, pending: addition, previousSpecification: priorSpecification,
   });
   const change = (next: typeof draft) => {
-    if (next.attributes.size !== draft.attributes.size && !/^[0-9]{0,9}(?:\.[0-9]{0,2})?$/.test(next.attributes.size)) { setErrors({ size: '尺寸只能填写数字，最多两位小数。' }); return; }
     setDraft(next); setErrors({});
     void writer.save(snapshot(next));
   };
@@ -154,7 +153,7 @@ export function ItemEdit({ initial: opened, itemId, latest, reopened, busy, erro
         if (field === 'specification' && structured && visibleSpecification(stored) === '') return null;
         const value = field === 'specification' && draft.attributes[field] === original?.attributes[field]
           ? visibleSpecification(draft.attributes[field]) : draft.attributes[field];
-        return <Field name={field} label={<ProductFieldLabel field={field} />} error={errors[field]}>{structured ? <span className="preserved-specification">{valueText(stored)}<small>此字段保留原值。</small></span> : (field === 'requirements' || field === 'filling' || field === 'specification') ? <textarea {...props(field)} rows={2} value={value || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} /> : <input {...props(field)} inputMode={field === 'size' ? 'decimal' : undefined} value={value || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} />}</Field>;
+        return <Field name={field} label={<ProductFieldLabel field={field} />} error={errors[field]}>{structured ? <span className="preserved-specification">{valueText(stored)}<small>此字段保留原值。</small></span> : (field === 'requirements' || field === 'filling' || field === 'specification') ? <textarea {...props(field)} rows={2} value={value || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} /> : <input {...props(field)} value={value || ''} onChange={event => change(changeItemDraft(draft, { attributes: { ...draft.attributes, [field]: event.target.value } }, field))} />}</Field>;
       }} />
 
       {prices && <PriceReference

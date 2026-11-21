@@ -259,7 +259,7 @@ case "CAKE", "DONUT", "CUPCAKE", "BREAD", "DRINK", "OTHER", "TEA_BREAK", "COOKIE
         };
     }
     private static final Map<String, String> SPECIFICATIONS = Map.ofEntries(
-            Map.entry("size", "尺寸（寸）"), Map.entry("flavor", "奶油"), Map.entry("base", "内胚"), Map.entry("cakeBase", "内胚"),
+            Map.entry("size", "尺寸"), Map.entry("flavor", "奶油"), Map.entry("base", "内胚"), Map.entry("cakeBase", "内胚"),
             Map.entry("filling", "夹馅"), Map.entry("message", "祝福语"), Map.entry("specification", "规格"),
             Map.entry("requirements", "其他要求"), Map.entry("otherRequirements", "其他要求"));
     private static String specifications(Map<String, Object> attributes) {

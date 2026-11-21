@@ -4,7 +4,7 @@ import { firstItemFormError, firstProductFormError, productFormLabels, productFo
 
 test('蛋糕字段按行排列，显示名称映射原字段，不混用文字规格', () => {
   assert.deepEqual(productFormRows('CAKE', true), [['name'], ['size', 'quantity'], ['unitPrice', 'memberPrice'], ['base', 'flavor'], ['filling'], ['message'], ['requirements'], ['specification']]);
-  assert.equal(productFormLabels.size, '尺寸（寸）'); assert.equal(productFormLabels.base, '蛋糕胚');
+  assert.equal(productFormLabels.size, '尺寸'); assert.equal(productFormLabels.base, '蛋糕胚');
   assert.deepEqual(productFormRows('DRINK', true), [['name'], ['quantity'], ['unitPrice', 'memberPrice'], ['specification'], ['requirements']]);
   assert.deepEqual(productFormRows('DRINK'), [['name'], ['quantity'], ['specification'], ['requirements']]);
 });

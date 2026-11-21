@@ -1548,8 +1548,8 @@ class OrderIT {
         assertEquals("原味", result.at("/items/0/flavor").asText());
         assertEquals(4, result.at("/items/0/quantity").asInt());
         var flavors = new HashMap<String, Integer>();
-        result.path("items").forEach(row -> { if (row.path("size").asText().equals("8")) flavors.put(row.path("flavor").asText(), row.path("quantity").asInt()); });
-        assertEquals(Map.of("原味", 2, "抹茶", 3), flavors);
+        result.path("items").forEach(row -> { flavors.put(row.path("size").asText() + "/" + row.path("flavor").asText(), row.path("quantity").asInt()); });
+        assertEquals(Map.of("6.5/原味", 4, "8/原味", 2, "8.00/抹茶", 3), flavors);
     }
 
     @Test void defaultProductionJobHidesNonProductionDataButKeepsProductionAndNotes() throws Exception {
@@ -1663,6 +1663,7 @@ class OrderIT {
             assertEquals("no-store", result.headers.firstValue("Cache-Control").orElseThrow());
             assertEquals("2026-09-30", result.body.at("/data/fields/requestedReceiveDate/value").asText());
             assertTrue(result.body.at("/data/fields/plannedHandoffAt/value").isNull());
+            assertEquals("8寸", result.body.at("/data/items/0/fields/size/value").asText());
             assertEquals("芒果、脆啵啵、奥利奥", result.body.at("/data/items/0/fields/filling/value").asText());
             assertTrue(result.body.at("/data/items/0/fields/name/value").isNull());
             assertTrue(result.body.at("/data/items/0/fields/quantity/value").isNull());

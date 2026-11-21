@@ -3,6 +3,7 @@ package org.xaspire.WuhouCake.order.domain.service;
 import java.time.*;
 import java.util.*;
 import java.util.regex.*;
+import org.xaspire.WuhouCake.order.domain.model.valobj.CakeSpecifications;
 import org.xaspire.WuhouCake.order.domain.model.valobj.RecognitionDraft;
 import org.xaspire.WuhouCake.order.domain.model.valobj.RecognitionDraft.*;
 
@@ -14,8 +15,9 @@ public final class OrderRecognition {
     public static final List<String> ITEM_FIELDS = List.of("name", "productType", "quantity", "specification", "size", "flavor", "base", "filling", "message", "requirements", "unitPriceCents", "memberPriceCents");
     private static final Map<String, String> LABELS = labels();
     private static final Pattern LABEL = Pattern.compile("(?<![\\p{L}\\p{N}])(" + String.join("|", LABELS.keySet().stream().sorted(Comparator.comparingInt(String::length).reversed()).map(Pattern::quote).toList())
-            + ")([（(][^）)\\n]{0,80}[）)])?\\s*[:：]\\s*");
-    private static final Pattern ITEM_HEADING = Pattern.compile("^(?:[【\\[])?(蛋糕|商品|小产品)\\s*[一二三四五六七八九十\\dA-Z]+[】\\]]?\\s*[:：、.]?\\s*(.*)$");
+            + ")([（(][^）)\\n]{0,80}[）)])?\\h*[:：]\\h*");
+    private static final Pattern RECORD_TOKEN = Pattern.compile(LABEL.pattern() + "|[\\n；;]");
+    private static final Pattern ITEM_HEADING = Pattern.compile("^(?:[【\\[])?(蛋糕|商品|小产品)\\s*[一二三四五六七八九十\\dA-Z]+[】\\]]?\\s*[:：、.]?\\s*(.*)$", Pattern.MULTILINE);
     private static final Pattern NOTICE = Pattern.compile("^[【\\[（(\\s]*[一二三四五六七八九十\\d、.\\s]*(?:订购须知|订购需知|预订须知|温馨提示|配送规则|配送说明|配套餐具|餐具说明|可选口味|注意事项).*");
     private static final String ORDER_NOTICE = "[【\\[]\\h*订购[须需]知\\h*[】\\]]";
     private static final Pattern NOTICE_SECTION = Pattern.compile("(?m)^\\h*" + ORDER_NOTICE + "(?=\\h*(?:[:：]|$))"
@@ -25,7 +27,6 @@ public final class OrderRecognition {
     private static final String BRACKETED_TITLE = "[【\\[](?:蛋糕预定单|蛋糕预订单|蛋糕订购单)[】\\]]";
     private static final Pattern TITLE = Pattern.compile("^" + BRACKETED_TITLE + "\\s*");
     private static final Pattern INLINE_TITLE = Pattern.compile(BRACKETED_TITLE + "\\h*(?=" + LABEL.pattern() + ")");
-    private static final Pattern SIZE = Pattern.compile("\\d+(?:\\.\\d+)?\\s*(?:英寸|寸)");
     private static final Pattern QUANTITY = Pattern.compile("(?<![\\d一二两三四五六七八九十百千万零〇])([一二两三四五六七八九\\d]+)\\s*(?:个|只|份|盒)");
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private final Map<String, String> cakeDefaults;
@@ -45,7 +46,7 @@ public final class OrderRecognition {
         String body = text.replace("\r\n", "\n").replace('\r', '\n');
         var section = NOTICE_SECTION.matcher(body);
         if (section.find()) body = body.substring(0, section.start());
-        for (String original : body.split("[\\n；;]")) {
+        for (String original : records(body)) {
             if (stopAfterLine) break;
             String line = original.strip(); if (line.isEmpty()) continue;
             if (NOTICE.matcher(line).matches()) break;
@@ -75,8 +76,14 @@ public final class OrderRecognition {
                 if (items.size() >= 20) { itemOverflow = true; current = null; issues.add("商品区块超过20个，请手工补充，原文已保留"); unmapped.add(line); continue; }
                 current = addItem(items); itemOverflow = false;
                 if (heading.group(1).equals("蛋糕")) put(current.fields, "productType", field("CAKE", line));
-                if (!heading.group(2).isBlank()) product(current, heading.group(2), line);
-                continue;
+                String description = heading.group(2);
+                var firstLabel = LABEL.matcher(description);
+                if (!firstLabel.find()) {
+                    product(current, description, line);
+                    continue;
+                }
+                product(current, description.substring(0, firstLabel.start()), line);
+                line = description.substring(firstLabel.start());
             }
             var matches = new ArrayList<Match>(); var matcher = LABEL.matcher(line);
             while (matcher.find()) matches.add(new Match(matcher.start(), matcher.end(), matcher.group(1), matcher.group(2)));
@@ -90,8 +97,10 @@ public final class OrderRecognition {
             for (int i = 0; i < matches.size(); i++) {
                 var match = matches.get(i);
                 int end = i + 1 < matches.size() ? matches.get(i + 1).start : line.length();
-                String value = trimValue(line.substring(match.end, end));
-                String key = LABELS.get(match.label), evidence = line.substring(match.start, i + 1 < matches.size() ? matches.get(i + 1).start : line.length()).strip();
+                String key = LABELS.get(match.label);
+                String rawValue = line.substring(match.end, end);
+                String value = key.equals("size") ? rawValue : trimValue(rawValue);
+                String evidence = line.substring(match.start, i + 1 < matches.size() ? matches.get(i + 1).start : line.length()).strip();
                 if (key.equals("unmapped")) { unmapped.add(evidence); continue; }
                 if (key.equals("plannedFinishAt")) {
                     if (!value.isBlank()) finishTimes.add(new TimeInput(key, value, evidence));
@@ -137,6 +146,33 @@ public final class OrderRecognition {
         if (fields.values().stream().noneMatch(f -> f.value() != null) && items.isEmpty()) issues.add("未找到明确订单字段，原文未填入表单");
         return new RecognitionDraft(fields, items.stream().map(x -> new Item(x.id, x.fields)).toList(), issues, fragments, unmapped);
     }
+
+    private static List<String> records(String body) {
+        var records = new ArrayList<String>();
+        var token = RECORD_TOKEN.matcher(body);
+        int start = 0;
+        boolean readingSize = false;
+        while (token.find()) {
+            if (token.group(1) != null) {
+                readingSize = "size".equals(LABELS.get(token.group(1)));
+                continue;
+            }
+            if (readingSize && !token.group().equals("\n")) {
+                int next = token.end();
+                while (next < body.length() && body.charAt(next) != '\n' && Character.isWhitespace(body.charAt(next))) next++;
+                // A semicolon inside the value is literal unless it starts another field or item.
+                if (!LABEL.matcher(body).region(next, body.length()).lookingAt()
+                        && !ITEM_HEADING.matcher(body).region(next, body.length()).lookingAt()
+                        && !TITLE.matcher(body).region(next, body.length()).lookingAt()) continue;
+            }
+            records.add(body.substring(start, token.start()));
+            start = token.end();
+            readingSize = false;
+        }
+        records.add(body.substring(start));
+        return records;
+    }
+
     private record TimeInput(String field, String value, String evidence) { }
 
     private static String trimValue(String value) {
@@ -276,12 +312,16 @@ public final class OrderRecognition {
         return List.copyOf(result);
     }
     private static void assign(Map<String, Field> fields, String key, String value, String evidence) {
+        if (key.equals("size")) {
+            String size = CakeSpecifications.size(value);
+            if (size != null) put(fields, key, field(size, evidence));
+            return;
+        }
         if (value.isBlank() || value.matches("客服填|待定|面议|未填写|待填写")) return;
         try {
             String normalized = switch (key) {
                 case "phone", "memberPhone" -> RecognitionValues.phone(value);
                 case "quantity" -> RecognitionValues.quantity(value);
-                case "size" -> RecognitionValues.size(value);
                 case "unitPriceCents", "memberPriceCents", "totalAmountCents" -> RecognitionValues.money(value);
                 case "fulfillmentType" -> switch (value) {
                     case "配送", "配送上门", "外送", "DELIVERY" -> "DELIVERY";
@@ -303,22 +343,14 @@ public final class OrderRecognition {
     private static void product(MutableItem item, String value, String evidence) {
         if (value.isBlank()) return;
         String name = value.split("[，,]", 2)[0].strip();
-        if (!SIZE.matcher(name).find() && !QUANTITY.matcher(name).find()) assign(item.fields, "name", name, evidence);
+        if (!QUANTITY.matcher(name).find()) assign(item.fields, "name", name, evidence);
         if (List.of("杯子蛋糕", "纸杯蛋糕", "甜甜圈", "茶歇", "饼干", "面包", "现货甜点", "饮品", "饮料", "小吃").stream().anyMatch(value::contains))
             put(item.fields, "productType", field("OTHER", evidence));
         else if (value.contains("蛋糕")) put(item.fields, "productType", field("CAKE", evidence));
         inline(item, value);
     }
     private static void inline(MutableItem item, String value) {
-        var sizes = SIZE.matcher(value); var found = new LinkedHashSet<String>(); boolean ambiguousSize = false;
-        while (sizes.find()) {
-            found.add(sizes.group());
-            ambiguousSize |= numericPrefix(value, sizes.start()) || value.substring(sizes.end()).stripLeading().matches("^(?:高|厚|长|宽).*");
-        }
-        if (ambiguousSize) put(item.fields, "size", invalid(value, "尺寸含符号、范围或高度含义，请人工核对"));
-        else if (found.size() == 1) assign(item.fields, "size", found.iterator().next(), value);
-        else if (found.size() > 1) put(item.fields, "size", invalid(value, "同一商品有多个尺寸，请核对"));
-        var quantities = QUANTITY.matcher(value); found.clear(); boolean ambiguousQuantity = false;
+        var quantities = QUANTITY.matcher(value); var found = new LinkedHashSet<String>(); boolean ambiguousQuantity = false;
         while (quantities.find()) { found.add(quantities.group(1)); ambiguousQuantity |= numericPrefix(value, quantities.start()); }
         ambiguousQuantity |= !found.isEmpty() && value.matches(".*(?:餐具|人份|蜡烛|叉碟).*" );
         if (ambiguousQuantity) put(item.fields, "quantity", invalid(value, "数量含符号、范围或配件含义，请人工核对"));

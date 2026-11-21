@@ -34,6 +34,6 @@ export function productionCardFields(item: Pick<Item, 'attributes' | 'productTyp
   const display = (value: unknown, missing: string) => value == null || typeof value === 'string' && !value.trim() ? missing : text(value) || missing;
   if (item.productType && !isCake(item.productType)) return [['规格', display(attributes.specification, '规格待确认')]];
   const size = display(attributes.size, '尺寸待确认');
-  return [['尺寸', /^\d+(?:\.\d+)?$/.test(size) ? `${size} 寸` : size],
+  return [['尺寸', size],
     ['蛋糕胚', display(attributes.base ?? attributes.cakeBase, '蛋糕胚待确认')]];
 }

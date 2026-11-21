@@ -1,5 +1,4 @@
 import { validDate } from './orderForm.ts';
-import { numericSize } from './productRules.ts';
 import { shiftDate } from './dates.ts';
 import { exportOptions } from './exportFiles.ts';
 import { orderingMethodError } from './orderingMethod.ts';
@@ -37,7 +36,7 @@ export function managementQuery(draft: ManagementDraft): string {
     if (!Object.hasOwn(exportOptions[key], draft[key])) throw new Error('筛选条件无效，请重新选择。');
     query.set(key, draft[key]);
   }
-  if (draft.sizeInches.trim()) query.set('sizeInches', numericSize(draft.sizeInches));
+  if (draft.sizeInches.trim()) query.set('sizeInches', draft.sizeInches.trim());
   if (draft.creditedEmployeeId && !draft.unassigned) {
     if (!/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(draft.creditedEmployeeId)) throw new Error('请选择有效的员工。');
     query.set('creditedEmployeeId', draft.creditedEmployeeId);

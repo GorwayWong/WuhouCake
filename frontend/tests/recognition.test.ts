@@ -5,7 +5,7 @@ import type { RecognitionDraft, RecognitionField } from '../src/types.ts';
 import { RecognitionLifecycle, applyRecognition, emptyRecognitionItem, recognitionValue,
   setCandidate, undoRecognition, validateCandidate, retainRecognitionFeedback, formFeedback, feedbackKey, orderEntryRecognition } from '../src/recognition.ts';
 import { decodeOrderDraft, freshOrderDraft } from '../src/orderDraftStorage.ts';
-import { cakeDefaults, normalizeSize } from '../src/productRules.ts';
+import { cakeDefaults } from '../src/productRules.ts';
 
 const field = (value: string | null, source: RecognitionField['source'] = value == null ? null : 'RULE', needsReview = false): RecognitionField =>
   ({ value, source, evidence: source === 'RULE' ? ['合成原文依据'] : [], needsReview, issues: [] });
@@ -264,7 +264,10 @@ test('保留金额、字段白名单和规格校验，未知类型由正常表�
   assert.equal(recognitionValue('unitPriceCents', '19929'), '199.29'); assert.equal(recognitionValue('totalAmountCents', '0'), '0.00');
   assert.throws(() => validateCandidate('paymentStatus', 'PAID')); assert.throws(() => validateCandidate('quantity', '0'));
   assert.throws(() => setCandidate(newDraft('2026-10-16'), 'paymentStatus', 'PAID'));
-  assert.equal(normalizeSize('08.00寸'), '8'); assert.throws(() => normalizeSize('4寸-6寸'));
+  assert.equal(validateCandidate('size', '　08.00寸　'), '08.00寸');
+  const typed = newDraft('2026-10-16');
+  const itemKey = typed.items[0].key;
+  assert.equal(setCandidate(typed, 'size', ' 6+8寸双层 ', itemKey).items[0].attributes.size, '6+8寸双层');
   const item = emptyRecognitionItem(); assert.equal(changeItemDraft(item, { productType: 'COOKIE' }).requiresTypeConfirmation, false);
   const cake = newItem(); assert.equal(cake.attributes.base, cakeDefaults.base);
   assert.equal(changeItemDraft(cake, { productType: 'CUPCAKE' }).attributes.base, '');

@@ -2,10 +2,12 @@ package org.xaspire.WuhouCake.order.domain.model.valobj;
 
 import java.math.BigDecimal;
 import java.util.*;
+import java.util.regex.Pattern;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.invalid;
 
 public final class CakeSpecifications {
     public static final Map<String, String> DEFAULTS = Map.of("base", "原味", "filling", "芒果", "flavor", "原味奶油");
+    private static final Pattern SIZE_WHITESPACE = Pattern.compile("^[\\p{Zs}\\t-\\r\\u2028\\u2029\\uFEFF]+|[\\p{Zs}\\t-\\r\\u2028\\u2029\\uFEFF]+\\z");
     private CakeSpecifications() { }
     public static Map<String, Object> other(Map<String, Object> attributes) {
         var lines = new LinkedHashSet<String>();
@@ -40,13 +42,10 @@ public final class CakeSpecifications {
         return JsonSnapshot.object(values);
     }
     public static String size(Object value) {
-        if (value == null || value instanceof String text && text.isBlank()) return null;
+        if (value == null) return null;
         if (!(value instanceof String) && !(value instanceof Number)) throw invalid();
-        String text = value.toString().strip();
-        if (!text.matches("[0-9]{1,9}(?:\\.[0-9]{1,2})?")) throw invalid();
-        var number = new BigDecimal(text);
-        if (number.signum() <= 0) throw invalid();
-        return number.stripTrailingZeros().toPlainString();
+        String text = SIZE_WHITESPACE.matcher(value.toString()).replaceAll("");
+        return text.isEmpty() ? null : text;
     }
     public static Map<String, Object> forWrite(String type, Map<String, Object> attributes) {
         var values = new LinkedHashMap<>(effective(type, attributes));

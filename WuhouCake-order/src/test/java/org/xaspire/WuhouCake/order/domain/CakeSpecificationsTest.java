@@ -14,13 +14,11 @@ class CakeSpecificationsTest {
             assertEquals(CakeSpecifications.DEFAULTS, new com.fasterxml.jackson.databind.ObjectMapper().readValue(resource, Map.class));
         }
     }
-    @Test void normalizesNumericSizesAndRejectsInvalidWrites() {
-        for (var entry : Map.of("8", "8", "08.00", "8", "4.5", "4.5", "6.50", "6.5").entrySet())
-            assertEquals(entry.getValue(), CakeSpecifications.size(entry.getKey()));
-        for (String value : List.of("8寸", "abc", "0", "-1", "1e2", "1.234", "1000000000", "NaN", "8/10"))
-            assertThrows(OrderFailure.class, () -> item("CAKE", Map.of("size", value)));
+    @Test void sizePreservesTextAndTrimsOnlyEdgeWhitespace() {
+        for (String size : List.of("8", "08.00", "8寸", "心形  20×15cm", "6+8寸双层"))
+            assertEquals(size, item("CAKE", Map.of("size", "\u00a0 " + size + "　")).attributes().get("size"));
+        assertFalse(item("CAKE", Map.of("size", "\t 　")).attributes().containsKey("size"));
         assertThrows(OrderFailure.class, () -> item("CAKE", Map.of("size", List.of(8))));
-        assertThrows(OrderFailure.class, () -> item(" cake ", Map.of("size", "abc")));
     }
     @Test void defaultsApplyToCreationClearingAndOldReadsWithoutAffectingOtherProducts() {
         var cake = item("cake", Map.of("base", " ", "filling", ""));
@@ -32,7 +30,7 @@ class CakeSpecificationsTest {
         var old = new OrderItem(UUID.randomUUID(), "旧单", "CAKE", 1, null, null, Map.of("size", "异常旧值"), "NOT_STARTED", null, false, Instant.EPOCH, Instant.EPOCH);
         assertEquals("原味", old.attributes().get("base"));
         assertEquals("异常旧值", old.revise(Map.of("quantity", 2), Instant.now()).attributes().get("size"));
-        assertThrows(OrderFailure.class, () -> old.revise(Map.of("attributes", Map.of("size", "abc")), Instant.now()));
+        assertEquals("6+8寸双层", old.revise(Map.of("attributes", Map.of("size", " 6+8寸双层 ")), Instant.now()).attributes().get("size"));
     }
     @Test void everyDefaultHandlesMissingNullBlankAndExplicitValues() {
         var custom = Map.<String, Object>of("base", "巧克力", "filling", "草莓", "flavor", "巧克力奶油");

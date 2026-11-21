@@ -15,7 +15,7 @@ class CustomerSubmissionTest {
     }
     @Test void cakeFieldsHaveCorrectDefaultsAndNoDefaultsLeakIntoOtherProducts() {
         var cake = cake(Map.of("size", "8.00", "flavor", "动物奶油", "filling", "芒果，奥利奥"));
-        assertEquals("8", cake.attributes().get("size")); assertEquals("原味", cake.attributes().get("base"));
+        assertEquals("8.00", cake.attributes().get("size")); assertEquals("原味", cake.attributes().get("base"));
         assertEquals("芒果，奥利奥", cake.attributes().get("filling")); assertEquals("动物奶油", cake.attributes().get("flavor"));
         var donut = new CustomerSubmission.Product("甜甜圈", "DONUT", 6, Map.of("filling", "巧克力"));
         assertEquals(Map.of("specification", "夹馅：巧克力"), donut.attributes());
@@ -23,7 +23,7 @@ class CustomerSubmissionTest {
     }
     @Test void invalidCustomerFieldsCannotIntroduceInternalData() {
         assertThrows(OrderFailure.class, () -> cake(Map.of()));
-        assertThrows(OrderFailure.class, () -> cake(Map.of("size", "-8")));
+        assertThrows(OrderFailure.class, () -> cake(Map.of("size", "　\t")));
         assertThrows(OrderFailure.class, () -> cake(Map.of("size", "8", "totalAmountCents", "0")));
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Product("", "CAKE", 1, Map.of("size", "8")));
         assertThrows(OrderFailure.class, () -> new CustomerSubmission.Product("蛋糕", null, 1, Map.of()));

@@ -400,28 +400,36 @@ test('取货日期、时刻和出品输入沿用原规则，恢复后同步提�
   const value = field => page.locator(`input[name="${field}"]`).inputValue();
   try {
     await complete(page); model.reject = true;
+    const size = page.locator('[id="items.0.size"]');
+    await size.fill('  心形  20×15cm  ');
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
     await waitFor(() => Promise.resolve(model.requests.length === 1));
     await waitFor(async () => (await pending(page)) === null);
+    assert.equal(model.requests[0].body.items[0].attributes.size, '心形  20×15cm');
     assert.equal(model.requests[0].body.fulfillment.requestedReceiveAt, null);
     assert.equal(model.requests[0].body.fulfillment.plannedHandoffAt, null);
     const date = await value('requestedReceiveAt');
     await selectTime(page, 'requestedReceiveAt', 'hour', '09');
     assert.equal(await value('requestedReceiveAt'), date + 'T09:00');
-    await selectTime(page, 'requestedReceiveAt', 'minute', '15');
+    const minutes = page.locator('[data-control-label="到店自提时间分钟"] .choice-trigger');
+    await minutes.click();
+    const options = page.getByRole('listbox', { name: '到店自提时间分钟' }).getByRole('option');
+    assert.deepEqual(await options.allTextContents(), ['分钟', '00', '10', '20', '30', '40', '50']);
+    await options.filter({ hasText: /^20$/ }).click();
     await page.locator('#plannedFinishAt').click();
     await page.getByRole('button', { name: '今天', exact: true }).click();
     await selectTime(page, 'plannedFinishAt', 'hour', '08');
     const production = await value('plannedFinishAt');
     await cycleOrderDraft(page);
-    assert.equal(await value('requestedReceiveAt'), date + 'T09:15');
+    assert.equal(await size.inputValue(), '  心形  20×15cm  ');
+    assert.equal(await value('requestedReceiveAt'), date + 'T09:20');
     assert.equal(await value('plannedFinishAt'), production);
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
     await waitFor(() => Promise.resolve(model.requests.length === 2));
     await waitFor(async () => (await pending(page)) === null);
     const fulfillment = model.requests[1].body.fulfillment;
     assert.equal(fulfillment.requestedReceiveAt, fulfillment.plannedHandoffAt);
-    assert.equal(fulfillment.requestedReceiveAt, date + 'T09:15:00+08:00');
+    assert.equal(fulfillment.requestedReceiveAt, date + 'T09:20:00+08:00');
     assert.equal(fulfillment.plannedFinishAt, production + ':00+08:00');
     await page.getByRole('button', { name: '清除时刻', exact: true }).click();
     assert.equal(await value('requestedReceiveAt'), date);
@@ -631,7 +639,7 @@ test('历史订单编辑只展示取货和出品，保留原始差异，不改�
   const detail = { orderId: '00000000-0000-4000-8000-000000000001', orderNo: 'TEST-LEGACY', version: 1, status: 'CAKE_BASE', paymentStatus: 'UNPAID', currentStageCode: null,
     customer: { phone: '13800000000', customerName: '测试客户', memberPhone: null, buyerName: null },
     fulfillment: { type: 'DELIVERY', address: '测试地址', requestedReceiveDate: '2026-11-05', requestedReceiveAt: '2026-11-05T10:00:00Z',
-      plannedHandoffAt: '2026-11-04T16:30:00Z', plannedFinishAt: '2026-11-04T14:00:00Z' },
+      plannedHandoffAt: '2026-11-04T16:37:42Z', plannedFinishAt: '2026-11-04T14:00:00Z' },
     totalAmountCents: null, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z', items: [] };
   try {
     model.extraPermissions = ['ORDER_READ', 'ORDER_BUSINESS_DETAILS_READ', 'ORDER_EDIT'];
@@ -648,7 +656,11 @@ test('历史订单编辑只展示取货和出品，保留原始差异，不改�
     await page.reload(); await page.locator('#customerName').waitFor();
     await page.goto(`${base}/#/orders/00000000-0000-4000-8000-000000000001`);
     await page.getByRole('button', { name: '编辑资料', exact: true }).click();
-    assert.equal(await page.locator('input[name="requestedReceiveAt"]').inputValue(), '2026-11-05T00:30');
+    assert.equal(await page.locator('input[name="requestedReceiveAt"]').inputValue(), '2026-11-05T00:37');
+    await page.locator('[data-control-label="配送员取货时间分钟"] .choice-trigger').click();
+    const originalMinute = page.getByRole('option', { name: '37（原值）' });
+    assert.equal(await originalMinute.getAttribute('aria-disabled'), 'true');
+    await page.keyboard.press('Escape');
     assert.equal(await page.locator('input[name="plannedFinishAt"]').inputValue(), '2026-11-04T22:00');
     assert.equal(await page.locator('.information-form input[name="plannedHandoffAt"]').count(), 0);
     assert.equal(await page.getByText('历史时间不同，请核对：', { exact: false }).count(), 1);
@@ -678,11 +690,12 @@ test('客户扫码响应丢失后用原请求重试，员工确认时暂存并�
     await page.locator('#phone').fill('13800000000'); await page.locator('#address').fill('测试地址');
     await page.locator('#requestedReceiveAt').click(); await page.getByRole('button', { name: '今天', exact: true }).click();
     await selectTime(page, 'requestedReceiveAt', 'hour', '17'); await selectTime(page, 'requestedReceiveAt', 'minute', '30');
-    await page.locator('[id="items.0.size"]').fill('8');
+    await page.locator('[id="items.0.size"]').fill(' 6+8寸双层 ');
     assert.equal(await page.locator('input[name="plannedHandoffAt"], input[name="plannedFinishAt"]').count(), 0);
     await page.getByRole('button', { name: '提交预订', exact: true }).click();
     await page.getByRole('status').filter({ hasText: '原提交结果仍待确认，输入已保留' }).waitFor();
     assert.equal(attempts.length, 1);
+    assert.equal(attempts[0].content.items[0].attributes.size, '6+8寸双层');
     assert.equal(await page.getByLabel('联系电话').inputValue(), '13800000000');
     assert.equal(await page.getByLabel('联系电话').isDisabled(), true);
     await page.getByRole('button', { name: '重试提交', exact: true }).click();

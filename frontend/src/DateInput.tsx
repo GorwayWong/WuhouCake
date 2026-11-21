@@ -8,6 +8,8 @@ import { Select } from './Select';
 
 const businessHours = Array.from({ length: 16 }, (_, index) => String(index + 7).padStart(2, '0'));
 
+const minuteOptions = ['00', '10', '20', '30', '40', '50'];
+
 interface Props {
   label: string; id?: string; name?: string; type?: 'date' | 'datetime-local';
   value: string; onChange: (value: string, parts?: { date: string; time: string }) => void; required?: boolean; disabled?: boolean;
@@ -38,7 +40,9 @@ function DateTimeInput({ value, onChange, label, name, id, required, disabled, r
         <option value="">小时</option>{draft.hour && !businessHours.includes(draft.hour) && <option value={draft.hour} disabled>{draft.hour}{compactTime ? '（原值）' : ' 时（原值）'}</option>}{businessHours.map(hour => <option key={hour} value={hour}>{hour}{!compactTime && ' 时'}</option>)}
       </Select>
       <Select label={`${label}分钟`} value={draft.minute} onChange={minute => update({ minute })} required={required && !timeOptional} disabled={disabled} {...aria}>
-        <option value="">分钟</option>{Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0')).map(minute => <option key={minute} value={minute}>{minute}{!compactTime && ' 分'}</option>)}
+        <option value="">分钟</option>
+        {draft.minute && !minuteOptions.includes(draft.minute) && <option value={draft.minute} disabled>{draft.minute}（原值）</option>}
+        {minuteOptions.map(minute => <option key={minute} value={minute}>{minute}{!compactTime && ' 分'}</option>)}
       </Select>
     </div>
     {timeOptional && (showTimeHint || draft.hour || draft.minute) && <div className="optional-time-help">{showTimeHint && <span>{!draft.hour && !draft.minute ? '时刻待定' : '时刻选填'}</span>}{(draft.hour || draft.minute) && <button type="button" className="text-button" disabled={disabled} onClick={() => update({ hour: '', minute: '' })}>清除时刻</button>}</div>}

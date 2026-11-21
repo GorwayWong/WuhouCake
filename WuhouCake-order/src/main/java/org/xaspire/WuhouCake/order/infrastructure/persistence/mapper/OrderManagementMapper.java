@@ -7,7 +7,7 @@ import org.apache.ibatis.annotations.*;
 import org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.*;
 
 public interface OrderManagementMapper {
-    String ITEM_MATCH = "<if test='filter.size != null'> AND upper(i.product_type)='CAKE' AND cake_size_inches(i.attributes)=CAST(#{filter.size} AS numeric)</if>"
+    String ITEM_MATCH = "<if test='filter.size != null'> AND upper(i.product_type)='CAKE' AND cake_size_text(i.attributes)=#{filter.size}</if>"
             + "<if test='filter.productName != null'> AND position(#{filter.productName} IN i.name)&gt;0</if>";
     String AMOUNTS = "COALESCE(sum(o.total_amount_cents),0)::text AS total_amount_cents,"
             + " COALESCE(sum(o.total_amount_cents) FILTER (WHERE o.payment_status='PAID'),0)::text AS paid_amount_cents,"
@@ -15,7 +15,7 @@ public interface OrderManagementMapper {
             + " count(*) FILTER (WHERE o.total_amount_cents IS NULL) AS missing_amount_orders";
     String SOURCE = " FROM cake_order o LEFT JOIN LATERAL (SELECT COALESCE(sum(i.quantity),0) AS quantity,"
             + " COALESCE(sum(i.quantity) FILTER (WHERE upper(i.product_type)='CAKE'),0) AS cakes,"
-            + " COALESCE(sum(i.quantity) FILTER (WHERE upper(i.product_type)='CAKE' AND cake_size_inches(i.attributes) IS NULL),0) AS unknown_size,"
+            + " COALESCE(sum(i.quantity) FILTER (WHERE upper(i.product_type)='CAKE' AND cake_size_text(i.attributes) IS NULL),0) AS unknown_size,"
             + " string_agg(i.name || ' ×' || i.quantity || CASE WHEN i.attributes->>'size' IS NULL THEN '' ELSE '（' || (i.attributes->>'size') || '）' END, '、' ORDER BY i.position NULLS LAST,i.created_at,i.id) AS products"
             + " FROM cake_order_item i WHERE i.order_id=o.id AND NOT i.is_removed"
             + ITEM_MATCH + ") p ON TRUE WHERE "
@@ -44,10 +44,10 @@ public interface OrderManagementMapper {
     @Select("<script>SELECT count(*) AS order_count,COALESCE(sum(p.quantity),0) AS matching_quantity,COALESCE(sum(p.cakes),0) AS cake_quantity,"
             + " COALESCE(sum(p.unknown_size),0) AS unclassified_cake_quantity," + AMOUNTS + SOURCE + "</script>")
     Totals totals(@Param("filter") Filter filter);
-    @Select("<script>SELECT cake_size_inches(i.attributes)::text AS size,count(DISTINCT selected.id) AS order_count,sum(i.quantity) AS cake_quantity"
+    @Select("<script>SELECT cake_size_text(i.attributes) AS size,count(DISTINCT selected.id) AS order_count,sum(i.quantity) AS cake_quantity"
             + " FROM (SELECT o.id" + SOURCE + ") selected JOIN cake_order_item i ON i.order_id=selected.id"
             + " WHERE NOT i.is_removed AND upper(i.product_type)='CAKE'" + ITEM_MATCH
-            + " GROUP BY cake_size_inches(i.attributes) ORDER BY cake_size_inches(i.attributes) NULLS LAST</script>")
+            + " GROUP BY cake_size_text(i.attributes) ORDER BY cake_size_text(i.attributes) NULLS LAST</script>")
     List<SizeSummary> sizes(@Param("filter") Filter filter);
     @Select("<script>SELECT o.credited_employee_id::text AS employee_id,"
             + " (array_agg(o.credited_employee_number ORDER BY o.created_at DESC,o.id))[1] AS employee_number,"
@@ -55,7 +55,7 @@ public interface OrderManagementMapper {
             + " count(*) AS order_count,COALESCE(sum(p.quantity),0) AS matching_quantity,COALESCE(sum(p.cakes),0) AS cake_quantity,"
             + AMOUNTS + SOURCE + " GROUP BY o.credited_employee_id ORDER BY employee_number NULLS LAST,o.credited_employee_id</script>")
     List<EmployeeSummary> employees(@Param("filter") Filter filter);
-    @Select("<script>SELECT selected.order_no,i.name,i.product_type,i.quantity::bigint AS quantity,i.attributes->>'size' AS size,"
+    @Select("<script>SELECT selected.order_no,i.name,i.product_type,i.quantity::bigint AS quantity,cake_size_text(i.attributes) AS size,"
             + " CASE WHEN upper(i.product_type)='CAKE' THEN COALESCE(NULLIF(regexp_replace(i.attributes->>'flavor','^[[:space:]]+|[[:space:]]+$','','g'),''),'原味奶油') ELSE i.attributes->>'flavor' END AS flavor,"
             + " CASE WHEN upper(i.product_type)='CAKE' THEN COALESCE(NULLIF(regexp_replace(i.attributes->>'base','^[[:space:]]+|[[:space:]]+$','','g'),''),'原味') ELSE i.attributes->>'base' END AS base,"
             + " CASE WHEN upper(i.product_type)='CAKE' THEN COALESCE(NULLIF(regexp_replace(i.attributes->>'filling','^[[:space:]]+|[[:space:]]+$','','g'),''),'芒果') ELSE i.attributes->>'filling' END AS filling,"

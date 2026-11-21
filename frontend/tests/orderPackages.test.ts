@@ -28,11 +28,15 @@ test('同款只合并首个其他商品，保留已有图，套餐原价及会�
   const draft = newDraft('2026-11-11'), value = template();
   const first = previewPackage(draft, value).next.items[0];
   first.images = [{ id: 'customer', name: '客户参考图.png', type: 'image/png', size: 100 }];
-  draft.items = [first, { ...first, key: 'duplicate', quantity: '2' }, { ...newItem(), name: first.name }];
+  const cake = newItem();
+  cake.name = first.name;
+  cake.attributes.size = '6+8寸双层';
+  draft.items = [first, { ...first, key: 'duplicate', quantity: '2' }, cake];
   draft.totalAmount = '100';
   const before = structuredClone(draft);
   const plan = previewPackage(draft, { ...value, items: [...value.items, product(first.name, '巧克力')] });
   assert.deepEqual(plan.next.items.map(item => item.quantity), ['12', '2', '1', '6']);
+  assert.equal(plan.next.items[2].attributes.size, '6+8寸双层');
   assert.equal(plan.next.items[0].images?.[0].id, 'customer');
   assert.equal(plan.imageSources.has(first.key), false);
   assert.equal(plan.changes[0].index, 0);

@@ -42,7 +42,7 @@ test('管理筛选双列布局、组合查询、导出、分页和详情返回�
         text: node.childNodes[0].textContent, x: node.getBoundingClientRect().x, y: node.getBoundingClientRect().y,
         width: node.getBoundingClientRect().width
       })));
-      assert.deepEqual(labels.slice(0, 10).map(row => row.text), ['日期口径', '开始日期', '结束日期（含当天）', '订单状态', '付款状态', '配送或自提', '蛋糕尺寸（寸）', '下单方式', '客户／电话', '商品名称']);
+      assert.deepEqual(labels.slice(0, 10).map(row => row.text), ['日期口径', '开始日期', '结束日期（含当天）', '订单状态', '付款状态', '配送或自提', '蛋糕尺寸', '下单方式', '客户／电话', '商品名称']);
       if (width >= 360) for (const left of [1, 3, 5, 7]) {
         assert.equal(labels[left].y, labels[left + 1].y); assert.ok(labels[left + 1].x > labels[left].x);
       }
@@ -68,7 +68,7 @@ test('管理筛选双列布局、组合查询、导出、分页和详情返回�
     await status.focus(); await page.keyboard.press('Enter'); await page.getByRole('option', { name: '出胚', exact: true }).click();
     await filters.locator('[data-control-label="配送或自提"] .choice-trigger').click();
     await page.getByRole('option', { name: '自提', exact: true }).click();
-    await filters.getByRole('textbox', { name: '蛋糕尺寸（寸）', exact: true }).fill('8');
+    await filters.getByRole('textbox', { name: '蛋糕尺寸', exact: true }).fill('8');
     const method = filters.locator('#management-orderingMethod');
     for (const option of ['老板', '小程序', '到店', '客服号', '其他']) {
       await method.click(); await page.getByRole('option', { name: option, exact: true }).click();
@@ -136,7 +136,7 @@ test('管理筛选双列布局、组合查询、导出、分页和详情返回�
       assert.match(await page.locator('.report-payment-summary').innerText(), /已付款订单总额.*¥0.00.*未付款订单总额.*¥0.00/s);
       if (amount !== '0') {
         await page.getByText('未报价 1 单', { exact: true }).waitFor();
-        await page.getByRole('button', { name: '查看 8 寸明细', exact: true }).waitFor();
+        await page.getByRole('button', { name: '查看 8 明细', exact: true }).waitFor();
       } else await page.getByText('暂无匹配蛋糕。', { exact: true }).waitFor();
       for (const width of [320, 390, 1280]) {
         await page.setViewportSize({ width, height: 1000 });

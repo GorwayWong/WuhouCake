@@ -3,7 +3,7 @@ import type { ItemDraft } from './orderForm.ts';
 
 export type ProductFormField = 'name' | 'quantity' | 'unitPrice' | 'memberPrice' | keyof ItemDraft['attributes'];
 export const productFormLabels: Record<ProductFormField, string> = {
-  name: '商品名称', quantity: '数量', size: '尺寸（寸）', base: '蛋糕胚', filling: '夹馅', flavor: '奶油',
+  name: '商品名称', quantity: '数量', size: '尺寸', base: '蛋糕胚', filling: '夹馅', flavor: '奶油',
   message: '祝福语', requirements: '特殊要求', specification: '商品说明', unitPrice: '原单价（元）', memberPrice: '会员单价（元）',
 };
 export function productFormRows(type: string, prices = false): ProductFormField[][] {

@@ -226,11 +226,11 @@ public interface OrderQueryMapper {
             + " FROM cake_order WHERE deleted_at IS NULL AND payment_status='PAID' AND paid_at>=#{from} AND paid_at<#{to}")
     ReceiptSummaryRow receiptSummary(@Param("from") Instant from, @Param("to") Instant to);
 
-    @Select("SELECT cake_size_inches(i.attributes)::text AS size,"
+    @Select("SELECT cake_size_text(i.attributes) AS size,"
             + " COALESCE(NULLIF(btrim(i.attributes->>'base'),''),NULLIF(btrim(i.attributes->>'cakeBase'),''),'原味') AS flavor,"
             + " sum(i.quantity)::bigint AS quantity FROM cake_order o JOIN cake_order_item i ON i.order_id=o.id"
             + " WHERE o.deleted_at IS NULL AND " + ORDER_PICKUP_DATE + "=#{date} AND o.status<>'CANCELLED' AND NOT i.is_removed AND upper(i.product_type)='CAKE'"
-            + " GROUP BY cake_size_inches(i.attributes), COALESCE(NULLIF(btrim(i.attributes->>'base'),''),NULLIF(btrim(i.attributes->>'cakeBase'),''),'原味')"
-            + " ORDER BY cake_size_inches(i.attributes) NULLS LAST, flavor")
+            + " GROUP BY cake_size_text(i.attributes), COALESCE(NULLIF(btrim(i.attributes->>'base'),''),NULLIF(btrim(i.attributes->>'cakeBase'),''),'原味')"
+            + " ORDER BY cake_size_text(i.attributes) NULLS LAST, flavor")
     List<CakeBaseRow> cakeBases(LocalDate date);
 }
