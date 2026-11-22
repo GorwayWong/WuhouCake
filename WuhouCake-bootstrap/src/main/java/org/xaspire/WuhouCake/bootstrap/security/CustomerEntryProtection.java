@@ -25,12 +25,14 @@ public final class CustomerEntryProtection extends OncePerRequestFilter {
         this.redis = redis; this.properties = properties; this.errors = errors; this.clock = clock; this.namespace = namespace;
     }
     @Override protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !request.getMethod().equals("POST") || !request.getRequestURI().matches("/api/public/order-entries/[^/]+/(submissions|items/[^/]+/images/[^/]+)");
+        return !request.getMethod().equals("POST") || !request.getRequestURI().matches("/api/public/order-entries/[^/]+/(submissions|images/status|items/[^/]+/images/[^/]+)");
     }
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException {
         long seconds = clock.instant().getEpochSecond(); String ip = clientAddress(request, properties.trustedProxies());
-        boolean image = !request.getRequestURI().endsWith("/submissions");
-        String key = namespace + (image ? ":customer-image:" : ":customer-entry:") + ip;
+        String path = request.getRequestURI();
+        boolean status = path.endsWith("/images/status");
+        boolean image = !status && !path.endsWith("/submissions");
+        String key = namespace + (image ? ":customer-image:" : status ? ":customer-image-status:" : ":customer-entry:") + ip;
         try {
             Long allowed = redis.execute(LIMIT, List.of(key + ":m:" + seconds / 60, key + ":h:" + seconds / 3600), image ? "30" : properties.perMinute().toString(), image ? "120" : properties.perHour().toString());
             if (allowed == null) { errors.write(response, 503, "SERVICE_UNAVAILABLE"); return; }

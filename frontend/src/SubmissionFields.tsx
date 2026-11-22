@@ -15,9 +15,11 @@ import { SubmissionItemImages } from './SubmissionItemImages';
 import type { SubmissionImageScope } from './SubmissionItemImages';
 import type { SubmissionContent, SubmissionItemDraft } from './customerSubmission';
 
-export function SubmissionFields({ draft, onChange, errors, busy, staff = false, imageScope, original, markImagePending }: {
+const ignoreImagePending = () => {};
+
+export function SubmissionFields({ draft, onChange, errors, busy, staff = false, imageScope, original, markImagePending = ignoreImagePending }: {
   draft: SubmissionDraft; onChange: (value: SubmissionDraft) => void; errors: Record<string, string>; busy: boolean; staff?: boolean;
-  imageScope: SubmissionImageScope; original?: SubmissionContent; markImagePending: (item: string, active: boolean) => void;
+  imageScope: SubmissionImageScope; original?: SubmissionContent; markImagePending?: (item: string, active: boolean) => void;
 }) {
   const latest = useRef({ draft, onChange });
   latest.current = { draft, onChange };

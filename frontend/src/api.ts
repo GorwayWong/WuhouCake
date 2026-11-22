@@ -5,7 +5,13 @@ import { hasUnsafeMoneyNumber } from './money.ts';
 export class ApiError extends Error {
   status: number;
   code: string;
-  constructor(status: number, code: string) { super(code); this.status = status; this.code = code; }
+  readonly retryAfter?: string;
+  constructor(status: number, code: string, retryAfter?: string) {
+    super(code);
+    this.status = status;
+    this.code = code;
+    this.retryAfter = retryAfter;
+  }
 }
 export function rejectedBeforeWrite(error: unknown): boolean {
   return error instanceof ApiError && ['IMAGE_PROCESSING_BUSY', 'IMAGE_PROCESSING_TIMEOUT', 'IMAGE_PROCESSING_UNAVAILABLE', 'TEMP_STORAGE_UNAVAILABLE'].includes(error.code);
@@ -105,10 +111,10 @@ export function errorText(error: unknown): string {
     SUBMISSION_RECEIPT_INVALID: '未收到有效的填单回执。',
   } as Record<string, string>)[error.code] || (error.status === 429 ? '操作过于频繁，请稍后重试。' : `请求未完成（${error.code}），请核对后重试。`);
 }
-async function decode<T>(response: Response, started?: number): Promise<T> {
+async function decode<T>(response: Response, started?: number, retryAfter?: string): Promise<T> {
   const body = await response.json().catch(() => null);
   if (started !== undefined && started !== generation) throw new ApiError(401, 'AUTHENTICATION_FAILED');
-  if (!response.ok || !body?.success) throw new ApiError(response.status, body?.code || `HTTP_${response.status}`);
+  if (!response.ok || !body?.success) throw new ApiError(response.status, body?.code || `HTTP_${response.status}`, retryAfter);
   if (hasUnsafeMoneyNumber(body.data)) throw new ApiError(502, 'UNSAFE_MONEY_AMOUNT');
   return body.data;
 }
@@ -333,6 +339,16 @@ export function readPublicOrderEntry(token: string, signal: AbortSignal) {
   return withRequestDeadline(signal, 'READ_TIMEOUT', signal =>
     publicApi<{ ownerName: string }>(`/public/order-entries/${encodeURIComponent(token)}`, { signal }));
 }
+export async function missingPublicImages(base: string, images: { item: string; id: string }[], signal: AbortSignal) {
+  if (!images.length) return new Set<string>();
+  const ids = new Set(images.map(image => image.id));
+  const missing = await withRequestDeadline(signal, 'READ_TIMEOUT', signal =>
+    publicApi<unknown>(`${base}/images/status`, { method: 'POST', signal,
+      body: images.map(({ item, id }) => ({ itemId: item, imageId: id })) }));
+  if (!Array.isArray(missing) || missing.some(id => typeof id !== 'string' || !ids.has(id)))
+    throw new ApiError(502, 'SERVICE_UNAVAILABLE');
+  return new Set<string>(missing);
+}
 export async function submitPublicOrder(token: string, key: string, content: SubmissionContent, signal: AbortSignal) {
   const receipt = await withRequestDeadline(signal, 'SUBMISSION_TIMEOUT', signal =>
     publicApi<{ submissionId: string; submissionNo: string }>(`/public/order-entries/${encodeURIComponent(token)}/submissions`, {
@@ -348,8 +364,10 @@ export function uploadSubmissionImage(path: string, file: File, signal: AbortSig
   const body = new FormData();
   body.append('file', file);
   if (!publicImage) return writeRequest<string>(path, { method: 'POST', body, signal });
-  return withRequestDeadline(signal, 'SUBMISSION_TIMEOUT', async signal =>
-    decode<string>(await fetch(`/api${path}`, { method: 'POST', credentials: 'omit', cache: 'no-store', body, signal })), 60_000);
+  return withRequestDeadline(signal, 'SUBMISSION_TIMEOUT', async signal => {
+    const response = await fetch(`/api${path}`, { method: 'POST', credentials: 'omit', cache: 'no-store', body, signal });
+    return decode<string>(response, undefined, response.headers.get('Retry-After') ?? undefined);
+  }, 60_000);
 }
 export async function uploadOrderImage(orderId: string, file: File, itemId: string, signal?: AbortSignal, requestId?: string): Promise<OrderImage> {
   const body = new FormData();

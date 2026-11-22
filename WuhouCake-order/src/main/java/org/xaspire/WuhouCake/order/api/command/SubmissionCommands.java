@@ -22,6 +22,7 @@ public final class SubmissionCommands {
             this(content, prices, totalAmountCents, creditedEmployeeId, plannedHandoffAt, null);
         }
     }
+    public record ImageReference(UUID itemId, UUID imageId) { }
     public record Save(Number expectedVersion, Review review) { }
     public record Confirm(Number expectedVersion, String duplicateCheckToken, UUID acknowledgedNewerSubmissionId) { }
     public record Delete(Number expectedVersion) { }

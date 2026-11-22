@@ -3,6 +3,7 @@ package org.xaspire.WuhouCake.order.application.service;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.List;
 import java.util.UUID;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
@@ -25,15 +26,18 @@ public class SubmissionImageService {
     public UUID stage(UUID entry, UUID submission, UUID item, UUID id, byte[] bytes, String filename) {
         if (entry != null) staged.lockEntryUploads(entry);
         var now = clock.instant();
+        var expires = now.plus(Duration.ofHours(48));
         var fingerprint = OrderImageService.fingerprint(item, filename, bytes);
-        if (staged.matchesUpload(id, item, entry, submission, now, fingerprint)) return id;
+        if (entry == null ? staged.matchesUpload(id, item, null, submission, now, fingerprint)
+                : staged.renewPublicUpload(id, item, entry, now, expires, fingerprint, false)) return id;
         if (staged.stagedCount(entry, submission, item, now) >= (entry == null ? 80 : 15))
             throw new OrderFailure(entry == null ? "ORDER_IMAGE_COUNT_EXCEEDED" : "ORDER_IMAGE_LIMIT_EXCEEDED");
         if (entry != null && staged.stagedEntryCount(entry, now) >= 200) throw new OrderFailure("IMAGE_PROCESSING_BUSY");
+        if (entry != null && staged.renewPublicUpload(id, item, entry, now, expires, fingerprint, true)) return id;
         var checked = validator.validate(bytes, filename);
         var image = new SubmissionImages.Image(id, item, checked.filename(), checked.contentType(),
                 checked.width(), checked.height(), checked.content() == null ? bytes : checked.content());
-        if (!staged.stage(image, entry, submission, now.plus(Duration.ofHours(48)), fingerprint)
+        if (!staged.stage(image, entry, submission, expires, fingerprint)
                 && !staged.matchesUpload(id, item, entry, submission, now, fingerprint))
             throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
         return id;
@@ -41,6 +45,10 @@ public class SubmissionImageService {
 
     public SubmissionImages.Image staged(UUID entry, UUID item, UUID image) {
         return requireImage(staged.staged(entry, item, image, clock.instant()));
+    }
+
+    public List<UUID> missingPublicImages(UUID entry, List<SubmissionImages.Reference> references) {
+        return staged.missingPublicImages(entry, references, clock.instant());
     }
 
     public SubmissionImages.Image submitted(UUID submission, UUID item, UUID image) {

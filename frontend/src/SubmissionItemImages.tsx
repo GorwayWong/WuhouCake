@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Plus, X } from '@phosphor-icons/react';
-import { errorText, fetchPackageImage, uploadSubmissionImage } from './api';
+import { ApiError, errorText, fetchPackageImage, uploadSubmissionImage } from './api';
 import { imageFileError, loadBlobPreview, whenImageVisible } from './imagePreview';
 import { randomUUID } from './uuid';
 
@@ -8,6 +8,9 @@ export interface SubmissionImageScope {
   base: string;
   publicImage?: boolean;
   allowUpload?: boolean;
+  previewRevision?: number;
+  localFiles?: ReadonlyMap<string, File>;
+  selectLocal?: (item: string, file: File) => void;
 }
 
 export function useSubmissionImagePending() {
@@ -23,6 +26,8 @@ export function SubmissionImageTile({ scope, item, image, label, action }: {
 }) {
   const path = `${scope.base}/items/${item}/images/${image}`;
   const publicImage = Boolean(scope.publicImage);
+  const previewRevision = scope.previewRevision;
+  const file = scope.localFiles?.get(image);
   const [url, setUrl] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [attempt, setAttempt] = useState(0);
@@ -30,11 +35,15 @@ export function SubmissionImageTile({ scope, item, image, label, action }: {
   const tile = useRef<HTMLLIElement>(null);
   useEffect(() => {
     setUrl(''); setError(null);
-    return whenImageVisible(tile.current, () => loadBlobPreview(signal => fetchPackageImage(path, signal, publicImage), setUrl, setError));
-  }, [path, publicImage, attempt]);
+    return whenImageVisible(tile.current, () => loadBlobPreview(signal => file ? Promise.resolve(file)
+      : fetchPackageImage(path, signal, publicImage), setUrl, setError));
+  }, [path, publicImage, attempt, previewRevision, file]);
+  const unavailable = publicImage && error instanceof ApiError && error.status === 404 && error.code === 'IMAGE_NOT_FOUND';
   return <li className="reference-image" ref={tile}>
     {url ? <button type="button" className="image-thumbnail" onClick={() => dialog.current?.showModal()} aria-label={`查看${label}`}><img src={url} alt={label} /></button>
-      : <div className="image-placeholder">{error ? <><span>图片读取失败</span><button type="button" className="text-button" onClick={() => setAttempt(attempt + 1)}>重试读取</button></> : '正在读取图片…'}</div>}
+      : <div className="image-placeholder">{unavailable ? '图片已失效' : error
+        ? <><span>图片读取失败</span><button type="button" className="text-button" onClick={() => setAttempt(attempt + 1)}>重试读取</button></>
+        : '正在读取图片…'}</div>}
     <div className="image-caption"><span>{label}</span>{action && <button type="button" className="text-button" onClick={action.run}>{action.label}</button>}</div>
     <dialog ref={dialog} className="image-dialog" aria-label={label} onClick={event => { if (event.target === dialog.current) dialog.current.close(); }}>
       <div className="image-dialog-heading"><strong>{label}</strong><button type="button" className="icon-button" aria-label="关闭大图" onClick={() => dialog.current?.close()}><X /></button></div>
@@ -86,7 +95,12 @@ export function SubmissionItemImages({ scope, item, selected, originals, setSele
       <input ref={input} type="file" accept="image/jpeg,image/png" hidden onChange={event => {
         const file = event.currentTarget.files?.[0];
         event.currentTarget.value = '';
-        if (file) void send(file, randomUUID());
+        if (!file) return;
+        if (scope.selectLocal) {
+          const issue = imageFileError(file);
+          setError(issue);
+          if (!issue && selected.length < 5) scope.selectLocal(item, file);
+        } else void send(file, randomUUID());
       }} />
     </div>
     {images.length > 0 && <ul className="image-grid">{images.map((id, index) => {

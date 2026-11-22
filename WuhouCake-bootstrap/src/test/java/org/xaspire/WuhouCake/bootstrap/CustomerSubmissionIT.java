@@ -148,6 +148,88 @@ class CustomerSubmissionIT {
         assertEquals(0.0, meters.get("wuhou.submission.images.staged.expired").gauge().value());
     }
 
+    @Test void publicImageStatusChecksExactPairsAndAllowsReuseAtFullStagingCapacity() throws Exception {
+        var manager = admin();
+        var clerk = employee(manager, "0002", "FRONT_DESK");
+        String token = entry(clerk), other = entry(manager);
+        String status = "/api/public/order-entries/" + token + "/images/status";
+        UUID item = UUID.randomUUID(), image = UUID.randomUUID(), otherItem = UUID.randomUUID(), otherImage = UUID.randomUUID();
+        var visitor = new Client();
+        byte[] photo = picture(0x7850ff);
+        assertEquals(200, visitor.upload("/api/public/order-entries/" + token + photoPath(item, image), photo).statusCode());
+        assertEquals(200, visitor.upload("/api/public/order-entries/" + token + photoPath(otherItem, otherImage), photo).statusCode());
+        UUID entry = jdbc.queryForObject("SELECT id FROM customer_order_entry WHERE token=?", UUID.class, token);
+        jdbc.update("""
+                INSERT INTO customer_submission_image(id,item_id,entry_id,expires_at,filename,content_type,width,height,content,fingerprint)
+                SELECT gen_random_uuid(),gen_random_uuid(),?,now()+interval '1 hour','seed.png','image/png',40,40,?,'seed'
+                FROM generate_series(1,198)
+                """, entry, photo);
+        var first = Map.of("itemId", item, "imageId", image);
+        var second = Map.of("itemId", otherItem, "imageId", otherImage);
+        var ok = visitor.request("POST", status, List.of(first, second));
+        assertEquals(200, ok.status, ok.body.toString());
+        assertTrue(ok.body.path("data").isArray());
+        assertEquals(0, ok.body.path("data").size());
+        var crossed = visitor.request("POST", status, List.of(
+                Map.of("itemId", item, "imageId", otherImage), Map.of("itemId", otherItem, "imageId", image)));
+        assertEquals(Set.of(image.toString(), otherImage.toString()),
+                java.util.stream.StreamSupport.stream(crossed.body.path("data").spliterator(), false)
+                        .map(JsonNode::asText).collect(java.util.stream.Collectors.toSet()));
+        assertEquals(image.toString(), visitor.request("POST", "/api/public/order-entries/" + other + "/images/status",
+                List.of(first)).body.at("/data/0").asText());
+        assertEquals(400, visitor.request("POST", status, Collections.nCopies(41, first)).status);
+        assertEquals(400, visitor.request("POST", status, List.of(first, first)).status);
+
+        long hour = Instant.now().getEpochSecond() / 3_600;
+        for (long at : List.of(hour, hour + 1)) {
+            redis.opsForValue().set(NAMESPACE + ":customer-image-status:127.0.0.1:h:" + at, "1000", java.time.Duration.ofMinutes(5));
+        }
+        assertEquals(429, visitor.request("POST", status, List.of(first)).status);
+        var input = json.valueToTree(content("13800000000", "2026-11-02T18:00:00+08:00"));
+        ((ObjectNode) input.at("/items/0")).put("itemId", item.toString()).putArray("imageIds").add(image.toString());
+        ((ObjectNode) input.at("/items/1")).put("itemId", otherItem.toString()).putArray("imageIds").add(otherImage.toString());
+        submit(token, input, UUID.randomUUID());
+        assertEquals(1, count("customer_order_submission"));
+        assertEquals(198, jdbc.queryForObject("SELECT count(*) FROM customer_submission_image WHERE submission_id IS NULL", Integer.class));
+    }
+
+    @Test void expiredPublicUploadCanBeRestagedWithTheSameFileAndSubmissionKey() throws Exception {
+        var manager = admin();
+        var clerk = employee(manager, "0002", "FRONT_DESK");
+        var visitor = new Client();
+        String token = entry(clerk);
+        String otherToken = entry(manager);
+        UUID item = UUID.randomUUID(), image = UUID.randomUUID();
+        UUID secondItem = UUID.randomUUID(), secondImage = UUID.randomUUID(), key = UUID.randomUUID();
+        String path = "/api/public/order-entries/" + token + photoPath(item, image);
+        String otherPath = "/api/public/order-entries/" + otherToken + photoPath(item, image);
+        byte[] photo = picture(0x7850ff);
+        assertEquals(200, visitor.upload(path, photo).statusCode());
+        assertEquals(200, visitor.upload("/api/public/order-entries/" + token + photoPath(secondItem, secondImage), photo).statusCode());
+        jdbc.update("UPDATE customer_submission_image SET expires_at=now()-interval '1 hour'");
+        assertEquals(404, visitor.image(path).statusCode());
+        assertEquals(409, visitor.upload(otherPath, photo).statusCode());
+        assertEquals(409, visitor.upload(path, picture(0xffa940)).statusCode());
+
+        var input = json.valueToTree(content("13800000000", "2026-11-02T18:00:00+08:00"));
+        ((ObjectNode) input.at("/items/0")).put("itemId", item.toString()).putArray("imageIds").add(image.toString());
+        ((ObjectNode) input.at("/items/1")).put("itemId", secondItem.toString()).putArray("imageIds").add(secondImage.toString());
+        var rejected = visitor.request("POST", submitPath(token), input, key.toString());
+        assertEquals(404, rejected.status);
+        assertEquals("IMAGE_NOT_FOUND", rejected.body.path("code").asText());
+        assertEquals(0, count("customer_order_submission"));
+
+        assertEquals(200, visitor.upload(path, photo).statusCode());
+        imageMaintenance.clean();
+        assertEquals(1L, count("customer_submission_image"));
+        assertEquals(200, visitor.upload("/api/public/order-entries/" + token + photoPath(secondItem, secondImage), photo).statusCode());
+        String id = submit(token, input, key).at("/data/submissionId").asText();
+        assertEquals(id, submit(token, input, key).at("/data/submissionId").asText());
+        assertEquals(409, visitor.upload(path, photo).statusCode());
+        assertEquals(1L, count("customer_order_submission"));
+        assertEquals(2L, count("customer_submission_image"));
+    }
+
     @Test void customerAndStaffPhotosStayWithTheirProductsAcrossReviewAndConfirmation() throws Exception {
         var manager = admin();
         var staff = employee(manager, "0002", "FRONT_DESK");

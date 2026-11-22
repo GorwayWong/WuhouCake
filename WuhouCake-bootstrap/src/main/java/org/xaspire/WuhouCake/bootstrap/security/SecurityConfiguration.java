@@ -55,7 +55,7 @@ public class SecurityConfiguration {
         http.securityMatcher("/api/public/order-entries/**")
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/public/order-entries/{token}", "/api/public/order-entries/{token}/items/{item}/images/{image}").permitAll()
-                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/public/order-entries/{token}/submissions", "/api/public/order-entries/{token}/items/{item}/images/{image}").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/public/order-entries/{token}/submissions", "/api/public/order-entries/{token}/items/{item}/images/{image}", "/api/public/order-entries/{token}/images/status").permitAll()
                         .anyRequest().denyAll())
                 .csrf(AbstractHttpConfigurer::disable)
                 .exceptionHandling(config -> config.authenticationEntryPoint(errors).accessDeniedHandler(errors));

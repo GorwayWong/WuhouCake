@@ -2,6 +2,7 @@ package org.xaspire.WuhouCake.order.adapter.web;
 
 import com.fasterxml.jackson.databind.*;
 import java.io.IOException;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -31,6 +32,11 @@ public class PublicOrderEntryController {
     public ApiResponse<UUID> uploadImage(@PathVariable String token, @PathVariable UUID item, @PathVariable UUID image,
             @RequestParam MultipartFile file) throws IOException {
         return ApiResponse.success(service.stagePublicImage(token, item, image, OrderFileController.readUpload(file), file.getOriginalFilename()));
+    }
+    @PostMapping(value = "/api/public/order-entries/{token}/images/status", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ApiResponse<List<UUID>>> imageStatus(@PathVariable String token,
+            @RequestBody List<SubmissionCommands.ImageReference> images) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.success(service.missingPublicImages(token, images)));
     }
     @GetMapping("/api/public/order-entries/{token}/items/{item}/images/{image}")
     public ResponseEntity<byte[]> image(@PathVariable String token, @PathVariable UUID item, @PathVariable UUID image) {

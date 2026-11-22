@@ -14,9 +14,11 @@ import org.xaspire.WuhouCake.order.api.dto.SubmissionViews;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.port.CustomerSubmissions;
+import org.xaspire.WuhouCake.order.domain.port.SubmissionImages;
 import org.xaspire.WuhouCake.shared.json.JsonCodec;
 import org.xaspire.WuhouCake.shared.response.Page;
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
+import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderFileLimits.IMAGES_PER_ORDER;
 import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permission.*;
 
 public class CustomerSubmissionService {
@@ -79,6 +81,18 @@ public class CustomerSubmissionService {
     }
     @Transactional public UUID stagePublicImage(String token, UUID item, UUID image, byte[] bytes, String filename) {
         return images.stage(validEntry(token, true).id(), null, item, image, bytes, filename);
+    }
+
+    @Transactional(readOnly = true) public List<UUID> missingPublicImages(String token, List<SubmissionCommands.ImageReference> references) {
+        if (references == null || references.size() > IMAGES_PER_ORDER) throw invalid();
+        var entry = validEntry(token, false);
+        var ids = new HashSet<UUID>();
+        var pairs = new ArrayList<SubmissionImages.Reference>();
+        for (var image : references) {
+            if (image == null || image.itemId() == null || image.imageId() == null || !ids.add(image.imageId())) throw invalid();
+            pairs.add(new SubmissionImages.Reference(image.itemId(), image.imageId()));
+        }
+        return images.missingPublicImages(entry.id(), pairs);
     }
 
     @Transactional(readOnly = true) public SubmissionViews.ImageContent publicImage(String token, UUID item, UUID image) {

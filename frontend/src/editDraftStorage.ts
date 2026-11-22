@@ -1,11 +1,19 @@
 import { randomUUID } from './uuid';
 
 interface Record<T> {
-  schema: 1;
+  schema: 1 | 2;
   revision: string;
   value: T;
   expiresAt?: number;
+  draftExpiresAt?: number;
+  fileIds?: string[];
 }
+
+export const publicDraftPrefix = 'public-submission:';
+const draftDeadline = (row?: Record<unknown>) => row?.schema === 2 ? row.draftExpiresAt : row?.expiresAt;
+
+const fileKey = (key: IDBValidKey, id: string) => `draft-attachment:${key}:${id}`;
+type DraftFile = { blob: Blob; name: string; lastModified: number };
 
 type EditKind = 'item' | 'amount' | 'information';
 export type DraftAccess = readonly [customer: boolean, amounts: boolean, phone: boolean, ordering: boolean];
@@ -49,15 +57,17 @@ export async function listLockedDraftKeys(accountId: string, orderId: string, ac
   }
 }
 
-function checkRecord<T>(value: unknown): Record<T> | undefined {
+function checkRecord<T>(value: unknown, key: string): Record<T> | undefined {
   if (value === undefined) return undefined;
   const row = value as Partial<Record<T>> | null;
-  if (!row || row.schema !== 1 || typeof row.revision !== 'string' || !row.value || typeof row.value !== 'object')
+  if (!row || (row.schema !== 1 && !(row.schema === 2 && key.startsWith(publicDraftPrefix)))
+      || typeof row.revision !== 'string' || !row.value || typeof row.value !== 'object')
     throw new Error('Invalid edit draft');
   return row as Record<T>;
 }
 
-async function transaction<T>(key: string, update?: (row?: Record<T>) => Record<T> | undefined, beforeCommit?: () => boolean): Promise<Record<T> | undefined> {
+async function transaction<T>(key: string, update?: (row?: Record<T>) => Record<T> | undefined,
+  beforeCommit?: () => boolean, files?: ReadonlyMap<string, File>, readFiles?: Map<string, File>): Promise<Record<T> | undefined> {
   const db = await openDatabase();
   try {
     return await new Promise((resolve, reject) => {
@@ -68,11 +78,29 @@ async function transaction<T>(key: string, update?: (row?: Record<T>) => Record<
       let failure: unknown;
       read.onsuccess = () => {
         try {
-          const current = checkRecord<T>(read.result);
+          const current = checkRecord<T>(read.result, key);
+          const deadline = draftDeadline(current);
           result = update ? update(current) : current;
           if (update) {
+            const previousIds = new Set(current?.fileIds);
+            const nextIds = new Set(result?.fileIds);
+            for (const id of previousIds) if (!nextIds.has(id)) store.delete(fileKey(key, id));
+            for (const [id, file] of files ?? []) if (!previousIds.has(id) && nextIds.has(id)) {
+              const attachment: DraftFile = { blob: file, name: file.name, lastModified: file.lastModified };
+              store.put(attachment, fileKey(key, id));
+            }
             const write = result ? store.put(result, key) : store.delete(key);
             if (beforeCommit) write.onsuccess = () => { if (!beforeCommit()) tx.abort(); };
+          } else if (readFiles && (deadline === undefined || deadline > Date.now())) {
+            for (const id of current?.fileIds ?? []) {
+              const attachment = store.get(fileKey(key, id));
+              attachment.onsuccess = () => {
+                const file = attachment.result as DraftFile | undefined;
+                if (file?.blob instanceof Blob && typeof file.name === 'string') {
+                  readFiles.set(id, new File([file.blob], file.name, { type: file.blob.type, lastModified: file.lastModified }));
+                }
+              };
+            }
           }
         } catch (error) {
           failure = error;
@@ -97,23 +125,33 @@ export class EditDraftSlot<T> {
 
   constructor(private readonly key: string) {}
 
-  read(): Promise<T | undefined> {
+  read(files?: Map<string, File>): Promise<T | undefined> {
     const read = this.queue.then(async () => {
-      const record = await transaction<T>(this.key);
+      const record = await transaction<T>(this.key, undefined, undefined, undefined, files);
       this.revision = record?.revision;
-      return record?.expiresAt !== undefined && record.expiresAt <= Date.now() ? undefined : record?.value;
+      const deadline = draftDeadline(record);
+      return deadline !== undefined && deadline <= Date.now() ? undefined : record?.value;
     });
     this.queue = read.catch(() => {});
     return read;
   }
 
-  write(value?: T, expiresAt?: number, beforeCommit?: () => boolean): Promise<DraftWriteResult> {
+  write(value?: T, expiresAt?: number, beforeCommit?: () => boolean,
+    allowCurrent?: (current?: T) => boolean, files?: ReadonlyMap<string, File>): Promise<DraftWriteResult> {
     const next = this.queue.then(async (): Promise<DraftWriteResult> => {
       try {
         const record = await transaction<T>(this.key, current => {
           if (current?.revision !== this.revision) throw new DraftConflict();
-          return value === undefined ? undefined : { schema: 1, revision: randomUUID(), value, expiresAt };
-        }, beforeCommit);
+          const deadline = draftDeadline(current);
+          const active = deadline !== undefined && deadline <= Date.now() ? undefined : current?.value;
+          if (allowCurrent && !allowCurrent(active)) throw new DraftConflict();
+          if (value === undefined) return undefined;
+          const fileIds = files ? [...files.keys()] : current?.fileIds;
+          const protectedDraft = this.key.startsWith(publicDraftPrefix) && (current?.schema === 2 || Boolean(fileIds?.length));
+          // Older clients only sweep the top-level expiresAt. The new reader removes both the draft and its blobs.
+          const version = protectedDraft ? { schema: 2 as const, draftExpiresAt: expiresAt } : { schema: 1 as const, expiresAt };
+          return { ...version, revision: randomUUID(), value, fileIds };
+        }, beforeCommit, files);
         this.revision = record?.revision;
         return 'saved';
       } catch (error) {
@@ -130,11 +168,16 @@ export async function pruneExpiredDrafts(prefix: string) {
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction('drafts', 'readwrite');
-      const cursor = tx.objectStore('drafts').openCursor(IDBKeyRange.bound(prefix, prefix + '\uffff'));
+      const store = tx.objectStore('drafts');
+      const cursor = store.openCursor(IDBKeyRange.bound(prefix, prefix + '\uffff'));
       cursor.onsuccess = () => {
         const entry = cursor.result;
         if (!entry) return;
-        if (typeof entry.value?.expiresAt === 'number' && entry.value.expiresAt <= Date.now()) entry.delete();
+        const deadline = draftDeadline(entry.value);
+        if (typeof deadline === 'number' && deadline <= Date.now()) {
+          for (const id of entry.value.fileIds ?? []) store.delete(fileKey(entry.key, id));
+          entry.delete();
+        }
         entry.continue();
       };
       tx.oncomplete = () => resolve();

@@ -2,6 +2,9 @@ package org.xaspire.WuhouCake.order.infrastructure.persistence.repository;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.xaspire.WuhouCake.order.domain.port.SubmissionImages;
@@ -9,6 +12,26 @@ import org.xaspire.WuhouCake.order.domain.port.SubmissionImages;
 public final class PostgresSubmissionImages implements SubmissionImages {
     private final JdbcTemplate jdbc;
     public PostgresSubmissionImages(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @Override public List<UUID> missingPublicImages(UUID entryId, List<Reference> images, Instant now) {
+        if (images.isEmpty()) return List.of();
+        var args = new ArrayList<Object>();
+        for (var image : images) {
+            args.add(image.itemId());
+            args.add(image.imageId());
+        }
+        args.add(entryId);
+        args.add(Timestamp.from(now));
+        String pairs = String.join(",", Collections.nCopies(images.size(), "(?::uuid,?::uuid)"));
+        return jdbc.queryForList("""
+                SELECT requested.image_id FROM (VALUES %s) AS requested(item_id,image_id)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM customer_submission_image image
+                    WHERE image.id=requested.image_id AND image.item_id=requested.item_id
+                        AND image.entry_id=? AND image.submission_id IS NULL AND image.expires_at>?
+                )
+                """.formatted(pairs), UUID.class, args.toArray());
+    }
 
     @Override public boolean stage(Image image, UUID entryId, UUID submissionId, Instant expires, String fingerprint) {
         return jdbc.update("""
@@ -34,6 +57,14 @@ public final class PostgresSubmissionImages implements SubmissionImages {
         return jdbc.queryForObject("""
                 SELECT count(*) FROM customer_submission_image WHERE submission_id=? AND entry_id IS NULL AND expires_at>?
                 """, Integer.class, submissionId, Timestamp.from(now));
+    }
+
+    @Override public boolean renewPublicUpload(UUID id, UUID itemId, UUID entryId, Instant now, Instant expires,
+                                               String fingerprint, boolean expired) {
+        return jdbc.update("""
+                UPDATE customer_submission_image SET expires_at=?
+                WHERE id=? AND item_id=? AND entry_id=? AND submission_id IS NULL AND fingerprint=? AND (expires_at<=?)=?
+                """, Timestamp.from(expires), id, itemId, entryId, fingerprint, Timestamp.from(now), expired) == 1;
     }
 
     @Override public void lockEntryUploads(UUID entryId) {
