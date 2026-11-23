@@ -61,8 +61,8 @@ services:
     environment:
       SPRING_APPLICATION_JSON: >-
         {"spring":{"flyway":{"init-sqls":[
-          "SET wuhou.submission_v37_source_timezone TO 'Asia/Shanghai'",
-          "SET wuhou.submission_v37_cutover TO '2026-01-01T00:00:00Z'"
+          "SET wuhou.submission_v37_source_timezone TO 'Asia/Shanghai';",
+          "SET wuhou.submission_v37_cutover TO '2026-01-01T00:00:00Z';"
         ]}}}
 ```
 
