@@ -54,6 +54,8 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             var summary = book.createSheet("统计");
             row(summary, "日期口径", filter.allUnpaid() ? "所有历史未付款" : filter.dateBasis().equals("CREATED") ? "录单日期（北京时间）" : "取货日期"); row(summary, "开始日期", filter.from()); row(summary, "结束日期（含当天）", filter.to() == null ? "不限日期" : filter.to().minusDays(1));
             row(summary, "订单状态", label(filter.status())); row(summary, "付款状态", label(filter.paymentStatus())); row(summary, "交接方式", label(filter.fulfillmentType()));
+            if (continuationColumns(filter.size()) > 0)
+                longTextHeading(summary, header, "蛋糕尺寸", continuationColumns(filter.size()), "", "");
             rowWithLongText(summary, 1, "蛋糕尺寸", filter.size()); row(summary, "归属员工 ID", filter.creditedEmployeeId());
             row(summary, "仅未归属", filter.unassigned()); row(summary, "包含已取消", filter.includeCancelled()); row(summary, "搜索", filter.keyword());
             row(summary, "商品名称", filter.productName());
@@ -66,7 +68,9 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             row(summary, "未填写金额订单数", totals.missingAmountOrders());
             row(summary, "统计说明", "付款状态由员工手动标记；金额不等于实收。尺寸按填写文本精确匹配，尺寸和商品名称只统计匹配商品，不分摊整单金额。尺寸订单数为各组去重，混合尺寸订单会进入多组，不可相加。员工业绩按账号合并，名称为最近录单的归属快照；本表用于业绩核对。");
             var sizeSheet = book.createSheet("尺寸统计");
-            heading(sizeSheet, header, "蛋糕尺寸", "涉及订单数（组内去重）", "蛋糕件数");
+            int sizeColumns = longTextHeading(sizeSheet, header, "蛋糕尺寸",
+                    sizes.stream().mapToInt(r -> continuationColumns(r.size())).max().orElse(0),
+                    "蛋糕尺寸", "涉及订单数（组内去重）", "蛋糕件数");
             for (var r : sizes) {
                 checkDeadline.run();
                 rowWithLongText(sizeSheet, 0, r.size() == null ? "尺寸未填写" : r.size(), r.orderCount(), r.cakeQuantity());
@@ -76,7 +80,9 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             for (var r : employees) row(employeeSheet, r.employeeNumber(), r.employeeName() == null ? "未归属" : r.employeeName(), r.orderCount(), r.matchingQuantity(), r.cakeQuantity(),
                     yuan(r.totalAmountCents()), yuan(r.paidAmountCents()), yuan(r.unpaidAmountCents()), r.missingAmountOrders(), r.employeeId());
             var sheet = book.createSheet("订单明细");
-            heading(sheet, header, "订单号", "取货日期", "状态", "付款", "客户", "电话", "归属工号", "归属员工", "创建员工 ID", "订单约定金额（元）", "匹配商品件数", "蛋糕件数", "匹配商品");
+            int orderColumns = longTextHeading(sheet, header, "匹配商品",
+                    rows.stream().mapToInt(r -> continuationColumns(r.products())).max().orElse(0),
+                    "订单号", "取货日期", "状态", "付款", "客户", "电话", "归属工号", "归属员工", "创建员工 ID", "订单约定金额（元）", "匹配商品件数", "蛋糕件数", "匹配商品");
             for (var r : rows) {
                 checkDeadline.run();
                 rowWithLongText(sheet, 12, r.orderNo(), r.receiveDate(), label(r.status()), label(r.paymentStatus()), r.customerName(), r.phone(), r.employeeNumber(),
@@ -84,7 +90,9 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
                     r.matchingQuantity(), r.cakeQuantity(), r.products());
             }
             var productSheet = book.createSheet("商品明细");
-            heading(productSheet, header, "订单号", "商品名称", "商品类型", "数量", "尺寸原值", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "规格");
+            int productColumns = longTextHeading(productSheet, header, "尺寸原值",
+                    products.stream().mapToInt(r -> continuationColumns(r.size())).max().orElse(0),
+                    "订单号", "商品名称", "商品类型", "数量", "尺寸原值", "奶油", "内胚", "夹馅", "祝福语", "其他要求", "规格");
             var wrap = book.createCellStyle();
             wrap.setWrapText(true);
             for (int i = 0; i < products.size(); i++) {
@@ -93,10 +101,10 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
             }
             summary.setColumnWidth(0, 24 * 256);
             summary.setColumnWidth(1, 24 * 256);
-            filter(sizeSheet, 3);
+            filter(sizeSheet, sizeColumns);
             filter(employeeSheet, 10);
-            filter(sheet, 13);
-            filter(productSheet, 11);
+            filter(sheet, orderColumns);
+            filter(productSheet, productColumns);
             productSheet.setColumnWidth(SPEC_COLUMN, 52 * 256);
             book.write(new PoiOrderExportFiles.BoundedOutputStream(output, REPORT_XLSX_BYTES, checkDeadline));
             return output.toByteArray();
@@ -113,6 +121,20 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
 
     private static void filter(Sheet sheet, int columns) {
         sheet.setAutoFilter(new CellRangeAddress(0, sheet.getLastRowNum(), 0, columns - 1));
+    }
+
+    private static int longTextHeading(Sheet sheet, CellStyle style, String label, int extra, Object... headings) {
+        var expanded = Arrays.copyOf(headings, headings.length + extra);
+        for (int i = 0; i < extra; i++) expanded[headings.length + i] = label + "续段 " + (i + 2);
+        heading(sheet, style, expanded);
+        return expanded.length;
+    }
+
+    private static int continuationColumns(String text) {
+        if (text == null || text.length() <= MAX_CELL_CHARS) return 0;
+        int columns = 0;
+        for (int end = cellEnd(text, 0); end < text.length(); end = cellEnd(text, end)) columns++;
+        return columns;
     }
 
     private static void productRows(Sheet sheet, ProductRow product, String specification, CellStyle wrap) {
@@ -137,13 +159,11 @@ public final class PoiOrderReportFiles implements OrderReportFiles {
         int end = cellEnd(text, 0);
         values[column] = text.substring(0, end);
         var first = row(sheet, values);
+        int continuationColumn = values.length;
         while (end < text.length()) {
             int start = end;
             end = cellEnd(text, start);
-            var continuation = new Object[column + 1];
-            if (column > 0) continuation[0] = values[0];
-            continuation[column] = text.substring(start, end);
-            row(sheet, continuation);
+            first.createCell(continuationColumn++).setCellValue(text.substring(start, end));
         }
         return first;
     }

@@ -49,6 +49,25 @@ docker compose exec -T -u postgres postgres psql -XAt -U wuhou -d wuhou \
 
 正式发布前，将候选镜像加载到本机，把候选静态产物放在新的绝对发布目录下的 `dist/`。保留当前运行版的 `.env`、镜像和发布目录。脚本先核对当前容器及数据库，探测当前 HTTPS 产物，再生成已验证的发布前备份。随后只切换应用、图片端和网关，验证 readiness 及 HTTPS 首页、入口脚本和样式的内容。检查使用公网 IP 的 HTTPS 证书和宿主机信任链。通过后原子登记候选镜像 ID 和目录，结果写入 `maintenance/release-last.json`。
 
+### V39 历史填单迁移
+
+有存量填单的数据库须提供 V37 启用新版指纹时的绝对分界。先用当时的部署日志及配置核实原始 Flyway 数据库会话时区，再使用该历史时区解释 V37 的 `flyway_schema_history.installed_on`。例如，经核实原会话使用 `Asia/Shanghai` 时，用 `installed_on AT TIME ZONE 'Asia/Shanghai'` 转为绝对时间，再记录为带 `Z` 或 UTC 偏移的 ISO 8601 时间。分界前按旧指纹重试，分界及其后使用文本尺寸指纹。缺少可靠分界时停止升级，先核实证据。
+
+通过应用的 `spring.flyway.init-sqls` 在 Flyway 连接上设置 `wuhou.submission_v37_cutover` 和 `wuhou.submission_v37_source_timezone`。V39 用后者解释成功的 V37 安装记录，并要求与提供的绝对时间完全相同，包括小数秒。可通过 app 的 `SPRING_APPLICATION_JSON` 传入下列配置。示例值仅用于说明格式。已有 JSON 配置或 Flyway 初始化 SQL 时须合并配置。
+
+```yaml
+services:
+  app:
+    environment:
+      SPRING_APPLICATION_JSON: >-
+        {"spring":{"flyway":{"init-sqls":[
+          "SET wuhou.submission_v37_source_timezone TO 'Asia/Shanghai'",
+          "SET wuhou.submission_v37_cutover TO '2026-01-01T00:00:00Z'"
+        ]}}}
+```
+
+先使用备份在独立数据库演练，检查 V39 成功、填单总数及原文不变、版本按分界归类。空库无需这两项参数。存在存量填单时，参数缺失、格式无效或分界与历史记录不符，都会触发事务回滚并保留原有标记。
+
 ### 失败发布的恢复
 
 只有在隔离环境验证过上一版能读取候选版写入的业务数据后，正式发布才可加 `--rollback-safe`。如果候选失败，脚本停止候选发布服务，核对两版 Flyway 迁移文件、发布前后数据库集群标识和 Flyway 历史，并检查上一版镜像与配置。条件满足时切回上一版并重新探测。即使服务已恢复，候选发布仍返回失败，回执标记为 `rolled-back`。

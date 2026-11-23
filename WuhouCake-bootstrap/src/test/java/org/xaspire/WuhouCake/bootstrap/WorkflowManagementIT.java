@@ -382,26 +382,47 @@ class WorkflowManagementIT {
         assertEquals(1, data.at("/totals/missingAmountOrders").asInt());
     }
     @Test void longCakeSizeExportsInFullWithoutRepeatingQuantities() throws Exception {
-        String dimension = "8".repeat(32_766) + "🎂加高";
+        String shared = "8".repeat(32_766);
+        String firstSize = shared + "🎂加高";
+        String secondSize = shared + "🎂双层";
         var input = new LinkedHashMap<>(create(a.id));
-        input.put("items", List.of(Map.of("name", "蛋糕", "productType", "CAKE", "quantity", 2,
-                "attributes", Map.of("size", dimension))));
+        input.put("items", List.of(
+                Map.of("name", "第一件", "productType", "CAKE", "quantity", 2, "attributes", Map.of("size", firstSize)),
+                Map.of("name", "第二件", "productType", "CAKE", "quantity", 3, "attributes", Map.of("size", secondSize))));
         var order = a.data("POST", "/api/orders", input);
-        assertEquals(dimension, order.at("/items/0/attributes/size").asText());
+        assertEquals(firstSize, order.at("/items/0/attributes/size").asText());
         var response = admin.raw("GET", search("").replace("/api/admin/orders?", "/api/admin/orders/export?"), null);
         assertEquals(200, response.statusCode());
         try (var book = new XSSFWorkbook(new ByteArrayInputStream(response.body()))) {
             var sizes = book.getSheet("尺寸统计");
             var details = book.getSheet("商品明细");
             var orders = book.getSheet("订单明细");
-            assertEquals(dimension, sizes.getRow(1).getCell(0).getStringCellValue() + sizes.getRow(2).getCell(0).getStringCellValue());
-            assertEquals(dimension, details.getRow(1).getCell(4).getStringCellValue() + details.getRow(2).getCell(4).getStringCellValue());
-            assertEquals("蛋糕 ×2（" + dimension + "）", orders.getRow(1).getCell(12).getStringCellValue()
-                    + orders.getRow(2).getCell(12).getStringCellValue());
-            assertEquals(2.0, sizes.getRow(1).getCell(2).getNumericCellValue());
+            assertEquals(3, sizes.getPhysicalNumberOfRows());
+            assertEquals(3, details.getPhysicalNumberOfRows());
+            assertEquals(2, orders.getPhysicalNumberOfRows());
+            assertEquals("蛋糕尺寸续段 2", sizes.getRow(0).getCell(3).getStringCellValue());
+            assertEquals("尺寸原值续段 2", details.getRow(0).getCell(11).getStringCellValue());
+            assertEquals("匹配商品续段 3", orders.getRow(0).getCell(14).getStringCellValue());
+            assertEquals("A1:D3", sizes.getCTWorksheet().getAutoFilter().getRef());
+            assertEquals("A1:L3", details.getCTWorksheet().getAutoFilter().getRef());
+            assertEquals("A1:O2", orders.getCTWorksheet().getAutoFilter().getRef());
+            var sizeQuantities = new HashMap<String, Double>();
+            for (int i = 1; i <= 2; i++) {
+                var group = sizes.getRow(i);
+                sizeQuantities.put(group.getCell(0).getStringCellValue() + group.getCell(3).getStringCellValue(),
+                        group.getCell(2).getNumericCellValue());
+            }
+            assertEquals(Map.of(firstSize, 2.0, secondSize, 3.0), sizeQuantities);
+            assertEquals(firstSize, details.getRow(1).getCell(4).getStringCellValue() + details.getRow(1).getCell(11).getStringCellValue());
+            assertEquals(secondSize, details.getRow(2).getCell(4).getStringCellValue() + details.getRow(2).getCell(11).getStringCellValue());
             assertEquals(2.0, details.getRow(1).getCell(3).getNumericCellValue());
-            assertEquals("", details.getRow(2).getCell(3).getStringCellValue());
-            assertEquals("", orders.getRow(2).getCell(11).getStringCellValue());
+            assertEquals(3.0, details.getRow(2).getCell(3).getNumericCellValue());
+            var orderRow = orders.getRow(1);
+            assertEquals("第一件 ×2（" + firstSize + "）、第二件 ×3（" + secondSize + "）",
+                    orderRow.getCell(12).getStringCellValue() + orderRow.getCell(13).getStringCellValue() + orderRow.getCell(14).getStringCellValue());
+            assertEquals(java.math.BigDecimal.valueOf(order.path("totalAmountCents").asLong(), 2).toPlainString(),
+                    orderRow.getCell(9).getStringCellValue());
+            assertEquals(5.0, orderRow.getCell(11).getNumericCellValue());
         }
     }
 

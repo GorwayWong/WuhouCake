@@ -79,6 +79,84 @@ class CustomerSubmissionIT {
         assertEquals(1, count("customer_order_submission"));
     }
 
+    @Test void v39RepairsFingerprintVersionsUsingTheVerifiedInstantAcrossTimeZones() throws Exception {
+        String token = entry(admin());
+        UUID key = UUID.randomUUID();
+        var input = json.createObjectNode().put("phone", "13800000000").put("fulfillmentType", "PICKUP")
+                .put("requestedReceiveAt", "2026-11-02T19:00:00+08:00");
+        var attributes = input.putArray("items").addObject().put("name", "蛋糕").put("quantity", 1)
+                .put("productType", "CAKE").putObject("attributes");
+        attributes.put("size", "8");
+        String existingId = submit(token, input, key).at("/data/submissionId").asText();
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM flyway_schema_history WHERE version='39' AND success", Integer.class));
+
+        for (String originalZone : List.of("UTC", "Asia/Shanghai")) {
+            String migrationZone = originalZone.equals("UTC") ? "Asia/Shanghai" : "UTC";
+            String schema = "fingerprint_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+            try {
+                var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).locations("classpath:db/migration");
+                flyway.initSql("SET TIME ZONE '" + originalZone + "'").target("37").load().migrate();
+                Instant cutover = jdbc.queryForObject("SELECT installed_on AT TIME ZONE ? FROM " + schema
+                        + ".flyway_schema_history WHERE version='37' AND success", java.sql.Timestamp.class, originalZone).toInstant();
+                jdbc.update("INSERT INTO " + schema + ".customer_order_entry SELECT e.* FROM customer_order_entry e"
+                        + " JOIN customer_order_submission s ON s.entry_id=e.id WHERE s.id=?::uuid", existingId);
+                for (int delta : List.of(-1, 0, 1)) {
+                    jdbc.update("INSERT INTO " + schema + ".customer_order_submission"
+                                    + "(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,original_phone,requested_date,status,created_at,updated_at)"
+                                    + " SELECT gen_random_uuid(),entry_id,owner_id,owner_name,gen_random_uuid(),fingerprint,original,original_phone,requested_date,"
+                                    + "'PENDING',?,updated_at FROM customer_order_submission WHERE id=?::uuid",
+                            java.sql.Timestamp.from(cutover.plusSeconds(delta)), existingId);
+                }
+                String timezone = "SET TIME ZONE '" + migrationZone + "'";
+                flyway.initSql(timezone).target("38").load().migrate();
+                String versions = "SELECT fingerprint_version FROM " + schema + ".customer_order_submission ORDER BY created_at";
+                var wrong = originalZone.equals("UTC") ? List.of(2, 2, 2) : List.of(1, 1, 1);
+                assertEquals(wrong, jdbc.queryForList(versions, Integer.class));
+
+                for (String invalid : List.of("", "2026-11-02T18:00:00", "2026-02-31T18:00:00Z")) {
+                    var failure = assertThrows(org.flywaydb.core.api.FlywayException.class, () -> flyway
+                            .initSql(timezone + "; SET wuhou.submission_v37_cutover TO '" + invalid + "'")
+                            .target("39").load().migrate());
+                    assertTrue(failure.getMessage().contains("wuhou.submission_v37_cutover"));
+                    assertEquals(wrong, jdbc.queryForList(versions, Integer.class));
+                    assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + schema
+                            + ".flyway_schema_history WHERE version='39' AND success", Integer.class));
+                }
+                var domainMismatches = Map.of(
+                        fingerprintCutover(cutover.minusSeconds(1), originalZone), "does not match",
+                        fingerprintCutover(cutover.plusNanos(1_000), originalZone), "does not match",
+                        fingerprintCutover(cutover, migrationZone), "does not match",
+                        fingerprintCutover(cutover, "invalid/zone"), "source_timezone",
+                        fingerprintCutover(cutover, ""), "source_timezone");
+                for (var mismatch : domainMismatches.entrySet()) {
+                    var failure = assertThrows(org.flywaydb.core.api.FlywayException.class, () -> flyway
+                            .initSql(timezone + "; " + mismatch.getKey()).target("39").load().migrate());
+                    assertTrue(failure.getMessage().contains(mismatch.getValue()));
+                    assertEquals(wrong, jdbc.queryForList(versions, Integer.class));
+                    assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM " + schema
+                            + ".flyway_schema_history WHERE version='39' AND success", Integer.class));
+                }
+                flyway.initSql(timezone + "; " + fingerprintCutover(cutover, originalZone)).target("39").load().migrate();
+                assertEquals(List.of(1, 2, 2), jdbc.queryForList(versions, Integer.class));
+                jdbc.update("UPDATE customer_order_submission SET fingerprint_version=(SELECT fingerprint_version FROM " + schema
+                        + ".customer_order_submission WHERE created_at=?) WHERE id=?::uuid",
+                        java.sql.Timestamp.from(cutover), existingId);
+                assertEquals(existingId, submit(token, input, key).at("/data/submissionId").asText());
+                attributes.put("size", "8.00");
+                var conflict = new Client().request("POST", submitPath(token), input, key.toString());
+                assertEquals(409, conflict.status);
+                assertEquals("IDEMPOTENCY_KEY_CONFLICT", conflict.body.path("code").asText());
+                attributes.put("size", "8");
+            } finally {
+                jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+            }
+        }
+    }
+
+    private static String fingerprintCutover(Instant cutover, String sourceTimezone) {
+        return "SET wuhou.submission_v37_cutover TO '" + cutover + "'; SET wuhou.submission_v37_source_timezone TO '" + sourceTimezone + "'";
+    }
+
     @Test void entryUploadLimitIsAtomicAcrossTransactions() throws Exception {
         String token = entry(admin());
         UUID entry = jdbc.queryForObject("SELECT id FROM customer_order_entry WHERE token=?", UUID.class, token);
@@ -484,7 +562,8 @@ class CustomerSubmissionIT {
         UUID owner = UUID.fromString(staff.id);
         String schema = "retry_v26_" + UUID.randomUUID().toString().replace("-", "");
         try {
-            var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).locations("classpath:db/migration");
+            var flyway = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).locations("classpath:db/migration")
+                    .initSql("SET TIME ZONE 'UTC'");
             flyway.target("26").load().migrate();
             jdbc.update("INSERT INTO " + schema + ".customer_order_entry(id,owner_id,owner_name,token,enabled) VALUES(?,?,?,'v26-retry-fixture',true)", entryId, owner, "合成客服");
             jdbc.update("INSERT INTO " + schema + ".customer_order_submission(id,entry_id,owner_id,owner_name,request_id,fingerprint,original,original_phone,requested_date,status,created_at,updated_at)"
@@ -496,6 +575,9 @@ class CustomerSubmissionIT {
                             + " VALUES(?,?,?,'合成客服',?,?,?::jsonb,'13800000000',DATE '2026-11-02','PENDING',now(),now())",
                     exactId, entryId, owner, UUID.randomUUID(), fingerprint, fixture.path("original").toString());
             flyway.target("38").load().migrate();
+            Instant cutover = jdbc.queryForObject("SELECT installed_on AT TIME ZONE 'UTC' FROM " + schema
+                    + ".flyway_schema_history WHERE version='37'", java.sql.Timestamp.class).toInstant();
+            flyway.initSql(fingerprintCutover(cutover, "UTC")).target("39").load().migrate();
             assertEquals(1, jdbc.queryForObject("SELECT fingerprint_version FROM " + schema + ".customer_order_submission WHERE id=?", Integer.class, id));
             assertEquals(2, jdbc.queryForObject("SELECT fingerprint_version FROM " + schema + ".customer_order_submission WHERE id=?", Integer.class, exactId));
             jdbc.update("INSERT INTO customer_order_submission SELECT * FROM " + schema + ".customer_order_submission WHERE id=?", id);
@@ -1119,7 +1201,13 @@ class CustomerSubmissionIT {
                     old.update("UPDATE cake_order SET source='CUSTOMER_SUBMITTED',source_submission_id=? WHERE id=?", submission, order);
                 }
             }
-            Flyway.configure().dataSource(single).schemas(migrationSchema).defaultSchema(migrationSchema).locations("classpath:db/migration").load().migrate();
+            var flyway = Flyway.configure().dataSource(single).schemas(migrationSchema).defaultSchema(migrationSchema).locations("classpath:db/migration")
+                    .initSql("SET TIME ZONE 'UTC'");
+            flyway.target("38").load().migrate();
+            connection.setSchema(migrationSchema);
+            Instant cutover = old.queryForObject("SELECT installed_on AT TIME ZONE 'UTC' FROM flyway_schema_history WHERE version='37'",
+                    java.sql.Timestamp.class).toInstant();
+            flyway.initSql(fingerprintCutover(cutover, "UTC")).target("39").load().migrate();
             connection.setSchema(migrationSchema);
             assertEquals(Instant.parse("2026-11-02T11:00:00Z"), old.queryForObject("SELECT requested_receive_at FROM cake_order WHERE order_no='OLD-0'", java.sql.Timestamp.class).toInstant());
             assertNull(old.queryForObject("SELECT requested_receive_at FROM cake_order WHERE order_no='OLD-1'", java.sql.Timestamp.class));
