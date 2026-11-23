@@ -3,7 +3,7 @@ import { isCancelledError } from '@tanstack/react-query';
 import type { InfiniteData, Query, QueryClient, QueryFilters } from '@tanstack/react-query';
 import { authenticatedFetch } from './api.ts';
 import type { OrderDetailRead } from './api.ts';
-import type { CalendarOrder, WorkbenchCards } from './types.ts';
+import type { CalendarDay, WorkbenchCards } from './types.ts';
 
 function orderFilters(orderId?: string): QueryFilters[] {
   // 日历范围整体失效：通知不带原日期，迁日必须同时清除旧日期投影。
@@ -47,7 +47,15 @@ export async function synchronize(client: QueryClient, orderId?: string, deleted
   await Promise.all(filters.map(filter => client.cancelQueries(filter)));
   if (deleted && orderId && (version === undefined || (lifecycleVersions.get(client)?.get(orderId) ?? version) <= version)) {
     client.setQueryData<OrderDetailRead>(['order', orderId, 'detail'], current => current && !('denied' in current) ? { ...current, deleted: true } : current);
-    client.setQueriesData<CalendarOrder[]>({ queryKey: ['calendar'] }, current => Array.isArray(current) ? current.filter(order => order.orderId !== orderId) : current);
+    client.setQueriesData<CalendarDay[]>({ queryKey: ['calendar', 'days'] }, days => {
+      if (!days?.some(day => day.firstOrderId === orderId)) return days;
+      return days.flatMap(day => {
+        if (day.firstOrderId !== orderId) return [day];
+        if (day.orderCount === 1) return [];
+        return [{ ...day, orderCount: day.orderCount - 1, unfinishedCount: null,
+          firstOrderId: null, firstItemName: null, customerPhoneLast4: null }];
+      });
+    });
     client.setQueriesData<InfiniteData<WorkbenchCards>>({ queryKey: ['workbench', 'cards'] }, current => current && ({
       ...current,
       pages: current.pages.map(page => ({ ...page, orders: page.orders.filter(order => order.orderId !== orderId),

@@ -46,6 +46,7 @@ class CustomerSubmissionIT {
     }
     @LocalServerPort int port;
     @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc; @Autowired StringRedisTemplate redis; @Autowired IdentityService identity;
+    @MockitoSpyBean org.xaspire.WuhouCake.order.domain.port.OrderImageValidator imageValidator;
     @MockitoSpyBean CustomerSubmissions store;
     @MockitoSpyBean Operations auditOperations;
     @Autowired DataSource dataSource;
@@ -155,6 +156,74 @@ class CustomerSubmissionIT {
 
     private static String fingerprintCutover(Instant cutover, String sourceTimezone) {
         return "SET wuhou.submission_v37_cutover TO '" + cutover + "'; SET wuhou.submission_v37_source_timezone TO '" + sourceTimezone + "'";
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void slowPhotoAllowsManualOrderAndRechecksEntryBeforeSaving(boolean resetEntry) throws Exception {
+        var owner = admin();
+        String token = entry(owner);
+        byte[] photo = picture(0x7850ff);
+        UUID item = UUID.randomUUID(), image = UUID.randomUUID();
+        var decoding = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        doAnswer(call -> {
+            assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            decoding.countDown();
+            await(resume);
+            return call.callRealMethod();
+        }).when(imageValidator).validate(any(byte[].class), eq("slow.png"));
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var upload = pool.submit(() -> customerSubmissions.stagePublicImage(token, item, image, photo, "slow.png"));
+            try {
+                assertTrue(decoding.await(5, TimeUnit.SECONDS));
+                assertFalse(manualOrder(owner, "13800000000", "2026-11-02").isBlank());
+                if (resetEntry) owner.data("POST", "/api/customer-submissions/entry", Map.of("action", "RESET"));
+            } finally {
+                resume.countDown();
+            }
+            if (resetEntry) {
+                var failure = assertThrows(ExecutionException.class, () -> upload.get(5, TimeUnit.SECONDS));
+                assertEquals("ENTRY_UNAVAILABLE", assertInstanceOf(
+                        org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure.class, failure.getCause()).code());
+                assertEquals(0, count("customer_submission_image"));
+            } else {
+                assertEquals(image, upload.get(5, TimeUnit.SECONDS));
+                assertEquals(image, customerSubmissions.stagePublicImage(token, item, image, photo, "slow.png"));
+                verify(imageValidator, times(1)).validate(any(byte[].class), eq("slow.png"));
+            }
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void staffPhotoRechecksConfirmationAndEmployeeAccess(boolean revoke) throws Exception {
+        var manager = admin();
+        var staff = employee(manager, "0002", "FRONT_DESK");
+        var content = content("13800000000", "2026-11-02T18:00:00+08:00");
+        var id = submit(entry(staff), content, UUID.randomUUID()).at("/data/submissionId").asText();
+        var path = "/api/customer-submissions/" + id;
+        manager.data("PATCH", path, Map.of("expectedVersion", 0, "review", review(content, staff.id, 9900)));
+        var decoding = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        doAnswer(call -> {
+            decoding.countDown();
+            await(resume);
+            return call.callRealMethod();
+        }).when(imageValidator).validate(any(byte[].class), eq("style.png"));
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var upload = pool.submit(() -> staff.upload(path + photoPath(UUID.randomUUID(), UUID.randomUUID()), picture(0xff8844)));
+            try {
+                assertTrue(decoding.await(5, TimeUnit.SECONDS));
+                if (revoke) manager.data("POST", "/api/admin/employees/" + staff.id + "/archive", Map.of());
+                else manager.data("POST", path + "/confirm", Map.of("expectedVersion", 1));
+            } finally {
+                resume.countDown();
+            }
+            var response = upload.get(5, TimeUnit.SECONDS);
+            assertTrue(response.statusCode() >= 400 && response.statusCode() < 500, new String(response.body()));
+            assertEquals(0, count("customer_submission_image"));
+        }
     }
 
     @Test void entryUploadLimitIsAtomicAcrossTransactions() throws Exception {
@@ -748,8 +817,8 @@ class CustomerSubmissionIT {
         assertEquals("2026-11-02T07:00:00Z", order.at("/fulfillment/plannedFinishAt").asText());
         assertEquals("2026-11-02T10:00:00Z", order.at("/fulfillment/requestedReceiveAt").asText());
         assertNotNull(jdbc.queryForObject("SELECT planned_handoff_at FROM cake_order WHERE id=?::uuid", java.sql.Timestamp.class, orderId));
-        var calendar = staff.data("GET", "/api/orders/calendar?from=2026-11-02&to=2026-11-03", null).get(0);
-        assertEquals(orderId, calendar.path("orderId").asText()); assertEquals("2026-11-02T10:00:00Z", calendar.path("plannedHandoffAt").asText());
+        var calendar = staff.data("GET", "/api/orders/calendar/days?from=2026-11-02&to=2026-11-03", null).get(0);
+        assertEquals(1, calendar.path("orderCount").asInt()); assertEquals("2026-11-02", calendar.path("calendarDate").asText());
         var pending = staff.data("GET", "/api/orders/workbench?date=2026-11-02", null).at("/pendingOrders/0");
         assertEquals(orderId, pending.path("orderId").asText()); assertEquals("2026-11-02T10:00:00Z", pending.path("plannedHandoffAt").asText());
         assertEquals("2026-11-02T10:00:00Z", pending.path("requestedReceiveAt").asText());
@@ -1094,8 +1163,8 @@ class CustomerSubmissionIT {
         assertEquals("2026-11-03", updated.at("/fulfillment/requestedReceiveDate").asText());
         assertEquals("2026-11-02T16:30:00Z", updated.at("/fulfillment/requestedReceiveAt").asText());
         assertEquals("2026-11-02T16:30:00Z", updated.at("/fulfillment/plannedHandoffAt").asText());
-        assertEquals(0, staff.data("GET", "/api/orders/calendar?from=2026-11-02&to=2026-11-03", null).size());
-        assertEquals(order, staff.data("GET", "/api/orders/calendar?from=2026-11-03&to=2026-11-04", null).get(0).path("orderId").asText());
+        assertEquals(0, staff.data("GET", "/api/orders/calendar/days?from=2026-11-02&to=2026-11-03", null).size());
+        assertEquals(1, staff.data("GET", "/api/orders/calendar/days?from=2026-11-03&to=2026-11-04", null).at("/0/orderCount").asInt());
         var log = staff.data("GET", "/api/orders/" + order + "/activities?type=ORDER_INFORMATION_CHANGED", null).at("/items/0");
         assertEquals("2026-11-02T08:00:00Z", log.at("/details/before/requestedReceiveAt").asText());
         assertEquals("2026-11-02T16:30:00Z", log.at("/details/after/requestedReceiveAt").asText());
@@ -1207,7 +1276,7 @@ class CustomerSubmissionIT {
             connection.setSchema(migrationSchema);
             Instant cutover = old.queryForObject("SELECT installed_on AT TIME ZONE 'UTC' FROM flyway_schema_history WHERE version='37'",
                     java.sql.Timestamp.class).toInstant();
-            flyway.initSql(fingerprintCutover(cutover, "UTC")).target("39").load().migrate();
+            flyway.initSql(fingerprintCutover(cutover, "UTC")).target("40").load().migrate();
             connection.setSchema(migrationSchema);
             assertEquals(Instant.parse("2026-11-02T11:00:00Z"), old.queryForObject("SELECT requested_receive_at FROM cake_order WHERE order_no='OLD-0'", java.sql.Timestamp.class).toInstant());
             assertNull(old.queryForObject("SELECT requested_receive_at FROM cake_order WHERE order_no='OLD-1'", java.sql.Timestamp.class));

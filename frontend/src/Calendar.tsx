@@ -3,14 +3,14 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } f
 import { ArrowLeft, ArrowRight, CaretDown, CaretUp, Plus } from '@phosphor-icons/react';
 import { readQuery } from './api';
 import { businessDate, calendarRange, today, weekStart, workbenchDate } from './dates';
-import type { Account, CalendarOrder, WorkbenchCards } from './types';
+import type { Account, CalendarDay, WorkbenchCards } from './types';
 import { ErrorNotice, Loading } from './ui';
 import { allCalendarFilters, calendarStatusCriteria, calendarStatusOptions } from './calendarFilters';
 import type { CalendarFilters } from './calendarFilters';
 import { exportOptions } from './exportFiles';
 import { DateInput } from './DateInput';
 import { Select } from './Select';
-import { calendarHref, overdueOrderCount, compareCalendarOrders, jumpCalendarDate, selectCalendarDate, shiftCalendarPeriod, toggleCalendarMode } from './calendarView';
+import { calendarHref, jumpCalendarDate, selectCalendarDate, shiftCalendarPeriod, toggleCalendarMode } from './calendarView';
 import type { CalendarView, CreatedOrderFocus } from './calendarView';
 import { OrderTimeline, resetTimelineGroups } from './OrderTimeline';
 import { orderAccess } from './access';
@@ -21,18 +21,18 @@ import { ProductionReminders } from './ProductionReminders';
 import { visibleCalendarFilters } from './shippingPayment';
 
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
-function MonthDayCell({ date, orders, view, onSelect }: { date: string; orders: CalendarOrder[]; view: CalendarView; onSelect: (date: string) => void }) {
-  const first = orders[0];
-  const overdue = overdueOrderCount(date, orders, today());
+function MonthDayCell({ date, day, view, onSelect }: { date: string; day?: CalendarDay; view: CalendarView; onSelect: (date: string) => void }) {
+  const count = day?.orderCount ?? 0;
+  const overdue = date < today() ? day?.unfinishedCount ?? 0 : 0;
   return <button type="button" className={`date-block ${overdue ? 'has-overdue' : ''} ${date === view.date ? 'selected' : ''} ${view.mode === 'month' && date.slice(0, 7) !== view.month ? 'outside-month' : ''}`}
-    aria-label={`${date}${date === today() ? ' 今天' : ''}，${orders.length} 笔订单${overdue ? `，未完成 ${overdue} 单` : ''}`}
+    aria-label={`${date}${date === today() ? ' 今天' : ''}，${count} 笔订单${overdue ? `，未完成 ${overdue} 单` : ''}`}
     aria-pressed={date === view.date} aria-current={date === today() ? 'date' : undefined}
     aria-expanded={view.mode === 'month' ? view.expanded && date === view.date : undefined}
     aria-controls={view.mode === 'month' ? `month-orders-${weekStart(date)}` : undefined} onClick={() => onSelect(date)}>
     <span className="date-select"><span>{Number(date.slice(8))}</span>{date === today() && <small>今</small>}</span>
     {overdue > 0 && <span className="date-overdue">未完成 {overdue} 单</span>}
-    {view.mode === 'month' ? first && <span className="month-day-summary"><strong>{first.items[0]?.name || '订单'}</strong><span>{first.customerPhoneLast4}</span>{orders.length > 1 && <span className="month-more" aria-label={`还有 ${orders.length - 1} 笔订单`}>…</span>}</span>
-      : <span className={`day-order-dot ${orders.length ? 'has-orders' : ''}`} aria-hidden="true" />}
+    {view.mode === 'month' ? day && <span className="month-day-summary"><strong>{day.firstOrderId === null ? '摘要待刷新' : day.firstItemName || '订单'}</strong><span>{day.customerPhoneLast4}</span>{count > 1 && <span className="month-more" aria-label={`还有 ${count - 1} 笔订单`}>…</span>}</span>
+      : <span className={`day-order-dot ${count ? 'has-orders' : ''}`} aria-hidden="true" />}
   </button>;
 }
 export function Calendar({ account, view, onViewChange, filters, onFiltersChange, createdOrder, onCreatedOrderLocated }: {
@@ -45,16 +45,17 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
   const access = orderAccess(account);
   const effectiveFilters = visibleCalendarFilters(filters, access.amounts);
   const range = calendarRange(mode === 'month' ? `${view.month}-01` : selected, mode);
-  const calendar = useQuery({ queryKey: ['calendar', range.from, range.to], queryFn: ({ signal }) => readQuery<CalendarOrder[]>(`/orders/calendar?from=${range.from}&to=${range.to}`, signal) });
+  const calendar = useQuery({ queryKey: ['calendar', 'days', range.from, range.to], queryFn: ({ signal }) => readQuery<CalendarDay[]>(`/orders/calendar/days?from=${range.from}&to=${range.to}`, signal) });
   const focusOrderId = createdOrder?.date === selected ? createdOrder.orderId : undefined;
   const workbench = useInfiniteQuery({
     queryKey: ['workbench', 'cards', selected, effectiveFilters.status, effectiveFilters.paymentStatus, focusOrderId],
     initialPageParam: null as string | null,
     queryFn: ({ signal, pageParam }) => {
       const params = new URLSearchParams({ date: selected });
-      const { status, fulfillmentType } = calendarStatusCriteria(effectiveFilters.status);
+      const { status, fulfillmentType, view: cardView } = calendarStatusCriteria(effectiveFilters.status);
       if (status) params.set('status', status);
       if (fulfillmentType) params.set('fulfillmentType', fulfillmentType);
+      if (cardView) params.set('view', cardView);
       if (effectiveFilters.paymentStatus) params.set('paymentStatus', effectiveFilters.paymentStatus);
       if (pageParam) params.set('cursor', pageParam);
       else if (focusOrderId) params.set('focusOrderId', focusOrderId);
@@ -88,16 +89,12 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
     element.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
     onCreatedOrderLocated?.(createdOrder.orderId);
   }, [createdOrder, onCreatedOrderLocated]);
-  const statuses = calendarStatusOptions();
+  const statuses = calendarStatusOptions(selected === today());
   const dailyById = new Map((workbench.data?.pages ?? []).flatMap(page => page.orders).map(order => [order.orderId, order]));
   const focused = firstPage?.focusedOrder;
   if (focused && !dailyById.has(focused.orderId)) dailyById.set(focused.orderId, focused);
   const daily = [...dailyById.values()];
-  const ordersByDay = new Map<string, CalendarOrder[]>();
-  for (const order of [...(calendar.data || [])].sort(compareCalendarOrders)) {
-    const orders = ordersByDay.get(order.calendarDate) || [];
-    orders.push(order); ordersByDay.set(order.calendarDate, orders);
-  }
+  const days = new Map(calendar.data?.map(day => [day.calendarDate, day]));
   const weeks = Array.from({ length: range.dates.length / 7 }, (_, index) => range.dates.slice(index * 7, index * 7 + 7));
   const calendarElement = useRef<HTMLDivElement>(null);
   const workbenchElement = useRef<HTMLDivElement>(null);
@@ -172,7 +169,7 @@ export function Calendar({ account, view, onViewChange, filters, onFiltersChange
       <ErrorNotice error={calendar.error} retry={() => void calendar.refetch()} />
       {calendar.error && calendar.data && <p className="notice" role="status">刷新失败，当前显示上次数据。</p>}
       <div className="calendar-scroll" ref={calendarElement}><div className="calendar-weekdays">{weekdays.map(day => <span key={day}>周{day}</span>)}</div><div className="calendar-weeks">{weeks.map(week => <Fragment key={week[0]}>
-        <div className="calendar-grid" data-week={week[0]}>{week.map(date => <MonthDayCell key={date} date={date} orders={ordersByDay.get(date) || []} view={view} onSelect={selectDate} />)}</div>
+        <div className="calendar-grid" data-week={week[0]}>{week.map(date => <MonthDayCell key={date} date={date} day={days.get(date)} view={view} onSelect={selectDate} />)}</div>
         {mode === 'month' && <section id={`month-orders-${week[0]}`} className="month-expanded" aria-label={`${selected} 当日订单`} hidden={!view.expanded || !week.includes(selected)}>
           {view.expanded && week.includes(selected) && <><div className="section-heading"><h2>{businessDate(selected)} 订单 <span>{firstPage?.total ?? '—'}</span></h2><button type="button" className="text-button" onClick={collapseMonthPanel} aria-expanded="true" aria-controls={`month-orders-${week[0]}`}><CaretUp />收起</button></div>{filtersControl}{timeline}</>}
         </section>}

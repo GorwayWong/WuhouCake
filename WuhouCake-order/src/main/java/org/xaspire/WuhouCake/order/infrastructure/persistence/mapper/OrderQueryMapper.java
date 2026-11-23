@@ -53,12 +53,11 @@ public interface OrderQueryMapper {
             + "<otherwise>" + PICKUP_AT + " NULLS LAST, order_no</otherwise></choose> LIMIT 10 OFFSET #{offset}</script>")
     List<PaymentOrderRow> paymentOrders(@Param("date") LocalDate date, @Param("kind") String kind,
             @Param("from") Instant from, @Param("to") Instant to, @Param("offset") long offset);
-    record CalendarRow(String orderId, String orderNo, LocalDate calendarDate, String status,
-            String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt, String customerPhoneLast4) { }
+    record CalendarRow(LocalDate calendarDate, long orderCount, long unfinishedCount,
+            String firstOrderId, String firstItemName, String customerPhoneLast4) { }
     record PendingRow(String orderId, String orderNo, LocalDate calendarDate, String status,
             String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt,
             String customerName, String phone, String memberPhone, String buyerName, String address, Instant plannedFinishAt, Instant requestedReceiveAt) { }
-    record CalendarItemRow(String orderId, String itemId, String name, int quantity) { }
     record ItemRow(String orderId, String itemId, String name, String productType, int quantity,
             Long unitPriceCents, Long memberPriceCents, String attributes) { }
     record NoteRow(long id, String itemId, String actorId, String actorNameSnapshot, Instant createdAt, String content) { }
@@ -71,13 +70,21 @@ public interface OrderQueryMapper {
             long unpaidOrderCount, String unpaidAmountCents, long unpaidMissingAmountOrderCount, long paidWithoutDateOrderCount) { }
     record ContentSizeRow(long bytes, long rows) { }
 
+    String PENDING_STATUSES = "('CAKE_BASE','LAYER','FROSTING','DECORATING','WAITING_DELIVERY')";
     String ORDER_COLUMNS = "id::text AS order_id, order_no, " + PICKUP_DATE + " AS calendar_date, status,"
             + " current_stage_code, payment_status, fulfillment_type, " + PICKUP_AT + " AS planned_handoff_at";
     String ORDER_SORT = " ORDER BY " + PICKUP_DATE + ", " + PICKUP_AT + ", order_no";
     String ORDER_IDS = "<foreach collection='orderIds' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>";
     String ITEM_IDS = "<foreach collection='itemIds' item='id' open='(' separator=',' close=')'>CAST(#{id} AS uuid)</foreach>";
 
-    @Select("SELECT " + ORDER_COLUMNS + ", RIGHT(customer_phone, 4) AS customer_phone_last4 FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + " >= #{from} AND " + PICKUP_DATE + " < #{to}" + ORDER_SORT)
+    @Select("WITH days AS (SELECT DISTINCT ON (" + PICKUP_DATE + ") " + PICKUP_DATE + " AS calendar_date,"
+            + " id, RIGHT(customer_phone,4) AS customer_phone_last4, count(*) OVER day AS order_count,"
+            + " count(*) FILTER (WHERE status IN " + PENDING_STATUSES + ") OVER day AS unfinished_count"
+            + " FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + " >= #{from} AND " + PICKUP_DATE + " < #{to}"
+            + " WINDOW day AS (PARTITION BY " + PICKUP_DATE + ")" + ORDER_SORT + ")"
+            + " SELECT calendar_date,order_count,unfinished_count,id::text AS first_order_id,(SELECT name FROM cake_order_item WHERE order_id=days.id"
+            + " AND NOT is_removed ORDER BY position NULLS LAST,created_at,id LIMIT 1) AS first_item_name,customer_phone_last4"
+            + " FROM days ORDER BY calendar_date")
     List<CalendarRow> calendar(@Param("from") LocalDate from, @Param("to") LocalDate to);
 
     @Select("<script>SELECT id::text FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + " &gt;= #{from} AND " + PICKUP_DATE + " &lt; #{to}"
@@ -121,7 +128,7 @@ public interface OrderQueryMapper {
             long totalOrderCount, long waitingDeliveryOrderCount) { }
     record CardRow(String orderId, String orderNo, String status, String paymentStatus, String fulfillmentType,
             Instant pickupAt, Instant plannedFinishAt, long itemCount, long quantity, String firstItemId, String firstItemName,
-            String firstProductType, String firstAttributes, String latestNote, String customerPhone) { }
+            String firstProductType, String firstAttributes, String latestNote, String customerPhone, String deliveryAddressPreview) { }
 
     @Select("WITH selected AS MATERIALIZED (SELECT id FROM cake_order WHERE deleted_at IS NULL AND " + PICKUP_DATE + "=#{date} LIMIT 101),"
             + " live_items AS (SELECT i.id,i.order_id,octet_length(i.attributes::text)+octet_length(i.name)+256 AS bytes"
@@ -140,9 +147,10 @@ public interface OrderQueryMapper {
     WorkbenchBudgetRow workbenchBudget(LocalDate date);
 
     String CARD_MATCH = " COALESCE(o.status=#{filter.status},true) AND COALESCE(o.payment_status=#{filter.paymentStatus},true)"
-            + " AND COALESCE(o.fulfillment_type=#{filter.fulfillmentType},true)";
+            + " AND COALESCE(o.fulfillment_type=#{filter.fulfillmentType},true)"
+            + " AND (NOT #{filter.deliveryView} OR (o.fulfillment_type='DELIVERY'"
+            + " AND (o.status IN " + PENDING_STATUSES + " OR o.status='COMPLETED')))";
     String CARD_DAY = " FROM cake_order o WHERE o.deleted_at IS NULL AND " + ORDER_PICKUP_DATE + "=#{filter.date}";
-    String PENDING_STATUSES = "('CAKE_BASE','LAYER','FROSTING','DECORATING','WAITING_DELIVERY')";
     @Select("WITH daily AS (SELECT o.status,o.fulfillment_type,(" + CARD_MATCH + ") AS matches" + CARD_DAY + ")"
             + " SELECT count(*) FILTER (WHERE matches AND status IN " + PENDING_STATUSES + ") AS pending,"
             + " count(*) FILTER (WHERE matches AND status='COMPLETED') AS completed,"
@@ -153,16 +161,19 @@ public interface OrderQueryMapper {
     CardCountsRow cardCounts(@Param("filter") CardFilter filter);
 
     String CARD_PICKUP_SORT = "COALESCE(" + ORDER_PICKUP_AT + ",'infinity'::timestamptz)";
+    String CARD_DELIVERY_SORT = "<if test='filter.deliveryView'>(o.status='COMPLETED'),</if>";
     @Select("<script>WITH selected AS MATERIALIZED (SELECT o.id,o.order_no,o.status,o.payment_status,o.fulfillment_type,o.customer_phone,"
+            + " CASE WHEN #{filter.showAddress} AND o.fulfillment_type='DELIVERY' THEN left(o.delivery_address,120) END AS delivery_address_preview,"
             + ORDER_PICKUP_AT + " AS pickup_at,o.planned_finish_at" + CARD_DAY + " AND " + CARD_MATCH
             + "<if test='onlyOrder != null'> AND o.id=CAST(#{onlyOrder} AS uuid)</if>"
-            + "<if test='after != null'> AND (" + CARD_PICKUP_SORT + ",o.order_no,o.id)"
-            + " &gt; (COALESCE(CAST(#{after.pickupAt} AS timestamptz),'infinity'::timestamptz),#{after.orderNo},CAST(#{after.orderId} AS uuid))</if>"
-            + " ORDER BY " + CARD_PICKUP_SORT + ",o.order_no,o.id LIMIT #{limit})"
+            + "<if test='after != null'> AND (" + CARD_DELIVERY_SORT + CARD_PICKUP_SORT + ",o.order_no,o.id)"
+            + " &gt; (<if test='filter.deliveryView'>#{after.delivered},</if>"
+            + " COALESCE(CAST(#{after.pickupAt} AS timestamptz),'infinity'::timestamptz),#{after.orderNo},CAST(#{after.orderId} AS uuid))</if>"
+            + " ORDER BY " + CARD_DELIVERY_SORT + CARD_PICKUP_SORT + ",o.order_no,o.id LIMIT #{limit})"
             + " SELECT o.id::text AS order_id,o.order_no,o.status,o.payment_status,o.fulfillment_type,o.pickup_at,o.planned_finish_at,"
             + " counts.item_count,counts.quantity,first_item.id::text AS first_item_id,first_item.name AS first_item_name,"
             + " first_item.product_type AS first_product_type,COALESCE(preview.attributes,'{}'::jsonb)::text AS first_attributes,"
-            + " CASE WHEN note.content IS NULL OR octet_length(note.content)&lt;=4096 THEN note.content ELSE '打开订单查看全文' END AS latest_note,o.customer_phone"
+            + " CASE WHEN note.content IS NULL OR octet_length(note.content)&lt;=4096 THEN note.content ELSE '打开订单查看全文' END AS latest_note,o.customer_phone,o.delivery_address_preview"
             + " FROM selected o"
             + " CROSS JOIN LATERAL (SELECT count(*) AS item_count,COALESCE(sum(quantity),0) AS quantity"
             + " FROM cake_order_item WHERE order_id=o.id AND NOT is_removed) counts"
@@ -176,14 +187,11 @@ public interface OrderQueryMapper {
             + " LEFT JOIN cake_order_item i ON i.id=a.item_id AND i.order_id=a.order_id"
             + " WHERE a.order_id=o.id AND a.type='NOTE' AND (a.item_id IS NULL OR NOT i.is_removed)"
             + " ORDER BY a.created_at DESC,a.id DESC LIMIT 1) note ON true"
-            + " ORDER BY o.pickup_at NULLS LAST,o.order_no,o.id</script>")
+            + " ORDER BY " + CARD_DELIVERY_SORT + "o.pickup_at NULLS LAST,o.order_no,o.id</script>")
     List<CardRow> cards(@Param("filter") CardFilter filter,
             @Param("after") CardPosition after,
             @Param("onlyOrder") String onlyOrder, @Param("limit") int limit);
 
-    @Select("<script>SELECT order_id::text, id::text AS item_id, name, quantity FROM cake_order_item"
-            + " WHERE NOT is_removed AND order_id IN " + ORDER_IDS + " ORDER BY order_id, position NULLS LAST, created_at, id</script>")
-    List<CalendarItemRow> calendarItems(@Param("orderIds") List<String> orderIds);
 
     @Select("<script>SELECT order_id::text, id::text AS item_id, name, product_type, quantity, unit_price_cents, member_price_cents,"
             + " attributes::text FROM cake_order_item WHERE NOT is_removed AND order_id IN " + ORDER_IDS

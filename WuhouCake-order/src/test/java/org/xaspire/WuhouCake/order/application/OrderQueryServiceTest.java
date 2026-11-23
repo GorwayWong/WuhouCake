@@ -93,16 +93,13 @@ class OrderQueryServiceTest {
 
     @Test void calendarPreservesPhoneSuffixAndCancelledOrdersWithoutChangingWorkbench() {
         var from = LocalDate.of(2026, 10, 20);
-        var id = UUID.randomUUID();
-        when(queries.calendar(from, from.plusDays(1))).thenReturn(List.of(new OrderQueries.CalendarOrder(
-                id, "001", from, "CANCELLED", null, "UNPAID", "PICKUP", Instant.parse("2026-10-20T01:00:00Z"), "0012")));
-        when(queries.calendarItems(List.of(id))).thenReturn(List.of(new OrderQueries.CalendarItem(id, UUID.randomUUID(), "草莓蛋糕", 2)));
-        var order = service.calendar(from, from.plusDays(1)).getFirst();
-        assertEquals("0012", order.customerPhoneLast4());
-        assertEquals("CANCELLED", order.status());
-        assertEquals(2, order.items().getFirst().quantity());
+        when(queries.calendar(from, from.plusDays(1))).thenReturn(List.of(
+                new OrderQueries.CalendarDay(from, 1, 0, UUID.randomUUID().toString(), "草莓蛋糕", "0012")));
+        var day = service.calendar(from, from.plusDays(1)).getFirst();
+        assertEquals("0012", day.customerPhoneLast4());
+        assertEquals(0, day.unfinishedCount());
+        assertEquals("草莓蛋糕", day.firstItemName());
         verify(queries).calendar(from, from.plusDays(1));
-        verify(queries).calendarItems(List.of(id));
         verifyNoMoreInteractions(queries);
     }
 

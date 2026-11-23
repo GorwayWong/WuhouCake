@@ -33,9 +33,8 @@ public final class PostgresOrderQueries implements OrderQueries {
     private final JsonCodec json;
     public PostgresOrderQueries(OrderQueryMapper mapper, JsonCodec json) { this.mapper = mapper; this.json = json; }
 
-    @Override public List<CalendarOrder> calendar(LocalDate from, LocalDate to) {
-        return mapper.calendar(from, to).stream().map(row -> new CalendarOrder(UUID.fromString(row.orderId()), row.orderNo(),
-                row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt(), row.customerPhoneLast4())).toList();
+    @Override public List<CalendarDay> calendar(LocalDate from, LocalDate to) {
+        return mapper.calendar(from, to).stream().map(row -> new CalendarDay(row.calendarDate(), row.orderCount(), row.unfinishedCount(), row.firstOrderId(), row.firstItemName(), row.customerPhoneLast4())).toList();
     }
     @Override public List<PendingOrder> pending(LocalDate date) {
         return mapper.pending(date).stream().map(PostgresOrderQueries::pendingOrder).toList();
@@ -57,7 +56,7 @@ public final class PostgresOrderQueries implements OrderQueries {
                 row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(),
                 row.firstItemId() == null ? null : UUID.fromString(row.firstItemId()), row.firstItemName(), row.firstProductType(),
                 CakeSpecifications.effective(row.firstProductType(), JsonSnapshot.object(json.read(row.firstAttributes(), Map.class))),
-                row.latestNote(), row.customerPhone())).toList();
+                row.latestNote(), row.customerPhone(), row.deliveryAddressPreview())).toList();
     }
 
     @Override public long countScheduledProduction(Instant from, Instant to, Set<String> stages) {
@@ -70,11 +69,6 @@ public final class PostgresOrderQueries implements OrderQueries {
         return new PendingOrder(UUID.fromString(row.orderId()), row.orderNo(),
                 row.calendarDate(), row.status(), row.currentStageCode(), row.paymentStatus(), row.fulfillmentType(), row.plannedHandoffAt(),
                 row.customerName(), row.phone(), row.memberPhone(), row.buyerName(), row.address(), row.plannedFinishAt(), row.requestedReceiveAt());
-    }
-    @Override public List<CalendarItem> calendarItems(List<UUID> orderIds) {
-        if (orderIds.isEmpty()) return List.of();
-        return mapper.calendarItems(ids(orderIds)).stream().map(row -> new CalendarItem(UUID.fromString(row.orderId()),
-                UUID.fromString(row.itemId()), row.name(), row.quantity())).toList();
     }
     @Override public List<Item> items(List<UUID> orderIds) {
         if (orderIds.isEmpty()) return List.of();

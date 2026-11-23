@@ -1,5 +1,15 @@
+const storeDateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
+export function calendarCardTime(value: string | null, selected: string): string {
+  if (!value) return '待定';
+  const day = storeDateFormat.format(new Date(value));
+  if (day === selected) return time(value);
+  if (day === shiftDate(selected, -1)) return `前一天 ${time(value)}`;
+  if (day === shiftDate(selected, 1)) return `次日 ${time(value)}`;
+  return businessTime(value, new Date(`${selected}T12:00:00+08:00`));
+}
+
 export function today(): string {
-  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  return storeDateFormat.format(new Date());
 }
 export function shiftDate(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00Z`);

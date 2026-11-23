@@ -5,6 +5,8 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Supplier;
+import org.springframework.transaction.support.TransactionOperations;
 import org.xaspire.WuhouCake.order.domain.model.aggregate.CustomerSubmission;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderFailure;
 import org.xaspire.WuhouCake.order.domain.model.valobj.OrderImage;
@@ -18,29 +20,42 @@ public class SubmissionImageService {
     private final OrderImages orders;
     private final OrderImageValidator validator;
     private final Clock clock;
+    private final TransactionOperations writes;
 
-    public SubmissionImageService(SubmissionImages staged, OrderImages orders, OrderImageValidator validator, Clock clock) {
-        this.staged = staged; this.orders = orders; this.validator = validator; this.clock = clock;
+    public SubmissionImageService(SubmissionImages staged, OrderImages orders, OrderImageValidator validator, Clock clock,
+            TransactionOperations writes) {
+        this.staged = staged; this.orders = orders; this.validator = validator; this.clock = clock; this.writes = writes;
     }
 
-    public UUID stage(UUID entry, UUID submission, UUID item, UUID id, byte[] bytes, String filename) {
-        if (entry != null) staged.lockEntryUploads(entry);
-        var now = clock.instant();
-        var expires = now.plus(Duration.ofHours(48));
+    public UUID stage(Supplier<UUID> authorizeEntry, UUID submission, UUID item, UUID id, byte[] bytes, String filename) {
         var fingerprint = OrderImageService.fingerprint(item, filename, bytes);
-        if (entry == null ? staged.matchesUpload(id, item, null, submission, now, fingerprint)
-                : staged.renewPublicUpload(id, item, entry, now, expires, fingerprint, false)) return id;
-        if (staged.stagedCount(entry, submission, item, now) >= (entry == null ? 80 : 15))
-            throw new OrderFailure(entry == null ? "ORDER_IMAGE_COUNT_EXCEEDED" : "ORDER_IMAGE_LIMIT_EXCEEDED");
-        if (entry != null && staged.stagedEntryCount(entry, now) >= 200) throw new OrderFailure("IMAGE_PROCESSING_BUSY");
-        if (entry != null && staged.renewPublicUpload(id, item, entry, now, expires, fingerprint, true)) return id;
+        if (Boolean.TRUE.equals(writes.execute(tx ->
+                existingUpload(authorizeEntry.get(), submission, item, id, fingerprint)))) return id;
+
         var checked = validator.validate(bytes, filename);
         var image = new SubmissionImages.Image(id, item, checked.filename(), checked.contentType(),
                 checked.width(), checked.height(), checked.content() == null ? bytes : checked.content());
-        if (!staged.stage(image, entry, submission, expires, fingerprint)
-                && !staged.matchesUpload(id, item, entry, submission, now, fingerprint))
-            throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
-        return id;
+        return writes.execute(tx -> {
+            var entry = authorizeEntry.get();
+            if (existingUpload(entry, submission, item, id, fingerprint)) return id;
+            var now = clock.instant();
+            if (!staged.stage(image, entry, submission, now.plus(Duration.ofHours(48)), fingerprint)
+                    && !staged.matchesUpload(id, item, entry, submission, now, fingerprint))
+                throw new OrderFailure("IDEMPOTENCY_KEY_CONFLICT");
+            return id;
+        });
+    }
+
+    private boolean existingUpload(UUID entry, UUID submission, UUID item, UUID id, String fingerprint) {
+        if (entry != null) staged.lockEntryUploads(entry);
+        var now = clock.instant();
+        var expires = now.plus(Duration.ofHours(48));
+        if (entry == null ? staged.matchesUpload(id, item, null, submission, now, fingerprint)
+                : staged.renewPublicUpload(id, item, entry, now, expires, fingerprint, false)) return true;
+        if (staged.stagedCount(entry, submission, item, now) >= (entry == null ? 80 : 15))
+            throw new OrderFailure(entry == null ? "ORDER_IMAGE_COUNT_EXCEEDED" : "ORDER_IMAGE_LIMIT_EXCEEDED");
+        if (entry != null && staged.stagedEntryCount(entry, now) >= 200) throw new OrderFailure("IMAGE_PROCESSING_BUSY");
+        return entry != null && staged.renewPublicUpload(id, item, entry, now, expires, fingerprint, true);
     }
 
     public SubmissionImages.Image staged(UUID entry, UUID item, UUID image) {

@@ -571,7 +571,7 @@ class WorkflowManagementIT {
         assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_deletion_audit", Integer.class));
         assertEquals(7, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='ORDER_DELETED'", Integer.class));
         assertEquals(0, admin.data("GET", search("&includeCancelled=true"), null).at("/totals/orderCount").asInt());
-        assertTrue(a.data("GET", "/api/orders/calendar?from=2026-10-01&to=2026-11-01", null).isEmpty());
+        assertTrue(a.data("GET", "/api/orders/calendar/days?from=2026-10-01&to=2026-11-01", null).isEmpty());
         assertEquals(0, a.data("GET", "/api/orders/workbench?date=2026-10-17", null).path("pendingOrders").size());
         assertTrue(a.data("GET", "/api/orders/workbench/cake-bases?date=2026-10-17", null).path("items").isEmpty());
         assertEquals(0, a.data("GET", "/api/orders/workbench/payment-summary?date=2026-10-17", null).path("totalOrderCount").asInt());

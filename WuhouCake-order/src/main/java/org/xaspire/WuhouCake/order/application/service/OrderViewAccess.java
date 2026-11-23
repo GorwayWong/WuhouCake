@@ -41,11 +41,10 @@ public final class OrderViewAccess {
                 business ? source.creditedEmployee() : null, amount ? source.paidAt() : null, source.deletion(), business || ordering ? source.orderingMethod() : null, amount ? source.originalAmountCents() : null, amount ? source.memberAmountCents() : null, amount ? source.paymentMethod() : null, source.pricingMode());
     }
 
-    public static List<OrderQueryViews.CalendarOrder> calendar(List<OrderQueryViews.CalendarOrder> source, EmployeeAccess access) {
-        if (source == null) return null;
-        return source.stream().map(order -> new OrderQueryViews.CalendarOrder(order.orderId(), order.orderNo(), order.calendarDate(),
-                order.status(), order.currentStageCode(), access.allows(ORDER_AMOUNT_READ) ? order.paymentStatus() : null,
-                order.fulfillmentType(), order.plannedHandoffAt(), access.allows(ORDER_CUSTOMER_READ) ? order.customerPhoneLast4() : null, order.items())).toList();
+    public static List<OrderQueryViews.CalendarDay> calendar(List<OrderQueryViews.CalendarDay> source, EmployeeAccess access) {
+        if (access.allows(ORDER_CUSTOMER_READ) || source == null) return source;
+        return source.stream().map(day -> new OrderQueryViews.CalendarDay(day.calendarDate(), day.orderCount(),
+                day.unfinishedCount(), day.firstOrderId(), day.firstItemName(), null)).toList();
     }
 
     public static OrderQueryViews.Workbench workbench(OrderQueryViews.Workbench source, EmployeeAccess access) {

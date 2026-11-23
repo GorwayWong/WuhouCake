@@ -28,7 +28,7 @@ JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 20
 | POST /api/orders/{id}/restart | expectedVersion，仅已取消订单；须同时具有 ORDER_CANCEL 与 ORDER_PRODUCTION_UPDATE |
 | POST /api/orders/{id}/notes | content、可选 itemId，空 itemId 为整单备注 |
 | GET /api/orders/{id}/activities | 可选 itemId/type，page 从 1 起、size 默认 20/最大 100 |
-| GET /api/orders/calendar | from/to，按取货日期查询 [from,to)，最多 42 天 |
+| GET /api/orders/calendar/days | from/to，按取货日汇总 [from,to)，最多 42 天；每日返回总单数、未完成数、首单 ID、首件商品名及按权限显示的手机号后四位 |
 | GET /api/orders/workbench | date，指定门店日期的统计与未完成/未取消待办 |
 | GET /api/orders/workbench/receipt-summary | date，按北京时间付款日汇总订单数和金额 |
 | GET /api/orders/workbench/cake-bases | date，按取货日期汇总蛋糕尺寸、胚口味及数量 |

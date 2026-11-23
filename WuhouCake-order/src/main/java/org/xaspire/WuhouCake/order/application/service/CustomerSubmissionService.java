@@ -79,8 +79,8 @@ public class CustomerSubmissionService {
         if (includesImages) images.retain(entry.id(), submission.id(), content);
         return new SubmissionViews.Receipt(submission.id(), "F" + submission.id());
     }
-    @Transactional public UUID stagePublicImage(String token, UUID item, UUID image, byte[] bytes, String filename) {
-        return images.stage(validEntry(token, true).id(), null, item, image, bytes, filename);
+    public UUID stagePublicImage(String token, UUID item, UUID image, byte[] bytes, String filename) {
+        return images.stage(() -> validEntry(token, true).id(), null, item, image, bytes, filename);
     }
 
     @Transactional(readOnly = true) public List<UUID> missingPublicImages(String token, List<SubmissionCommands.ImageReference> references) {
@@ -100,11 +100,13 @@ public class CustomerSubmissionService {
         return new SubmissionViews.ImageContent(file.contentType(), file.content());
     }
 
-    @Transactional public UUID stageStaffImage(UUID id, UUID item, UUID image, byte[] bytes, String filename) {
-        staff(ORDER_IMAGE_UPLOAD, CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ);
-        var submission = require(id, true);
-        submission.requirePending(submission.version());
-        return images.stage(null, id, item, image, bytes, filename);
+    public UUID stageStaffImage(UUID id, UUID item, UUID image, byte[] bytes, String filename) {
+        return images.stage(() -> {
+            staff(ORDER_IMAGE_UPLOAD, CUSTOMER_SUBMISSION_PROCESS, ORDER_CUSTOMER_READ, ORDER_AMOUNT_READ);
+            var submission = require(id, true);
+            submission.requirePending(submission.version());
+            return null;
+        }, id, item, image, bytes, filename);
     }
 
     @Transactional(readOnly = true) public SubmissionViews.ImageContent staffImage(UUID id, UUID item, UUID image) {

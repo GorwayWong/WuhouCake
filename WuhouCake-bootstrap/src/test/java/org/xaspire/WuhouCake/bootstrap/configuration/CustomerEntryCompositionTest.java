@@ -1,6 +1,7 @@
 package org.xaspire.WuhouCake.bootstrap.configuration;
 
 import java.time.Clock;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,6 +24,7 @@ class CustomerEntryCompositionTest {
             .withBean(JsonCodec.class, () -> mock(JsonCodec.class))
             .withBean(IdentityFacade.class, () -> mock(IdentityFacade.class))
             .withBean(OrderService.class, () -> mock(OrderService.class))
+            .withBean(PlatformTransactionManager.class, () -> mock(PlatformTransactionManager.class))
             .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
             .withBean(OrderImages.class, () -> mock(OrderImages.class))
             .withBean(OrderImageValidator.class, () -> mock(OrderImageValidator.class))

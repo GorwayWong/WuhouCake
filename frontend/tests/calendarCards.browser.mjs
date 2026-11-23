@@ -1,13 +1,56 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId, workbenchCards } from './orderBrowserFixture.mjs';
+import { calendarDays, createOrderFixture, orderId, workbenchCards } from './orderBrowserFixture.mjs';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
-const displayDate = value => value.slice(0, 4) === new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date()).slice(0, 4) ? value.slice(5).replaceAll('-', '/') : value.replaceAll('-', '/');
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true, channel: 'chrome' }); });
 after(async () => { await browser?.close(); });
+
+test('日期首单按实际取货时刻和订单号决定，待定排最后', () => {
+  const row = (orderNo, plannedHandoffAt) => ({ orderId: orderNo, orderNo, plannedHandoffAt, calendarDate: '2026-11-20' });
+  const rows = [row('00', null), row('01', '2026-11-20T01:00:00.000500Z'),
+    row('03', '2026-11-20T09:00:00.000400+08:00'), row('02', '2026-11-20T01:00:00.000400Z')];
+  assert.equal(calendarDays(rows)[0].firstOrderId, '02');
+});
+
+test('月历收到首单删除通知后即使刷新失败也隐藏旧预览，恢复后显示下一单', async () => {
+  const { context, page } = await createOrderFixture(browser, base);
+  const date = '2026-11-20';
+  const day = { calendarDate: date, firstOrderId: orderId, orderCount: 2, unfinishedCount: 1,
+    firstItemName: '旧首单蛋糕', customerPhoneLast4: '0123' };
+  const other = { ...day, calendarDate: '2026-11-21', firstOrderId: crypto.randomUUID(), firstItemName: '次日蛋糕' };
+  let phase = 'before', release;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    await context.route('**/api/orders/calendar/days?**', route => {
+      if (phase === 'offline') return route.fulfill({ status: 503, json: { success: false, code: 'SERVICE_UNAVAILABLE' } });
+      const current = phase === 'before' ? day : { ...day, firstOrderId: crypto.randomUUID(),
+        orderCount: 1, unfinishedCount: 0, firstItemName: '新首单蛋糕', customerPhoneLast4: '4567' };
+      return route.fulfill({ json: { success: true, data: [current, other] } });
+    });
+    await context.route('**/api/orders/stream', async route => {
+      await gate;
+      return route.fulfill({ contentType: 'text/event-stream', body: 'event: order.changed\ndata: '
+        + JSON.stringify({ orderId, changeType: 'ORDER_DELETED', version: 4 }) + '\n\n' });
+    });
+    await page.goto(base + '/#/?date=' + date + '&view=month&month=2026-11');
+    const cell = page.locator('.date-block').filter({ hasText: '旧首单蛋糕' });
+    await cell.waitFor();
+    phase = 'offline';
+    release();
+    await page.getByText('摘要待刷新', { exact: true }).waitFor();
+    await page.getByText('刷新失败，当前显示上次数据。', { exact: true }).waitFor();
+    const selected = page.locator('.date-block.selected');
+    assert.doesNotMatch(await selected.innerText(), /旧首单蛋糕|0123/);
+    assert.ok(await page.getByText('次日蛋糕', { exact: true }).isVisible());
+    phase = 'after';
+    await page.locator('.calendar-panel').getByRole('button', { name: /重试/ }).click();
+    await selected.getByText('新首单蛋糕', { exact: true }).waitFor();
+    assert.match(await selected.innerText(), /4567/);
+  } finally { release(); await context.close(); }
+});
 
 test('按详情状态切换筛选后，列表只显示同名状态的订单', async () => {
   const { context, page } = await createOrderFixture(browser, base);
@@ -41,7 +84,7 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     plannedHandoffAt: model.order.fulfillment.plannedHandoffAt, requestedReceiveAt: model.order.fulfillment.requestedReceiveAt,
     plannedFinishAt: model.order.fulfillment.plannedFinishAt, fulfillmentType: model.order.fulfillment.type }, ...extra] : [];
   try {
-    await context.route('**/api/orders/calendar?**', route => route.fulfill({ json: { success: true, data: pending().map(order => ({ ...order, customerPhoneLast4: '0000' })) } }));
+    await context.route('**/api/orders/calendar/days?**', route => route.fulfill({ json: { success: true, data: calendarDays(pending().map(order => ({ ...order, customerPhoneLast4: '0000' }))) } }));
     await context.route('**/api/orders/workbench/cards?**', route => route.fulfill({ json: { success: true, data: workbenchCards(route.request(), pending()) } }));
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     await page.evaluate(() => {
@@ -92,13 +135,13 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     assert.equal(await main.locator('.order-summary-number').count(), 0);
     assert.equal(await main.locator('.order-summary-heading .order-summary-phone').innerText(), '13800000000');
     assert.equal((await main.innerText()).includes('TEST-IMAGE'), false);
-    assert.equal(await main.locator('.front-card-times dd').nth(0).innerText(), displayDate(date) + ' 23:45');
-    assert.equal(await main.locator('.front-card-times dd').nth(1).innerText(), displayDate(prior) + ' 23:15');
+    assert.equal(await main.locator('.front-card-times dd').nth(0).innerText(), '23:45');
+    assert.equal(await main.locator('.front-card-times dd').nth(1).innerText(), '前一天 23:15');
     assert.equal(await main.locator('.order-summary-note-preview').innerText(), '备注：请提前联系取货');
     assert.equal(await main.locator('.badges').getByText('出胚', { exact: true }).count(), 1);
     assert.equal(await main.locator('.badges').getByText('未付款', { exact: true }).count(), 1);
     assert.equal(await unspecified.locator('h3').innerText(), '野餐盒');
-    assert.equal(await unspecified.locator('.front-card-times dd').nth(0).innerText(), displayDate(date) + ' · 时刻待定');
+    assert.equal(await unspecified.locator('.front-card-times dd').nth(0).innerText(), '待定');
     assert.equal(await unspecified.locator('.front-card-times dd').nth(1).innerText(), '待定');
     assert.equal(await main.locator('xpath=ancestor::section[contains(@class,"timeline-group")]').getAttribute('aria-label'), date + ' 取货时段 23:30 至次日 00:00');
     assert.equal(await page.locator('.order-partition').filter({ hasText: '已交接' }).locator('.timeline-partition-toggle').getAttribute('aria-expanded'), 'false');
@@ -130,7 +173,7 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     await page.getByRole('button', { name: '清除筛选', exact: true }).click();
     await page.locator('.order-partition').filter({ hasText: '已交接' }).locator('.timeline-partition-toggle').click();
     const completed = page.locator('[data-order-id="40000000-0000-4000-8000-000000000004"]'); await completed.waitFor();
-    assert.equal(await completed.locator('.front-card-times dd').nth(0).innerText(), displayDate(date) + ' 09:10');
+    assert.equal(await completed.locator('.front-card-times dd').nth(0).innerText(), '09:10');
     model.permissions = model.permissions.filter(permission => permission !== 'ORDER_AMOUNT_READ');
     await page.reload(); await main.locator('.front-card-times').waitFor();
     assert.equal(await main.locator('.badges .badge').count(), 1);

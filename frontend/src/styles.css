@@ -661,6 +661,8 @@ small{
 .timeline-orders{display:flex;flex-direction:column;gap:12px;min-width:0}
 .order-summary-card{display:flex;flex-direction:column;gap:12px;padding:18px 20px;background:#fff;border:1px solid var(--line);border-radius:14px;min-width:0;color:var(--ink);text-decoration:none;transition:border-color 140ms ease,box-shadow 140ms ease}
 .order-summary-card:hover{border-color:#d4b665;box-shadow:0 3px 12px #292b2b08}
+.order-summary-card.is-ready-for-delivery{border:2px solid #b28a30}
+.order-partition>h3.timeline-delivered-separator{border-top:1px solid var(--line);padding-top:12px;margin:4px 0 12px;color:var(--muted);font-size:13px;font-weight:500}
 .order-summary-card:focus-visible,.date-block:focus-visible{outline:2px solid #946a0c;outline-offset:3px}
 .order-summary-title{display:flex;align-items:start;justify-content:space-between;gap:12px;min-width:0}
 .order-summary-title h3{font-size:19px;line-height:1.5;margin:0;overflow-wrap:anywhere}
@@ -2160,6 +2162,7 @@ button,a{
 .compact-order-card .order-summary-title h3{font-size:16px;line-height:1.45}
 .order-summary-caption{flex:1;min-width:0}
 .order-summary-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 10px}
+.calendar-address-preview{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;margin:0;color:var(--muted);font-size:13px;line-height:1.5}
 .order-summary-phone{color:var(--muted);font-size:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;min-width:0}
 .order-summary-caption>span{display:block;margin-top:3px;font-size:12px;line-height:1.5;color:var(--muted)}
 .compact-order-card .production-thumbnail{width:56px;height:56px;flex:0 0 56px;margin:0;font-size:10px;text-align:center;border-radius:6px}

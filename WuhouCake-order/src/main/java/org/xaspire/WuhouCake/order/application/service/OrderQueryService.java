@@ -131,16 +131,10 @@ public class OrderQueryService {
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
-    public List<OrderQueryViews.CalendarOrder> calendar(LocalDate from, LocalDate to) {
+    public List<OrderQueryViews.CalendarDay> calendar(LocalDate from, LocalDate to) {
         if (from == null || to == null || !from.isBefore(to) || ChronoUnit.DAYS.between(from, to) > 42) throw invalid();
-        var orders = queries.calendar(from, to);
-        if (orders.isEmpty()) return List.of();
-        var items = queries.calendarItems(orders.stream().map(OrderQueries.CalendarOrder::orderId).toList()).stream()
-                .collect(Collectors.groupingBy(OrderQueries.CalendarItem::orderId,
-                        Collectors.mapping(item -> new OrderQueryViews.CalendarItem(item.itemId(), item.name(), item.quantity()), Collectors.toList())));
-        return orders.stream().map(order -> new OrderQueryViews.CalendarOrder(order.orderId(), order.orderNo(), order.calendarDate(),
-                order.status(), order.currentStageCode(), order.paymentStatus(), order.fulfillmentType(), order.plannedHandoffAt(),
-                order.customerPhoneLast4(), items.getOrDefault(order.orderId(), List.of()))).toList();
+        return queries.calendar(from, to).stream().map(row -> new OrderQueryViews.CalendarDay(
+                row.calendarDate(), row.orderCount(), row.unfinishedCount(), row.firstOrderId(), row.firstItemName(), row.customerPhoneLast4())).toList();
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -168,14 +162,15 @@ public class OrderQueryService {
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public OrderQueryViews.WorkbenchCards cards(LocalDate date, String status, String paymentStatus,
-            String fulfillmentType, String cursor, UUID focusOrderId, boolean showPayment, boolean showPhone) {
+            String fulfillmentType, String view, String cursor, UUID focusOrderId, boolean showPayment, boolean showPhone, boolean showAddress) {
         if (!productionDate(date)
+                || view != null && !"delivery".equals(view)
                 || status != null && !org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.ORDER_STATUSES.contains(status)
                 || fulfillmentType != null && !Set.of("DELIVERY", "PICKUP").contains(fulfillmentType)
                 || paymentStatus != null && !Set.of("PAID", "UNPAID").contains(paymentStatus)) throw invalid();
         if (paymentStatus != null && !showPayment) throw new OrderFailure("FORBIDDEN");
 
-        var filter = new OrderQueries.CardFilter(date, status, paymentStatus, fulfillmentType);
+        var filter = new OrderQueries.CardFilter(date, status, paymentStatus, fulfillmentType, "delivery".equals(view), showAddress);
         var rows = queries.cards(filter, cardPosition(filter, cursor), null, CARD_PAGE_SIZE + 1);
         var visible = rows.stream().limit(CARD_PAGE_SIZE).map(row -> card(row, date, showPayment, showPhone)).toList();
         var focus = focusOrderId == null || cursor != null || visible.stream().anyMatch(row -> row.orderId().equals(focusOrderId))
@@ -194,11 +189,13 @@ public class OrderQueryService {
         var first = row.firstItemId() == null ? null : new OrderQueryViews.CardItem(row.firstItemId(), row.firstItemName(),
                 row.firstProductType(), row.firstAttributes());
         return new OrderQueryViews.Card(row.orderId(), row.orderNo(), date, row.status(), showPayment ? row.paymentStatus() : null,
-                row.fulfillmentType(), row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(), first, row.latestNote(), showPhone ? row.customerPhone() : null);
+                row.fulfillmentType(), row.pickupAt(), row.plannedFinishAt(), row.itemCount(), row.quantity(), first, row.latestNote(), showPhone ? row.customerPhone() : null,
+                row.deliveryAddressPreview());
     }
 
     private static String encodePosition(OrderQueries.CardFilter filter, OrderQueries.Card row) {
         var raw = cursorScope(filter) + "\n" + Objects.toString(row.pickupAt(), "") + "\n" + row.orderNo() + "\n" + row.orderId();
+        if (filter.deliveryView()) raw += "COMPLETED".equals(row.status()) ? "\n1" : "\n0";
         return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -207,17 +204,21 @@ public class OrderQueryService {
         if (cursor.length() > 512) throw invalid();
         try {
             var fields = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8).split("\n", -1);
-            if (fields.length != 4 || !fields[0].equals(cursorScope(filter)) || fields[2].isBlank() || fields[2].length() > 32)
+            if (fields.length != (filter.deliveryView() ? 5 : 4) || !fields[0].equals(cursorScope(filter))
+                    || fields[2].isBlank() || fields[2].length() > 32
+                    || filter.deliveryView() && !Set.of("0", "1").contains(fields[4]))
                 throw invalid();
             var pickup = fields[1].isEmpty() ? null : Instant.parse(fields[1]);
             if (pickup != null && !pickup.atZone(STORE_ZONE).toLocalDate().equals(filter.date())) throw invalid();
-            return new OrderQueries.CardPosition(pickup, fields[2], UUID.fromString(fields[3]));
+            return new OrderQueries.CardPosition(pickup, fields[2], UUID.fromString(fields[3]),
+                    filter.deliveryView() && "1".equals(fields[4]));
         } catch (IllegalArgumentException | DateTimeException failure) { throw invalid(); }
     }
 
     private static String cursorScope(OrderQueries.CardFilter filter) {
         return filter.date() + "|" + Objects.toString(filter.status(), "") + "|" + Objects.toString(filter.paymentStatus(), "")
-                + (filter.fulfillmentType() == null ? "" : "|" + filter.fulfillmentType());
+                + (filter.fulfillmentType() == null ? "" : "|" + filter.fulfillmentType())
+                + (filter.deliveryView() ? "|delivery" : "");
     }
 
     private List<OrderQueryViews.PendingOrder> pendingViews(List<OrderQueries.PendingOrder> orders) {

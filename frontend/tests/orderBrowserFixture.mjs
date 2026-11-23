@@ -6,10 +6,12 @@ export function workbenchCards(request, rows, { nextCursor = null, counts = rows
   const params = new URL(request.url()).searchParams;
   const status = params.get('status'), payment = params.get('paymentStatus'), type = params.get('fulfillmentType');
   const visible = rows.filter(order => !order.deleted && !order.deletion);
-  const matches = order => (!status || order.status === status) && (!type || order.fulfillmentType === type) && (!payment || order.paymentStatus === payment);
+  const pending = ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING', 'WAITING_DELIVERY'];
+  const matches = order => (params.get('view') !== 'delivery' || order.fulfillmentType === 'DELIVERY'
+    && (pending.includes(order.status) || order.status === 'COMPLETED'))
+    && (!status || order.status === status) && (!type || order.fulfillmentType === type) && (!payment || order.paymentStatus === payment);
   const counted = counts.filter(order => !order.deleted && !order.deletion);
   const groups = { pending: 0, completed: 0, cancelled: 0, unknown: 0 };
-  const pending = ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING', 'WAITING_DELIVERY'];
   for (const { status } of counted.filter(matches)) {
     const group = pending.includes(status) ? 'pending' : status === 'COMPLETED' ? 'completed' : status === 'CANCELLED' ? 'cancelled' : 'unknown';
     groups[group]++;
@@ -18,7 +20,8 @@ export function workbenchCards(request, rows, { nextCursor = null, counts = rows
     orderId, orderNo, calendarDate, status, paymentStatus, fulfillmentType, plannedFinishAt,
     plannedHandoffAt: order.plannedHandoffAt ?? order.requestedReceiveAt ?? null,
     itemCount: order.items.length, quantity: order.items.reduce((sum, item) => sum + item.quantity, 0),
-    firstItem: order.items[0] ?? null, latestNote: order.latestNote?.content ?? null, customerPhone: order.customer?.phone ?? null });
+    firstItem: order.items[0] ?? null, latestNote: order.latestNote?.content ?? null, customerPhone: order.customer?.phone ?? null,
+    deliveryAddressPreview: fulfillmentType === 'DELIVERY' ? (order.address ?? order.fulfillment?.address)?.slice(0, 120) ?? null : null });
   return { date: params.get('date'), orders: visible.filter(matches).map(card),
     focusedOrder: focus && matches(focus) ? card(focus) : null, nextCursor, total: counted.filter(matches).length,
     groupCounts: groups, operationalCounts: { totalOrderCount: counted.filter(row => row.status !== 'CANCELLED').length,
@@ -112,7 +115,7 @@ export async function createOrderFixture(browser, base) {
       return route.fulfill({ contentType: 'image/png', body: png });
     }
     if (path.endsWith('/activities')) return ok({ items: [], total: 0, page: 1, size: 20 });
-    if (path.endsWith('/calendar')) return ok([]);
+    if (path.endsWith('/calendar/days')) return ok([]);
     if (path.endsWith('/production-reminders')) return ok({ date: '2026-11-12', today: 0, overdue: 0 });
     if (path.endsWith('/workbench/cards')) return ok(workbenchCards(request, []));
     if (path.endsWith('/receipt-summary')) return ok({ orderCount: 0, amountCents: '0', missingAmountOrderCount: 0 });
@@ -129,4 +132,23 @@ export async function createOrderFixture(browser, base) {
   const queue = () => page.evaluate(async ([account, id]) => (await import('/src/draftImages.ts')).imageQueue(account, id).then(rows => rows.map(({ file, ...row }) => row)), [model.account, orderId]);
   const complete = async () => { await page.locator('#phone').fill('13800000000'); await page.getByRole('button', { name: /交接方式/ }).click(); await page.getByRole('option', { name: '门店自提' }).click(); await page.locator('[id="items.0.name"]').fill('蛋糕A'); };
   return { context, page, model, errors, png, select, saved, queue, complete };
+}
+
+function fractionalSeconds(time) {
+  return Number('0.' + (time?.match(/:\d{2}\.(\d+)/)?.[1] ?? '0'));
+}
+
+export function calendarDays(rows) {
+  const days = new Map();
+  for (const row of rows.filter(row => !row.deleted).sort((a, b) =>
+    (a.plannedHandoffAt == null) - (b.plannedHandoffAt == null)
+    || Date.parse(a.plannedHandoffAt) - Date.parse(b.plannedHandoffAt)
+    || fractionalSeconds(a.plannedHandoffAt) - fractionalSeconds(b.plannedHandoffAt) || a.orderNo.localeCompare(b.orderNo))) {
+    const day = days.get(row.calendarDate) ?? { calendarDate: row.calendarDate, orderCount: 0,
+      unfinishedCount: 0, firstOrderId: row.orderId, firstItemName: row.items?.[0]?.name ?? null, customerPhoneLast4: row.customerPhoneLast4 ?? null };
+    day.orderCount++;
+    if (['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING', 'WAITING_DELIVERY'].includes(row.status)) day.unfinishedCount++;
+    days.set(row.calendarDate, day);
+  }
+  return [...days.values()];
 }

@@ -30,9 +30,10 @@ public class CustomerEntryComposition {
     @Bean CustomerSubmissions customerSubmissions(CustomerSubmissionMapper mapper, JsonCodec json) { return new PostgresCustomerSubmissions(mapper, json); }
     @Bean SubmissionImageService submissionImageService(org.springframework.jdbc.core.JdbcTemplate jdbc,
             org.xaspire.WuhouCake.order.domain.port.OrderImages orders,
-            org.xaspire.WuhouCake.order.domain.port.OrderImageValidator validator, Clock clock) {
+            org.xaspire.WuhouCake.order.domain.port.OrderImageValidator validator, Clock clock,
+            org.springframework.transaction.PlatformTransactionManager transactions) {
         return new SubmissionImageService(new org.xaspire.WuhouCake.order.infrastructure.persistence.repository.PostgresSubmissionImages(jdbc),
-                orders, validator, clock);
+                orders, validator, clock, new org.springframework.transaction.support.TransactionTemplate(transactions));
     }
     @Bean SubmissionImageMaintenance submissionImageMaintenance(SubmissionImageService images, io.micrometer.core.instrument.MeterRegistry metrics) {
         return new SubmissionImageMaintenance(images, metrics);

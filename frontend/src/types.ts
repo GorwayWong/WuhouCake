@@ -21,17 +21,19 @@ export interface Item {
   productionStatus?: string; currentStageCode?: string | null;
 }
 export interface OrderStatus { fulfillmentType?: string; fulfillment?: { type: string }; status: string; currentStageCode: string | null; paymentStatus: string | null; deletion?: unknown; deleted?: boolean }
-export interface CalendarOrder extends OrderStatus {
+export interface CalendarDay { calendarDate: string; orderCount: number; unfinishedCount: number | null; firstOrderId: string | null; firstItemName: string | null; customerPhoneLast4: string | null }
+export interface PendingOrder extends OrderStatus {
   orderId: string; orderNo: string; calendarDate: string; fulfillmentType: string;
-  plannedHandoffAt: string | null; customerPhoneLast4: string | null; items: Pick<Item, 'itemId' | 'name' | 'quantity'>[];
+  plannedHandoffAt: string | null; customer: Customer | null; address: string | null;
+  plannedFinishAt: string | null; requestedReceiveAt?: string | null; items: Item[]; latestNote?: Note | null;
 }
-export interface PendingOrder extends Omit<CalendarOrder, 'customerPhoneLast4'> { customer: Customer | null; address: string | null; plannedFinishAt: string | null; requestedReceiveAt?: string | null; items: Item[]; latestNote?: Note | null }
 export interface OperationalCounts { totalOrderCount: number; waitingDeliveryOrderCount: number }
 export interface WorkbenchCard extends Omit<OrderStatus, 'currentStageCode'> {
   orderId: string; orderNo: string; calendarDate: string; fulfillmentType: string;
   plannedHandoffAt: string | null; plannedFinishAt: string | null; itemCount: number; quantity: number;
   firstItem: Pick<Item, 'itemId' | 'name' | 'productType' | 'attributes'> | null;
   customerPhone: string | null;
+  deliveryAddressPreview: string | null;
   latestNote: string | null;
 }
 export interface WorkbenchCards {

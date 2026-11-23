@@ -72,8 +72,8 @@ public class OrderQueryController {
         return ApiResponse.success(queries.paymentSummary(date));
     }
 
-    @GetMapping("/calendar")
-    public ApiResponse<List<OrderQueryViews.CalendarOrder>> calendar(
+    @GetMapping("/calendar/days")
+    public ApiResponse<List<OrderQueryViews.CalendarDay>> calendar(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to, Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
@@ -85,12 +85,13 @@ public class OrderQueryController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
             @RequestParam(required = false) String status, @RequestParam(required = false) String paymentStatus,
             @RequestParam(required = false) String cursor, @RequestParam(required = false) UUID focusOrderId,
-            @RequestParam(required = false) String fulfillmentType,
+            @RequestParam(required = false) String fulfillmentType, @RequestParam(required = false) String view,
             Authentication authentication) {
         var account = (IdentityFacade.AccountView) authentication.getDetails();
         var access = account.access();
-        return ApiResponse.success(queries.cards(date, status, paymentStatus, fulfillmentType, cursor, focusOrderId,
-                access.allows(ORDER_AMOUNT_READ), access.allows(ORDER_PHONE_READ) || access.allows(ORDER_CUSTOMER_READ)));
+        return ApiResponse.success(queries.cards(date, status, paymentStatus, fulfillmentType, view, cursor, focusOrderId,
+                access.allows(ORDER_AMOUNT_READ), access.allows(ORDER_PHONE_READ) || access.allows(ORDER_CUSTOMER_READ),
+                access.allows(ORDER_CUSTOMER_READ)));
     }
 
     @GetMapping("/workbench")

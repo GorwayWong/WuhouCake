@@ -17,21 +17,20 @@ public interface OrderQueries {
     List<PaymentOrder> paymentOrders(LocalDate date, String kind, Instant from, Instant to, long offset);
     record PaymentOrder(UUID orderId, String orderNo, Instant createdAt, LocalDate calendarDate,
             Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
-    List<CalendarOrder> calendar(LocalDate from, LocalDate to);
+    List<CalendarDay> calendar(LocalDate from, LocalDate to);
     List<PendingOrder> pending(LocalDate date);
     WorkbenchBudget workbenchBudget(LocalDate date);
     CardCounts cardCounts(CardFilter filter);
     List<Card> cards(CardFilter filter, CardPosition after, UUID onlyOrder, int limit);
     record WorkbenchBudget(long orders, long bytes) { }
-    record CardFilter(LocalDate date, String status, String paymentStatus, String fulfillmentType) { }
-    record CardPosition(Instant pickupAt, String orderNo, UUID orderId) { }
+    record CardFilter(LocalDate date, String status, String paymentStatus, String fulfillmentType, boolean deliveryView, boolean showAddress) { }
+    record CardPosition(Instant pickupAt, String orderNo, UUID orderId, boolean delivered) { }
     record CardCounts(long pending, long completed, long cancelled, long unknown, long totalOrderCount, long waitingDeliveryOrderCount) { }
     record Card(UUID orderId, String orderNo, String status, String paymentStatus, String fulfillmentType,
             Instant pickupAt, Instant plannedFinishAt, long itemCount, long quantity, UUID firstItemId, String firstItemName,
-            String firstProductType, Map<String, Object> firstAttributes, String latestNote, String customerPhone) { }
+            String firstProductType, Map<String, Object> firstAttributes, String latestNote, String customerPhone, String deliveryAddressPreview) { }
     long countScheduledProduction(Instant from, Instant to, Set<String> stages);
     List<PendingOrder> scheduledProduction(Instant from, Instant to, Set<String> stages, int limit, long offset);
-    List<CalendarItem> calendarItems(List<UUID> orderIds);
     List<Item> items(List<UUID> orderIds);
     /** 按商品独立取三条 NOTE，以 createdAt、id 倒序返回，不含订单级备注。 */
     List<Note> recentNotes(List<UUID> orderIds, List<UUID> itemIds);
@@ -48,12 +47,11 @@ public interface OrderQueries {
             long paidOrderCount, String paidAmountCents, long paidMissingAmountOrderCount,
             long unpaidOrderCount, String unpaidAmountCents, long unpaidMissingAmountOrderCount, long paidWithoutDateOrderCount) { }
 
-    record CalendarOrder(UUID orderId, String orderNo, LocalDate calendarDate, String status,
-            String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt, String customerPhoneLast4) { }
+    record CalendarDay(LocalDate calendarDate, long orderCount, long unfinishedCount,
+            String firstOrderId, String firstItemName, String customerPhoneLast4) { }
     record PendingOrder(UUID orderId, String orderNo, LocalDate calendarDate, String status,
             String currentStageCode, String paymentStatus, String fulfillmentType, Instant plannedHandoffAt,
             String customerName, String phone, String memberPhone, String buyerName, String address, Instant plannedFinishAt, Instant requestedReceiveAt) { }
-    record CalendarItem(UUID orderId, UUID itemId, String name, int quantity) { }
     record Item(UUID orderId, UUID itemId, String name, String productType, int quantity, Long unitPriceCents,
             Long memberPriceCents, Map<String, Object> attributes) { }
     record Note(long id, UUID itemId, UUID actorId, String actorNameSnapshot, Instant createdAt, String content) { }

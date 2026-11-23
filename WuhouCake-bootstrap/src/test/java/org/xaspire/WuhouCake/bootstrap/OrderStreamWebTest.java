@@ -196,15 +196,14 @@ class OrderStreamWebTest {
     @Test void calendarAndWorkbenchUseTheSameDataPermissions() throws Exception {
         withPermissions(Set.of(ORDER_READ));
         var detail = sensitiveOrder(); var date = LocalDate.of(2026, 10, 22);
-        when(queries.calendar(null, null)).thenReturn(List.of(new OrderQueryViews.CalendarOrder(detail.orderId(), "TEST001", date,
-                "CREATED", "WAITING", "PAID", "DELIVERY", Instant.now(), "0000", List.of())));
+        when(queries.calendar(null, null)).thenReturn(List.of(new OrderQueryViews.CalendarDay(date, 1, 1, detail.orderId().toString(), "蛋糕", "0000")));
         var item = new OrderQueryViews.Item(UUID.randomUUID(), "蛋糕", "CAKE", 1, 20000L, 18000L, Map.of("base", "原味"), List.of());
         when(queries.workbench(null, true)).thenReturn(new OrderQueryViews.Workbench(date, new OrderQueryViews.Metrics(1, 1, 1),
                 List.of(new OrderQueryViews.PendingOrder(detail.orderId(), "TEST001", date, "CREATED", "WAITING", "PAID", "DELIVERY",
                         Instant.now(), detail.customer(), "客户地址", Instant.now(), List.of(item), null, Instant.now()))));
-        mvc.perform(get("/api/orders/calendar").header("Authorization", "Bearer valid"))
+        mvc.perform(get("/api/orders/calendar/days").header("Authorization", "Bearer valid"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].customerPhoneLast4").isEmpty())
-                .andExpect(jsonPath("$.data[0].paymentStatus").isEmpty());
+                .andExpect(jsonPath("$.data[0].paymentStatus").doesNotExist());
         mvc.perform(get("/api/orders/workbench").header("Authorization", "Bearer valid"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.pendingOrders[0].customer").isEmpty())
                 .andExpect(jsonPath("$.data.pendingOrders[0].address").isEmpty())

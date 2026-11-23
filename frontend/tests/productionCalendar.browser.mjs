@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
 import { createRequire } from 'node:module';
-import { createOrderFixture, orderId, workbenchCards } from './orderBrowserFixture.mjs';
+import { calendarDays, createOrderFixture, orderId, workbenchCards } from './orderBrowserFixture.mjs';
 
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.DRAFT_TEST_URL || 'http://127.0.0.1:5197';
@@ -9,6 +9,89 @@ const date = '2026-11-05';
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true, channel: 'chrome' }); });
 after(async () => { await browser?.close(); });
+
+test('手机日历配送筛选按约定时间排列并分隔已送达订单', async () => {
+  const { context, page, errors } = await createOrderFixture(browser, base);
+  try {
+    const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format();
+    const tomorrow = new Date(Date.parse(today) + 86_400_000).toISOString().slice(0, 10);
+    const order = (orderNo, time, status, extras = {}) => ({
+      orderId: crypto.randomUUID(), orderNo, status, calendarDate: today, fulfillmentType: 'DELIVERY',
+      paymentStatus: 'UNPAID', plannedHandoffAt: `${today}T${time}:00+08:00`,
+      plannedFinishAt: `${today}T08:00:00+08:00`, items: [], ...extras,
+    });
+    const delivered = order('送达', '08:30', 'COMPLETED');
+    const frosting = order('抹面', '09:00', 'FROSTING', { plannedFinishAt: `${today}T08:45:00+08:00` });
+    const ready = order('待送', '10:00', 'WAITING_DELIVERY', { address: '测试街道'.repeat(32), customer: { phone: '13800000000' } });
+    const paid = order('已付款制作', '11:00', 'CAKE_BASE', { paymentStatus: 'PAID' });
+    const nextDay = order('次日送达', '11:00', 'COMPLETED', {
+      calendarDate: tomorrow, plannedHandoffAt: `${tomorrow}T11:00:00+08:00`,
+    });
+    const rows = [delivered, paid, ready, frosting, nextDay,
+      order('自提', '08:00', 'WAITING_DELIVERY', { fulfillmentType: 'PICKUP' }),
+      order('取消', '08:00', 'CANCELLED')];
+    await context.route('**/api/orders/workbench/cards?**', route => {
+      const selected = new URL(route.request().url()).searchParams.get('date');
+      return route.fulfill({ json: { success: true, data: workbenchCards(route.request(), rows.filter(row => row.calendarDate === selected)) } });
+    });
+    await page.goto(`${base}/#/?date=${today}`);
+    const select = async (label, name) => {
+      await page.locator(`[data-control-label="${label}"] button`).click();
+      await page.getByRole('option', { name, exact: true }).click();
+    };
+    await select('订单状态', '今日需配送');
+    const cards = page.locator('.order-timeline .order-summary-card');
+    const readyCard = page.locator(`[data-order-id="${ready.orderId}"]`);
+    const separator = page.getByRole('heading', { name: '已送达', exact: true });
+    await readyCard.locator('xpath=ancestor::section[@aria-label="' + today + ' 配送时间 10:00"]').waitFor();
+    assert.deepEqual(await cards.locator('h3').allTextContents(), ['订单 #抹面', '订单 #待送', '订单 #已付款制作', '订单 #送达']);
+    const highlighted = page.locator('.order-summary-card.is-ready-for-delivery');
+    assert.equal(await highlighted.count(), 1);
+    assert.match(await readyCard.locator('.calendar-address-preview').innerText(), /^配送地址.*测试街道/u);
+    assert.equal(await page.locator(`[data-order-id="${paid.orderId}"] .calendar-address-preview`).innerText(), '配送地址未填写');
+    assert.equal(await highlighted.getAttribute('data-order-id'), ready.orderId);
+    assert.equal(await highlighted.evaluate(node => getComputedStyle(node).borderTopWidth), '2px');
+    assert.equal(await separator.evaluate(node => getComputedStyle(node).borderTopWidth), '1px');
+    assert.equal(await separator.locator('..').locator('.order-summary-card').getAttribute('data-order-id'), delivered.orderId);
+    assert.match(await readyCard.getAttribute('href'), new RegExp(ready.orderId));
+    for (const width of [320, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      const address = readyCard.locator('.calendar-address-preview');
+      assert.ok(await address.evaluate(node => node.scrollHeight > node.clientHeight
+        && node.clientHeight <= 2 * parseFloat(getComputedStyle(node).lineHeight) + 1));
+      assert.ok(await readyCard.getByText('13800000000').isVisible());
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    }
+    if (process.env.PRODUCTION_SCREENSHOT_DIR) {
+      await page.locator('.order-timeline').screenshot({ path: `${process.env.PRODUCTION_SCREENSHOT_DIR}/delivery-calendar-390.png` });
+    }
+
+    await select('付款状态', '已付款');
+    await expectCardNames(['订单 #已付款制作']);
+    assert.equal(await separator.count(), 0);
+    await select('付款状态', '全部');
+    await highlighted.waitFor();
+    ready.status = 'COMPLETED';
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await highlighted.waitFor({ state: 'detached' });
+    await expectCardNames(['订单 #抹面', '订单 #已付款制作', '订单 #送达', '订单 #待送']);
+
+    await page.evaluate(date => { location.hash = `#/?date=${date}&view=month&expanded=1`; }, tomorrow);
+    await expectCardNames(['订单 #次日送达']);
+    assert.ok(await page.locator('[data-control-label="订单状态"] button').getByText('当日需配送').isVisible());
+    assert.ok(await separator.isVisible());
+    assert.deepEqual(errors, []);
+
+    async function expectCardNames(names) {
+      await page.waitForFunction(expected => {
+        const names = [...document.querySelectorAll('.order-timeline .order-summary-card h3')].map(node => node.textContent);
+        return JSON.stringify(names) === JSON.stringify(expected);
+      }, names);
+    }
+  } finally {
+    await context.close();
+  }
+});
 
 test('制作日历准确时间、首项规格、缩略图归属、统计及权限组合', async () => {
   const { context, page, model, png, errors } = await createOrderFixture(browser, base);
@@ -33,7 +116,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     const rows = [nextTime, main, sameTime, prior, unspecified, completed, cancelled, deleted];
     const requests = [];
     page.on('request', request => { if (request.url().includes('/api/')) requests.push(request.url()); });
-    await context.route('**/api/orders/calendar?**', route => route.fulfill({ json: { success: true, data: rows.filter(row => !row.deleted).map(row => ({ ...row, customerPhoneLast4: null })) } }));
+    await context.route('**/api/orders/calendar/days?**', route => route.fulfill({ json: { success: true, data: calendarDays(rows.filter(row => !row.deleted).map(row => ({ ...row, customerPhoneLast4: null }))) } }));
     await context.route('**/api/orders/workbench/cards?**', route => route.fulfill({ json: { success: true, data: workbenchCards(route.request(), rows) } }));
     await context.route('**/api/orders/workbench/cake-bases?**', route => route.fulfill({ json: { success: true, data: { date, items: [{ size: '6', flavor: '原味', quantity: 8 }] } } }));
     const otherImage = crypto.randomUUID(), orderImage = crypto.randomUUID(), firstImage = crypto.randomUUID();
@@ -48,7 +131,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     await card.scrollIntoViewIfNeeded();
     await card.locator('.production-thumbnail img').waitFor();
     assert.deepEqual(imageRequests, [firstImage]);
-    assert.deepEqual(await card.locator('.production-card-specifications dd').allTextContents(), ['6 寸', '原味']);
+    assert.deepEqual(await card.locator('.production-card-specifications dd').allTextContents(), ['6', '原味']);
     assert.match(await card.locator('.order-summary-caption > span').innerText(), /2 项 · 3 件 · 另有 1 项/);
     assert.equal((await card.innerText()).includes('第二个蛋糕'), false);
     assert.equal(await card.locator('.order-summary-receive-time').count(), 0);
