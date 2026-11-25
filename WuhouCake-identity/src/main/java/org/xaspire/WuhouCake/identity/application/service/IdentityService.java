@@ -126,7 +126,7 @@ public class IdentityService implements IdentityFacade {
     @Override @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public AccountView lockCurrentEmployee() {
         var actor = actors.current();
-        var account = accounts.lock(actor.accountId()).orElseThrow(() -> new IdentityFailure("AUTHENTICATION_FAILED"));
+        var account = accounts.lockShared(actor.accountId()).orElseThrow(() -> new IdentityFailure("AUTHENTICATION_FAILED"));
         account.requireActive();
         if (account.credentialVersion() != actor.credentialVersion()) throw new IdentityFailure("AUTHENTICATION_FAILED");
         if (account.passwordChangeRequired()) throw new IdentityFailure("PASSWORD_CHANGE_REQUIRED");
@@ -247,9 +247,16 @@ public class IdentityService implements IdentityFacade {
     }
     @Override @Transactional
     public EmployeeOption selectEmployee(UUID id) {
+        return selectEmployee(id, false);
+    }
+    @Override @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public EmployeeOption selectEmployeeForOrder(UUID id) {
+        return selectEmployee(id, true);
+    }
+    private EmployeeOption selectEmployee(UUID id, boolean shared) {
         var actor = actorAccount();
         if (actor.passwordChangeRequired()) throw new IdentityFailure("PASSWORD_CHANGE_REQUIRED");
-        var employee = accounts.lock(id).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
+        var employee = (shared ? accounts.lockShared(id) : accounts.lock(id)).orElseThrow(() -> new IdentityFailure("NOT_FOUND"));
         if (employee.status() != Status.ACTIVE) throw new IdentityFailure("ACCOUNT_ARCHIVED");
         return new EmployeeOption(employee.id(), employee.employeeNumber(), employee.nickname(), employee.status().name());
     }

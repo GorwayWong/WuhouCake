@@ -33,11 +33,12 @@ release = bool(args and args[0] == "--release")
 rollback_safe = release and args[-1] == "--rollback-safe"
 candidate = args[1:-1] if rollback_safe else args[1:]
 check_only = "--check" in args
+recover_previous = args == ["--recover-previous"]
 disable_pitr = "--disable-pitr" in args
-services = [] if release else [arg for arg in args if arg not in ("--check", "--disable-pitr")]
-if (release and len(candidate) != 2 or not release and (
+services = [] if release or recover_previous else [arg for arg in args if arg not in ("--check", "--disable-pitr")]
+if (release and len(candidate) != 2 or not release and not recover_previous and (
         len(set(args)) != len(args) or services not in ([], ["postgres"]) or disable_pitr and services != ["postgres"])):
-    stop("用法：./deploy-ip.sh [--release IMAGE RELEASE_DIR [--rollback-safe] | [--check] [postgres [--disable-pitr]]]")
+    stop("用法：./deploy-ip.sh [--release IMAGE RELEASE_DIR [--rollback-safe] | --recover-previous | [--check] [postgres [--disable-pitr]]]")
 
 compose = ["docker", "compose", "--env-file", ".env"]
 application_services = ["app", "image-worker"]
@@ -52,7 +53,7 @@ if release or not check_only:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         stop("已有发布或启动在运行。")
-    if journal.exists():
+    if journal.exists() and not recover_previous:
         stop("上次发布未完成。请按运维手册处理 maintenance/release-pending.json。")
 
 
@@ -277,6 +278,12 @@ def image_id(reference):
     return value
 
 
+def release_config_hashes():
+    hashes = dict(line.split() for line in checked(compose + ["config", "--hash=*"],
+                                                   "无法验证运行中服务的 Compose 配置。").splitlines())
+    return {name: hashes[name] for name in release_services}
+
+
 def previous_artifacts():
     ids = checked(compose + ["ps", "-q", *release_services], "无法读取现有发布服务。").split()
     if len(ids) != len(release_services):
@@ -291,11 +298,10 @@ def previous_artifacts():
             or gateway["Image"] != image_id(environment.get("GATEWAY_IMAGE") or "caddy:2.10.2-alpine")
             or mount["RW"] or Path(mount["Source"]).resolve() != Path(environment["RELEASE_DIR"], "dist").resolve()):
         raise ReleaseError("现有发布与 .env 登记不符，请先核对基线镜像和前端目录。")
-    hashes = dict(line.split() for line in checked(compose + ["config", "--hash=*"], "无法验证运行中服务的 Compose 配置。").splitlines())
-    if any(running[name]["Config"]["Labels"].get("com.docker.compose.config-hash") != hashes.get(name)
-           or not hashes.get(name) for name in release_services):
+    hashes = release_config_hashes()
+    if any(running[name]["Config"]["Labels"].get("com.docker.compose.config-hash") != hashes[name] for name in release_services):
         raise ReleaseError("运行中服务的 Compose 配置已变化，请走单独维护流程。")
-    return {"image": app, "directory": environment["RELEASE_DIR"]}
+    return {"image": app, "directory": environment["RELEASE_DIR"]}, hashes, gateway["Id"]
 
 
 def flyway_history():
@@ -348,6 +354,15 @@ def application_artifact(image, collect_migrations=False):
 def require_order_submission_protocol(site, app_protocol):
     if app_protocol is None or site[3] != app_protocol:
         raise ReleaseError("应用镜像与前端产物必须声明相同的建单协议，才能启动工作台。")
+
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def frontend_fingerprint(site):
+    return fingerprint({url: hashlib.sha256(source.read_bytes()).hexdigest()
+                        for url, (source, _) in site[0].items()})
 
 
 def atomic_record(path, data):
@@ -406,11 +421,54 @@ def start_release_gateway(command, site):
     probe(command, site)
 
 
+def recover_legacy_previous():
+    failure = "无法确认网关尚未切换且旧版可恢复。请保留发布记录并按手册前滚。"
+    if journal.is_symlink() or not journal.is_file():
+        raise ReleaseError(failure)
+    metadata = json.loads(journal.read_text(encoding="utf-8"))
+    if not isinstance(metadata, dict):
+        raise ReleaseError(failure)
+    evidence = metadata.get("legacyRecovery")
+    if (metadata.get("state") not in ("switching", "manual-recovery")
+            or metadata.get("gatewaySwitchStarted") is not False
+            or metadata.get("cluster") != expected_cluster or not isinstance(evidence, dict)):
+        raise ReleaseError(failure)
+    previous = metadata["previous"]
+    previous_image = image_id(environment["APP_IMAGE"])
+    env = Path(".env")
+    if (env.is_symlink() or hashlib.sha256(env.read_bytes()).hexdigest() != evidence["env"]
+            or previous != {"image": previous_image, "directory": environment["RELEASE_DIR"]}
+            or release_config_hashes() != evidence["compose"]
+            or fingerprint(flyway_history()) != evidence["flyway"]):
+        raise ReleaseError(failure)
+    # A different gateway may already have served the new client.
+    gateway, = checked(compose + ["ps", "-q", "gateway"], failure).split()
+    gateway_row, = json.loads(checked(["docker", "inspect", gateway], failure))
+    if gateway_row["Id"] != evidence["gateway"]:
+        raise ReleaseError(failure)
+    site = frontend(compose, previous["directory"])
+    protocol, _ = application_artifact(previous_image)
+    if protocol is not None or site[3] is not None or frontend_fingerprint(site) != evidence["frontend"]:
+        raise ReleaseError(failure)
+    probe_gateway(site)
+    start_release_application(compose)
+    restored, hashes, gateway_id = previous_artifacts()
+    if (restored != previous or hashes != evidence["compose"] or gateway_id != evidence["gateway"]
+            or hashlib.sha256(env.read_bytes()).hexdigest() != evidence["env"]
+            or fingerprint(flyway_history()) != evidence["flyway"]
+            or frontend_fingerprint(site) != evidence["frontend"]):
+        raise ReleaseError(failure)
+    probe_gateway(site)
+    metadata.update(state="rolled-back")
+    record(receipt, metadata)
+    journal.unlink()
+
+
 def publish():
     image, directory = candidate
     if not re.fullmatch(r"[a-zA-Z0-9_./:@-]+", image) or not re.fullmatch(r"/[a-zA-Z0-9_./-]+", directory):
         raise ReleaseError("请指定本地候选镜像及不含空格的绝对发布目录。")
-    old = previous_artifacts()
+    old, hashes, gateway = previous_artifacts()
     baseline_site = frontend(compose)
     probe(compose, baseline_site)
     new_id = image_id(image)
@@ -422,22 +480,28 @@ def publish():
                                       "无法核对候选服务镜像。"))["services"]
         if any(resolved[name]["image"] != new_id for name in ("app", "image-worker")):
             raise ReleaseError("Compose 未选择指定的候选镜像。")
-        new_protocol, new_migrations = application_artifact(new_id, collect_migrations=rollback_safe)
+        inspect_migrations = rollback_safe or baseline_site[3] is None
+        new_protocol, new_migrations = application_artifact(new_id, collect_migrations=inspect_migrations)
         require_order_submission_protocol(site, new_protocol)
         history = None
         legacy_baseline = False
-        if rollback_safe:
+        if inspect_migrations:
             old_protocol, old_migrations = application_artifact(old["image"], collect_migrations=True)
             legacy_baseline = old_protocol is None and baseline_site[3] is None
-            if not legacy_baseline and (old_protocol != new_protocol or baseline_site[3] != old_protocol):
+            if rollback_safe and not legacy_baseline and (old_protocol != new_protocol or baseline_site[3] != old_protocol):
                 raise ReleaseError("上一版缺少兼容的建单协议，不能自动回退。请去掉 --rollback-safe 后重新发布。")
-            if old_migrations == new_migrations:
+            if (rollback_safe or legacy_baseline) and old_migrations == new_migrations:
                 history = flyway_history()
         if subprocess.run(["./backup-ip-database.sh", "predeploy"], timeout=1250).returncode:
             raise ReleaseError("发布前备份或校验失败。请查看 wuhou-backup 日志。")
         metadata = {"previous": old, "candidate": {"image": new_id, "directory": directory},
-                    "cluster": expected_cluster, "sameMigrationHistoryRequired": history is not None,
+                    "cluster": expected_cluster, "sameMigrationHistoryRequired": rollback_safe and history is not None,
                     "gatewaySwitchStarted": False, "state": "switching"}
+        if legacy_baseline and history is not None:
+            metadata["legacyRecovery"] = {
+                "env": hashlib.sha256(original).hexdigest(), "compose": hashes,
+                "gateway": gateway, "flyway": fingerprint(history), "frontend": frontend_fingerprint(baseline_site),
+            }
         record(journal, metadata)
         gateway_switch_started = False
         try:
@@ -456,7 +520,7 @@ def publish():
             try:
                 services_to_stop = release_services if gateway_switch_started else application_services
                 checked(command + ["stop", "-t", "10", *services_to_stop], "无法停止候选发布服务。", timeout=45)
-                if (history is None or (legacy_baseline and gateway_switch_started)
+                if (not rollback_safe or history is None or (legacy_baseline and gateway_switch_started)
                         or flyway_history() != history or Path(".env").read_bytes() != original
                         or image_id(environment["APP_IMAGE"]) != old["image"]):
                     raise ReleaseError("自动回退条件不满足，请执行人工恢复流程。")
@@ -480,13 +544,21 @@ try:
     up = compose + ["up", "-d", "--wait", *services]
     if check_only:
         if not services:
-            frontend(compose)
+            site = frontend(compose)
+            protocol, _ = application_artifact(image_id(environment["APP_IMAGE"]))
+            if protocol is None and site[3] is None:
+                print("前后端均无建单协议声明，可作为首次升级基线。普通启动不支持此组合。")
+            else:
+                require_order_submission_protocol(site, protocol)
         print("原数据库与 PITR 配置预检通过。" + ("" if services else "前端产物预检通过。"))
     elif services:
         checked(up, "PostgreSQL 启动失败，请核对 Compose 状态和服务日志。", timeout=200)
     elif release:
         publish()
         print("应用 readiness 与网关前端检查通过，候选版本已登记。")
+    elif recover_previous:
+        recover_legacy_previous()
+        print("已恢复并验证网关切换前的旧版。")
     else:
         site = frontend(compose)
         app_protocol, _ = application_artifact(image_id(environment["APP_IMAGE"]))

@@ -52,7 +52,7 @@ class OrderServiceTest {
         verifyNoInteractions(events);
     }
     @Test void creationPublishesOnlyOrderIdentityAndInitialVersion() {
-        when(identity.selectEmployee(operator.accountId())).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(operator.accountId(), "0002", "员工", "ACTIVE"));
+        when(identity.selectEmployeeForOrder(operator.accountId())).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(operator.accountId(), "0002", "员工", "ACTIVE"));
         when(ids.nextId()).thenAnswer(invocation -> UUID.randomUUID()); when(orders.nextNumber()).thenReturn("0000001");
         var command = new OrderCommands.Create(new OrderCommands.Customer("客户", "13800000000", null, null),
                 new OrderCommands.Fulfillment("PICKUP", null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
@@ -64,7 +64,7 @@ class OrderServiceTest {
     }
     @Test void manualCreationCreditsAuthenticatedEmployeeInsteadOfRequestedEmployee() {
         var requestedEmployee = UUID.randomUUID();
-        when(identity.selectEmployee(operator.accountId())).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(operator.accountId(), "0002", "员工", "ACTIVE"));
+        when(identity.selectEmployeeForOrder(operator.accountId())).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(operator.accountId(), "0002", "员工", "ACTIVE"));
         when(ids.nextId()).thenAnswer(invocation -> UUID.randomUUID()); when(orders.nextNumber()).thenReturn("0000001");
         var command = new OrderCommands.Create(new OrderCommands.Customer("客户", "13800000000", null, null),
                 new OrderCommands.Fulfillment("PICKUP", null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
@@ -72,7 +72,7 @@ class OrderServiceTest {
         var result = service.create(command, operator);
         assertEquals(operator.accountId(), result.creditedEmployee().accountId());
         assertEquals(operator.accountId(), result.createdBy());
-        verify(identity, never()).selectEmployee(requestedEmployee);
+        verify(identity, never()).selectEmployeeForOrder(requestedEmployee);
         var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());
         assertEquals(operator.accountId(), logged.getValue().actorId());
         assertEquals(operator.accountId().toString(), logged.getValue().details().get("creditedEmployeeId"));

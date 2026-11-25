@@ -429,7 +429,7 @@ public class OrderService {
         return new DuplicateGroup(order.customer().phone(), order.fulfillment().pickupDate());
     }
     Attribution selectEmployee(UUID id) {
-        var employee = identity.selectEmployee(id);
+        var employee = identity.selectEmployeeForOrder(id);
         return new Attribution(employee.accountId(), employee.employeeNumber(), employee.nickname());
     }
     private static OrderViews.Activity activity(OrderActivity activity) {

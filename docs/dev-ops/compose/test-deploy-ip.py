@@ -120,6 +120,53 @@ class DeployPreflight(unittest.TestCase):
         self.assertIn("建单协议", result.stderr)
         self.assertFalse(any("up" in call for call in commands))
 
+    def test_preflight_reports_legacy_pair_and_rejects_mismatched_protocol(self):
+        result, commands = self.run_preflight(args=["--check"], baseline_protocol=None)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("可作为首次升级基线", result.stdout)
+        self.assertIn("普通启动不支持", result.stdout)
+        self.assertFalse(any("up" in call for call in commands))
+        result, commands = self.run_preflight(args=["--check"], failure="baseline_web_protocol_mismatch")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("建单协议", result.stderr)
+        self.assertFalse(any("up" in call for call in commands))
+
+    def test_manual_recovery_restarts_legacy_application_without_touching_gateway(self):
+        result, commands = self.run_preflight(failure="readiness_down", args=["--release"],
+                                              baseline_protocol=None, recover="unchanged")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("rolled-back", self.receipt["state"])
+        self.assertFalse(self.receipt["gatewaySwitchStarted"])
+        self.assertIsNone(self.pending)
+        self.assertIn("APP_IMAGE=old-app", self.final_env)
+        updates = [call for call in commands if "up" in call or "stop" in call]
+        self.assertEqual(1, len(updates))
+        self.assertEqual(["app", "image-worker"], updates[0][-2:])
+        self.assertIn("--no-deps", updates[0])
+        self.assertTrue(any(call[0] == "curl" for call in commands[commands.index(updates[0]) + 1:]))
+
+    def test_manual_recovery_checks_record_artifacts_gateway_and_schema_before_starting(self):
+        for change in ("missing", "evidence_missing", "unknown_phase", "gateway_switched", "gateway_replaced",
+                       "wrong_image", "wrong_frontend", "env_changed", "config_hash_changed", "schema_changed"):
+            with self.subTest(change=change):
+                result, commands = self.run_preflight(failure="readiness_down", args=["--release"],
+                                                      baseline_protocol=None, recover=change)
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("前滚", result.stderr)
+                self.assertFalse(any("up" in call or "stop" in call for call in commands))
+                self.assertIsNone(self.receipt)
+                if change != "missing":
+                    self.assertIsNotNone(self.pending)
+
+    def test_manual_recovery_preserves_record_if_the_restarted_application_is_unready(self):
+        result, commands = self.run_preflight(failure="readiness_down", args=["--release"],
+                                              baseline_protocol=None, recover="recovery_unready")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("未通过 readiness", result.stderr)
+        self.assertIsNotNone(self.pending)
+        self.assertIsNone(self.receipt)
+        self.assertEqual([["app", "image-worker"]], [call[-2:] for call in commands if "up" in call])
+
     def test_site_files_are_required_before_backup_and_startup(self):
         for failure in ("missing_index", "missing_entry", "missing_style"):
             for args in (["--check"], ["--release"]):
@@ -176,7 +223,7 @@ class DeployPreflight(unittest.TestCase):
                 self.assertIsNone(self.receipt)
 
     def run_preflight(self, failure="", pitr=False, args=(), *, baseline_protocol="2",
-                      candidate_protocol="2", candidate_web_protocol="2"):
+                      candidate_protocol="2", candidate_web_protocol="2", recover=None):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory).resolve()
             shutil.copy(SCRIPT, work)
@@ -196,7 +243,8 @@ class DeployPreflight(unittest.TestCase):
                     (dist / path).write_text(body)
             candidate = work / "candidate-dir"
             shutil.copytree(dist, candidate / "dist")
-            for root, protocol in ((dist, baseline_protocol), (candidate / "dist", candidate_web_protocol)):
+            baseline_web_protocol = "3" if failure == "baseline_web_protocol_mismatch" else baseline_protocol
+            for root, protocol in ((dist, baseline_web_protocol), (candidate / "dist", candidate_web_protocol)):
                 index = root / "index.html"
                 if protocol is not None and index.exists():
                     index.write_text(f'<meta name="wuhou-order-submission-protocol" content="{protocol}">' + index.read_text())
@@ -248,7 +296,7 @@ class DeployPreflight(unittest.TestCase):
                           }},
                           "volumes": {"postgres-data": {"name": "wrong" if failure == "wrong_volume" else VOLUME, "external": True}}},
                 "running": [
-                    {"Image": image, "State": {"Running": True}, "Mounts": mounts,
+                    {"Id": "container-" + name, "Image": image, "State": {"Running": True}, "Mounts": mounts,
                      "Config": {"Labels": {"com.docker.compose.service": name, "com.docker.compose.config-hash": name}}}
                     for name, image, mounts in [
                         ("app", OLD, []), ("image-worker", OLD, []),
@@ -293,7 +341,8 @@ if "config" in args:
         for name, value in fixture["environment"].items():
             print(f"{name}={value}")
     elif "--hash=*" in args:
-        print("app app\nimage-worker image-worker\ngateway gateway")
+        print("app changed\nimage-worker image-worker\ngateway gateway" if failure == "config_hash_changed"
+              else "app app\nimage-worker image-worker\ngateway gateway")
     else:
         model = fixture["model"]
         if is_candidate:
@@ -304,11 +353,14 @@ if "config" in args:
 elif args[:2] == ["volume", "inspect"]:
     sys.exit(failure == "missing_volume")
 elif args[:2] == ["image", "inspect"]:
-    print(fixture["old"] if args[-1] == "old-app" else fixture["new"])
+    print(fixture["old"] if args[-1] == "old-app" and failure != "wrong_image" else fixture["new"])
 elif args[0] == "ps":
     print("existing-postgres")
 elif args[0] == "inspect":
-    print(json.dumps(fixture["existing"] if args[1] == "existing-postgres" else fixture["running"]))
+    rows = fixture["existing"] if args[1] == "existing-postgres" else fixture["running"]
+    if args[1:] == ["existing-gateway"]:
+        rows = [rows[-1]]
+    print(json.dumps(rows))
 elif args[0] == "run":
     if "cat" in args and "/app/application.jar" in args:
         sys.stdout.buffer.write(Path(args[-2][-1] + ".jar").read_bytes())
@@ -318,10 +370,10 @@ elif args[0] == "run":
         print(fixture["cluster"])
         print("Database system identifier: " + fixture["identifier"])
 elif "ps" in args:
-    print("existing-app existing-worker existing-gateway")
+    print("existing-gateway" if args[-2:] == ["-q", "gateway"] else "existing-app existing-worker existing-gateway")
 elif "exec" in args:
     if "psql" in args:
-        history_changed = switched and failure in ("history_changed", "history_changed_before_gateway")
+        history_changed = failure == "schema_changed" or switched and failure in ("history_changed", "history_changed_before_gateway")
         print(json.dumps([fixture["identifier"], [{"success": True, "version": 2 if history_changed else 1}]]))
     else:
         if switched and failure == "readiness_missing":
@@ -330,7 +382,8 @@ elif "exec" in args:
             with Path(".env").open("a") as env:
                 env.write("UPDATED=1\n")
         readiness_down = failure in ("readiness_down", "history_changed_before_gateway", "config_changed_before_gateway")
-        print(json.dumps({"status": "DOWN" if switched and readiness_down and (is_candidate or not any(".release-" in str(c) for c in former)) else "UP"}))
+        down = failure == "recovery_unready" or switched and readiness_down and (is_candidate or not any(".release-" in str(c) for c in former))
+        print(json.dumps({"status": "DOWN" if down else "UP"}))
 elif "up" in args:
     if is_candidate and failure == "up_failed" or not is_candidate and failure == "rollback_failed":
         sys.exit(1)
@@ -373,16 +426,46 @@ sys.stdout.buffer.write(body + ("\n200 " + media).encode())
 """)
             for command in (docker, findmnt, curl):
                 command.chmod(0o700)
-            result = subprocess.run(["sh", str(work / SCRIPT.name), *args], capture_output=True, text=True,
-                                    env=os.environ | {"PATH": f"{work}{os.pathsep}{os.environ['PATH']}"}, timeout=25)
+            def invoke(arguments):
+                return subprocess.run(["sh", str(work / SCRIPT.name), *arguments], capture_output=True, text=True,
+                                      env=os.environ | {"PATH": f"{work}{os.pathsep}{os.environ['PATH']}"}, timeout=25)
+
+            result = invoke(args)
+            log = work / "commands.jsonl"
+            offset = 0
+            if recover is not None:
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                pending = work / "maintenance/release-pending.json"
+                metadata = json.loads(pending.read_text())
+                self.assertIn("legacyRecovery", metadata)
+                fixture["failure"] = recover
+                if recover == "missing":
+                    pending.unlink()
+                elif recover == "evidence_missing":
+                    del metadata["legacyRecovery"]
+                elif recover == "unknown_phase":
+                    del metadata["gatewaySwitchStarted"]
+                elif recover == "gateway_switched":
+                    metadata["gatewaySwitchStarted"] = True
+                elif recover == "gateway_replaced":
+                    fixture["running"][-1]["Id"] = "replaced-gateway"
+                elif recover == "wrong_frontend":
+                    (dist / "assets/main.js").write_text("export const other = true;")
+                elif recover == "env_changed":
+                    with (work / ".env").open("a") as config:
+                        config.write("UPDATED=1\n")
+                if pending.exists():
+                    pending.write_text(json.dumps(metadata))
+                (work / "fixture.json").write_text(json.dumps(fixture))
+                offset = len(log.read_text().splitlines())
+                result = invoke(["--recover-previous"])
             self.final_env = (work / ".env").read_text()
             def release_record(name):
                 path = work / "maintenance" / f"release-{name}.json"
                 return json.loads(path.read_text()) if path.exists() else None
             self.pending = release_record("pending")
             self.receipt = release_record("last")
-            log = work / "commands.jsonl"
-            return result, [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            return result, [json.loads(line) for line in log.read_text().splitlines()[offset:]] if log.exists() else []
 
 
 if __name__ == "__main__":

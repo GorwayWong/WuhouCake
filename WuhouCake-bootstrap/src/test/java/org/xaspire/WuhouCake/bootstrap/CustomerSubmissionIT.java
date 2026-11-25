@@ -1239,6 +1239,52 @@ class CustomerSubmissionIT {
         assertEquals(1, count("cake_order"));
     }
 
+    @Test void aWaitingDuplicateGroupDoesNotBlockAnotherOrderForTheSameEmployee() throws Exception {
+        var manager = admin();
+        var employee = employee(manager, "0002", "FRONT_DESK");
+        var otherSession = new Client();
+        otherSession.login("0002", PASSWORD);
+        String date = "2026-11-02";
+        var groupLocked = new CountDownLatch(1);
+        var releaseGroup = new CountDownLatch(1);
+        try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            var holder = pool.submit(() -> new TransactionTemplate(transactions).executeWithoutResult(tx -> {
+                store.lockOrderDuplicateGroup(new CustomerSubmissions.DuplicateGroup("13800000000", java.time.LocalDate.parse(date)));
+                groupLocked.countDown();
+                await(releaseGroup);
+            }));
+            Future<String> waitingOrder;
+            Future<Result> archive;
+            try {
+                await(groupLocked);
+                waitingOrder = pool.submit(() -> manualOrder(employee, "13800000000", date));
+                awaitDatabaseWait("pg_locks WHERE locktype='advisory' AND NOT granted");
+                var independentOrder = pool.submit(() -> manualOrder(otherSession, "13900000000", date));
+                assertFalse(independentOrder.get(5, TimeUnit.SECONDS).isBlank());
+                assertFalse(waitingOrder.isDone());
+
+                archive = pool.submit(() -> manager.request("POST", "/api/admin/employees/" + employee.id + "/archive", Map.of()));
+                awaitDatabaseWait("pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%identity_account%FOR UPDATE%'");
+                assertFalse(archive.isDone());
+            } finally {
+                releaseGroup.countDown();
+            }
+            holder.get(10, TimeUnit.SECONDS);
+            assertFalse(waitingOrder.get(10, TimeUnit.SECONDS).isBlank());
+            assertEquals(200, archive.get(10, TimeUnit.SECONDS).status);
+        }
+        assertEquals(2, count("cake_order"));
+    }
+
+    private void awaitDatabaseWait(String condition) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        do {
+            if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM " + condition + ")", Boolean.class))) return;
+            Thread.sleep(20);
+        } while (System.nanoTime() < deadline);
+        fail("Expected PostgreSQL lock wait");
+    }
+
     @Test void confirmationLogFailureRollsBackOrderAndSubmissionTogether() throws Exception {
         var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00"); String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
         staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", review(input, staff.id, 10000)));

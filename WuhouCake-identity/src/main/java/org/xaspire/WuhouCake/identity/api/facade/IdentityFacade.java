@@ -37,7 +37,7 @@ public interface IdentityFacade {
     void logout(String refreshCredential, String requestId);
     AccountView authenticate(UUID accountId, UUID sessionId, long credentialVersion);
     AccountView me();
-    /** Returns the current account under its row lock in the caller's transaction. */
+    /** Returns the current account under a shared row lock in the caller's transaction. */
     AccountView lockCurrentEmployee();
     AccountView rename(String nickname);
     void changePassword(String currentPassword, String newPassword);
@@ -49,6 +49,8 @@ public interface IdentityFacade {
     AccountView reviseEmployee(UUID accountId, Profile command);
     List<EmployeeOption> employeeOptions(boolean includeArchived);
     EmployeeOption selectEmployee(UUID accountId);
+    /** Validates an active employee for order attribution and holds a shared row lock until the caller's transaction ends. */
+    EmployeeOption selectEmployeeForOrder(UUID accountId);
     /** Returns an active front-desk/manager entry owner, or null; does not require a customer login. */
     EmployeeOption customerEntryOwner(UUID accountId);
     /** Holds a shared owner lock until the caller's transaction completes; requires an existing transaction. */
