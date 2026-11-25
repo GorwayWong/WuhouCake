@@ -236,6 +236,8 @@ test('并发 401 只刷新一次；SSE 分块 UTF-8、断线重连与清理不�
   Object.assign(documentTarget, { cookie: 'XSRF-TOKEN=test-csrf', visibilityState: 'visible' });
   Object.defineProperty(globalThis, 'document', { value: documentTarget, configurable: true });
   Object.defineProperty(globalThis, 'window', { value: new EventTarget(), configurable: true });
+  const initialOnline = Object.getOwnPropertyDescriptor(navigator, 'onLine');
+  const notifications: OrderUpdate[] = [];
   let refreshes = 0, live = 0, maxLive = 0, connections = 0, reads = 0, writes = 0;
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let disconnect = () => {};
@@ -268,8 +270,18 @@ test('并发 401 只刷新一次；SSE 分块 UTF-8、断线重连与清理不�
     assert.equal(refreshes, 1);
     await assert.rejects(api('/orders/conflict', { method: 'POST', body: { expectedVersion: 1 } }), error => error instanceof ApiError && error.status === 409 && error.code === 'CONCURRENT_MODIFICATION');
     assert.equal(writes, 1, 'a conflicting write must not be automatically retried');
-    stop = connectOrders(client, () => {});
+    // A reachable workbench can load even when the browser's initial status says offline.
+    Object.defineProperty(navigator, 'onLine', { value: false, configurable: true });
+    stop = connectOrders(client, () => {}, change => notifications.push(change));
     await waitFor(() => connections === 1 && reads >= 2);
+    Object.assign(documentTarget, { visibilityState: 'hidden' });
+    documentTarget.dispatchEvent(new Event('visibilitychange'));
+    Object.assign(documentTarget, { visibilityState: 'visible' });
+    documentTarget.dispatchEvent(new Event('visibilitychange'));
+    assert.equal(live, 1, 'returning to the workbench keeps the healthy stream open');
+    const noteOrderId = '11111111-1111-4111-8111-111111111111';
+    controller!.enqueue(new TextEncoder().encode(`event: order.changed\ndata: {"orderId":"${noteOrderId}","changeType":"NOTE","version":1}\n\n`));
+    await waitFor(() => notifications.some(change => change.orderId === noteOrderId && change.changeType === 'NOTE'));
     const before = reads;
     const bytes = new TextEncoder().encode('event: order.changed\ndata: {"orderId":"a","changeType":"NOTE","version":1,"text":"备注"}\n\n');
     for (const byte of bytes) controller!.enqueue(new Uint8Array([byte]));
@@ -283,9 +295,74 @@ test('并发 401 只刷新一次；SSE 分块 UTF-8、断线重连与清理不�
     await waitFor(() => connections === 3);
     assert.ok(Date.now() - disconnectedAt >= 2000, 'a short ready connection must not reset backoff');
     assert.equal(maxLive, 1);
+    const beforeNetworkRecovery = reads;
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('online'));
+    await waitFor(() => connections === 4 && reads > beforeNetworkRecovery);
+    assert.equal(maxLive, 1);
+    assert.equal(live, 1);
+    controller!.enqueue(new TextEncoder().encode(`event: order.changed\ndata: {"orderId":"${noteOrderId}","changeType":"NOTE","version":2}\n\n`));
+    await waitFor(() => notifications.some(change => change.orderId === noteOrderId && change.version === 2));
+
     stop(); await waitFor(() => live === 0);
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
     await session.logout();
+    assert.equal(connections, 4);
     assert.equal(session.snapshot().token, null);
     await assert.rejects(api('/me'), error => error instanceof ApiError && error.status === 401);
-  } finally { stop(); stopObserver(); client.clear(); forgetSession(); globalThis.fetch = originalFetch; }
+  } finally {
+    stop(); stopObserver(); client.clear(); forgetSession(); globalThis.fetch = originalFetch;
+    if (initialOnline) Object.defineProperty(navigator, 'onLine', initialOnline);
+    else Reflect.deleteProperty(navigator, 'onLine');
+  }
+});
+
+test('从已离线状态打开，online 唤醒退避中的首连且不重复连接', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const originalFetch = globalThis.fetch;
+  const browserWindow = new EventTarget();
+  Object.defineProperty(globalThis, 'window', { value: browserWindow, configurable: true });
+  Object.defineProperty(globalThis, 'document', { value: { cookie: 'XSRF-TOKEN=test-csrf' }, configurable: true });
+  let reachable = false;
+  let requests = 0;
+  let state: string | undefined;
+  globalThis.fetch = async (input, init) => {
+    if (input === '/api/auth/csrf') return Response.json({ success: true, data: { headerName: 'X-XSRF-TOKEN' } });
+    if (input === '/api/auth/login') return Response.json({ success: true, data: {
+      accessToken: testJwt('test'), expiresIn: 900, passwordChangeRequired: false,
+    } });
+    assert.equal(input, '/api/orders/stream');
+    requests++;
+    if (!reachable) throw new TypeError('Failed to fetch');
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: ready\ndata: {}\n\n'));
+        init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), { once: true });
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  const client = new QueryClient();
+  let close = () => {};
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+  try {
+    await session.login('test', 'test');
+    close = connectOrders(client, status => { state = status; });
+    await tick();
+    assert.equal(state, 'reconnecting');
+    assert.equal(requests, 1);
+
+    reachable = true;
+    browserWindow.dispatchEvent(new Event('online'));
+    browserWindow.dispatchEvent(new Event('online'));
+    await tick();
+    assert.equal(requests, 2);
+    assert.equal(state, 'live');
+    t.mock.timers.tick(31000);
+    await tick();
+    assert.equal(requests, 2, 'the cancelled retry must not open another stream');
+  } finally {
+    close(); client.clear(); forgetSession(); globalThis.fetch = originalFetch;
+  }
 });

@@ -266,15 +266,19 @@ test('录单顶部紧凑且套餐默认不加载，四种宽度无溢出', async
       await page.setViewportSize({ width, height: 1000 });
       await page.evaluate(() => window.scrollTo(0, 0));
       const layout = await page.evaluate(() => {
-        const nav = document.querySelector('.app-nav').getBoundingClientRect();
-        const bar = document.querySelector('.draft-toolbar').getBoundingClientRect();
-        const recognition = document.querySelector('.recognition-section').getBoundingClientRect();
-        const exit = document.querySelector('.draft-toolbar a').getBoundingClientRect();
-        return { overflow: document.documentElement.scrollWidth > innerWidth, navGap: bar.top - nav.bottom, barGap: recognition.top - bar.bottom, height: exit.height };
+        const submissions = document.querySelector('.order-entry-nav-actions a[href="#/customer-submissions"]').getBoundingClientRect();
+        const exit = document.querySelector('.order-entry-nav-actions .exit-order-link');
+        const bounds = exit.getBoundingClientRect();
+        const style = getComputedStyle(exit);
+        return { overflow: document.documentElement.scrollWidth > innerWidth, gap: bounds.left - submissions.right,
+          sameRow: Math.abs((bounds.top + bounds.bottom) - (submissions.top + submissions.bottom)) < 2,
+          height: bounds.height, border: style.borderTopColor };
       });
-      assert.equal(layout.overflow, false); assert.ok(layout.navGap >= 12 && layout.navGap <= 16, JSON.stringify(layout));
-      assert.ok(layout.barGap >= 12 && layout.barGap <= 16, JSON.stringify(layout));
+      assert.equal(layout.overflow, false);
+      assert.equal(layout.gap, 8);
+      assert.ok(layout.sameRow, JSON.stringify(layout));
       assert.ok(layout.height >= 44);
+      assert.equal(layout.border, 'rgb(122, 128, 122)');
       if (process.env.LAYOUT_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.LAYOUT_SCREENSHOT_DIR}/entry-compact-top-${width}.png`, fullPage: false });
     }
     assert.equal(requests, 0);
@@ -282,7 +286,11 @@ test('录单顶部紧凑且套餐默认不加载，四种宽度无溢出', async
     await productsHeading.getByRole('heading', { name: '商品信息', exact: true }).waitFor();
     assert.equal(await productsHeading.getByRole('button', { name: '导入套餐', exact: true }).getAttribute('aria-expanded'), 'false');
     assert.equal(await page.getByRole('textbox', { name: '搜索套餐' }).count(), 0);
-    await page.getByRole('link', { name: '退出下单', exact: true }).click();
+    await page.getByRole('link', { name: '客户填单', exact: true }).focus();
+    await page.keyboard.press('Tab');
+    const exit = page.getByRole('link', { name: '退出下单', exact: true });
+    assert.ok(await exit.evaluate(el => document.activeElement === el && getComputedStyle(el).outlineStyle === 'solid'));
+    await exit.press('Enter');
     await page.getByRole('button', { name: '继续填写', exact: true }).click();
     assert.equal(await page.locator('#customerName').inputValue(), '布局客户');
     assert.deepEqual(errors, []);

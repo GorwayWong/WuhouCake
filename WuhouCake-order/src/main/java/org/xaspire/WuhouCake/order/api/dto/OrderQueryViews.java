@@ -16,7 +16,7 @@ public final class OrderQueryViews {
     public record ProductionOrders(int page, long total, List<ProductionOrder> orders) { }
 
     public record PaymentOrder(UUID orderId, String orderNo, Instant createdAt, LocalDate calendarDate,
-            Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
+            Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode, String fulfillmentType) { }
     public record PaymentOrders(LocalDate date, String kind, int page, long total, List<PaymentOrder> orders) { }
 
     public record PaymentGroup(long orderCount, String amountCents, long missingAmountOrderCount) { }

@@ -10,6 +10,11 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true, channel: 'chrome' }); });
 after(async () => { await browser?.close(); });
 
+const recoverNetwork = page => page.evaluate(() => {
+  window.dispatchEvent(new Event('offline'));
+  window.dispatchEvent(new Event('online'));
+});
+
 test('手机日历配送筛选按约定时间排列并分隔已送达订单', async () => {
   const { context, page, errors } = await createOrderFixture(browser, base);
   try {
@@ -72,7 +77,7 @@ test('手机日历配送筛选按约定时间排列并分隔已送达订单', as
     await select('付款状态', '全部');
     await highlighted.waitFor();
     ready.status = 'COMPLETED';
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await recoverNetwork(page);
     await highlighted.waitFor({ state: 'detached' });
     await expectCardNames(['订单 #抹面', '订单 #已付款制作', '订单 #送达', '订单 #待送']);
 
@@ -161,7 +166,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
     await page.getByRole('button', { name: '清除筛选', exact: true }).click();
     const originalName = item.name;
     item.name = '超长蛋糕名称'.repeat(12); item.attributes.base = '原味与巧克力混合蛋糕胚'.repeat(8);
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await recoverNetwork(page);
     await page.waitForFunction(({ name, id }) => document.querySelector(`[data-order-id="${id}"] h3`)?.textContent === name, { name: item.name, id: orderId });
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 1000 });
@@ -171,7 +176,7 @@ test('制作日历准确时间、首项规格、缩略图归属、统计及权�
       if (process.env.PRODUCTION_SCREENSHOT_DIR) { await card.scrollIntoViewIfNeeded(); await page.screenshot({ path: `${process.env.PRODUCTION_SCREENSHOT_DIR}/production-calendar-${width}.png`, fullPage: true }); }
     }
     item.name = originalName; item.attributes.base = '原味';
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await recoverNetwork(page);
     await page.waitForFunction(id => document.querySelector(`[data-order-id="${id}"] h3`)?.textContent === '草莓蛋糕', orderId);
     if (process.env.PRODUCTION_SCREENSHOT_DIR) {
       await page.setViewportSize({ width: 390, height: 844 });
@@ -233,7 +238,7 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
     } } }));
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     const cake = { itemId: crypto.randomUUID(), name: '草莓蛋糕', productType: 'CAKE', quantity: 1,
-      attributes: { size: '8', base: '原味', filling: '芒果、奥利奥碎、黄油脆片', flavor: '动物奶油', message: '生日快乐', requirements: '请把文字写在蛋糕正中'.repeat(20) },
+      attributes: { size: '8', base: '原味', filling: '芒果、奥利奥碎、黄油脆片', flavor: '动物奶油', message: '生日快乐', requirements: '请把文字写在蛋糕正中\n' + '请分开包装并准备蜡烛'.repeat(8) },
       unitPriceCents: 18800, memberPriceCents: 16900, productionStatus: 'COMPLETED', recentNotes: [] };
     const cookies = { itemId: crypto.randomUUID(), name: '手工饼干', productType: 'COOKIE', quantity: 3,
       attributes: { specification: '每盒六片', requirements: '分袋装' }, productionStatus: 'IN_PROGRESS', recentNotes: [] };
@@ -245,7 +250,9 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       paidAt: '2026-11-04T08:01:00Z', totalAmountCents: 16900 };
     model.images = [cake, cookies].map(item => ({ imageId: crypto.randomUUID(), orderId, itemId: item.itemId,
       filename: item.name + '.png', contentType: 'image/png' }));
+    model.images.push({ ...model.images[0], imageId: crypto.randomUUID(), filename: '第二张款式.png' });
     model.images.push({ ...model.images[0], imageId: crypto.randomUUID(), itemId: null, filename: '历史款式.png' });
+    model.images.push({ ...model.images[0], imageId: crypto.randomUUID(), itemId: crypto.randomUUID(), filename: '已移除商品款式.png' });
     const decoratorPermissions = ['ORDER_READ', 'ORDER_PRODUCTION_UPDATE', 'ORDER_FULFILLMENT_UPDATE',
       'ORDER_PHONE_READ', 'ORDER_ORDERING_DETAILS_READ', 'ORDER_IMAGE_UPLOAD', 'ORDER_IMAGE_DELETE',
       'ORDER_CANCEL', 'ORDER_EXPORT', 'ORDER_ACTIVITY_READ', 'ORDER_NOTE_CREATE'];
@@ -256,9 +263,18 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       await page.getByRole('list', { name: '整单状态进度' }).waitFor();
     };
     const labels = ['出胚', '夹层', '抹面', '装饰', '待自提', '已自提'];
-    const checkProgress = async () => {
+    const checkProgress = async (compact = true) => {
       assert.deepEqual(await page.locator('.progress-label').allTextContents(), labels);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      const steps = page.locator('.progress-step');
+      const rows = await steps.evaluateAll(nodes => new Set(nodes.map(node => node.getBoundingClientRect().top)).size);
+      assert.equal(rows, compact ? 1 : 2);
+      assert.equal(await steps.nth(3).evaluate(node => getComputedStyle(node, '::after').display), compact ? 'block' : 'none');
+      assert.equal(await steps.getByRole('button').count(), 0);
+      const current = await steps.evaluateAll(nodes => nodes.findIndex(node => node.getAttribute('aria-current') === 'step'));
+      assert.equal(await steps.locator('.progress-done-mark:visible').count(), current);
+      assert.equal(await steps.locator('.progress-done-mark:not([aria-hidden="true"])').count(), 0);
+      assert.equal(await page.locator('.progress-step:not(.done) .progress-done-mark').count(), 0);
     };
     const information = page.getByRole('region', { name: '订单信息', exact: true });
     const contacts = page.getByRole('region', { name: '客户与交接', exact: true });
@@ -280,70 +296,100 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
     const cancelOrder = page.getByRole('button', { name: '取消订单', exact: true });
     const downloadOrder = page.getByRole('button', { name: '下载 XLSX', exact: true });
     const reversePayment = page.getByRole('button', { name: '撤销付款登记', exact: true });
+    const payment = page.locator('.payment-disclosure');
+    const paymentSummary = payment.locator('summary');
     const supplement = page.getByText('补充资料', { exact: true });
-    const checkProductFields = async (editable, baseLabel) => {
+    const checkProductFields = async editable => {
       for (const name of ['添加商品', '编辑', '移除']) {
         const action = products.getByRole('button', { name, exact: true });
         if (editable) assert.ok(await action.isEnabled());
         else assert.equal(await action.count(), 0);
       }
-      for (const label of ['数量', '尺寸', baseLabel, '夹馅', '奶油']) {
+      const rows = [];
+      for (const label of ['数量', '尺寸', '内胚', '夹馅', '奶油']) {
         const field = products.getByText(label, { exact: true }).locator('..');
         assert.ok(await field.locator('dt').evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 16));
         assert.ok(await field.locator('dd').evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 20 && el.scrollWidth <= el.clientWidth + 1));
+        rows.push(await field.evaluate(el => el.getBoundingClientRect().top));
       }
+      assert.deepEqual(rows.map(y => y === rows[0]), [true, true, true, false, false]);
+      assert.equal(rows[3], rows[4]);
+      assert.equal(await products.getByText('商品名称', { exact: true }).count(), 0);
     };
-    for (const width of [390, 1280]) {
+    for (const width of [320, 390, 1280]) {
       await page.setViewportSize({ width, height: 900 });
       await open();
       await checkProgress();
       assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '装饰');
-      const steps = await page.locator('.progress-step').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
-      assert.equal(new Set(steps).size, width < 600 ? 2 : 1);
-      if (width < 600) assert.deepEqual(steps.map(y => y === steps[0]), [true, true, true, true, false, false]);
       await checkContacts(['下单人', '订购方式', '交接方式', '客户手机号']);
       await contacts.getByText('测试订购人', { exact: true }).waitFor();
       assert.equal(await page.getByText('合成取货地址', { exact: false }).count(), 0);
-      await checkProductFields(false, '蛋糕胚口味');
-      assert.ok(await products.getByRole('checkbox', { name: '草莓蛋糕制作完成' }).isEnabled());
-      await products.getByText(cake.attributes.requirements, { exact: true }).waitFor();
-      await currentImageTile.scrollIntoViewIfNeeded();
+      await checkProductFields(false);
+      assert.ok(await products.locator('.section-heading').getByRole('checkbox', { name: '草莓蛋糕制作完成' }).isEnabled());
+      const requirements = products.locator('.front-order-requirements p');
+      assert.equal(await requirements.textContent(), cake.attributes.requirements);
+      assert.ok(await requirements.evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 18 && el.scrollWidth <= el.clientWidth));
+      await currentImageTile.first().scrollIntoViewIfNeeded();
       assert.equal(await addImage.count(), 0);
       assert.equal(await uploadHelp.count(), 0);
       assert.equal(await removeSavedImage.count(), 0);
+      assert.equal(await currentImageTile.locator('.image-caption').count(), 0);
+      assert.deepEqual(await images.locator('.historical-images .image-scope').allTextContents(), ['整单历史图片', '已移除商品']);
+      assert.equal(await images.locator('.image-filename').count(), 0);
+      assert.equal(await images.getByText(/\/ 5 张/).count(), 0);
       assert.equal(await products.getByText('原单价', { exact: true }).count(), 0);
       await images.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).click();
       const preview = images.getByRole('dialog', { name: '参考图片：草莓蛋糕.png' });
       await preview.getByRole('img', { name: '草莓蛋糕.png' }).waitFor();
       await preview.getByRole('button', { name: '关闭大图' }).click();
+      if (process.env.PRODUCTION_SCREENSHOT_DIR) {
+        await page.screenshot({ path: `${process.env.PRODUCTION_SCREENSHOT_DIR}/production-detail-${width}.png`, fullPage: true });
+      }
       await page.getByRole('button', { name: '下一个商品' }).click();
       await products.getByText('每盒六片', { exact: true }).waitFor();
       await currentImageTile.scrollIntoViewIfNeeded();
       await products.getByRole('button', { name: '查看大图：手工饼干.png' }).waitFor();
       assert.equal(await products.getByRole('button', { name: '查看大图：草莓蛋糕.png' }).count(), 0);
+      const sequence = page.getByRole('textbox', { name: '商品序号（1–2）' });
+      await sequence.fill('1');
+      await sequence.press('Enter');
+      await products.locator('.section-heading').getByRole('checkbox', { name: '草莓蛋糕制作完成' }).waitFor();
       await page.getByRole('button', { name: '完成装饰' }).click();
       const unfinished = page.getByRole('dialog', { name: '还有 1 项商品未完成' });
-      await unfinished.getByRole('button', { name: '第 2 个商品 · 手工饼干' }).waitFor();
-      await unfinished.getByRole('button', { name: '关闭' }).click();
-      assert.equal(await page.getByRole('heading', { name: '金额与付款' }).count(), 0);
+      await unfinished.getByRole('button', { name: '第 2 个商品 · 手工饼干' }).click();
+      await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === '手工饼干制作完成');
+      assert.equal(await payment.count(), 0);
       for (const entry of [cancelOrder, downloadOrder, reversePayment, supplement]) assert.equal(await entry.count(), 0);
       await page.locator('.note-panel summary').click();
       await page.getByRole('button', { name: '发布备注', exact: true }).waitFor();
     }
     model.order.status = 'WAITING_DELIVERY';
+    model.permissions = [...decoratorPermissions, 'ORDER_EDIT'];
+    for (const role of ['PASTRY_SUPERVISOR', 'BAKER', 'PASTRY_CHEF']) {
+      roles = [role];
+      await open();
+      await checkProgress();
+      await checkProductFields(false);
+      await addImage.waitFor();
+      await page.getByRole('button', { name: '确认自提', exact: true }).waitFor();
+      assert.equal(await payment.count(), 0);
+    }
     model.permissions = [...originalPermissions, ...decoratorPermissions, 'ORDER_PAYMENT_UPDATE'];
     for (const [width, otherRole] of [[390, 'FRONT_DESK_CLERK'], [1280, 'STORE_MANAGER']]) {
       roles = ['DECORATOR', otherRole];
       await page.setViewportSize({ width, height: 900 });
       await open();
       await checkProgress();
-      await checkProductFields(true, '内胚');
+      await checkProductFields(true);
       await checkContacts(['客户', '电话', '下单方式', '交接方式', '地址', '下单时间']);
       await contacts.getByText('门店自提 · 合成取货地址', { exact: true }).waitFor();
       assert.equal(await information.getByRole('button', { name: '编辑资料', exact: true }).isEnabled(), true);
       assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '待自提');
       await page.getByRole('button', { name: '确认自提' }).waitFor();
-      await page.getByRole('heading', { name: '金额与付款' }).waitFor();
+      assert.equal(await payment.evaluate(el => el.open), false);
+      assert.equal(await payment.getByText('成交金额', { exact: true }).isVisible(), false);
+      await paymentSummary.press('Enter');
+      await payment.getByText('成交金额', { exact: true }).waitFor();
       await supplement.waitFor();
       for (const entry of [cancelOrder, reversePayment]) assert.ok(await entry.isEnabled());
       if (otherRole === 'STORE_MANAGER') assert.ok(await downloadOrder.isEnabled());
@@ -354,17 +400,94 @@ test('手机与桌面详情共用六节点，师傅切换商品可核对规格�
       for (const button of await removeSavedImage.all()) assert.ok(await button.isEnabled());
       await addImage.waitFor();
     }
+    roles = ['FRONT_DESK_CLERK'];
+    await page.setViewportSize({ width: 390, height: 900 });
+    await open();
+    await checkProgress(false);
+    assert.equal(await payment.count(), 0);
+    await page.getByRole('heading', { name: '金额与付款' }).waitFor();
+
+    roles = ['DECORATOR', 'FRONT_DESK_CLERK'];
+    model.order.pricingMode = 'MANUAL';
+    model.order.paymentStatus = 'UNPAID';
+    model.order.items = [cake];
+    cake.name = '很长的定制商品名'.repeat(12);
+    await open();
+    assert.equal(await products.getByText('商品名称', { exact: true }).count(), 0);
+    const caption = page.locator('.detail-item-navigation strong');
+    assert.equal(await caption.textContent(), cake.name);
+    assert.ok(await caption.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight));
+    assert.equal(await page.getByRole('button', { name: '下一个商品' }).count(), 0);
+    await paymentSummary.click();
+    const editAmount = payment.getByRole('button', { name: '修改金额' });
+    assert.equal(await editAmount.evaluate(el => getComputedStyle(el).whiteSpace), 'nowrap');
+    await editAmount.click();
+    const price = payment.getByRole('textbox', { name: '原价（元）' });
+    await price.fill('188.50');
+    await paymentSummary.click();
+    assert.equal(await payment.evaluate(el => el.open), true);
+    await context.route(`**/api/orders/${orderId}/information`, route =>
+      route.fulfill({ status: 503, json: { success: false, code: 'SERVICE_UNAVAILABLE' } }));
+    await payment.getByRole('button', { name: '保存修改' }).click();
+    await payment.getByRole('alert').filter({ hasText: /服务|稍后/ }).first().waitFor();
+    assert.equal(await price.inputValue(), '188.50');
+    await payment.getByRole('button', { name: '取消', exact: true }).click();
+    await paymentSummary.click();
+    assert.equal(await payment.evaluate(el => el.open), false);
+
     model.failNames.add('retry.png');
-    await select(['retry.png']);
+    model.failNames.add('discard.png');
+    await select(['retry.png', 'discard.png']);
     await images.getByText('仍有图片上传未完成', { exact: false }).waitFor();
     model.failNames.clear();
     roles = ['DECORATOR'];
     model.permissions = decoratorPermissions;
     await open();
+    await images.locator('.reference-image').filter({ hasText: 'discard.png' }).getByRole('button', { name: '移除待上传图片' }).click();
+    await images.getByText('discard.png', { exact: true }).waitFor({ state: 'detached' });
     await images.getByRole('button', { name: '重试上传', exact: true }).click();
     await images.getByText('图片已上传。', { exact: true }).waitFor();
     assert.ok(model.images.some(image => image.filename === 'retry.png'));
+    assert.ok(!model.images.some(image => image.filename === 'discard.png'));
     assert.equal(await removeSavedImage.count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test('前厅改价期间兼任制作岗位，原编辑器继续显示，取消后应用折叠布局', async () => {
+  const { context, page, model, errors } = await createOrderFixture(browser, base);
+  try {
+    let roles = ['FRONT_DESK_CLERK'];
+    await context.route('**/api/me', route => route.fulfill({ json: { success: true, data: {
+      accountId: model.account, nickname: '测试前厅', jobRoles: roles, access: { permissions: model.permissions, uiCapabilities: [] },
+    } } }));
+    await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
+    model.order = { orderId, orderNo: 'TEST-PAYMENT-LAYOUT', version: 1, status: 'CAKE_BASE', pricingMode: 'MANUAL',
+      originalAmountCents: 12000, totalAmountCents: 12000, paymentStatus: 'UNPAID', paymentMethod: 'UNPAID',
+      customer: {}, fulfillment: { type: 'PICKUP', requestedReceiveDate: date },
+      items: [{ itemId: crypto.randomUUID(), name: '测试蛋糕', productType: 'CAKE', quantity: 1,
+        attributes: {}, productionStatus: 'NOT_STARTED', recentNotes: [] }],
+    };
+    await page.goto(base + '/#/orders/' + orderId);
+    await page.getByRole('button', { name: '修改金额' }).click();
+    const price = page.getByRole('textbox', { name: '原价（元）' });
+    await price.fill('188.50');
+    await page.getByText('草稿已保存在本机。', { exact: true }).waitFor();
+
+    roles = ['FRONT_DESK_CLERK', 'DECORATOR'];
+    model.permissions.push('ORDER_PRODUCTION_UPDATE');
+    await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
+    await page.locator('.compact-production-detail').waitFor();
+    assert.equal(await price.inputValue(), '188.50');
+    assert.ok(await page.getByRole('button', { name: '保存修改' }).isEnabled());
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    const payment = page.locator('.payment-disclosure');
+    await payment.waitFor();
+    assert.equal(await payment.evaluate(el => el.open), false);
+    await payment.locator('summary').click();
+    await payment.getByRole('button', { name: '修改金额' }).waitFor();
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -391,9 +514,17 @@ test('单岗裱花师完成装饰后回原工作台，有未发布备注时留�
     let fail = true;
     await context.route(`**/api/orders/${orderId}/production-actions`, route => {
       const { action, expectedVersion } = route.request().postDataJSON();
-      assert.equal(action, 'COMPLETE_DECORATION');
+      assert.ok(['COMPLETE_DECORATION', 'REOPEN_PRODUCTION'].includes(action));
       assert.equal(expectedVersion, model.order.version);
       if (fail) return route.fulfill({ status: 503, json: { success: false, code: 'SERVICE_UNAVAILABLE' } });
+      const status = action === 'COMPLETE_DECORATION' ? 'WAITING_DELIVERY' : 'DECORATING';
+      model.order = { ...model.order, status, version: expectedVersion + 1 };
+      return route.fulfill({ json: { success: true, data: model.order } });
+    });
+    await context.route(`**/api/orders/${orderId}/fulfillment-actions`, route => {
+      const { action, expectedVersion } = route.request().postDataJSON();
+      assert.equal(action, 'ROLLBACK_FULFILLMENT');
+      assert.equal(expectedVersion, model.order.version);
       model.order = { ...model.order, status: 'WAITING_DELIVERY', version: expectedVersion + 1 };
       return route.fulfill({ json: { success: true, data: model.order } });
     });
@@ -434,9 +565,14 @@ test('单岗裱花师完成装饰后回原工作台，有未发布备注时留�
       await open();
       await reopen.waitFor();
       assert.equal(await page.getByRole('button', { name: confirmation, exact: true }).count(), 0);
+      page.once('dialog', dialog => dialog.accept());
+      await reopen.click();
+      await finish.waitFor();
       model.order.status = 'COMPLETED';
       await open();
-      await page.getByRole('button', { name: rollback, exact: true }).waitFor();
+      page.once('dialog', dialog => dialog.accept());
+      await page.getByRole('button', { name: rollback, exact: true }).click();
+      await reopen.waitFor();
     }
     model.permissions = [...businessPermissions, ...decoratorPermissions];
     for (const [otherRole, type, confirmation] of [

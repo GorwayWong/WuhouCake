@@ -1485,6 +1485,9 @@ class OrderIT {
         var paidList = query(staff, listPath + "SHIPPING_PAID");
         assertEquals(2, paidList.path("total").asInt());
         assertEquals(paidId, paidList.at("/orders/0/orderId").asText());
+        assertEquals("PICKUP", paidList.at("/orders/0/fulfillmentType").asText());
+        assertEquals(completedId, paidList.at("/orders/1/orderId").asText());
+        assertEquals("DELIVERY", paidList.at("/orders/1/fulfillmentType").asText());
         assertEquals("12345", paidList.at("/orders/0/amountCents").asText());
         var unpaidList = query(staff, listPath + "SHIPPING_UNPAID");
         assertEquals(2, unpaidList.path("total").asInt());
@@ -1825,6 +1828,29 @@ class OrderIT {
             assertEquals(cancelled.body.path("data"), query(front, "/api/orders/" + cancelledId));
             assertEquals(count, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE order_id=?::uuid", Long.class, cancelledId));
         }
+    }
+
+    @Test void staleOrderCreateProtocolCannotCreateOrReserveAnOrder() throws Exception {
+        var staff = staff(); var input = create();
+        String originalKey = UUID.randomUUID().toString();
+        var legacy = staff.request("POST", "/api/orders", input, originalKey, null);
+        assertEquals(503, legacy.status);
+        assertEquals("ORDER_CREATE_CLIENT_UPDATE_REQUIRED", legacy.body.path("code").asText());
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM cake_order_creation", Integer.class));
+
+        var accepted = staff.request("POST", "/api/orders", input, originalKey, "3");
+        assertEquals(201, accepted.status);
+        for (String stale : Arrays.asList(null, "1", "2")) {
+            var rejected = staff.request("POST", "/api/orders", input, UUID.randomUUID().toString(), stale);
+            assertEquals(503, rejected.status);
+            assertEquals("ORDER_CREATE_CLIENT_UPDATE_REQUIRED", rejected.body.path("code").asText());
+        }
+        var replay = staff.request("POST", "/api/orders", input, originalKey, "3");
+        assertEquals(201, replay.status);
+        assertEquals(accepted.body.at("/data/orderId"), replay.body.at("/data/orderId"));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_creation", Integer.class));
     }
 
     @Test void orderQuotesPaymentMethodsPersistAtomicallyAndDriveReceiptTotals() throws Exception {
@@ -2211,10 +2237,24 @@ class OrderIT {
         }
         Result request(String method, String path, Object body) throws Exception { return request(method, path, body, null); }
         Result request(String method, String path, Object body, String idempotencyKey) throws Exception {
+            return request(method, path, body, idempotencyKey, "3");
+        }
+        Result request(String method, String path, Object body, String idempotencyKey, String submissionProtocol) throws Exception {
+            var result = send(method, path, body, idempotencyKey, submissionProtocol, null);
+            // These workflows intentionally seed independent orders under the same sample contact.
+            if (method.equals("POST") && path.equals("/api/orders") && result.status == 409
+                    && "DUPLICATE_REVIEW_REQUIRED".equals(result.body.path("code").asText()))
+                return send(method, path, body, idempotencyKey, submissionProtocol, result.body.at("/data/token").asText());
+            return result;
+        }
+        Result send(String method, String path, Object body, String idempotencyKey, String submissionProtocol, String duplicateToken) throws Exception {
             boolean auth = path.startsWith("/api/auth/");
             if (auth && !method.equals("GET")) request("GET", "/api/auth/csrf", null);
             var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).header("Content-Type", "application/json");
             if (idempotencyKey != null) builder.header("Idempotency-Key", idempotencyKey);
+            if (method.equals("POST") && path.equals("/api/orders") && submissionProtocol != null)
+                builder.header("X-Wuhou-Order-Submission", submissionProtocol);
+            if (duplicateToken != null) builder.header("X-Wuhou-Duplicate-Check", duplicateToken);
             if (method.equals("POST") && path.equals("/api/order-packages")) builder.header("Idempotency-Key", UUID.randomUUID().toString());
             if (token != null && !auth) builder.header("Authorization", "Bearer " + token);
             if (auth && !method.equals("GET")) cookies.getCookieStore().getCookies().stream().filter(cookie -> cookie.getName().equals("XSRF-TOKEN"))

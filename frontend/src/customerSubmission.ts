@@ -27,9 +27,10 @@ export interface SubmissionDuplicate {
   kind: 'SUBMISSION' | 'ORDER'; id: string; version: number; status: string; orderNo: string | null; phone: string;
   requestedReceiveDate: string; requestedReceiveAt: string | null; items: { name: string; quantity: number }[];
   totalAmountCents: number | null; handledBy: string; createdAt: string; requiresAcknowledgement: boolean;
+  fulfillmentType?: 'DELIVERY' | 'PICKUP' | null;
 }
 export interface SubmissionDetail { submission: Submission; duplicates: SubmissionDuplicate[]; duplicateCheckToken: string | null; activities: SubmissionActivity[] }
-export interface EntryLink { ownerId: string; ownerName: string; url: string; enabled: boolean }
+export interface EntryLink { ownerId: string; ownerName: string; url: string; enabled: boolean; ownerEligible: boolean }
 export interface SubmissionOrigin { submissionId: string; entryOwnerName: string; submittedAt: string; requestedReceiveAt: string }
 export type SubmissionItemDraft = ItemDraft & { imageIds?: string[] | null };
 export interface SubmissionDraft {

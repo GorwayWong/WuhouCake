@@ -77,6 +77,8 @@ class WorkflowManagementIT {
         a.data("POST", "/api/orders/" + cancelled.path("orderId").asText() + "/cancel", Map.of("expectedVersion", 0, "reason", "合成取消"));
         assertEquals(1, management.totals(new org.xaspire.WuhouCake.order.domain.port.OrderManagementQueries.Filter(java.time.LocalDate.of(2026,10,1), java.time.LocalDate.of(2026,11,1), null,null,null,null,null,false,false,null,null)).orderCount());
         var all = admin.data("GET", search(""), null);
+        assertEquals(order.at("/fulfillment/type").asText(), all.at("/items/0/fulfillmentType").asText());
+        assertTrue(Set.of("PICKUP", "DELIVERY").contains(all.at("/items/0/fulfillmentType").asText()));
         assertEquals(Set.of("CAKE", "OTHER"), json.convertValue(all.at("/items/0/productTypes"), Set.class));
         assertEquals(1, all.at("/totals/orderCount").asLong()); assertEquals(9, all.at("/totals/matchingQuantity").asLong()); assertEquals(3, all.at("/totals/cakeQuantity").asLong());
         assertEquals(2, all.path("sizes").size());
@@ -540,8 +542,8 @@ class WorkflowManagementIT {
             return result;
         }).when(creations).claim(any(), any(), anyString());
         try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
-            var x = executor.submit(() -> a.raw("POST", "/api/orders", create(b.id), UUID.randomUUID().toString()));
-            var y = executor.submit(() -> b.raw("POST", "/api/orders", create(a.id), UUID.randomUUID().toString()));
+            var x = executor.submit(() -> a.send("POST", "/api/orders", create(b.id), UUID.randomUUID().toString(), null));
+            var y = executor.submit(() -> b.send("POST", "/api/orders", create(a.id, "13900000001"), UUID.randomUUID().toString(), null));
             assertEquals(201, x.get().statusCode()); assertEquals(201, y.get().statusCode());
         }
         assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM cake_order", Integer.class));
@@ -882,7 +884,10 @@ class WorkflowManagementIT {
     }
     private String search(String suffix) { return "/api/admin/orders?from=2026-10-01&to=2026-11-01" + suffix; }
     private Map<String, Object> create(String employee) {
-        return Map.of("customer", Map.of("customerName", "合成客户", "phone", "13900000000"), "creditedEmployeeId", employee,
+        return create(employee, "13900000000");
+    }
+    private Map<String, Object> create(String employee, String phone) {
+        return Map.of("customer", Map.of("customerName", "合成客户", "phone", phone), "creditedEmployeeId", employee,
                 "fulfillment", Map.of("type", "PICKUP", "requestedReceiveDate", "2026-10-17", "plannedHandoffAt", "2026-10-17T14:00:00+08:00"), "totalAmountCents", 52000,
                 "items", List.of(Map.of("name", "八寸蛋糕", "productType", "CAKE", "quantity", 2, "attributes", Map.of("size", "8", "base", " ")),
                         Map.of("name", "十寸蛋糕", "productType", "CAKE", "quantity", 1, "attributes", Map.of("size", "10")), Map.of("name", "杯子蛋糕", "productType", "CUPCAKE", "quantity", 6)));
@@ -906,8 +911,20 @@ class WorkflowManagementIT {
             return raw(method, path, body, null);
         }
         HttpResponse<byte[]> raw(String method, String path, Object body, String idempotencyKey) throws Exception {
+            var response = send(method, path, body, idempotencyKey, null);
+            if (method.equals("POST") && path.equals("/api/orders") && response.statusCode() == 409) {
+                var result = json.readTree(response.body());
+                // Report fixtures may use one sample contact for several independent orders.
+                if ("DUPLICATE_REVIEW_REQUIRED".equals(result.path("code").asText()))
+                    return send(method, path, body, idempotencyKey, result.at("/data/token").asText());
+            }
+            return response;
+        }
+        HttpResponse<byte[]> send(String method, String path, Object body, String idempotencyKey, String duplicateToken) throws Exception {
             boolean auth = path.startsWith("/api/auth/"); if (auth && !method.equals("GET")) raw("GET", "/api/auth/csrf", null);
             var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).header("Content-Type", "application/json");
+            if (method.equals("POST") && path.equals("/api/orders")) request.header("X-Wuhou-Order-Submission", "3");
+            if (duplicateToken != null) request.header("X-Wuhou-Duplicate-Check", duplicateToken);
             if (idempotencyKey != null) request.header("Idempotency-Key", idempotencyKey);
             if (!auth && token != null) request.header("Authorization", "Bearer " + token);
             if (auth && !method.equals("GET")) cookies.getCookieStore().getCookies().stream().filter(c -> c.getName().equals("XSRF-TOKEN")).findFirst().ifPresent(c -> request.header("X-XSRF-TOKEN", c.getValue()));

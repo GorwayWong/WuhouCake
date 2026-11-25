@@ -40,7 +40,8 @@ if (release and len(candidate) != 2 or not release and (
     stop("用法：./deploy-ip.sh [--release IMAGE RELEASE_DIR [--rollback-safe] | [--check] [postgres [--disable-pitr]]]")
 
 compose = ["docker", "compose", "--env-file", ".env"]
-release_services = ["app", "image-worker", "gateway"]
+application_services = ["app", "image-worker"]
+release_services = [*application_services, "gateway"]
 journal = Path("maintenance/release-pending.json")
 receipt = journal.with_name("release-last.json")
 
@@ -157,14 +158,25 @@ if repository:
             or not os.path.isfile(config_mount.get("source", ""))):
         stop("PostgreSQL 缺少 pgBackRest 配置的只读挂载。")
 
+def valid_order_submission_protocol(value):
+    return isinstance(value, str) and re.fullmatch(r"[2-9]|[1-9][0-9]{1,8}", value) is not None
+
+
 class EntryPage(HTMLParser):
     def __init__(self):
         super().__init__()
         self.assets = {}
         self.has_entry = False
+        self.order_submission_protocol = None
 
     def handle_starttag(self, tag, attributes):
         attrs = dict(attributes)
+        if tag == "meta" and attrs.get("name") == "wuhou-order-submission-protocol":
+            declared = attrs.get("content")
+            if self.order_submission_protocol is not None or not valid_order_submission_protocol(declared):
+                raise ReleaseError("前端产物中的建单协议声明无效。")
+            self.order_submission_protocol = declared
+            return
         is_entry = tag == "script" and attrs.get("type") == "module"
         relation = attrs.get("rel") if tag == "link" else None
         if not is_entry and relation not in ("modulepreload", "stylesheet"):
@@ -211,7 +223,7 @@ def frontend(command, expected_directory=None):
     if not shutil.which("curl"):
         stop("网关前端检查需要 curl。")
 
-    return assets, public_ip, https_port
+    return assets, public_ip, https_port, page.order_submission_protocol
 
 class ReleaseError(Exception):
     pass
@@ -224,8 +236,7 @@ def checked(command, failure, timeout=30):
         raise ReleaseError(failure) from error
 
 
-def probe(command, site):
-    assets, public_ip, https_port = site
+def probe_application(command):
     failure = "应用未通过 readiness 检查，请核对 PostgreSQL、Redis 和应用日志。"
     body = checked(command + ["exec", "-T", "app", "wget", "-T", "10", "-qO-",
                            "http://127.0.0.1:8080/actuator/health/readiness"], failure)
@@ -234,6 +245,10 @@ def probe(command, site):
             raise ReleaseError(failure)
     except (ValueError, AttributeError):
         raise ReleaseError(failure)
+
+
+def probe_gateway(site):
+    assets, public_ip, https_port, _ = site
     for path, (source, media_types) in assets.items():
         failure = f"网关前端检查失败：{path}。请核对 HTTPS、发布目录及静态文件响应。"
         try:
@@ -248,6 +263,11 @@ def probe(command, site):
                 raise ReleaseError(failure)
         except (OSError, subprocess.SubprocessError, ValueError):
             raise ReleaseError(failure)
+
+
+def probe(command, site):
+    probe_application(command)
+    probe_gateway(site)
 
 
 def image_id(reference):
@@ -289,26 +309,45 @@ def flyway_history():
     return value
 
 
-def migrations(image):
-    # Read packaged SQL from the image without starting the application.
+def application_artifact(image, collect_migrations=False):
+    # Inspect the same resources the application loads from the packaged jar.
     command = ["docker", "run", "--pull=never", "--rm", "--network", "none", "--entrypoint", "cat",
                image, "/app/application.jar"]
     with tempfile.TemporaryFile() as jar:
         subprocess.run(command, stdout=jar, stderr=subprocess.DEVNULL, check=True, timeout=60)
         with zipfile.ZipFile(jar) as boot:
-            result = {}
+            migrations = {}
+            protocols = []
+
             def scan(archive, prefix, owner):
                 for name in archive.namelist():
                     if name.startswith(prefix + "db/migration/") and not name.endswith("/"):
-                        result[(owner, name)] = hashlib.sha256(archive.read(name)).digest()
-            scan(boot, "BOOT-INF/classes/", "bootstrap")
+                        migrations[(owner, name)] = hashlib.sha256(archive.read(name)).digest()
+
+            if collect_migrations:
+                scan(boot, "BOOT-INF/classes/", "bootstrap")
             for name in boot.namelist():
-                if name.startswith("BOOT-INF/lib/") and name.endswith(".jar"):
-                    with zipfile.ZipFile(io.BytesIO(boot.read(name))) as module:
+                if not name.startswith("BOOT-INF/lib/") or not name.endswith(".jar"):
+                    continue
+                order_module = Path(name).name.startswith("WuhouCake-order-")
+                if not collect_migrations and not order_module:
+                    continue
+                with zipfile.ZipFile(io.BytesIO(boot.read(name))) as module:
+                    if collect_migrations:
                         scan(module, "", Path(name).name)
-        if not result:
+                    if order_module:
+                        protocols.extend(module.read(item).decode("ascii").strip()
+                                         for item in module.infolist() if item.filename == "order/submission-protocol.txt")
+        if collect_migrations and not migrations:
             raise ReleaseError("镜像未包含可核实的 Flyway 迁移。")
-        return result
+        if len(protocols) > 1 or protocols and not valid_order_submission_protocol(protocols[0]):
+            raise ReleaseError("应用镜像中的建单协议声明无效。")
+        return (protocols[0] if protocols else None), migrations
+
+
+def require_order_submission_protocol(site, app_protocol):
+    if app_protocol is None or site[3] != app_protocol:
+        raise ReleaseError("应用镜像与前端产物必须声明相同的建单协议，才能启动工作台。")
 
 
 def atomic_record(path, data):
@@ -352,9 +391,18 @@ def candidate_config(image, directory):
         temporary.unlink(missing_ok=True)
 
 
-def apply_release(command, site):
-    checked(command + ["up", "-d", "--no-deps", "--pull", "never", "--wait", "--wait-timeout", "180", *release_services],
-            "发布服务启动失败，请核对容器状态和日志。", timeout=200)
+def start_release_services(command, services, failure):
+    startup = command + ["up", "-d", "--no-deps", "--pull", "never", "--wait", "--wait-timeout", "180"]
+    checked(startup + services, failure, timeout=200)
+
+
+def start_release_application(command):
+    start_release_services(command, application_services, "应用服务启动失败，请核对容器状态和日志。")
+    probe_application(command)
+
+
+def start_release_gateway(command, site):
+    start_release_services(command, ["gateway"], "网关启动失败，请核对容器状态和日志。")
     probe(command, site)
 
 
@@ -374,27 +422,49 @@ def publish():
                                       "无法核对候选服务镜像。"))["services"]
         if any(resolved[name]["image"] != new_id for name in ("app", "image-worker")):
             raise ReleaseError("Compose 未选择指定的候选镜像。")
-        safe_schema = rollback_safe and migrations(old["image"]) == migrations(new_id)
-        history = flyway_history() if safe_schema else None
+        new_protocol, new_migrations = application_artifact(new_id, collect_migrations=rollback_safe)
+        require_order_submission_protocol(site, new_protocol)
+        history = None
+        legacy_baseline = False
+        if rollback_safe:
+            old_protocol, old_migrations = application_artifact(old["image"], collect_migrations=True)
+            legacy_baseline = old_protocol is None and baseline_site[3] is None
+            if not legacy_baseline and (old_protocol != new_protocol or baseline_site[3] != old_protocol):
+                raise ReleaseError("上一版缺少兼容的建单协议，不能自动回退。请去掉 --rollback-safe 后重新发布。")
+            if old_migrations == new_migrations:
+                history = flyway_history()
         if subprocess.run(["./backup-ip-database.sh", "predeploy"], timeout=1250).returncode:
             raise ReleaseError("发布前备份或校验失败。请查看 wuhou-backup 日志。")
         metadata = {"previous": old, "candidate": {"image": new_id, "directory": directory},
-                    "cluster": expected_cluster, "sameMigrationHistoryRequired": history is not None, "state": "switching"}
+                    "cluster": expected_cluster, "sameMigrationHistoryRequired": history is not None,
+                    "gatewaySwitchStarted": False, "state": "switching"}
         record(journal, metadata)
+        gateway_switch_started = False
         try:
-            apply_release(command, site)
+            start_release_application(command)
+            metadata["gatewaySwitchStarted"] = True
+            record(journal, metadata)
+            gateway_switch_started = True
+            start_release_gateway(command, site)
             if Path(".env").read_bytes() != original:
                 raise ReleaseError("发布期间 .env 发生变化。")
             atomic_record(Path(".env"), content)
         except (ReleaseError, OSError) as error:
-            metadata.update(state="manual-recovery", failure=str(error) if isinstance(error, ReleaseError) else "发布配置写入失败")
+            metadata.update(state="manual-recovery", gatewaySwitchStarted=gateway_switch_started,
+                            failure=str(error) if isinstance(error, ReleaseError) else "发布配置写入失败")
             record(journal, metadata)
             try:
-                checked(command + ["stop", "-t", "10", *release_services], "无法停止候选发布服务。", timeout=45)
-                if (history is None or flyway_history() != history or Path(".env").read_bytes() != original
+                services_to_stop = release_services if gateway_switch_started else application_services
+                checked(command + ["stop", "-t", "10", *services_to_stop], "无法停止候选发布服务。", timeout=45)
+                if (history is None or (legacy_baseline and gateway_switch_started)
+                        or flyway_history() != history or Path(".env").read_bytes() != original
                         or image_id(environment["APP_IMAGE"]) != old["image"]):
                     raise ReleaseError("自动回退条件不满足，请执行人工恢复流程。")
-                apply_release(compose, baseline_site)
+                start_release_application(compose)
+                if gateway_switch_started:
+                    start_release_gateway(compose, baseline_site)
+                else:
+                    probe_gateway(baseline_site)
                 metadata.update(state="rolled-back")
                 record(receipt, metadata)
                 journal.unlink()
@@ -419,6 +489,8 @@ try:
         print("应用 readiness 与网关前端检查通过，候选版本已登记。")
     else:
         site = frontend(compose)
+        app_protocol, _ = application_artifact(image_id(environment["APP_IMAGE"]))
+        require_order_submission_protocol(site, app_protocol)
         checked(up, "容器启动失败，请核对 Compose 状态和服务日志。", timeout=200)
         probe(compose, site)
         print("应用 readiness 与网关前端检查通过。")

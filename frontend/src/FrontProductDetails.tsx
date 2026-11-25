@@ -5,19 +5,21 @@ import { ItemPriceFields, itemSpecification, valueText } from './ui';
 
 const display = (value: unknown) => value == null || typeof value === 'string' && !value.trim() ? '未填写' : valueText(value);
 
-export function FrontProductDetails({ item, prices = false, itemSum = false, children, actions, completion }: { item: Item; prices?: boolean; itemSum?: boolean; children?: ReactNode; actions?: ReactNode; completion?: ReactNode }) {
+export function FrontProductDetails({ item, prices = false, itemSum = false, children, actions, completion, compact = false }: { item: Item; prices?: boolean; itemSum?: boolean; children?: ReactNode; actions?: ReactNode; completion?: ReactNode; compact?: boolean }) {
   const cake = isCake(item.productType), attributes = item.attributes || {};
   const specification = itemSpecification(item);
+  const base = <div className="product-making-field"><dt>内胚</dt><dd>{display(attributes.base ?? attributes.cakeBase)}</dd></div>;
   return <section className="front-product-details" aria-label={`商品 ${item.name}`}>
-    <div className="front-product-heading"><div><h3>商品名称</h3><div className="detail-product-name-row"><strong>{item.name}</strong>{completion}</div></div>{actions}</div>
+    {!compact && <div className="front-product-heading"><div><h3>商品名称</h3><div className="detail-product-name-row"><strong>{item.name}</strong>{completion}</div></div>{actions}</div>}
     {children || <>
-      <dl className="front-product-row front-product-pair">
+      <dl className={`front-product-row ${compact && cake ? 'front-product-triple' : 'front-product-pair'}`}>
         <div className="product-making-field"><dt>数量</dt><dd>{item.quantity}</dd></div>
         {cake && <div className="product-making-field"><dt>尺寸</dt><dd className="product-spec-text">{display(attributes.size)}</dd></div>}
+        {compact && cake && base}
         {!cake && specification && <div><dt>商品说明</dt><dd className="product-spec-text">{specification}</dd></div>}
       </dl>
-      {cake && <dl className="front-product-row front-product-triple">
-        <div className="product-making-field"><dt>内胚</dt><dd>{display(attributes.base ?? attributes.cakeBase)}</dd></div>
+      {cake && <dl className={`front-product-row ${compact ? 'front-product-pair' : 'front-product-triple'}`}>
+        {!compact && base}
         <div className="product-making-field"><dt>夹馅</dt><dd>{display(attributes.filling)}</dd></div>
         <div className="product-making-field"><dt>奶油</dt><dd>{display(attributes.flavor)}</dd></div>
       </dl>}

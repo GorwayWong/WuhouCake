@@ -32,25 +32,31 @@ export async function readCreationDraft<T>(key: string): Promise<SavedCreationDr
   });
 }
 
-async function write(key: string, expected: string | null, value: SavedCreationDraft<unknown> | null) {
+export async function updateCreationDraft<T>(key: string, update: (current: SavedCreationDraft<T> | null) => SavedCreationDraft<T> | null) {
   const db = await open();
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<SavedCreationDraft<T> | null>((resolve, reject) => {
     const tx = db.transaction('drafts', 'readwrite');
-    tx.oncomplete = () => resolve();
+    let result: SavedCreationDraft<T> | null = null;
+    tx.oncomplete = () => resolve(result);
     tx.onabort = () => reject(tx.error ?? new Error('草稿保存未完成。'));
     const store = tx.objectStore('drafts');
     const read = store.get(key);
     read.onsuccess = () => {
-      if ((read.result?.revision ?? null) !== expected) {
-        reject(new CreationDraftConflict());
-        tx.abort();
-        return;
-      }
       try {
-        if (value) store.put(value, key);
+        const current = read.result ?? null;
+        result = update(current);
+        if (result === current) return;
+        if (result) store.put(result, key);
         else store.delete(key);
       } catch (failure) { reject(failure); tx.abort(); }
     };
+  });
+}
+
+async function write<T>(key: string, expected: string | null, value: SavedCreationDraft<T> | null) {
+  await updateCreationDraft<T>(key, current => {
+    if ((current?.revision ?? null) !== expected) throw new CreationDraftConflict();
+    return value;
   });
 }
 

@@ -15,9 +15,11 @@ public class CustomerSubmissionController {
     @GetMapping("/pending-count") public ApiResponse<java.util.Map<String, Long>> pendingCount() {
         return ApiResponse.success(java.util.Map.of("count", service.pendingCount()));
     }
-    @GetMapping public ApiResponse<Page<SubmissionViews.Detail>> search(@RequestParam(defaultValue = "true") boolean mine,
-            @RequestParam(defaultValue = "PENDING") String status, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size, @RequestParam(defaultValue = "") String keyword) {
-        return ApiResponse.success(service.search(mine, status, keyword, page, size));
+    @GetMapping public ApiResponse<Page<?>> search(@RequestParam(defaultValue = "true") boolean mine,
+            @RequestParam(defaultValue = "PENDING") String status, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "") String keyword, @RequestParam(defaultValue = "") String view) {
+        return ApiResponse.success("summary".equals(view) ? service.searchSummary(mine, status, keyword, page, size)
+                : service.search(mine, status, keyword, page, size));
     }
     @GetMapping("/{id}") public ApiResponse<SubmissionViews.Detail> detail(@PathVariable UUID id) { return ApiResponse.success(service.detail(id)); }
     @PostMapping(value = "/{id}/items/{item}/images/{image}", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)

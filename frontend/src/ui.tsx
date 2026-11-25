@@ -1,4 +1,4 @@
-import { CalendarBlank, Clock, Truck, CheckCircle, XCircle, Circle, Stack, Cake } from '@phosphor-icons/react';
+import { CalendarBlank, Clock, Truck, CheckCircle, XCircle, Circle, Stack, Cake, Storefront, Trash } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import type { Item, OrderStatus } from './types';
 import { time } from './dates';
@@ -6,22 +6,28 @@ import { exactYuan } from './money';
 import { errorText } from './api';
 import { productTypeLabel } from './productTypes';
 import { visibleSpecification } from './specificationText';
-import { displayedStatusCode, fulfillmentStatusName } from './orderStates';
+import { displayedStatusCode, fulfillmentStatusName, orderStatusTone } from './orderStates';
 export { statusNames } from './orderStates';
 
-export function statusLabel(order: OrderStatus) {
+type StatusDisplay = Pick<OrderStatus, 'status' | 'fulfillment' | 'fulfillmentType' | 'deletion' | 'deleted'>;
+export function statusLabel(order: StatusDisplay) {
   return fulfillmentStatusName(displayedStatusCode(order), order.fulfillment?.type ?? order.fulfillmentType);
 }
-export function Status({ order }: { order: OrderStatus }) {
-  const status = displayedStatusCode(order);
-  const Icon = status === 'COMPLETED' ? CheckCircle : ['CANCELLED', 'DELETED'].includes(status) ? XCircle
-    : status === 'WAITING_DELIVERY' ? Truck : status === 'LAYER' ? Stack
+export function orderStatusIcon(status: string, type?: string) {
+  return status === 'COMPLETED' ? CheckCircle : status === 'CANCELLED' ? XCircle : status === 'DELETED' ? Trash
+    : status === 'WAITING_DELIVERY' ? type === 'DELIVERY' ? Truck : type === 'PICKUP' ? Storefront : Clock : status === 'LAYER' ? Stack
     : ['CAKE_BASE', 'FROSTING', 'DECORATING'].includes(status) ? Cake : Clock;
-  return <span className={`badge status-${status.toLowerCase()}`}><Icon size={15} />{statusLabel(order)}</span>;
+}
+export function Status({ order, label = statusLabel(order) }: { order: StatusDisplay; label?: string }) {
+  const status = displayedStatusCode(order);
+  const type = order.fulfillment?.type ?? order.fulfillmentType;
+  const Icon = orderStatusIcon(status, type);
+  return <span className="badge state-badge" data-order-tone={orderStatusTone(status, type)}><Icon size={15} aria-hidden="true" />{label}</span>;
 }
 export function Payment({ status }: { status: string | null }) {
   if (status == null) return null;
-  return <span className={`badge payment-${status.toLowerCase()}`}><Circle size={11} weight={status === 'PAID' ? 'fill' : 'regular'} />{status === 'PAID' ? '已付款' : '未付款'}</span>;
+  const paid = status === 'PAID';
+  return <span className="badge state-badge" data-order-tone={paid ? 'success' : status === 'UNPAID' ? 'unpaid' : 'unknown'}><Circle size={11} weight={paid ? 'fill' : 'regular'} aria-hidden="true" />{paid ? '已付款' : status === 'UNPAID' ? '未付款' : '付款状态待更新'}</span>;
 }
 export function Brand() { return <a className="brand" href="#" aria-label="午逅 Story 工作台"><img src="/brand.jpg" alt="午逅 Story" /></a>; }
 export function ErrorNotice({ error, retry }: { error: unknown; retry?: () => void }) {

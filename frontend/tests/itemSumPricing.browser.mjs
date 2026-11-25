@@ -191,7 +191,7 @@ for (const change of ['updated', 'deleted', 'timeout', 'cancelled', 'offline', '
     if (change !== 'deleted' && change !== 'redacted') {
       await confirm.click();
       await dialog.waitFor({ state: 'detached' });
-      assert.equal(detailReads, 3);
+      assert.equal(detailReads, 4);
       await cycleOrderDraft(page);
       assert.equal((await saved()).value.items.at(-1).name, value.items[0].name);
       assert.equal(await page.locator('#totalAmount').inputValue(), change === 'updated' ? '125.00' : '110.00');
@@ -202,15 +202,72 @@ for (const change of ['updated', 'deleted', 'timeout', 'cancelled', 'offline', '
   } finally { pending.resolve(); sendEvent.resolve(); await context.close(); }
 });
 
-test('订单详情保留手填金额，改商品单价前后显示差额', async () => {
+for (const change of ['updated', 'deleted']) test(`套餐图片读取期间${change === 'updated' ? '更新' : '删除'}，保留原草稿`, async () => {
+  const { context, page, complete, png, errors } = await createOrderFixture(browser, base);
+  const imageRequested = Promise.withResolvers(), releaseImage = Promise.withResolvers();
+  const id = crypto.randomUUID(), itemId = crypto.randomUUID();
+  let current = { id, name: '点心套餐', version: 1, originalAmountCents: 10000, memberAmountCents: null,
+    items: [{ itemId, imageId: crypto.randomUUID(), name: '原款点心', productType: 'OTHER', quantity: 1,
+      unitPriceCents: 10000, memberPriceCents: null, attributes: {} }] };
+  try {
+    if (change === 'deleted') {
+      await complete();
+      await page.locator('#totalAmount').fill('88');
+    }
+    const before = await visibleOrderFields(page);
+    await context.route('**/api/order-packages?*', route => route.fulfill({ json: { success: true,
+      data: { items: current ? [current] : [], total: current ? 1 : 0, page: 1, size: 20 } } }));
+    await context.route(`**/api/order-packages/${id}`, route => current
+      ? route.fulfill({ json: { success: true, data: current } })
+      : route.fulfill({ status: 404, json: { success: false, code: 'PACKAGE_NOT_FOUND' } }));
+    await context.route(`**/api/order-packages/${id}/items/*/images/*`, async route => {
+      imageRequested.resolve();
+      await releaseImage.promise;
+      await route.fulfill({ contentType: 'image/png', body: png });
+    });
+    await page.getByRole('button', { name: '导入套餐', exact: true }).click();
+    await page.locator('.package-picker select').selectOption(id);
+    await page.getByRole('button', { name: '带入商品', exact: true }).click();
+    if (change === 'deleted') await page.getByRole('button', { name: '带入并采用建议金额', exact: true }).click();
+    await imageRequested.promise;
+    current = change === 'deleted' ? null : { ...current, version: 2, originalAmountCents: 20000,
+      items: [{ ...current.items[0], imageId: null, name: '新版点心', unitPriceCents: 20000 }] };
+    releaseImage.resolve();
+    await page.getByText(change === 'deleted' ? /所选套餐已删除或不可用/ : /套餐内容已更新，当前录单内容已保留/).waitFor();
+    assert.deepEqual(await visibleOrderFields(page), before);
+    assert.equal(await page.getByText(/已带入「点心套餐」/).count(), 0);
+    if (current) {
+      await page.getByRole('button', { name: '带入商品', exact: true }).click();
+      await page.getByText(/已带入「点心套餐」/).waitFor();
+      assert.equal(await page.locator('[id="items.0.name"]').inputValue(), '新版点心');
+      assert.equal(await page.locator('#totalAmount').inputValue(), '200.00');
+    }
+    assert.deepEqual(errors, []);
+  } finally { releaseImage.resolve(); await context.close(); }
+});
+
+test('前台详情并排显示整单金额，编辑时查看商品价格差额', async () => {
   const { context, page, model, complete, errors } = await createOrderFixture(browser, base);
   try {
     await complete(); await page.locator('[id="items.0.unitPrice"]').fill('10'); await page.locator('#totalAmount').fill('12');
     await page.getByRole('button', { name: '创建订单', exact: true }).click();
     await page.waitForURL('**/#/?date=*');
     await page.goto(base + '/#/orders/' + orderId);
-    await page.locator('.payment-panel').waitFor();
-    await page.getByRole('button', { name: '修改金额', exact: true }).waitFor();
+    const payment = page.locator('.front-payment-panel');
+    await payment.waitFor();
+    const quotes = payment.locator('.order-quoted-prices');
+    const changeAmount = payment.getByRole('button', { name: '修改金额', exact: true });
+    await changeAmount.waitFor();
+    assert.deepEqual(await quotes.locator('dt').allTextContents(), ['原价', '会员价', '成交金额']);
+    for (const width of [320, 390, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      const [original, member, total] = await quotes.locator(':scope > div').evaluateAll(
+        fields => fields.map(field => field.getBoundingClientRect().toJSON()));
+      assert.equal(original.y, member.y);
+      assert.equal(member.y, total.y);
+      assert.ok(original.x < member.x && member.x < total.x);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    }
     await context.route(`**/api/orders/${orderId}`, async route => {
       if (route.request().method() !== 'PATCH') return route.fallback();
       const request = route.request().postDataJSON();
@@ -225,8 +282,25 @@ test('订单详情保留手填金额，改商品单价前后显示差额', async
     await page.locator('.item-form').getByText('商品原价合计 ¥20.00', { exact: false }).waitFor();
     await page.locator('.item-form').getByRole('button', { name: '保存', exact: true }).click();
     await until(() => model.order.version === 1);
-    await page.locator('.payment-panel').getByText('商品原价合计 ¥20.00', { exact: false }).waitFor();
-    assert.equal(await page.locator('.order-amount').innerText(), '¥12.00');
+    await changeAmount.waitFor();
+    assert.equal(await payment.locator('.price-reference').count(), 0);
+    assert.equal(await payment.getByText(/商品原价合计|暂时算不出/).count(), 0);
+    assert.deepEqual(await quotes.locator('dd').allTextContents(), ['¥12.00', '未填写', '¥12.00']);
+    await changeAmount.click();
+    await payment.locator('.amount-editor').getByText('商品原价合计 ¥20.00 · 将采用填写金额', { exact: true }).waitFor();
+    await payment.getByRole('button', { name: '取消', exact: true }).click();
+
+    for (const [originalAmountCents, memberAmountCents, totalAmountCents, expected] of [
+      [null, null, null, ['未填写', '未填写', '未填写']],
+      [20000, 18000, 18000, ['¥200.00', '¥180.00', '¥180.00']],
+      [20000, 0, 0, ['¥200.00', '¥0.00', '¥0.00']],
+      [undefined, undefined, 16800, ['¥168.00', '未填写', '¥168.00']],
+    ]) {
+      Object.assign(model.order, { originalAmountCents, memberAmountCents, totalAmountCents });
+      await page.reload();
+      await quotes.waitFor();
+      assert.deepEqual(await quotes.locator('dd').allTextContents(), expected);
+    }
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

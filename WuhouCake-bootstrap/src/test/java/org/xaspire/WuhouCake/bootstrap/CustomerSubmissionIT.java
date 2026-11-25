@@ -43,6 +43,7 @@ class CustomerSubmissionIT {
         JwtTestKeys.properties(registry);
         registry.add("spring.flyway.default-schema", () -> SCHEMA); registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("spring.datasource.hikari.schema", () -> SCHEMA); registry.add("wuhoucake.identity.redis-namespace", () -> NAMESPACE);
+        registry.add("wuhoucake.authorization.job-permissions.PASTRY_SUPERVISOR", () -> "ORDER_CREATE,ORDER_READ");
     }
     @LocalServerPort int port;
     @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc; @Autowired StringRedisTemplate redis; @Autowired IdentityService identity;
@@ -532,7 +533,7 @@ class CustomerSubmissionIT {
             last = new TransactionTemplate(transactions).execute(tx ->
                     store.submit(source, UUID.randomUUID(), UUID.randomUUID().toString(), null, input, Instant.now()).id().toString());
         }
-        String path = "/api/customer-submissions?mine=true&status=PENDING&keyword=1380000&page=2&size=20";
+        String path = "/api/customer-submissions?view=summary&mine=true&status=PENDING&keyword=1380000&page=2&size=20";
         var before = staff.data("GET", path, null);
         assertEquals(2, before.path("page").asInt()); assertEquals(21, before.path("total").asInt());
         assertEquals(1, before.path("items").size());
@@ -907,6 +908,39 @@ class CustomerSubmissionIT {
         assertEquals("DELETED", staff.data("GET", "/api/customer-submissions/" + second, null).at("/submission/status").asText());
         assertEquals(3, count("customer_order_submission")); assertEquals(1, staff.data("GET", "/api/customer-submissions?mine=false", null).path("total").asInt());
     }
+    @Test void submissionSummaryMatchesReviewWarningsWithoutReturningCandidateDetails() throws Exception {
+        var staff = admin(); var other = employee(staff, "0002", "FRONT_DESK");
+        var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String duplicate = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        var peerInput = content("13500000000", "2026-11-03T00:30:00+08:00");
+        String peer = submit(entry(other), peerInput, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + peer, Map.of("expectedVersion", 0, "review", review(input, staff.id, 12300)));
+        var cancelledInput = content("13900000000", "2026-11-02T18:00:00+08:00");
+        String cancelledOnly = submit(entry(staff), cancelledInput, UUID.randomUUID()).at("/data/submissionId").asText();
+        String cancelledOrder = manualOrder(staff, "139-0000-0000", "2026-11-02");
+        jdbc.update("UPDATE cake_order SET status='CANCELLED' WHERE id=?::uuid", cancelledOrder);
+        var independent = content("13700000000", "2026-11-02T18:00:00+08:00");
+        String confirmed = submit(entry(staff), independent, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + confirmed, Map.of("expectedVersion", 0, "review", review(independent, staff.id, 12300)));
+        staff.data("POST", "/api/customer-submissions/" + confirmed + "/confirm", Map.of("expectedVersion", 1));
+
+        var result = staff.data("GET", "/api/customer-submissions?view=summary&status=ALL", null);
+        assertEquals(3, result.path("total").asInt());
+        var warnings = new HashMap<String, Boolean>();
+        for (var row : result.path("items")) {
+            String id = row.at("/submission/id").asText();
+            var detail = staff.data("GET", "/api/customer-submissions/" + id, null);
+            boolean expected = false;
+            for (var candidate : detail.path("duplicates")) expected |= candidate.path("requiresAcknowledgement").asBoolean();
+            assertTrue(row.path("requiresAcknowledgement").isBoolean());
+            assertEquals(expected, row.path("requiresAcknowledgement").asBoolean());
+            assertFalse(row.has("duplicates"));
+            assertFalse(row.has("duplicateCheckToken"));
+            warnings.put(id, expected);
+        }
+        assertEquals(Map.of(duplicate, true, cancelledOnly, false, confirmed, false), warnings);
+    }
+
     @Test void duplicatesIncludeAllAgesOwnersAndManualOrdersAndConfirmedSubmissionsAppearOnlyAsOrders() throws Exception {
         var staff = admin(); var other = employee(staff, "0002", "FRONT_DESK");
         var input = content("13800000000", "2026-11-02T18:00:00+08:00");
@@ -929,12 +963,15 @@ class CustomerSubmissionIT {
         var current = staff.data("GET", "/api/customer-submissions/" + first, null);
         assertEquals(Set.of(manual, second, confirmedOrder), duplicateIds(current));
         assertEquals("ORDER", duplicate(current, confirmedOrder).path("kind").asText());
+        assertTrue(Set.of("PICKUP", "DELIVERY").contains(duplicate(current, confirmedOrder).path("fulfillmentType").asText()));
+        assertTrue(duplicate(current, second).path("fulfillmentType").isNull());
         var confirmed = staff.data("POST", "/api/customer-submissions/" + first + "/confirm", Map.of("expectedVersion", 1,
                 "duplicateCheckToken", current.path("duplicateCheckToken").asText()));
         var log = confirmed.at("/activities/0");
         assertEquals(staff.id, log.path("actorId").asText());
         assertEquals("CONFIRMED_INDEPENDENT_ORDER", log.at("/details/duplicateReview/decision").asText());
         assertEquals(3, log.at("/details/duplicateReview/records").size());
+        assertFalse(log.at("/details/duplicateReview/records/0").has("fulfillmentType"));
     }
     @Test void duplicateMatchingUsesReviewedAndCurrentContactsAndShanghaiDatesWithoutCountryGuessing() throws Exception {
         var staff = admin(); String token = entry(staff);
@@ -1008,6 +1045,38 @@ class CustomerSubmissionIT {
         assertEquals(404, new Client().request("GET", "/api/public/order-entries/" + current, null).status);
         assertEquals(1, admin.data("GET", "/api/customer-submissions?mine=false", null).path("total").asInt());
     }
+    @Test void entryManagementReportsOwnerEligibilitySeparatelyFromTheSwitch() throws Exception {
+        var manager = admin();
+        var front = employee(manager, "0002", "FRONT_DESK");
+        String token = entry(front);
+        String management = "/api/customer-submissions/entry?ownerId=" + front.id;
+        String publicEntry = "/api/public/order-entries/" + token;
+        String employeePath = "/api/admin/employees/" + front.id;
+        var visitor = new Client();
+
+        assertTrue(manager.data("GET", management, null).path("ownerEligible").asBoolean());
+        assertEquals(200, visitor.request("GET", publicEntry, null).status);
+        var before = front.data("GET", "/api/me", null);
+        manager.data("PATCH", employeePath, Map.of("expectedVersion", before.path("version").asLong(), "nickname", "FRONT_DESK", "jobRoles", List.of("BAKER")));
+        var changed = manager.data("GET", management, null);
+        assertTrue(changed.path("enabled").asBoolean());
+        assertFalse(changed.path("ownerEligible").asBoolean(true));
+        assertEquals(404, visitor.request("GET", publicEntry, null).status);
+
+        var disabled = manager.data("POST", management, Map.of("action", "DISABLE"));
+        assertFalse(disabled.path("enabled").asBoolean());
+        var enabled = manager.data("POST", management, Map.of("action", "ENABLE"));
+        assertTrue(enabled.path("enabled").asBoolean());
+        assertFalse(enabled.path("ownerEligible").asBoolean(true));
+        assertEquals(404, visitor.request("GET", publicEntry, null).status);
+
+        var updated = front.data("GET", "/api/me", null);
+        manager.data("PATCH", employeePath, Map.of("expectedVersion", updated.path("version").asLong(), "nickname", "FRONT_DESK", "jobRoles", List.of("FRONT_DESK")));
+        var restored = manager.data("GET", management, null);
+        assertTrue(restored.path("ownerEligible").asBoolean());
+        assertEquals(changed.path("url"), restored.path("url"));
+        assertEquals(200, visitor.request("GET", publicEntry, null).status);
+    }
     @Test void concurrentConfirmationsCreateExactlyOneOrderAndReturnTheSameResult() throws Exception {
         var staff = admin(); var input = content("13800000000", "2026-11-02T18:00:00+08:00");
         String id = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
@@ -1027,8 +1096,11 @@ class CustomerSubmissionIT {
         String first = submit(token, input, UUID.randomUUID()).at("/data/submissionId").asText();
         String second = submit(token, input, UUID.randomUUID()).at("/data/submissionId").asText();
         String third = submit(token, independent, UUID.randomUUID()).at("/data/submissionId").asText();
+        var secondCredited = employee(staff, "0002", "FRONT_DESK");
+        var thirdCredited = employee(staff, "0003", "FRONT_DESK");
         for (String id : List.of(first, second, third)) {
-            var current = new LinkedHashMap<>(review(id.equals(third) ? independent : input, staff.id, 10000));
+            String credited = id.equals(third) ? thirdCredited.id : id.equals(second) ? secondCredited.id : staff.id;
+            var current = new LinkedHashMap<>(review(id.equals(third) ? independent : input, credited, 10000));
             if (id.equals(third)) current.put("plannedHandoffAt", independent.get("requestedReceiveAt"));
             staff.data("PATCH", "/api/customer-submissions/" + id, Map.of("expectedVersion", 0, "review", current));
         }
@@ -1067,6 +1139,104 @@ class CustomerSubmissionIT {
         assertEquals(2, count("cake_order"));
         assertEquals(200, confirmWithToken(staff, second, staff.data("GET", "/api/customer-submissions/" + second, null)).status);
         assertEquals(3, count("cake_order"));
+    }
+
+    @Test void manualOrderAfterScanRequiresOneAcknowledgementAndReplaysOriginalOrder() throws Exception {
+        var staff = admin();
+        var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String submission = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 10000)));
+        var scanned = staff.data("POST", "/api/customer-submissions/" + submission + "/confirm", Map.of("expectedVersion", 1));
+
+        var manual = manualInput("138 (0000)-0000", "2026-11-02");
+        String key = UUID.randomUUID().toString();
+        var warning = staff.request("POST", "/api/orders", manual, key);
+        assertEquals(409, warning.status, warning.body.toString());
+        assertEquals("DUPLICATE_REVIEW_REQUIRED", warning.body.path("code").asText());
+        assertEquals(1, warning.body.at("/data/count").asInt());
+        assertEquals(1, warning.body.at("/data/orderNos").size());
+        assertFalse(warning.body.at("/data/token").asText().contains(scanned.at("/submission/orderId").asText()));
+        assertEquals(1, count("cake_order"));
+        assertEquals(0, count("cake_order_creation"));
+        var saved = staff.request("POST", "/api/orders", manual, key, warning.body.at("/data/token").asText());
+        assertEquals(201, saved.status, saved.body.toString());
+        assertNotEquals(scanned.at("/submission/orderId"), saved.body.at("/data/orderId"));
+        assertEquals(saved.body.at("/data/orderId"), staff.request("POST", "/api/orders", manual, key).body.at("/data/orderId"));
+        assertEquals(2, count("cake_order"));
+        assertEquals("CONFIRMED_INDEPENDENT_ORDER", jdbc.queryForObject(
+                "SELECT details#>>'{duplicateReview,decision}' FROM cake_order_activity WHERE order_id=?::uuid AND type='CREATED'",
+                String.class, saved.body.at("/data/orderId").asText()));
+    }
+
+    @Test void manualOrderDoesNotExposeMatchesToStaffWithoutPhoneAccess() throws Exception {
+        var staff = admin();
+        var restricted = employee(staff, "0002", "PASTRY_SUPERVISOR");
+        String phone = "13800000000", date = "2026-11-02";
+        manualOrder(staff, phone, date);
+        var input = new LinkedHashMap<>(manualInput(phone, date));
+        input.remove("totalAmountCents");
+
+        var saved = restricted.request("POST", "/api/orders", input, UUID.randomUUID().toString());
+        assertEquals(201, saved.status, saved.body.toString());
+        assertTrue(saved.body.at("/data/customer").isNull());
+        assertEquals(2, count("cake_order"));
+    }
+
+    @Test void manualReviewRefreshesForOrdersMovedIntoTheGroupAndAcceptsRemovedCandidates() throws Exception {
+        var staff = admin();
+        String first = manualOrder(staff, "13800000000", "2026-11-02");
+        String second = manualOrder(staff, "13900000000", "2026-11-02");
+        var manual = manualInput("13800000000", "2026-11-02");
+        String key = UUID.randomUUID().toString();
+        var warning = staff.request("POST", "/api/orders", manual, key);
+        assertEquals(409, warning.status, warning.body.toString());
+
+        staff.data("PATCH", "/api/orders/" + second + "/information",
+                Map.of("expectedVersion", 0, "changes", Map.of("phone", "13800000000")));
+        var changed = staff.request("POST", "/api/orders", manual, key, warning.body.at("/data/token").asText());
+        assertEquals(409, changed.status, changed.body.toString());
+        assertEquals(2, changed.body.at("/data/count").asInt());
+        staff.data("POST", "/api/orders/" + first + "/cancel", Map.of("expectedVersion", 0, "reason", "取消合成订单"));
+        var saved = staff.request("POST", "/api/orders", manual, key, changed.body.at("/data/token").asText());
+        assertEquals(201, saved.status, saved.body.toString());
+        assertEquals(3, count("cake_order"));
+    }
+
+    @Test void scanWaitsForAnInFlightManualOrderWithTheSamePhoneAndPickupDate() throws Exception {
+        var staff = admin();
+        var manualStaff = employee(staff, "0002", "FRONT_DESK");
+        var input = content("13800000000", "2026-11-02T18:00:00+08:00");
+        String submission = submit(entry(staff), input, UUID.randomUUID()).at("/data/submissionId").asText();
+        staff.data("PATCH", "/api/customer-submissions/" + submission, Map.of("expectedVersion", 0, "review", review(input, staff.id, 10000)));
+        var manualHoldingGroup = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        doAnswer(call -> {
+            var candidates = call.callRealMethod();
+            manualHoldingGroup.countDown();
+            await(release);
+            return candidates;
+        }).when(store).activeOrders(any());
+
+        try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            var manual = pool.submit(() -> manualOrder(manualStaff, "138-0000-0000", "2026-11-02"));
+            Future<Result> scan;
+            try {
+                await(manualHoldingGroup);
+                scan = pool.submit(() -> staff.request("POST", "/api/customer-submissions/" + submission + "/confirm", Map.of("expectedVersion", 1)));
+                var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                boolean waiting;
+                do {
+                    waiting = Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted)", Boolean.class));
+                    if (!waiting) Thread.sleep(20);
+                } while (!waiting && System.nanoTime() < deadline);
+                assertTrue(waiting);
+            } finally { release.countDown(); }
+            assertFalse(manual.get(10, TimeUnit.SECONDS).isBlank());
+            var result = scan.get(10, TimeUnit.SECONDS);
+            assertEquals(409, result.status, result.body.toString());
+            assertEquals("DUPLICATE_REVIEW_REQUIRED", result.body.path("code").asText());
+        }
+        assertEquals(1, count("cake_order"));
     }
 
     @Test void confirmationLogFailureRollsBackOrderAndSubmissionTogether() throws Exception {
@@ -1296,10 +1466,13 @@ class CustomerSubmissionIT {
                 "duplicateCheckToken", detail.path("duplicateCheckToken").asText()));
     }
     private String manualOrder(Client staff, String phone, String date) throws Exception {
-        return staff.data("POST", "/api/orders", Map.of("customer", Map.of("phone", phone),
+        return staff.data("POST", "/api/orders", manualInput(phone, date)).path("orderId").asText();
+    }
+    private static Map<String, Object> manualInput(String phone, String date) {
+        return Map.of("customer", Map.of("phone", phone),
                 "fulfillment", Map.of("type", "PICKUP", "requestedReceiveDate", date, "plannedHandoffAt", date + "T16:00:00+08:00"),
                 "items", List.of(Map.of("name", "手工蛋糕", "productType", "CAKE", "quantity", 2, "attributes", Map.of("size", "8"))),
-                "totalAmountCents", 9900)).path("orderId").asText();
+                "totalAmountCents", 9900);
     }
     private long entryAuditCount() { return jdbc.queryForObject("SELECT count(*) FROM audit_operation WHERE action LIKE 'order.entry_%'", Long.class); }
     private static void await(CountDownLatch latch) {
@@ -1354,8 +1527,13 @@ class CustomerSubmissionIT {
         JsonNode data(String method, String path, Object body) throws Exception { var result = request(method, path, body); assertTrue(result.status >= 200 && result.status < 300, result.body.toString()); return result.body.path("data"); }
         Result request(String method, String path, Object body) throws Exception { return request(method, path, body, null); }
         Result request(String method, String path, Object body, String key) throws Exception {
+            return request(method, path, body, key, null);
+        }
+        Result request(String method, String path, Object body, String key, String duplicateToken) throws Exception {
             boolean auth = path.startsWith("/api/auth/"); if (auth && !method.equals("GET")) request("GET", "/api/auth/csrf", null);
             var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).timeout(java.time.Duration.ofSeconds(20)).header("Content-Type", "application/json");
+            if (method.equals("POST") && path.equals("/api/orders")) builder.header("X-Wuhou-Order-Submission", "3");
+            if (duplicateToken != null) builder.header("X-Wuhou-Duplicate-Check", duplicateToken);
             if (token != null && !auth) builder.header("Authorization", "Bearer " + token); if (key != null) builder.header("Idempotency-Key", key);
             if (auth && !method.equals("GET")) cookies.getCookieStore().getCookies().stream().filter(c -> c.getName().equals("XSRF-TOKEN")).findFirst().ifPresent(c -> builder.header("X-XSRF-TOKEN", c.getValue()));
             builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));

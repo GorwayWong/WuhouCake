@@ -31,13 +31,15 @@ test('管理员查看服务器状态，刷新看到告警，权限变化后隐�
     await page.getByRole('heading', { name: '服务器情况' }).waitFor();
     await page.getByText('20 GiB（50.0%）').waitFor();
     await page.getByText('校验通过').waitFor();
-    data = { ...data, alerts: ['DISK_LOW', 'DAILY_FAILED', 'DAILY_OVERDUE'], daily: { ...data.daily,
+    data = { ...data, alerts: ['DISK_LOW', 'DAILY_FAILED', 'DAILY_OVERDUE', 'DAILY_BACKUP_CORRUPT', 'PREDEPLOY_INTEGRITY_UNCONFIRMED'], daily: { ...data.daily,
       latestAttempt: { state: 'FAILED', startedAt: when, finishedAt: when, error: 'VERIFY_FAILED' } } };
     const refresh = page.getByRole('button', { name: '刷新', exact: true });
     await refresh.click();
     await page.getByText('备份验读失败', { exact: true }).waitFor();
     await page.getByText(/日常备份已逾期/).waitFor();
     await page.getByText(/磁盘余量不足/).waitFor();
+    await page.getByText(/发现损坏的日常备份/).waitFor();
+    await page.getByText(/发布前备份完整性待确认/).waitFor();
     await page.getByRole('link', { name: /服务器情况.*有提醒/ }).waitFor();
     assert.equal(await page.getByText('3 MiB', { exact: true }).count(), 1);
     data = { state: 'UNKNOWN' };

@@ -51,7 +51,7 @@ for (const kind of ['submissions', 'payment', 'production', 'reminders']) test(`
     const next = paging.getByRole(kind === 'submissions' || kind === 'reminders' ? 'button' : 'link', { name: '下一页', exact: true });
     const refreshPage = () => kind === 'submissions'
       ? page.getByRole('button', { name: '刷新列表', exact: true }).click()
-      : page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      : page.evaluate(() => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })));
     await next.click(); await eventually(async () => /第 2/.test(await paging.innerText()));
     await next.click(); await eventually(async () => /第 3/.test(await paging.innerText()));
     for (const elapsed of [0, 16_000]) {

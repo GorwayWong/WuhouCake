@@ -2,7 +2,7 @@ import { businessDate } from './dates';
 import { useEffect, useRef } from 'react';
 import { OrderDraftDiscard } from './OrderDraftDiscard';
 import { X } from '@phosphor-icons/react';
-import type { DraftCandidate } from './useOrderDraft';
+import type { DraftCandidate } from './orderDraftStorage';
 
 export function OrderDraftRecovery({ candidate, accept, discard, dismiss, blocked }: {
   candidate: DraftCandidate; accept: () => void; discard: () => boolean | Promise<boolean>; dismiss: () => void; blocked: boolean;

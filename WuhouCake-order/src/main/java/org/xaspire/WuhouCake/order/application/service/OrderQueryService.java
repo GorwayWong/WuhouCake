@@ -104,7 +104,7 @@ public class OrderQueryService {
         int current = (int) Math.min(page, Math.max(1, (total + 9) / 10));
         var rows = queries.paymentOrders(date, kind, from, to, (current - 1L) * 10).stream()
                 .map(row -> new OrderQueryViews.PaymentOrder(row.orderId(), row.orderNo(), row.createdAt(), row.calendarDate(),
-                        row.paidAt(), row.amountCents(), row.paymentStatus(), row.status(), row.currentStageCode())).toList();
+                        row.paidAt(), row.amountCents(), row.paymentStatus(), row.status(), row.currentStageCode(), row.fulfillmentType())).toList();
         return new OrderQueryViews.PaymentOrders(date, kind, current, total, rows);
     }
 

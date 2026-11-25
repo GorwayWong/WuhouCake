@@ -8,6 +8,10 @@ const alerts = {
   DAILY_FAILED: '日常备份失败或长时间未完成。请查看服务器备份日志并补跑。',
   DAILY_OVERDUE: '日常备份已逾期。请检查定时任务并补跑。',
   PREDEPLOY_FAILED: '发布前备份失败或长时间未完成。请核对日志后再发布。',
+  DAILY_BACKUP_CORRUPT: '发现损坏的日常备份。请核对服务器备份日志和剩余可用副本。',
+  PREDEPLOY_BACKUP_CORRUPT: '发现损坏的发布前备份。请核对服务器备份日志和剩余可用副本。',
+  DAILY_INTEGRITY_UNCONFIRMED: '日常备份完整性待确认。请检查备份复核任务。',
+  PREDEPLOY_INTEGRITY_UNCONFIRMED: '发布前备份完整性待确认。请检查备份复核任务。',
 };
 const failures = {
   DUMP_FAILED: '数据库导出失败',

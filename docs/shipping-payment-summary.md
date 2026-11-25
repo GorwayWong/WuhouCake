@@ -38,7 +38,7 @@
 
 工作台保留已付款和未付款两个明细入口，分别打开当天出货已付款订单、当天出货未付款订单列表；原有当天付款订单（`RECEIPT`）路由仍可访问。列表每页 10 条，显示订单号、下单时间（需要业务资料读取权限）、出货日期、付款时间、整单金额及当前付款和订单状态。左上角逐级返回列表、原工作台，保留日期、视图、筛选、页码和滚动位置；业务数据继续刷新。
 
-`GET /api/orders/workbench/payment-orders?date=YYYY-MM-DD&kind=RECEIPT&page=1` 要求 `ORDER_READ` 与 `ORDER_AMOUNT_READ`。kind 为 `RECEIPT`、`SHIPPING_PAID` 或 `SHIPPING_UNPAID`；page 从 1 开始，返回 date、kind、实际 page、total 和 orders。请求页超过末页时返回末页。
+`GET /api/orders/workbench/payment-orders?date=YYYY-MM-DD&kind=RECEIPT&page=1` 要求 `ORDER_READ` 与 `ORDER_AMOUNT_READ`。kind 为 `RECEIPT`、`SHIPPING_PAID` 或 `SHIPPING_UNPAID`；page 从 1 开始，返回 date、kind、实际 page、total 和 orders。订单行的 `fulfillmentType` 用于区分配送和自提状态。请求页超过末页时返回末页。
 
 RECEIPT 使用北京时间当天的左闭右开付款时间范围，当前仍为已付款，出货日期不限，包含已取消订单；付款时间缺失不计入。SHIPPING 两组与出货汇总完全一致，排除取消订单。前者按付款时间倒序、订单号排序，后者按交接时间（空值在后）、订单号排序。金额为分单位字符串，缺失为 null。订单改为已付款时记录服务器时间，重复标记不更新时间；改回未付款清空，再次付款重新记录。
 

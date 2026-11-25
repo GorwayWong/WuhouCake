@@ -145,6 +145,19 @@ class OrderStreamWebTest {
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_NOT_CANCELLABLE"));
     }
 
+    @Test void uploadReceiptsUseOrderReadPermission() throws Exception {
+        UUID id = UUID.randomUUID(), request = UUID.randomUUID(), item = UUID.randomUUID();
+        String path = "/api/orders/" + id + "/image-upload-receipts";
+        withPermissions(Set.of(ORDER_IMAGE_UPLOAD));
+        mvc.perform(get(path).param("requestId", request.toString()).header("Authorization", "Bearer valid"))
+                .andExpect(status().isForbidden());
+        verify(images, never()).uploadReceipts(any(), any());
+        withPermissions(Set.of(ORDER_READ));
+        when(images.uploadReceipts(id, List.of(request))).thenReturn(java.util.Map.of(request, item));
+        mvc.perform(get(path).param("requestId", request.toString()).header("Authorization", "Bearer valid"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data." + request).value(item.toString()));
+    }
+
     @Test void operationPermissionsRejectWritesExportsAndSensitiveReadsBeforeCallingServices() throws Exception {
         withPermissions(Set.of(ORDER_READ, ORDER_PRODUCTION_UPDATE));
         String id = UUID.randomUUID().toString(), item = UUID.randomUUID().toString();
@@ -220,9 +233,10 @@ class OrderStreamWebTest {
         var date = LocalDate.of(2026, 10, 23);
         when(queries.paymentOrders(date, "RECEIPT", 1)).thenReturn(new OrderQueryViews.PaymentOrders(date, "RECEIPT", 1, 1,
                 List.of(new OrderQueryViews.PaymentOrder(UUID.randomUUID(), "TEST001", Instant.now(), date,
-                        Instant.now(), "12345", "PAID", "CANCELLED", null))));
+                        Instant.now(), "12345", "PAID", "CANCELLED", null, "DELIVERY"))));
         mvc.perform(get(path).header("Authorization", "Bearer valid")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.orders[0].createdAt").isEmpty())
+                .andExpect(jsonPath("$.data.orders[0].fulfillmentType").value("DELIVERY"))
                 .andExpect(jsonPath("$.data.orders[0].amountCents").value("12345"))
                 .andExpect(jsonPath("$.data.orders[0].paidAt").isNotEmpty());
     }

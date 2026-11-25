@@ -5,6 +5,9 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.function.Function;
+import org.xaspire.WuhouCake.order.domain.port.CustomerSubmissions;
+import org.xaspire.WuhouCake.order.domain.port.CustomerSubmissions.DuplicateGroup;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,6 +32,7 @@ public class OrderService {
     private static final int MAX_ORDER_SPEC_BYTES = 1024 * 1024;
     private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity;
     private final Orders orders;
+    private final CustomerSubmissions submissions;
     private final OrderActivities activities;
     private final IdGenerator ids;
     private final Clock clock;
@@ -36,21 +40,26 @@ public class OrderService {
     private final ApplicationEventPublisher events;
 
     public OrderService(Orders orders, OrderActivities activities, IdGenerator ids, Clock clock, ApplicationEventPublisher events,
-            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity, JsonCodec json) {
+            org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity, JsonCodec json, CustomerSubmissions submissions) {
         this.orders = orders; this.activities = activities; this.ids = ids; this.clock = clock;
         this.events = events;
-        this.identity = identity; this.json = json;
+        this.identity = identity; this.json = json; this.submissions = submissions;
     }
     @Transactional
     public OrderViews.Detail create(OrderCommands.Create command, Operator operator) {
-        return createInternal(command, operator, null);
+        return createInternal(command, operator, null, null, group -> List.of());
     }
     @Transactional
-    public OrderViews.Detail createCustomer(OrderCommands.Create command, Operator operator, UUID submissionId) {
-        if (command.creditedEmployeeId() == null) throw invalid();
-        return createInternal(command, operator, submissionId);
+    public OrderViews.Detail createManual(OrderCommands.Create command, Operator operator,
+            Function<DuplicateGroup, List<String>> reviewDuplicates) {
+        return createInternal(command, operator, null, null, reviewDuplicates);
     }
-    private OrderViews.Detail createInternal(OrderCommands.Create command, Operator operator, UUID submissionId) {
+    @Transactional
+    public OrderViews.Detail createCustomer(OrderCommands.Create command, Operator operator, UUID submissionId, Attribution employee) {
+        return createInternal(command, operator, submissionId, employee, group -> List.of());
+    }
+    private OrderViews.Detail createInternal(OrderCommands.Create command, Operator operator, UUID submissionId,
+            Attribution credited, Function<DuplicateGroup, List<String>> reviewDuplicates) {
         var actor = actor(operator); var now = now();
         if (command.customer() == null || command.fulfillment() == null || command.items() == null || command.items().isEmpty()) throw invalid();
         Order.requireItemCapacity(command.items().size());
@@ -72,8 +81,17 @@ public class OrderService {
             return createItem(item, itemId, now, submissionId != null, "ITEM_SUM".equals(command.pricingMode()));
         }).toList();
         checkOrderSpecSize(items);
-        var employee = selectEmployee(submissionId == null ? actor.accountId() : command.creditedEmployeeId());
-        var order = Order.create(ids.nextId(), orders.nextNumber(), contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(), money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod(), command.pricingMode());
+        var employee = submissionId == null ? selectEmployee(actor.accountId()) : credited;
+        var reviewedOrders = new ArrayList<String>();
+        var order = Order.createWithOrderNumber(ids.nextId(), () -> {
+            if (submissionId == null) {
+                var group = new DuplicateGroup(contact.phone(), plan.pickupDate());
+                submissions.lockOrderDuplicateGroup(group);
+                reviewedOrders.addAll(reviewDuplicates.apply(group));
+            }
+            return orders.nextNumber();
+        }, contact, plan, money(command.totalAmountCents()), items, actor.accountId(), now, employee, command.orderingMethod(),
+                money(command.originalAmountCents()), money(command.memberAmountCents()), command.paymentMethod(), command.pricingMode());
         orders.create(order);
         var creation = new LinkedHashMap<String, Object>();
         creation.put("pricingMode", order.pricingMode());
@@ -82,6 +100,8 @@ public class OrderService {
         creation.put("totalAmountCents", order.totalAmountCents()); creation.put("paymentMethod", order.paymentMethod());
         creation.put("paidAt", order.paidAt() == null ? null : order.paidAt().toString());
         creation.put("creditedEmployeeId", employee.accountId().toString()); creation.put("creditedEmployeeName", employee.nickname());
+        if (!reviewedOrders.isEmpty()) creation.put("duplicateReview",
+                Map.of("decision", "CONFIRMED_INDEPENDENT_ORDER", "orderIds", reviewedOrders));
         if (submissionId != null) { creation.put("source", "CUSTOMER_SUBMITTED"); creation.put("submissionId", submissionId.toString()); }
         activities.append(OrderActivity.append(order.id(), null, "CREATED", submissionId == null ? "创建订单" : "确认客户填单 · 来源：用户填写", creation, actor, now));
         changed(order, null, OrderChanged.Type.CREATED);
@@ -196,11 +216,17 @@ public class OrderService {
             catch (RuntimeException failure) { throw invalid(); }
             if (employee == null || !employee.accountId().equals(selected)) employee = selectEmployee(selected);
         }
+        var oldGroup = duplicateGroup(order);
         var previousAddress = order.fulfillment().address();
         var now = now(); var changed = order.reviseInformation(command.changes(), now, employee);
         checkAddress(order.fulfillment().address(), previousAddress);
         if (changed.isEmpty()) orders.verifyVersion(id, expected);
         else {
+            var newGroup = duplicateGroup(order);
+            if (!oldGroup.equals(newGroup)) {
+                var groups = new TreeSet<>(List.of(oldGroup, newGroup));
+                groups.forEach(submissions::lockOrderDuplicateGroup);
+            }
             orders.reviseInformation(order, expected);
             activities.append(OrderActivity.append(id, null, "ORDER_INFORMATION_CHANGED", "更正订单资料", changed, actor, now));
             changed(order, null, OrderChanged.Type.ORDER_INFORMATION_CHANGED);
@@ -262,6 +288,7 @@ public class OrderService {
         var order = requireOrder(id);
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var previousItems = order.activeItems(); var now = now();
+        submissions.lockOrderDuplicateGroup(duplicateGroup(order));
         var changed = order.restartCancelled(now);
         orders.changeProduction(order, expected, changedProductionItems(previousItems, order));
         activities.append(OrderActivity.append(id, null, "ORDER_PRODUCTION_CHANGED", "恢复已取消订单至出胚", changed, actor, now));
@@ -304,6 +331,7 @@ public class OrderService {
         var actor = actor(operator); long expected = nonNegativeInteger(command.expectedVersion());
         var order = requireOrder(id);
         if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        submissions.lockOrderDuplicateGroup(duplicateGroup(order));
         var now = now(); var changed = order.cancel(command.reason(), now);
         orders.changeStatus(order, expected);
         activities.append(OrderActivity.append(id, null, "ORDER_CANCELLED", command.reason(), changed, actor, now));
@@ -316,11 +344,13 @@ public class OrderService {
             throw new OrderFailure("ORDER_DELETED_FORBIDDEN");
         long expected = nonNegativeInteger(command.expectedVersion());
         var actor = actor(operator);
+        var beforeLock = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        submissions.lockOrderDuplicateGroup(duplicateGroup(beforeLock));
         var order = orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
         if (order.deletion() != null) {
             return detail(order, activities.recentItemNotes(id));
         }
-        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (order.version() != expected || beforeLock.version() != order.version()) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var now = now(); order.delete(command.reason(), actor, now);
         orders.delete(order, expected);
         activities.append(OrderActivity.append(id, null, "ORDER_DELETED", order.deletion().reason(), Map.of(), actor, now));
@@ -335,8 +365,10 @@ public class OrderService {
             throw new OrderFailure("ORDER_DELETED_FORBIDDEN");
         long expected = nonNegativeInteger(command.expectedVersion());
         var actor = actor(operator);
+        var beforeLock = orders.find(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
+        submissions.lockOrderDuplicateGroup(duplicateGroup(beforeLock));
         var order = orders.lock(id).orElseThrow(() -> new OrderFailure("ORDER_NOT_FOUND"));
-        if (order.version() != expected) throw new OrderFailure("CONCURRENT_MODIFICATION");
+        if (order.version() != expected || beforeLock.version() != order.version()) throw new OrderFailure("CONCURRENT_MODIFICATION");
         var deletion = order.deletion();
         var now = now();
         order.restore(now);
@@ -393,7 +425,10 @@ public class OrderService {
     }
     private Instant now() { return clock.instant().truncatedTo(ChronoUnit.MICROS); }
     private static Actor actor(Operator operator) { return new Actor(operator.accountId(), operator.nickname()); }
-    private Attribution selectEmployee(UUID id) {
+    private static DuplicateGroup duplicateGroup(Order order) {
+        return new DuplicateGroup(order.customer().phone(), order.fulfillment().pickupDate());
+    }
+    Attribution selectEmployee(UUID id) {
         var employee = identity.selectEmployee(id);
         return new Attribution(employee.accountId(), employee.employeeNumber(), employee.nickname());
     }

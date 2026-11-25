@@ -16,7 +16,7 @@ public interface OrderQueries {
     long paymentOrderCount(LocalDate date, String kind, Instant from, Instant to);
     List<PaymentOrder> paymentOrders(LocalDate date, String kind, Instant from, Instant to, long offset);
     record PaymentOrder(UUID orderId, String orderNo, Instant createdAt, LocalDate calendarDate,
-            Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
+            Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode, String fulfillmentType) { }
     List<CalendarDay> calendar(LocalDate from, LocalDate to);
     List<PendingOrder> pending(LocalDate date);
     WorkbenchBudget workbenchBudget(LocalDate date);

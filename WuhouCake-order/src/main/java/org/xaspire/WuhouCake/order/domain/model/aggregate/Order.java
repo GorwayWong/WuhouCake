@@ -14,6 +14,8 @@ import org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
 import static org.xaspire.WuhouCake.order.domain.model.valobj.OrderValues.*;
 
+import java.util.function.Supplier;
+
 public final class Order {
     private final UUID id;
     private final String orderNo;
@@ -79,13 +81,21 @@ public final class Order {
             FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
             Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion, String orderingMethod,
             Long originalAmountCents, Long memberAmountCents, String paymentMethod, String pricingMode) {
+        this(id, () -> orderNo, version, status, paymentStatus, currentStageCode, customer, fulfillment, totalAmountCents,
+                createdBy, createdAt, confirmedAt, updatedAt, items, creditedEmployee, paidAt, deletion, orderingMethod,
+                originalAmountCents, memberAmountCents, paymentMethod, pricingMode);
+    }
+    private Order(UUID id, Supplier<String> orderNumber, long version, String status, String paymentStatus, String currentStageCode,
+            CustomerContact customer, FulfillmentPlan fulfillment, Long totalAmountCents, UUID createdBy, Instant createdAt, Instant confirmedAt,
+            Instant updatedAt, List<OrderItem> items, Attribution creditedEmployee, Instant paidAt, OrderDeletion deletion, String orderingMethod,
+            Long originalAmountCents, Long memberAmountCents, String paymentMethod, String pricingMode) {
         this.pricingMode = ItemPricing.mode(pricingMode);
         this.originalAmountCents = money(originalAmountCents); this.memberAmountCents = money(memberAmountCents);
         this.paymentMethod = normalizePaymentMethod(paymentMethod);
         if (this.paymentMethod != null && !paymentStatus.equals(this.paymentMethod.equals("UNPAID") ? "UNPAID" : "PAID")) throw invalid();
         if ((originalAmountCents != null || memberAmountCents != null) && !Objects.equals(totalAmountCents, memberAmountCents != null ? memberAmountCents : originalAmountCents)) throw invalid();
         this.orderingMethod = normalizeOrderingMethod(orderingMethod);
-        this.id = Objects.requireNonNull(id); this.orderNo = requiredText(orderNo, 32);
+        this.id = Objects.requireNonNull(id);
         this.version = nonNegativeInteger(version); this.status = Objects.requireNonNull(status); this.paymentStatus = Objects.requireNonNull(paymentStatus);
         if (currentStageCode != null || !ORDER_STATUSES.contains(status)) throw invalid();
         this.paidAt = paidAt;
@@ -97,6 +107,7 @@ public final class Order {
         if (items == null || items.isEmpty()) throw invalid();
         for (var item : items) if (this.items.putIfAbsent(item.itemId(), item) != null) throw invalid();
         if (activeItems().isEmpty()) throw invalid();
+        this.orderNo = requiredText(orderNumber.get(), 32);
     }
     public static void requireItemCapacity(int size) {
         if (size > 100) throw new OrderFailure("ORDER_ITEM_LIMIT_EXCEEDED");
@@ -116,6 +127,12 @@ public final class Order {
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod,
             Long originalAmountCents, Long memberAmountCents, String paymentMethod) {
+        return createPriced(id, () -> orderNo, customer, fulfillment, total, items, actorId, now, creditedEmployee,
+                orderingMethod, originalAmountCents, memberAmountCents, paymentMethod);
+    }
+    private static Order createPriced(UUID id, Supplier<String> orderNumber, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
+            List<OrderItem> items, UUID actorId, Instant now, Attribution creditedEmployee, String orderingMethod,
+            Long originalAmountCents, Long memberAmountCents, String paymentMethod) {
         if (items != null) requireItemCapacity(items.size());
         Long original = money(originalAmountCents), member = money(memberAmountCents);
         Long effective = member != null ? member : original;
@@ -125,20 +142,26 @@ public final class Order {
         var method = normalizePaymentMethod(paymentMethod);
         boolean paid = method != null && !method.equals("UNPAID");
         if (paid && effective == null) throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
-        return new Order(id, orderNo, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, effective,
-                actorId, now, now, now, items, creditedEmployee, paid ? now : null, null, orderingMethod, original, member, method);
+        return new Order(id, orderNumber, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, effective,
+                actorId, now, now, now, items, creditedEmployee, paid ? now : null, null, orderingMethod, original, member, method, "MANUAL");
     }
     public static Order create(UUID id, String orderNo, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
             List<OrderItem> items, UUID actorId, Instant now, Attribution employee, String orderingMethod,
             Long original, Long member, String method, String pricingMode) {
+        return createWithOrderNumber(id, () -> orderNo, customer, fulfillment, total, items, actorId, now, employee,
+                orderingMethod, original, member, method, pricingMode);
+    }
+    public static Order createWithOrderNumber(UUID id, Supplier<String> orderNumber, CustomerContact customer, FulfillmentPlan fulfillment, Long total,
+            List<OrderItem> items, UUID actorId, Instant now, Attribution employee, String orderingMethod,
+            Long original, Long member, String method, String pricingMode) {
         if (ItemPricing.mode(pricingMode).equals("MANUAL"))
-            return create(id, orderNo, customer, fulfillment, total, items, actorId, now, employee, orderingMethod, original, member, method);
+            return createPriced(id, orderNumber, customer, fulfillment, total, items, actorId, now, employee, orderingMethod, original, member, method);
         if (items != null) requireItemCapacity(items.size());
         var totals = totals(items);
         var payment = normalizePaymentMethod(method);
         boolean paid = payment != null && !payment.equals("UNPAID");
         if (paid && totals.total() == null) throw new OrderFailure("ORDER_QUOTE_INCOMPLETE");
-        return new Order(id, orderNo, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, totals.total(),
+        return new Order(id, orderNumber, 0, "CAKE_BASE", paid ? "PAID" : "UNPAID", null, customer, fulfillment, totals.total(),
                 actorId, now, now, now, items, employee, paid ? now : null, null, orderingMethod,
                 totals.original(), totals.member(), payment, "MANUAL");
     }

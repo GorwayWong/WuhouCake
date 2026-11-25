@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ArrowRight, DownloadSimple, QrCode } from '@phosphor-icons/react';
 import { api, ApiError, creationResultUnknown, readQuery } from './api';
-import { Empty, ErrorNotice, Loading, money, statusNames } from './ui';
+import { Empty, ErrorNotice, Loading, money, Status, statusNames } from './ui';
 import { EmployeeSelect } from './EmployeeSelect';
 import { Select } from './Select';
 import { SubmissionFields } from './SubmissionFields';
@@ -58,53 +58,68 @@ function ReviewSummary({ value }: { value: unknown }) {
 }
 function DuplicateRecords({ records, historical = false }: { records: SubmissionDuplicate[]; historical?: boolean }) {
   return <ul className="duplicate-records">{records.map(record => <li key={`${record.kind}:${record.id}`}>
-    <div className="note-meta"><strong>{record.kind === 'ORDER' ? `订单 #${record.orderNo}` : `填单 F${record.id}`}</strong><span>{record.kind === 'SUBMISSION' ? '待确认' : statusNames[record.status] || record.status}</span>{record.status === 'CANCELLED' && <span>历史参考</span>}</div>
+    <div className="note-meta"><strong>{record.kind === 'ORDER' ? `订单 #${record.orderNo}` : `填单 F${record.id}`}</strong>{record.kind === 'SUBMISSION' ? <span>待确认</span>
+      : !record.fulfillmentType && (record.status === 'WAITING_DELIVERY' || record.status === 'COMPLETED') ? <span>{statusNames[record.status]}</span> : (
+      <Status order={{ ...record, fulfillmentType: record.fulfillmentType ?? undefined }} label={historical && !Object.hasOwn(statusNames, record.status) ? record.status : undefined} />
+    )}{record.status === 'CANCELLED' && <span>历史参考</span>}</div>
     <p>{record.phone} · 取货 {record.requestedReceiveAt ? historical ? time(record.requestedReceiveAt, true) : businessTime(record.requestedReceiveAt) : `${historical ? record.requestedReceiveDate : businessDate(record.requestedReceiveDate)}（时刻未填写）`}</p>
     <p>{record.items.map(item => `${item.name} × ${item.quantity}`).join('、')} · 合计 {record.items.reduce((sum, item) => sum + item.quantity, 0)} 件</p>
     <p>金额：{money(record.totalAmountCents)} · 经办：{record.handledBy}</p>
     <a className="text-button" href={record.kind === 'ORDER' ? `#/orders/${record.id}` : `#/customer-submissions/${record.id}`} target="_blank" rel="noreferrer">查看{record.kind === 'ORDER' ? '订单' : '填单'}详情<ArrowRight /></a>
   </li>)}</ul>;
 }
-function EntryManager({ account, onWritingChange }: { account: Account; onWritingChange: (busy: boolean) => void }) {
+function EntryManager({ account, expanded, onWritingChange }: { account: Account; expanded: boolean; onWritingChange: (busy: boolean) => void }) {
   const client = useQueryClient(); const [owner, setOwner] = useState(account.accountId);
   const [busy, setBusy] = useState(false); const [error, setError] = useState<unknown>(null); const [qrImage, setQrImage] = useState<{ url: string; owner: string; data: string } | null>(null);
   const [qrError, setQrError] = useState<unknown>(null); const [qrAttempt, setQrAttempt] = useState(0);
-  const entry = useQuery({ queryKey: ['customer-entry', owner], queryFn: ({ signal }) => api<EntryLink | null>(`/customer-submissions/entry?ownerId=${owner}`, { signal }) });
+  const entry = useQuery({ queryKey: ['customer-entry', owner], queryFn: ({ signal }) => readQuery<EntryLink | null>(`/customer-submissions/entry?ownerId=${owner}`, signal),
+    staleTime: 0, enabled: expanded });
+  const ownerEligible = entry.data?.ownerEligible;
+  const statusKnown = !entry.isError && typeof ownerEligible === 'boolean';
+  const usableUrl = statusKnown && entry.data?.enabled && ownerEligible ? entry.data.url : undefined;
   useEffect(() => {
     let alive = true; setQrImage(null); setQrError(null);
-    const url = entry.data?.url;
-    if (url) void brandedQr(url).then(data => { if (alive) setQrImage({ url, owner, data }); })
+    if (usableUrl) void brandedQr(usableUrl).then(data => { if (alive) setQrImage({ url: usableUrl, owner, data }); })
       .catch(failure => { if (alive) setQrError(failure); });
     return () => { alive = false; };
-  }, [entry.data?.url, owner, qrAttempt]);
-  const image = !busy && qrImage?.owner === owner && qrImage.url === entry.data?.url ? qrImage.data : '';
+  }, [usableUrl, owner, qrAttempt]);
+  const canIssue = !busy && !entry.isFetching && !entry.isError && Boolean(usableUrl);
+  const image = canIssue && qrImage?.owner === owner && qrImage.url === usableUrl ? qrImage.data : '';
   const change = async (action: string) => {
     if (busy) return;
     if (action === 'RESET' && !window.confirm('重置二维码？已发出的二维码将失效。')) return;
     setBusy(true); onWritingChange(true); setError(null);
     if (action === 'RESET') setQrImage(null);
-    try { const result = await api<EntryLink>(`/customer-submissions/entry?ownerId=${owner}`, { method: 'POST', body: { action } }); client.setQueryData(['customer-entry', owner], result); }
+    try {
+      const result = await api<EntryLink>(`/customer-submissions/entry?ownerId=${owner}`, { method: 'POST', body: { action } });
+      await client.cancelQueries({ queryKey: ['customer-entry', owner], exact: true });
+      client.setQueryData(['customer-entry', owner], result);
+    }
     catch (failure) { setError(failure); await entry.refetch(); } finally { setBusy(false); onWritingChange(false); }
   };
   return <section className="panel entry-manager"><div className="section-heading"><h2><QrCode />填单二维码</h2></div>
     {hasPermissions(account, 'CUSTOMER_ENTRY_MANAGE_ALL') && <label>管理员工二维码<EmployeeSelect disabled={busy} value={owner} emptyLabel="请选择员工" onChange={value => { if (value) { setOwner(value); setError(null); } }} /></label>}
     <ErrorNotice error={entry.error || error} retry={() => { void entry.refetch(); setQrAttempt(value => value + 1); }} />
     {Boolean(qrError) && <p className="notice" role="alert">二维码生成失败。<button className="text-button" onClick={() => setQrAttempt(value => value + 1)}>重新生成图片</button></p>}
-    {entry.isPending ? <Loading /> : entry.data ? <div className="entry-content"><div>{image && <img className="entry-qr" src={image} alt={`${entry.data.ownerName}的客户填单二维码`} width={240} height={240} />}</div><div><h3>{entry.data.ownerName} · {entry.data.enabled ? '接收填单中' : '已停用'}</h3><a className="entry-url" href={entry.data.url} target="_blank" rel="noreferrer">打开客户填写页面<ArrowRight /></a><div className="actions">
+    {entry.isPending ? <Loading /> : entry.data ? <div className="entry-content"><div>{image && <img className="entry-qr" src={image} alt={`${entry.data.ownerName}的客户填单二维码`} width={240} height={240} />}</div><div><h3>{entry.data.ownerName} · {!statusKnown ? '状态待确认' : usableUrl ? '接收填单中' : entry.data.enabled ? '已启用' : '已停用'}{statusKnown && !ownerEligible && ' · 归属员工暂无接单资格'}</h3>{canIssue && <a className="entry-url" href={usableUrl} target="_blank" rel="noreferrer">打开客户填写页面<ArrowRight /></a>}<div className="actions">
       {image && <a className="secondary" href={image} download={`午逅填单-${entry.data.ownerName}.png`}><DownloadSimple />下载二维码</a>}
       <button className="secondary" type="button" disabled={busy} onClick={() => void change(entry.data!.enabled ? 'DISABLE' : 'ENABLE')}>{entry.data.enabled ? '停用' : '重新启用'}</button><button className="text-button danger" type="button" disabled={busy} onClick={() => void change('RESET')}>重置二维码</button>
     </div></div></div> : <>{owner === account.accountId ? <button className="secondary" disabled={busy} onClick={() => void change('CREATE')}>{busy ? '正在生成…' : '生成我的二维码'}</button> : <p className="muted">该员工尚未生成二维码，请由本人先生成。</p>}</>}
   </section>;
 }
+type SubmissionListRow = Pick<SubmissionDetail, 'submission'> &
+  ({ requiresAcknowledgement: boolean } | Pick<SubmissionDetail, 'duplicates'>);
+
 const submissionListViews = new Map<string, SubmissionListView>();
 export function CustomerSubmissions({ account, onWritingChange, onDenied }: { account: Account; onWritingChange: (busy: boolean) => void; onDenied: () => void }) {
+  const [entryExpanded, setEntryExpanded] = useState(false);
   const client = useQueryClient();
   const [view, setView] = useState<SubmissionListView>(() => submissionListViews.get(account.accountId) || { mine: false, status: 'PENDING', keyword: '', page: 1 });
   const [searchText, setSearchText] = useState(view.keyword);
   const { mine, status, keyword, page } = view;
   const changeView = (next: SubmissionListView) => { setView(next); submissionListViews.set(account.accountId, next); };
   const params = submissionListQuery(view);
-  const query = useQuery({ queryKey: ['customer-submissions', params], gcTime: 0, staleTime: 0, queryFn: ({ signal }) => readQuery<Page<SubmissionDetail>>(`/customer-submissions?${params}`, signal), refetchInterval: 15000, enabled: canHandleSubmissions(account) });
+  const query = useQuery({ queryKey: ['customer-submissions', params], gcTime: 0, staleTime: 0, queryFn: ({ signal }) => readQuery<Page<SubmissionListRow>>(`/customer-submissions?${params}&view=summary`, signal), refetchInterval: 15000, enabled: canHandleSubmissions(account) });
   const denied = query.error instanceof ApiError && query.error.status === 403;
   useEffect(() => { if (denied) onDenied(); }, [denied, onDenied]);
   const actualPage = query.data?.page;
@@ -122,9 +137,10 @@ export function CustomerSubmissions({ account, onWritingChange, onDenied }: { ac
       <label htmlFor="submission-search">手机号／填单编号<input id="submission-search" type="search" enterKeyHint="search" value={searchText} maxLength={100} placeholder="输入手机号或填单编号" onChange={event => setSearchText(event.target.value)} /></label>
       <button type="submit" className="primary">搜索</button><button type="button" className="secondary" disabled={!searchText && !keyword} onClick={() => { setSearchText(''); changeView(searchSubmissionView(view, '')); }}>清除</button>
     </form><div className="submission-filters"><label>查看范围<Select label="查看范围" value={mine ? 'mine' : 'all'} onChange={value => { changeView({ ...view, mine: value === 'mine', page: 1 }); }}><option value="mine">我的二维码收到的</option><option value="all">全部客服的</option></Select></label><label>处理状态<Select label="处理状态" value={status} onChange={value => { changeView({ ...view, status: value as SubmissionListView['status'], page: 1 }); }}><option value="ALL">全部</option><option value="PENDING">待确认</option><option value="CONFIRMED">已确认</option></Select></label><button className="secondary" disabled={query.isFetching} onClick={() => void client.invalidateQueries({ queryKey: ['customer-submissions'] })}>刷新列表</button></div>
-      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending || (actualPage !== page && !query.isError) ? <Loading /> : result?.total === 0 ? <Empty>{keyword ? '未找到匹配的填单。' : `暂无${mine ? '我的' : ''}${status === 'ALL' ? '' : status === 'PENDING' ? '待确认' : '已确认'}填单。`}</Empty> : !result ? null : !result.items.length ? <Empty><span>当前页暂无记录，请刷新</span><button className="text-button" onClick={() => { if (page === 1) void query.refetch(); else changeView({ ...view, page: 1 }); }}>返回第一页</button></Empty> : <ul className="submission-list">{result.items.map(({ submission: s, duplicates }) => { const overdueDate = overdueSubmissionDate(s, today()); return <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><span className="submission-state">{s.status === 'CONFIRMED' ? '已确认' : '待确认'}</span><time>{time(s.createdAt, true)}</time></div><p className="submission-reference">填单编号：F{s.id}</p>{s.reviewed?.content.phone && s.reviewed.content.phone !== s.original.phone && <p className="muted">核对手机号：{s.reviewed.content.phone}</p>}<p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始客户填写取货 {businessTime(s.original.requestedReceiveAt)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{overdueDate && <p className="submission-warning">取货日期已过（{businessDate(overdueDate)}），待核对</p>}{duplicates.some(record => record.requiresAcknowledgement) && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>; })}</ul>}
+      <ErrorNotice error={query.error} retry={() => void query.refetch()} />{query.isPending || (actualPage !== page && !query.isError) ? <Loading /> : result?.total === 0 ? <Empty>{keyword ? '未找到匹配的填单。' : `暂无${mine ? '我的' : ''}${status === 'ALL' ? '' : status === 'PENDING' ? '待确认' : '已确认'}填单。`}</Empty> : !result ? null : !result.items.length ? <Empty><span>当前页暂无记录，请刷新</span><button className="text-button" onClick={() => { if (page === 1) void query.refetch(); else changeView({ ...view, page: 1 }); }}>返回第一页</button></Empty> : <ul className="submission-list">{result.items.map(row => { const { submission: s } = row; const requiresAcknowledgement = 'requiresAcknowledgement' in row
+        ? row.requiresAcknowledgement : row.duplicates.some(record => record.requiresAcknowledgement); const overdueDate = overdueSubmissionDate(s, today()); return <li key={s.id}><div><div className="note-meta"><strong>{s.original.phone}</strong><span>{s.ownerName}</span><span className="submission-state">{s.status === 'CONFIRMED' ? '已确认' : '待确认'}</span><time>{time(s.createdAt, true)}</time></div><p className="submission-reference">填单编号：F{s.id}</p>{s.reviewed?.content.phone && s.reviewed.content.phone !== s.original.phone && <p className="muted">核对手机号：{s.reviewed.content.phone}</p>}<p>{s.original.items.map(item => `${item.name} × ${item.quantity}`).join('、')}</p><p className="muted">原始客户填写取货 {businessTime(s.original.requestedReceiveAt)} · {s.original.fulfillmentType === 'PICKUP' ? '自提' : '配送'}</p>{overdueDate && <p className="submission-warning">取货日期已过（{businessDate(overdueDate)}），待核对</p>}{requiresAcknowledgement && <span className="submission-warning">有疑似重复记录，请核对。</span>}</div><a className="secondary" href={`#/customer-submissions/${s.id}`}>{s.status === 'CONFIRMED' ? '查看记录' : '核对填单'}<ArrowRight /></a></li>; })}</ul>}
       {result && (result.total > 20 || page > 1) && <div className="pagination"><button className="secondary" disabled={page === 1} onClick={() => changeView({ ...view, page: page - 1 })}>上一页</button><span>第 {page} 页 · {result.total} 份</span><button className="secondary" disabled={page * 20 >= result.total} onClick={() => changeView({ ...view, page: page + 1 })}>下一页</button></div>}
-    </section><details className="panel entry-settings"><summary>填单二维码管理</summary><EntryManager account={account} onWritingChange={onWritingChange} /></details>
+    </section><details className="panel entry-settings" onToggle={event => setEntryExpanded(event.currentTarget.open)}><summary>填单二维码管理</summary><EntryManager account={account} expanded={entryExpanded} onWritingChange={onWritingChange} /></details>
   </div>;
 }
 interface SavedReviewDraft {

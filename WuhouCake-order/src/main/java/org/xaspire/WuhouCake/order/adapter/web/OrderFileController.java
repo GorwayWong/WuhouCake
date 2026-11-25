@@ -46,6 +46,10 @@ public class OrderFileController {
     }
     @GetMapping("/{orderId}/images")
     public ApiResponse<List<OrderFileViews.Image>> list(@PathVariable UUID orderId) { return ApiResponse.success(images.list(orderId)); }
+    @GetMapping("/{orderId}/image-upload-receipts")
+    public ApiResponse<Map<UUID, UUID>> uploadReceipts(@PathVariable UUID orderId, @RequestParam("requestId") List<UUID> requestIds) {
+        return ApiResponse.success(images.uploadReceipts(orderId, requestIds));
+    }
     @DeleteMapping("/{orderId}/images/{imageId}")
     public ApiResponse<Void> remove(@PathVariable UUID orderId, @PathVariable UUID imageId, Authentication authentication) {
         images.remove(orderId, imageId, operator(authentication));

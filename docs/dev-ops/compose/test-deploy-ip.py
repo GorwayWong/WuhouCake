@@ -1,5 +1,6 @@
 """Exercise deploy preflight with synthetic Docker and mount metadata."""
 import json
+from io import BytesIO
 import os
 from pathlib import Path
 import shutil
@@ -67,6 +68,58 @@ class DeployPreflight(unittest.TestCase):
                     self.assertLess(commands.index(["backup", "predeploy"]), next(i for i, call in enumerate(commands) if "up" in call))
                     self.assertIn("APP_IMAGE=" + NEW, self.final_env)
 
+    def test_release_checks_candidate_app_before_switching_gateway(self):
+        result, commands = self.run_preflight(args=["--release"])
+        self.assertEqual(0, result.returncode, result.stderr)
+        starts = [i for i, call in enumerate(commands) if "up" in call]
+        self.assertEqual(2, len(starts))
+        app, gateway = starts
+        self.assertEqual(["app", "image-worker"], commands[app][-2:])
+        self.assertEqual("gateway", commands[gateway][-1])
+        self.assertTrue(any("exec" in call and "http://127.0.0.1:8080/actuator/health/readiness" in call
+                            for call in commands[app + 1:gateway]))
+        result, commands = self.run_preflight(args=["--release"], failure="readiness_down")
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse(any("up" in call and call[-1] == "gateway" for call in commands))
+
+    def test_release_checks_the_packaged_order_protocol(self):
+        for app, web in ((None, "2"), ("2", None), ("2", "3")):
+            with self.subTest(app=app, web=web):
+                result, commands = self.run_preflight(args=["--release"], candidate_protocol=app, candidate_web_protocol=web)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("建单协议", result.stderr)
+                self.assertFalse(any("up" in call or "backup" in call for call in commands))
+
+    def test_first_protocol_release_restores_legacy_before_gateway_only(self):
+        result, commands = self.run_preflight(failure="readiness_down", args=["--release", "--rollback-safe"], baseline_protocol=None)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("rolled-back", self.receipt["state"])
+        self.assertFalse(self.receipt["gatewaySwitchStarted"])
+        self.assertIsNone(self.pending)
+        updates = [call for call in commands if "up" in call or "stop" in call]
+        self.assertEqual(3, len(updates))
+        self.assertTrue(all(call[-2:] == ["app", "image-worker"] for call in updates))
+        for failure in ("gateway_404", "history_changed_before_gateway", "config_changed_before_gateway"):
+            with self.subTest(failure=failure):
+                result, commands = self.run_preflight(failure=failure, args=["--release", "--rollback-safe"], baseline_protocol=None)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("manual-recovery", self.pending["state"])
+                self.assertEqual(failure == "gateway_404", self.pending["gatewaySwitchStarted"])
+                self.assertFalse(any("up" in call and ".env" in call for call in commands))
+        result, commands = self.run_preflight(failure="readiness_down", args=["--release"], baseline_protocol=None)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("manual-recovery", self.pending["state"])
+        self.assertFalse(any("up" in call and ".env" in call for call in commands))
+        result, commands = self.run_preflight(args=["--release", "--rollback-safe"], baseline_protocol=None)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("published", self.receipt["state"])
+
+    def test_startup_rejects_configured_legacy_artifacts(self):
+        result, commands = self.run_preflight(baseline_protocol=None)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("建单协议", result.stderr)
+        self.assertFalse(any("up" in call for call in commands))
+
     def test_site_files_are_required_before_backup_and_startup(self):
         for failure in ("missing_index", "missing_entry", "missing_style"):
             for args in (["--check"], ["--release"]):
@@ -101,9 +154,14 @@ class DeployPreflight(unittest.TestCase):
                 self.assertIsNone(self.pending)
                 self.assertIn("APP_IMAGE=old-app", self.final_env)
                 updates = [call for call in commands if "up" in call or "stop" in call]
-                self.assertEqual(3, len(updates))
-                for call in updates:
-                    self.assertEqual(["app", "image-worker", "gateway"], call[-3:])
+                expected = [["app", "image-worker"]]
+                if failure == "gateway_404":
+                    expected.extend([["gateway"], ["app", "image-worker", "gateway"], ["app", "image-worker"], ["gateway"]])
+                else:
+                    expected.extend([["app", "image-worker"], ["app", "image-worker"]])
+                self.assertEqual(len(expected), len(updates))
+                for services, call in zip(expected, updates):
+                    self.assertEqual(services, call[-len(services):])
                 self.assertIn("--no-deps", updates[-1])
 
     def test_unsafe_or_failed_rollback_requires_manual_recovery(self):
@@ -113,11 +171,12 @@ class DeployPreflight(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn("APP_IMAGE=old-app", self.final_env)
                 self.assertIsNotNone(self.pending)
-                self.assertEqual(int(failure != "interrupted") + int(failure == "rollback_failed"),
+                self.assertEqual(2 * int(failure != "interrupted") + int(failure == "rollback_failed"),
                                  sum("up" in call for call in commands))
                 self.assertIsNone(self.receipt)
 
-    def run_preflight(self, failure="", pitr=False, args=()):
+    def run_preflight(self, failure="", pitr=False, args=(), *, baseline_protocol="2",
+                      candidate_protocol="2", candidate_web_protocol="2"):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory).resolve()
             shutil.copy(SCRIPT, work)
@@ -137,14 +196,23 @@ class DeployPreflight(unittest.TestCase):
                     (dist / path).write_text(body)
             candidate = work / "candidate-dir"
             shutil.copytree(dist, candidate / "dist")
+            for root, protocol in ((dist, baseline_protocol), (candidate / "dist", candidate_web_protocol)):
+                index = root / "index.html"
+                if protocol is not None and index.exists():
+                    index.write_text(f'<meta name="wuhou-order-submission-protocol" content="{protocol}">' + index.read_text())
             (work / ".env").write_text(f"APP_IMAGE=old-app\nRELEASE_DIR={work}\n")
             if failure == "interrupted":
                 (work / "maintenance").mkdir()
                 (work / "maintenance/release-pending.json").write_text('{"state":"switching"}')
-            for reference in (OLD, NEW):
+            for reference, protocol in ((OLD, baseline_protocol), (NEW, candidate_protocol)):
                 with zipfile.ZipFile(work / (reference[-1] + ".jar"), "w") as jar:
                     jar.writestr("BOOT-INF/classes/db/migration/V1__test.sql",
                                  "SELECT 2" if failure == "migration_changed" and reference == NEW else "SELECT 1")
+                    if protocol is not None:
+                        module = BytesIO()
+                        with zipfile.ZipFile(module, "w") as order:
+                            order.writestr("order/submission-protocol.txt", protocol + "\n")
+                        jar.writestr("BOOT-INF/lib/WuhouCake-order-test.jar", module.getvalue())
             if args and args[0] == "--release":
                 args = ["--release", "new-app", str(candidate), *args[1:]]
             environment = {
@@ -253,11 +321,16 @@ elif "ps" in args:
     print("existing-app existing-worker existing-gateway")
 elif "exec" in args:
     if "psql" in args:
-        print(json.dumps([fixture["identifier"], [{"success": True, "version": 2 if switched and failure == "history_changed" else 1}]]))
+        history_changed = switched and failure in ("history_changed", "history_changed_before_gateway")
+        print(json.dumps([fixture["identifier"], [{"success": True, "version": 2 if history_changed else 1}]]))
     else:
         if switched and failure == "readiness_missing":
             sys.exit(1)
-        print(json.dumps({"status": "DOWN" if switched and failure == "readiness_down" and (is_candidate or not any(".release-" in str(c) for c in former)) else "UP"}))
+        if switched and is_candidate and failure == "config_changed_before_gateway":
+            with Path(".env").open("a") as env:
+                env.write("UPDATED=1\n")
+        readiness_down = failure in ("readiness_down", "history_changed_before_gateway", "config_changed_before_gateway")
+        print(json.dumps({"status": "DOWN" if switched and readiness_down and (is_candidate or not any(".release-" in str(c) for c in former)) else "UP"}))
 elif "up" in args:
     if is_candidate and failure == "up_failed" or not is_candidate and failure == "rollback_failed":
         sys.exit(1)
@@ -278,7 +351,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 args = sys.argv[1:]
 commands = [json.loads(line) for line in Path("commands.jsonl").read_text().splitlines()]
-updates = [call for call in commands if "up" in call]
+updates = [call for call in commands if "up" in call and call[-1] == "gateway"]
 candidate = bool(updates and any(".release-" in entry for entry in updates[-1]))
 with Path("commands.jsonl").open("a") as log:
     log.write(json.dumps(["curl", *args, *(["candidate-dir"] if candidate else [])]) + "\n")

@@ -40,6 +40,12 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
     if (page > last) { setPage(last); setSelected(''); }
     else if (selected && !query.data.items.some(value => value.id === selected)) { setSelected(''); setMessage('所选套餐已更新或已移出当前列表，请重新选择。已填写商品保持不变。'); }
   }, [query.data, query.isSuccess, query.isFetching, page, selected]);
+  function readDetail(id: string) {
+    const key = ['order-packages', 'detail', id];
+    readKey.current = key;
+    return client.fetchQuery({ queryKey: key, queryFn: ({ signal }) => readQuery<OrderPackage>(`/order-packages/${id}`, signal),
+      staleTime: 0, gcTime: 0, networkMode: 'always', retry: false });
+  }
   async function apply(value: OrderPackage, plan: ReturnType<typeof previewPackage>, before: OrderDraft, controller: AbortController) {
     if (plan.imageSources.size && !canUploadImages) throw new Error('当前岗位不能带入图片，请由可上传图片的员工录单。');
     const entries = await Promise.all([...plan.imageSources].map(async ([itemId, item]) => {
@@ -48,17 +54,23 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
     }));
     if (controller.signal.aborted || latest.current.getDraft() !== before) throw new Error('草稿已有变化，请核对更新后的预览。');
     let images: Awaited<ReturnType<typeof saveWorkingDraftImageBatch>>;
-    try { images = await saveWorkingDraftImageBatch(imageScope, entries); }
+    try { images = entries.length ? await saveWorkingDraftImageBatch(imageScope, entries) : []; }
     catch (failure) { throw new Error(localImageError(failure)); }
     const byItem = new Map(entries.map((entry, index) => [entry.itemId, images[index]]));
     const next = { ...plan.next, items: plan.next.items.map(item => byItem.has(item.key) ? { ...item, images: [byItem.get(item.key)!] } : item) };
     let applied = false;
     try {
+      if (entries.length) {
+        if (controller.signal.aborted || latest.current.getDraft() !== before)
+          throw new Error('草稿已有变化，请核对更新后的预览。');
+        const current = await readDetail(value.id);
+        if (current.version !== value.version || !samePackageContent(current, value)) return current;
+      }
       if (controller.signal.aborted || latest.current.getDraft() !== before || !latest.current.onChange(next))
         throw new Error('草稿已有变化或无法保存，请核对后重试。');
       applied = true;
     } finally {
-      if (!applied) await Promise.all(entries.map((entry, index) => removeDraftImage(imageScope, entry.itemId, images[index].id)));
+      if (!applied) await Promise.allSettled(entries.map((entry, index) => removeDraftImage(imageScope, entry.itemId, images[index].id)));
     }
     setReview(null); setAdded(current => [...current, value.id]);
     setMessage(`已带入「${value.name}」的 ${value.items.length} 项商品。${!next.totalAmount.trim() && !next.memberAmount?.trim() ? '订单金额待补，可先录为未付。' : ''}`);
@@ -67,23 +79,28 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
     if (!chosen || active.current || disabled) return;
     setReview(null);
     const controller = new AbortController(); active.current = controller; setBusy(true); setError(null); setMessage('');
-    const key = ['order-packages', 'detail', chosen.id]; readKey.current = key;
     let writing = false;
     try {
-      const value = await client.fetchQuery({ queryKey: key, queryFn: ({ signal }) => readQuery<OrderPackage>(`/order-packages/${chosen.id}`, signal),
-        staleTime: 0, gcTime: 0, networkMode: 'always', retry: false });
+      const value = await readDetail(chosen.id);
       if (controller.signal.aborted || latest.current.disabled) return;
       const before = latest.current.getDraft();
       const empty = isEmptyPackageDraft(before);
       const plan = previewPackage(before, value);
       if (empty && !plan.resetPayment) {
         writing = true; onImageWritingChange(true);
-        await apply(value, plan, before, controller);
+        const current = await apply(value, plan, before, controller);
+        if (current && !controller.signal.aborted) {
+          setMessage('套餐内容已更新，当前录单内容已保留，请核对后重新带入。');
+          void query.refetch();
+        }
       } else {
         setReviewError(''); setReview(value);
       }
     } catch (failure) { if (!controller.signal.aborted) {
-      if (isCancelledError(failure)) setMessage('套餐内容已更新，当前录单内容已保留，请核对后重新带入。');
+      if (failure instanceof ApiError && failure.status === 404 && failure.code === 'PACKAGE_NOT_FOUND') {
+        setSelected(''); setMessage('所选套餐已删除或不可用，已填写商品保持不变。');
+        void query.refetch();
+      } else if (isCancelledError(failure)) setMessage('套餐内容已更新，当前录单内容已保留，请核对后重新带入。');
       else { setError(failure instanceof ApiError ? failure : null); if (failure instanceof Error && !(failure instanceof ApiError)) setMessage(failure.message); void query.refetch(); }
     } }
     finally {
@@ -96,19 +113,19 @@ export function OrderPackagePicker({ draft, getDraft, onChange, disabled, imageS
     const before = latest.current.getDraft();
     if (before !== draft) { setReviewError('草稿已变化，请核对更新后的预览。'); return; }
     const controller = new AbortController(); active.current = controller;
-    const key = ['order-packages', 'detail', review.id]; readKey.current = key;
     setBusy(true); onImageWritingChange(true); setReviewError('');
     try {
-      const current = await client.fetchQuery({ queryKey: key,
-        queryFn: ({ signal }) => readQuery<OrderPackage>(`/order-packages/${review.id}`, signal),
-        staleTime: 0, gcTime: 0, networkMode: 'always', retry: false });
+      const current = await readDetail(review.id);
       if (controller.signal.aborted) return;
       if (latest.current.getDraft() !== before) throw new Error('草稿已有变化，请核对更新后的预览。');
       if (current.version !== review.version || !samePackageContent(current, review)) {
         setReview(current); setReviewError('套餐已更新，请核对新版内容后再次确认。');
         return;
       }
-      await apply(current, previewPackage(before, current, useSuggestedPrice), before, controller);
+      const updated = await apply(current, previewPackage(before, current, useSuggestedPrice), before, controller);
+      if (updated && !controller.signal.aborted) {
+        setReview(updated); setReviewError('套餐已更新，请核对新版内容后再次确认。');
+      }
     } catch (failure) {
       if (controller.signal.aborted) return;
       if (failure instanceof ApiError && failure.status === 404 && failure.code === 'PACKAGE_NOT_FOUND') {

@@ -123,6 +123,15 @@ public class IdentityService implements IdentityFacade {
         return view(validAccount(accountId, version));
     }
     @Override public AccountView me() { return view(actorAccount()); }
+    @Override @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public AccountView lockCurrentEmployee() {
+        var actor = actors.current();
+        var account = accounts.lock(actor.accountId()).orElseThrow(() -> new IdentityFailure("AUTHENTICATION_FAILED"));
+        account.requireActive();
+        if (account.credentialVersion() != actor.credentialVersion()) throw new IdentityFailure("AUTHENTICATION_FAILED");
+        if (account.passwordChangeRequired()) throw new IdentityFailure("PASSWORD_CHANGE_REQUIRED");
+        return view(account);
+    }
     @Override @Transactional
     public AccountView rename(String nickname) {
         var actor = actorAccount();

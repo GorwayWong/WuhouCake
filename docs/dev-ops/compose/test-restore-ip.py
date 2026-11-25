@@ -68,13 +68,13 @@ def session(base, initial=False):
     return request
 
 
-def create_order(client, name):
+def create_order(client, name, phone):
     return json_call(client, "POST", "/api/orders", {
-        "customer": {"customerName": "Recovery fixture", "phone": "13800000000"},
+        "customer": {"customerName": "Recovery fixture", "phone": phone},
         "fulfillment": {"type": "PICKUP", "requestedReceiveDate": "2030-01-01"},
         "items": [{"name": name, "productType": "CAKE", "quantity": 2, "attributes": {"size": "8"}}],
         "originalAmountCents": 12000, "totalAmountCents": 12000, "paymentMethod": "CASH",
-    }, status=201, headers={"Idempotency-Key": str(uuid.uuid4())})
+    }, status=201, headers={"Idempotency-Key": str(uuid.uuid4()), "X-Wuhou-Order-Submission": "3"})
 
 
 def png():
@@ -86,7 +86,7 @@ def png():
 
 
 def seed(client):
-    order = create_order(client, "Before recovery point")
+    order = create_order(client, "Before recovery point", "13800000000")
     path = "/api/orders/" + order["orderId"]
     item = order["items"][0]["itemId"]
     boundary = "wuhou-" + uuid.uuid4().hex
@@ -246,7 +246,7 @@ class Environment:
             target = self.sql("postgres", "SELECT clock_timestamp()")
             if not pitr:
                 self.run("sh", "backup-ip-database.sh", "daily")
-            later = create_order(client, "After recovery point")
+            later = create_order(client, "After recovery point", "13800000001")
         assert self.sql("postgres", "SELECT count(*) FROM cake_order") == "2"
 
         if pitr:

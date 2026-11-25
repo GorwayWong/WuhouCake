@@ -116,6 +116,17 @@ public class CustomerSubmissionService {
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ) public Page<SubmissionViews.Detail> search(boolean mine, String status, String keyword, int page, int size) {
+        var result = searchPage(mine, status, keyword, page, size);
+        return new Page<>(result.items().stream().map(s -> view(s, false)).toList(), result.total(), result.page(), result.size());
+    }
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ) public Page<SubmissionViews.Summary> searchSummary(boolean mine, String status, String keyword, int page, int size) {
+        var result = searchPage(mine, status, keyword, page, size);
+        var pending = result.items().stream().filter(s -> "PENDING".equals(s.status())).toList();
+        var warnings = pending.isEmpty() ? Set.<UUID>of() : submissions.requiringDuplicateAcknowledgement(pending);
+        var items = result.items().stream().map(s -> new SubmissionViews.Summary(submissionView(s), warnings.contains(s.id()))).toList();
+        return new Page<>(items, result.total(), result.page(), result.size());
+    }
+    private Page<CustomerSubmission> searchPage(boolean mine, String status, String keyword, int page, int size) {
         var me = staff();
         if (page < 1 || size < 1 || size > 50 || !Set.of("PENDING", "CONFIRMED", "ALL").contains(status)) throw invalid();
         String term = keyword == null ? "" : keyword.strip().toLowerCase(Locale.ROOT);
@@ -126,8 +137,8 @@ public class CustomerSubmissionService {
         UUID owner = mine ? me.accountId() : null;
         long total = submissions.count(owner, status, term);
         int current = (int) Math.min(page, total == 0 ? 1 : 1 + (total - 1) / size);
-        var items = total == 0 ? List.<SubmissionViews.Detail>of()
-                : submissions.search(owner, status, term, size, (current - 1L) * size).stream().map(s -> view(s, false)).toList();
+        var items = total == 0 ? List.<CustomerSubmission>of()
+                : submissions.search(owner, status, term, size, (current - 1L) * size);
         return new Page<>(items, total, current, size);
     }
     @Transactional(readOnly = true) public long pendingCount() {
@@ -169,8 +180,9 @@ public class CustomerSubmissionService {
         }
         submission.requirePending(expected);
         var review = submission.reviewed(); if (review == null) throw new OrderFailure("SUBMISSION_REVIEW_REQUIRED"); review.requireConfirmation();
+        var employee = orders.selectEmployee(review.creditedEmployeeId());
         submissions.lockDuplicateGroup(submission);
-        var duplicates = submissions.duplicates(submission);
+        var duplicates = submissions.duplicates(submission).stream().map(CustomerSubmissions.DuplicateMatch::record).toList();
         boolean requiresAcknowledgement = duplicates.stream().anyMatch(CustomerSubmissions.Duplicate::requiresAcknowledgement);
         if ((requiresAcknowledgement || command.duplicateCheckToken() != null)
                 && !duplicateCheckToken(submission, duplicates).equals(command.duplicateCheckToken()))
@@ -185,7 +197,7 @@ public class CustomerSubmissionService {
         var create = new OrderCommands.Create(new OrderCommands.Customer(null, content.phone(), content.memberPhone(), null),
                 new OrderCommands.Fulfillment(content.fulfillmentType(), content.address(), content.requestedDate(), review.plannedHandoffAt(), review.plannedFinishAt(), content.requestedReceiveAt()),
                 items, review.totalAmountCents(), review.creditedEmployeeId());
-        var order = orders.createCustomer(create, new OrderCommands.Operator(me.accountId(), me.nickname()), id);
+        var order = orders.createCustomer(create, new OrderCommands.Operator(me.accountId(), me.nickname()), id, employee);
         for (int i = 0; i < items.size(); i++) {
             if (items.get(i).itemId() != null)
                 images.copyToOrder(id, content.items().get(i), order.orderId(), items.get(i).itemId(), me.accountId(), me.nickname());
@@ -234,18 +246,26 @@ public class CustomerSubmissionService {
         if (!me.accountId().equals(owner) && !me.access().allows(CUSTOMER_ENTRY_MANAGE_ALL)) throw new OrderFailure("SUBMISSION_FORBIDDEN");
     }
     private SubmissionViews.Entry entryView(CustomerSubmissions.Entry entry) {
-        return entry == null ? null : new SubmissionViews.Entry(entry.ownerId(), entry.ownerName(), publicOrigin + "/#/fill/" + entry.token(), entry.enabled());
+        return entry == null ? null : new SubmissionViews.Entry(entry.ownerId(), entry.ownerName(),
+                publicOrigin + "/#/fill/" + entry.token(), entry.enabled(), identity.customerEntryOwner(entry.ownerId()) != null);
     }
     private CustomerSubmission require(UUID id, boolean lock) {
         var submission = submissions.find(id, lock); if (submission == null) throw new OrderFailure("SUBMISSION_NOT_FOUND"); return submission;
     }
     private SubmissionViews.Detail view(CustomerSubmission submission, boolean history) {
-        var duplicates = "PENDING".equals(submission.status()) ? submissions.duplicates(submission) : List.<CustomerSubmissions.Duplicate>of();
-        var exposed = snapshot(submission);
-        return new SubmissionViews.Detail(convert(exposed, SubmissionViews.Submission.class),
-                duplicates.stream().map(record -> convert(record, SubmissionViews.Duplicate.class)).toList(),
-                "PENDING".equals(submission.status()) ? duplicateCheckToken(submission, duplicates) : null,
+        var matches = "PENDING".equals(submission.status()) ? submissions.duplicates(submission) : List.<CustomerSubmissions.DuplicateMatch>of();
+        return new SubmissionViews.Detail(submissionView(submission),
+                matches.stream().map(match -> {
+                    var fields = new LinkedHashMap<>(snapshot(match.record()));
+                    fields.put("fulfillmentType", match.fulfillmentType());
+                    return convert(fields, SubmissionViews.Duplicate.class);
+                }).toList(),
+                "PENDING".equals(submission.status()) ? duplicateCheckToken(submission,
+                        matches.stream().map(CustomerSubmissions.DuplicateMatch::record).toList()) : null,
                 history ? submissions.activities(submission.id()).stream().map(a -> convert(a, SubmissionViews.Activity.class)).toList() : List.of());
+    }
+    private SubmissionViews.Submission submissionView(CustomerSubmission submission) {
+        return convert(snapshot(submission), SubmissionViews.Submission.class);
     }
     private CustomerSubmission.Review reviewForWrite(SubmissionCommands.Review command, CustomerSubmission.Review previous, CustomerSubmission.Content original) {
         if (command.content() == null) throw invalid();

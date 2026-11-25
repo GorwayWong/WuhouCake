@@ -34,7 +34,9 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     model.order.items[0].attributes.requirements = '不要坚果\n需要10份叉碟';
     model.order.items[1].attributes.requirements = ''; model.order.items[1].attributes.otherRequirements = '不应恢复旧要求';
     model.order.customer.customerName = '测试客户';
-    model.order.fulfillment.address = '长地址'.repeat(50);
+    const longAddress = '长地址'.repeat(50);
+    Object.assign(model.order.fulfillment, { type: 'DELIVERY', address: longAddress });
+    model.order.createdAt = '2024-11-24T10:25:00Z';
     model.images = model.order.items.map((item, i) => ({ imageId: `image-${i}`, orderId, itemId: item.itemId, filename: `${i}.png`, uploadedAt: model.order.createdAt, uploaderNameSnapshot: '测试员工' }));
     await page.reload(); await page.locator('.front-order-grid').waitFor();
     const title = page.getByRole('heading', { level: 1 });
@@ -50,11 +52,24 @@ test('前台订单分区、下单方式草稿和编辑、商品联动及桌面�
     await productPanel.getByRole('button', { name: '查看大图：0.png', exact: true }).waitFor();
     await productPanel.getByRole('button', { name: '查看大图：0.png', exact: true }).click(); await page.getByRole('dialog').waitFor();
     await page.getByRole('button', { name: '关闭大图' }).click();
-    for (const width of [390, 1280]) {
+    const overview = panel.locator('.front-order-grid');
+    assert.deepEqual(await overview.locator('dt').allTextContents(),
+      ['配送员取货时间', '出品时间', '客户', '电话', '地址', '下单方式', '下单时间', '交接方式']);
+    await overview.getByText('2024/11/24 18:25', { exact: true }).waitFor();
+    await overview.getByText(longAddress, { exact: true }).waitFor();
+    for (const width of [320, 390, 1280]) {
       await page.setViewportSize({ width, height: 1000 });
-      const rows = await page.locator('.front-order-grid > div').evaluateAll(elements => elements.map(el => ({ x: el.getBoundingClientRect().x, y: el.getBoundingClientRect().y })));
-      assert.equal(rows[0].y, rows[1].y); assert.ok(rows[1].x > rows[0].x);
-      assert.equal(rows[2].y, rows[3].y);
+      const [pickup, finish, customer, phone, address, method, created, handoff] = await overview.locator(':scope > div').evaluateAll(
+        fields => fields.map(field => field.getBoundingClientRect().toJSON()));
+      assert.equal(pickup.y, finish.y);
+      assert.equal(customer.y, phone.y);
+      assert.equal(address.top, phone.bottom);
+      assert.equal(address.left, customer.left);
+      assert.equal(address.right, phone.right);
+      assert.equal(method.top, address.bottom);
+      assert.equal(method.y, created.y);
+      assert.equal(created.y, handoff.y);
+      assert.ok(method.x < created.x && created.x < handoff.x);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await panel.scrollIntoViewIfNeeded();
       await page.screenshot({ path: `/private/tmp/wuhou-detail-${width}.png`, fullPage: true });
@@ -138,8 +153,13 @@ test('商品资料直接展开，其他商品统一展示规格，历史价格�
     const gate = new Promise(resolve => { releasePayment = resolve; });
     await context.route(`**/api/orders/${orderId}/payment-status`, async route => {
       const input = route.request().postDataJSON(); assert.equal(input.expectedVersion, model.order.version);
-      assert.equal(input.paymentStatus, 'PAID'); assert.equal(Object.hasOwn(input, 'itemId'), false);
-      await gate; model.order.paymentMethod = input.paymentMethod; model.order.paymentStatus = 'PAID'; model.order.paidAt = '2026-11-05T04:00:00Z'; model.order.version++;
+      assert.equal(input.paymentStatus, input.paymentMethod === 'UNPAID' ? 'UNPAID' : 'PAID');
+      assert.equal(Object.hasOwn(input, 'itemId'), false);
+      await gate;
+      model.order.paymentMethod = input.paymentMethod;
+      model.order.paymentStatus = input.paymentStatus;
+      model.order.paidAt = input.paymentStatus === 'PAID' ? '2026-11-05T04:00:00Z' : null;
+      model.order.version++;
       await route.fulfill({ json: { success: true, data: model.order } });
     });
     const notes = [];
@@ -157,7 +177,7 @@ test('商品资料直接展开，其他商品统一展示规格，历史价格�
     assert.equal(await page.locator('.note-panel').evaluate(el => el.open), false);
     assert.equal(await product.locator('.front-product-triple dd').nth(0).innerText(), cake.attributes.cakeBase);
     assert.equal(await page.evaluate(() => {
-      const selectors = ['.front-order-created', '.order-products', '.payment-panel', '.note-panel', '.order-supplement'];
+      const selectors = ['.front-order-information', '.order-products', '.payment-panel', '.note-panel', '.order-supplement'];
       return selectors.every((selector, i) => !i || Boolean(document.querySelector(selectors[i - 1]).compareDocumentPosition(document.querySelector(selector)) & Node.DOCUMENT_POSITION_FOLLOWING));
     }), true);
     for (const width of [390, 1280]) {
@@ -241,6 +261,10 @@ test('商品资料直接展开，其他商品统一展示规格，历史价格�
     await page.getByRole('button', { name: '发布备注', exact: true }).click();
     await page.locator('.note-panel .activity-feed').getByText('当前商品备注', { exact: true }).waitFor(); assert.equal(notes[0].itemId, cake.itemId);
     assert.equal(model.order.totalAmountCents, 16800); assert.equal(model.order.paymentStatus, 'PAID');
+    await page.getByRole('button', { name: '撤销付款登记', exact: true }).click();
+    await page.getByText('支付方式：未付', { exact: true }).waitFor();
+    assert.equal(await page.locator('.order-amount').innerText(), '¥168.00');
+    assert.equal(model.order.paidAt, null);
     assert.deepEqual(errors, []);
   } finally { releasePayment(); await context.close(); }
 });

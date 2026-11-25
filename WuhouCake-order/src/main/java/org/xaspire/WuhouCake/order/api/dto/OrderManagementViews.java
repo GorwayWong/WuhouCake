@@ -5,7 +5,7 @@ import java.util.List;
 
 public final class OrderManagementViews {
     private OrderManagementViews() { }
-    public record Row(String orderId, String orderNo, LocalDate receiveDate, String status, String paymentStatus,
+    public record Row(String orderId, String orderNo, LocalDate receiveDate, String status, String paymentStatus, String fulfillmentType,
             String phone, String customerName, String employeeNumber, String employeeName, String createdBy,
             String totalAmountCents, long matchingQuantity, long cakeQuantity, String products, List<String> productTypes, boolean deleted) { }
     public record Totals(long orderCount, long matchingQuantity, long cakeQuantity, long unclassifiedCakeQuantity, String totalAmountCents,

@@ -1,5 +1,5 @@
 import { testBrowserChannel, closeTestContext, closeTestBrowser, openTestContext } from './browserTrace.mjs';
-import { cycleOrderDraft, openOrderDraft, pendingOrderDraft, savedOrderDraft, saveOrderDraftAndExit } from './orderBrowserFixture.mjs';
+import { cycleOrderDraft, movePendingOrderDraftToLegacy, openOrderDraft, pendingOrderDraft, savedOrderDraft, saveOrderDraftAndExit } from './orderBrowserFixture.mjs';
 import { testJwt } from './testJwt.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -17,7 +17,7 @@ async function fixture() {
   const context = await openTestContext(browser, { viewport: { width: 390, height: 844 }, locale: 'zh-CN' });
   context.setDefaultTimeout(10000);
   await context.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }));
-  const model = { account: 'alice', permitted: true, loseResponse: false, reject: false, orders: new Map(), requests: [],
+  const model = { account: 'alice', permitted: true, loseResponse: false, reject: false, protocolOutdated: false, orders: new Map(), requests: [],
     recognitionFields: {}, recognitionRequests: [], recognitionFailures: 0, recognitionInvalid: 0, extraPermissions: [] };
   await context.route('**/api/**', async route => {
     const req = route.request(), path = new URL(req.url()).pathname;
@@ -46,11 +46,24 @@ async function fixture() {
     if (path === '/api/order-packages') return ok({ items: [], total: 0, page: 1, size: 20 });
     if (path === '/api/orders' && req.method() === 'POST') {
       const id = req.headers()['idempotency-key'], body = req.postDataJSON();
+      assert.equal(req.headers()['x-wuhou-order-submission'], '3');
       model.requests.push({ id, body });
+      if (model.duplicateToken) {
+        const token = model.duplicateToken;
+        model.duplicateHeaders ??= [];
+        model.duplicateHeaders.push(req.headers()['x-wuhou-duplicate-check']);
+        if (req.headers()['x-wuhou-duplicate-check'] !== token) {
+          await model.beforeDuplicateResponse?.();
+          return route.fulfill({ status: 409, json: { success: false, code: 'DUPLICATE_REVIEW_REQUIRED',
+            data: { count: 1, orderNos: ['ORDER-123'], token } } });
+        }
+      }
+      if (model.protocolOutdated) return route.fulfill({ status: 503, json: { success: false, code: 'ORDER_CREATE_CLIENT_UPDATE_REQUIRED' } });
       if (model.reject) return route.fulfill({ status: 400, json: { success: false, code: 'VALIDATION_FAILED' } });
       if (!model.orders.has(id)) model.orders.set(id, { ...body, orderId: 'order-one', orderNo: 'TEST-001', version: 1, status: 'CAKE_BASE', currentStageCode: null, paymentStatus: 'UNPAID' });
+      await model.beforeCreateResponse?.(req);
       if (model.loseResponse) { model.loseResponse = false; return route.abort('failed'); }
-      assert.deepEqual(body, model.requests[0].body);
+      assert.deepEqual(body, model.requests.find(request => request.id === id).body);
       return ok(model.orders.get(id));
     }
     return route.fulfill({ status: 404, json: { success: false, code: 'NOT_FOUND' } });
@@ -75,6 +88,212 @@ async function complete(page) {
   await page.getByRole('option', { name: '门店自提' }).click();
   await page.locator('[id="items.0.name"]').fill('生日蛋糕');
 }
+test('手工疑似重复仅提示一次，继续保存后丢失响应仍按原请求重试', async () => {
+  const { context, page, model, errors } = await fixture();
+  try {
+    await complete(page);
+    model.duplicateToken = 'b'.repeat(32) + '.' + 'a'.repeat(64);
+    await button(page, '创建订单').click();
+    await page.getByText(/同一联系电话、同一取货日已有 1 笔订单.*ORDER-123/).waitFor();
+    assert.equal(model.orders.size, 0);
+    const waiting = await pending(page);
+    assert.equal(waiting.duplicateReview.state, 'REQUIRED');
+    assert.equal(waiting.pending, undefined);
+    assert.equal(waiting.pendingDuplicateCheck, undefined);
+    await page.reload();
+    await button(page, '按独立订单保存').waitFor();
+    assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+    assert.equal(model.requests.length, 1);
+    model.loseResponse = true;
+    await button(page, '按独立订单保存').click();
+    await button(page, '重试提交').waitFor();
+    assert.equal((await pending(page)).pendingDuplicateCheck, model.duplicateToken);
+    await page.reload();
+    await button(page, '重试提交').click();
+    await waitFor(async () => (await pending(page)) === null);
+    assert.deepEqual(model.duplicateHeaders, [undefined, model.duplicateToken, model.duplicateToken]);
+    assert.deepEqual(model.requests, Array(3).fill(model.requests[0]));
+    assert.equal(model.orders.size, 1);
+    assert.deepEqual(errors, []);
+  } finally { await closeTestContext(context); }
+});
+
+test('修改待核对订单后退出保存，恢复时按新内容重新查重', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await complete(page);
+    model.duplicateToken = 'b'.repeat(32) + '.' + 'a'.repeat(64);
+    await button(page, '创建订单').click();
+    await button(page, '按独立订单保存').waitFor();
+    await page.locator('#phone').fill('13900000000');
+    await button(page, '创建订单').waitFor();
+    assert.equal(await page.getByText(/同一联系电话、同一取货日已有/).count(), 0);
+    await saveOrderDraftAndExit(page);
+    await page.getByRole('link', { name: '新建订单', exact: true }).click();
+    await page.getByText('已恢复上次填写', { exact: true }).waitFor();
+    assert.equal(await page.locator('#phone').inputValue(), '13900000000');
+    assert.equal((await pending(page)).duplicateReview.state, 'EDITING');
+    assert.equal(model.requests.length, 1);
+    model.duplicateToken = 'c'.repeat(32) + '.' + 'a'.repeat(64);
+    await button(page, '创建订单').click();
+    await button(page, '按独立订单保存').waitFor();
+    assert.deepEqual(model.duplicateHeaders, [undefined, undefined]);
+    assert.equal(model.requests[1].body.customer.phone, '13900000000');
+    assert.equal((await pending(page)).duplicateReview.match.token, model.duplicateToken);
+    assert.equal(model.orders.size, 0);
+  } finally { await closeTestContext(context); }
+});
+
+test('旧标签页迟到的查重响应不覆盖另一标签页的放行请求', async () => {
+  const { context, page, model } = await fixture();
+  const releaseLate = Promise.withResolvers(), releaseApproved = Promise.withResolvers();
+  try {
+    await complete(page);
+    model.duplicateToken = 'b'.repeat(32) + '.' + 'a'.repeat(64);
+    model.beforeDuplicateResponse = async () => {
+      if (model.requests.length === 1) await releaseLate.promise;
+    };
+    model.beforeCreateResponse = () => releaseApproved.promise;
+    await button(page, '创建订单').click();
+    await waitFor(() => model.requests.length === 1);
+    const other = await context.newPage();
+    await other.goto(`${base}/#/orders/new`);
+    await button(other, '重试提交').click();
+    await button(other, '按独立订单保存').click();
+    await waitFor(() => model.orders.size === 1);
+    const newer = await pending(other);
+    assert.equal(newer.pendingDuplicateCheck, model.duplicateToken);
+    releaseLate.resolve();
+    await page.getByText('此账号另有订单结果待确认，请回到原标签页核对。', { exact: true }).waitFor();
+    assert.deepEqual(await pending(other), newer);
+    releaseApproved.resolve();
+    await waitFor(async () => (await pending(other)) === null);
+    assert.equal(model.orders.size, 1);
+  } finally {
+    releaseLate.resolve(); releaseApproved.resolve();
+    await closeTestContext(context);
+  }
+});
+
+test('保存查重结果失败时保留输入，重试本机保存无需再发请求', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await complete(page);
+    model.duplicateToken = 'b'.repeat(32) + '.' + 'a'.repeat(64);
+    model.beforeDuplicateResponse = () => page.evaluate(() => {
+      const transaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (store, mode, options) {
+        if (mode === 'readwrite' && store === 'drafts') {
+          IDBDatabase.prototype.transaction = transaction;
+          throw new DOMException('Storage unavailable', 'InvalidStateError');
+        }
+        return transaction.call(this, store, mode, options);
+      };
+    });
+    await button(page, '创建订单').click();
+    await page.getByText('本机提交记录保存失败，请检查浏览器存储后重试。', { exact: true }).waitFor();
+    assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+    await button(page, '重试提交').click();
+    await button(page, '按独立订单保存').waitFor();
+    assert.equal(model.requests.length, 1);
+    assert.equal((await pending(page)).duplicateReview.match.token, model.duplicateToken);
+  } finally { await closeTestContext(context); }
+});
+
+test('缺少 Web Locks 时存储事务不可用，保留录单输入并且不发出请求', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await complete(page);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'locks', { value: undefined });
+      const transaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (store, mode, options) {
+        if (mode === 'readwrite') throw new DOMException('Storage unavailable', 'InvalidStateError');
+        return transaction.call(this, store, mode, options);
+      };
+    });
+    await button(page, '创建订单').click();
+    await page.getByText('本机提交记录保存失败，请检查浏览器存储后重试。', { exact: true }).waitFor({ timeout: 3000 });
+    assert.equal(model.requests.length, 0);
+    assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+  } finally { await closeTestContext(context); }
+});
+
+test('待确认记录写入后事务中止，刷新不会恢复一笔未发送的订单', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await complete(page);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'locks', { value: undefined });
+      const put = IDBObjectStore.prototype.put;
+      // Abort after the mutation runs, before the browser can commit it.
+      IDBObjectStore.prototype.put = function (...args) {
+        const req = put.apply(this, args);
+        if (this.transaction.db.name === 'wuhou-create-drafts')
+          req.addEventListener('success', () => this.transaction.abort(), { once: true });
+        return req;
+      };
+    });
+    await button(page, '创建订单').click();
+    await page.getByText('本机提交记录保存失败，请检查浏览器存储后重试。', { exact: true }).waitFor();
+    assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+    assert.equal(model.requests.length, 0);
+    await page.reload();
+    await page.locator('#phone').waitFor();
+    assert.equal(await button(page, '重试提交').count(), 0);
+
+    const other = await context.newPage();
+    await other.goto(`${base}/#/orders/new`);
+    await complete(other);
+    await button(other, '创建订单').click();
+    await other.waitForURL('**/#/?date=*');
+    assert.equal(model.requests.length, 1);
+  } finally { await closeTestContext(context); }
+});
+
+test('缺少 Web Locks 时双标签页仅发出一笔待确认提交，原单可恢复并以同键重试', async () => {
+  const { context, page, model } = await fixture();
+  const disableLocks = () => Object.defineProperty(navigator, 'locks', { value: undefined });
+  const release = Promise.withResolvers();
+  try {
+    await context.addInitScript(disableLocks);
+    await page.evaluate(disableLocks);
+    const other = await context.newPage();
+    await other.goto(`${base}/#/orders/new`);
+    await other.locator('#customerName').waitFor();
+    await Promise.all([complete(page), complete(other)]);
+    await other.locator('#phone').fill('13900001111');
+    model.loseResponse = true;
+    model.beforeCreateResponse = () => release.promise;
+
+    const request = context.waitForEvent('request', {
+      predicate: req => new URL(req.url()).pathname === '/api/orders' && req.method() === 'POST',
+      timeout: 5000,
+    });
+    await Promise.all([button(page, '创建订单').click(), button(other, '创建订单').click(), request]);
+    const winner = (await request).frame().page();
+    const blocked = winner === page ? other : page;
+    const blockedPhone = winner === page ? '13900001111' : '13800000000';
+    await blocked.getByText('此账号另有订单结果待确认，请回到原标签页核对。', { exact: true }).waitFor();
+    assert.equal(await blocked.locator('#phone').inputValue(), blockedPhone);
+    assert.equal(model.requests.length, 1);
+    release.resolve();
+    await button(winner, '重试提交').waitFor();
+    await winner.reload();
+    await button(winner, '重试提交').click();
+    await winner.waitForURL('**/#/?date=*');
+    assert.equal(model.requests[1].id, model.requests[0].id);
+    assert.deepEqual(model.requests[1].body, model.requests[0].body);
+    assert.equal(model.orders.size, 1);
+
+    await button(blocked, '创建订单').click();
+    await blocked.waitForURL('**/#/?date=*');
+    assert.equal(model.requests.length, 3);
+    assert.notEqual(model.requests[2].id, model.requests[0].id);
+    assert.equal(model.orders.size, 2);
+  } finally { release.resolve(); await closeTestContext(context); }
+});
+
 test('只粘贴原文可显式保存，重开时选择恢复', async () => {
   const { context, page, errors } = await fixture();
   try {
@@ -118,7 +337,7 @@ test('多商品、未完成金额、当前商品及手工标记随已保存草�
     await openOrderDraft(page);
   } finally { await closeTestContext(context); }
 });
-test('响应丢失后重载，用原始载荷及相同标识重试，仅产生一单，成功清除草稿', async () => {
+test('旧版待确认记录恢复原始载荷及幂等键，重试仍只有一单并清除草稿', async () => {
   const { context, page, model, errors } = await fixture();
   try {
     await complete(page); model.loseResponse = true;
@@ -126,6 +345,7 @@ test('响应丢失后重载，用原始载荷及相同标识重试，仅产生�
     await page.getByRole('button', { name: '重试提交' }).waitFor();
     const original = await pending(page);
     assert.ok(original.pending);
+    await movePendingOrderDraftToLegacy(page);
     await page.reload();
     await page.getByText('已恢复上次填写', { exact: true }).waitFor();
     assert.equal(await page.locator('#phone').isDisabled(), true);
@@ -708,8 +928,11 @@ test('客户扫码响应丢失后用原请求重试，员工确认时暂存并�
     model.extraPermissions = ['CUSTOMER_SUBMISSION_PROCESS', 'ORDER_BUSINESS_DETAILS_READ'];
     const submission = { id: '00000000-0000-4000-8000-000000000002', original: posted, reviewed: null, status: 'PENDING', ownerId: '00000000-0000-4000-8000-000000000004', ownerName: '测试客服', version: 0, createdAt: new Date().toISOString(), orderId: null };
     const duplicate = { kind: 'ORDER', id: '00000000-0000-4000-8000-000000000003', phone: '13800000000',
-      requestedReceiveAt: posted.requestedReceiveAt, orderNo: 'DUP-1', status: 'CAKE_BASE', items: [], requiresAcknowledgement: true };
-    const details = () => ({ submission, duplicates: submission.reviewed && submission.status === 'PENDING' ? [duplicate] : [],
+      requestedReceiveAt: posted.requestedReceiveAt, orderNo: 'DUP-1', status: 'WAITING_DELIVERY', items: [], requiresAcknowledgement: true };
+    const duplicates = [{ ...duplicate, fulfillmentType: 'DELIVERY' },
+      { ...duplicate, id: '00000000-0000-4000-8000-000000000006', orderNo: 'DUP-2', fulfillmentType: 'PICKUP' },
+      { ...duplicate, id: '00000000-0000-4000-8000-000000000007', orderNo: 'DUP-3' }];
+    const details = () => ({ submission, duplicates: submission.reviewed && submission.status === 'PENDING' ? duplicates : [],
       activities: [], duplicateCheckToken: 'test' });
     let confirmAttempts = 0;
     const submissionPath = '**/api/customer-submissions/00000000-0000-4000-8000-000000000002';
@@ -737,6 +960,10 @@ test('客户扫码响应丢失后用原请求重试，员工确认时暂存并�
     const confirm = page.getByRole('button', { name: '确认接单', exact: true });
     await confirm.click();
     await page.getByText('已暂存。请核实疑似重复单后继续接单。').waitFor();
+    const duplicateList = page.locator('.duplicate-records');
+    assert.equal(await duplicateList.getByText('待配送', { exact: true }).getAttribute('data-order-tone'), 'delivery');
+    assert.equal(await duplicateList.getByText('待自提', { exact: true }).getAttribute('data-order-tone'), 'handoff');
+    assert.equal(await duplicateList.getByText('待交接', { exact: true }).getAttribute('data-order-tone'), null);
     assert.equal(confirmAttempts, 0);
     assert.equal(savedReview.creditedEmployeeId, submission.ownerId);
     assert.equal(savedReview.plannedHandoffAt, savedReview.content.requestedReceiveAt);
@@ -766,12 +993,18 @@ test('放弃待确认记录就地确认，删除失败可见且重试闭环，�
     await modal.getByRole('button', { name: '返回', exact: true }).click();
     assert.equal((await pending(page)).requestId, original.requestId);
     await modal.getByRole('button', { name: '放弃待确认记录' }).click();
-    await page.evaluate(() => { window.originalRemove = Storage.prototype.removeItem; Storage.prototype.removeItem = () => { throw new DOMException('denied', 'SecurityError'); }; });
+    await page.evaluate(() => {
+      window.originalDelete = IDBObjectStore.prototype.delete;
+      IDBObjectStore.prototype.delete = function (key) {
+        if (this.transaction.db.name === 'wuhou-create-drafts') throw new DOMException('denied', 'InvalidStateError');
+        return window.originalDelete.call(this, key);
+      };
+    });
     await modal.getByRole('button', { name: '确认放弃', exact: true }).click();
     await modal.getByRole('alert').filter({ hasText: '草稿未能删除' }).waitFor();
     assert.equal((await pending(page)).requestId, original.requestId);
     assert.equal(await page.locator('#customerName').inputValue(), '保留客户');
-    await page.evaluate(() => { Storage.prototype.removeItem = window.originalRemove; });
+    await page.evaluate(() => { IDBObjectStore.prototype.delete = window.originalDelete; });
     await modal.getByRole('button', { name: '重试删除' }).click();
     await waitFor(async () => await pending(page) === null);
     assert.equal(await page.locator('#customerName').inputValue(), '');
@@ -788,11 +1021,111 @@ test('恢复确认期间其他标签页更新，禁止删除新版本', async ()
     const modal = page.locator('.draft-toolbar, .draft-discard-confirmation');
     await modal.getByRole('button', { name: '放弃待确认记录' }).click();
     const peer = await context.newPage();
-    await peer.goto(base);
-    await peer.evaluate(key => { const value = JSON.parse(localStorage.getItem(key)); value.revision = 'peer-new'; value.requestId = crypto.randomUUID(); value.value.customerName = '其他标签页'; localStorage.setItem(key, JSON.stringify(value)); }, key);
+    await peer.goto(`${base}/#/orders/new`);
+    await button(peer, '放弃待确认记录').click();
+    await button(peer, '确认放弃').click();
+    await complete(peer);
+    await peer.locator('#customerName').fill('其他标签页');
+    model.loseResponse = true;
+    await button(peer, '创建订单').click();
+    await button(peer, '重试提交').waitFor();
     await button(page, '确认放弃').click();
     await modal.getByRole('alert').filter({ hasText: '草稿未能删除' }).waitFor();
     assert.equal((await pending(page)).value.customerName, '其他标签页');
+  } finally { await closeTestContext(context); }
+});
+
+test('建单协议过期时提示刷新，原提交可用同键恢复', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await complete(page);
+    model.protocolOutdated = true;
+    await button(page, '创建订单').click();
+    await page.getByText('录单页面需要更新。原提交已保留，请刷新后继续核对。').waitFor();
+    assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+    assert.equal(model.orders.size, 0);
+
+    model.protocolOutdated = false;
+    await page.reload();
+    await button(page, '重试提交').click();
+    await page.waitForURL('**/#/?date=*');
+    assert.equal(model.requests.length, 2);
+    assert.deepEqual(model.requests[1], model.requests[0]);
+    assert.equal(model.orders.size, 1);
+  } finally { await closeTestContext(context); }
+});
+
+for (const initialReadFails of [false, true]) test(`旧单${initialReadFails ? '首次读取失败' : '迁移中止'}后仍显示原单，同页重试沿用幂等键`, async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await complete(page);
+    model.loseResponse = true;
+    await button(page, '创建订单').click();
+    await button(page, '重试提交').waitFor();
+    await movePendingOrderDraftToLegacy(page);
+    await page.addInitScript(initialReadFails => {
+      const get = IDBObjectStore.prototype.get;
+      let failedRead = false;
+      IDBObjectStore.prototype.get = function (key) {
+        if (initialReadFails && key === 'order-pending:alice' && !failedRead) {
+          failedRead = true;
+          throw new DOMException('pending read failed', 'InvalidStateError');
+        }
+        return get.call(this, key);
+      };
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, key) {
+        const request = put.call(this, value, key);
+        if (key === 'order-pending:alice' && !window.allowMigrationWrites)
+          request.addEventListener('success', () => this.transaction.abort(), { once: true });
+        return request;
+      };
+    }, initialReadFails);
+    await page.reload();
+    await page.locator('#phone').waitFor();
+    assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+    await page.getByText(/旧待确认记录暂未迁移/).waitFor();
+    await button(page, '重试提交').click();
+    await page.getByText('本机提交记录保存失败，请检查浏览器存储后重试。', { exact: true }).waitFor();
+    assert.equal(model.requests.length, 1);
+    assert.equal(await page.locator('#phone').inputValue(), '13800000000');
+
+    await page.evaluate(() => { window.allowMigrationWrites = true; });
+    await button(page, '重试提交').click();
+    await page.waitForURL('**/#/?date=*');
+    assert.equal(model.requests.length, 2);
+    assert.deepEqual(model.requests[1], model.requests[0]);
+    assert.equal(model.orders.size, 1);
+  } finally { await closeTestContext(context); }
+});
+
+test('旧待确认记录迁移后，旧副本清理失败可以重试且清理成功后不会复活', async () => {
+  const { context, page, model } = await fixture();
+  try {
+    await complete(page); model.loseResponse = true;
+    await button(page, '创建订单').click();
+    await button(page, '重试提交').waitFor();
+    await movePendingOrderDraftToLegacy(page);
+    await page.addInitScript(() => {
+      window.originalRemove = Storage.prototype.removeItem;
+      Storage.prototype.removeItem = function (key) {
+        if (key === 'wuhou:order-draft:v1:alice') throw new DOMException('denied', 'SecurityError');
+        return window.originalRemove.call(this, key);
+      };
+    });
+    await page.reload();
+    await button(page, '重试提交').waitFor();
+    await button(page, '放弃待确认记录').click();
+    await button(page, '确认放弃').click();
+    await page.getByRole('alert').filter({ hasText: '草稿未能删除' }).waitFor();
+    assert.equal((await pending(page)).requestId, model.requests[0].id);
+    await page.evaluate(() => { Storage.prototype.removeItem = window.originalRemove; });
+    await button(page, '重试删除').click();
+    await waitFor(async () => await pending(page) === null);
+    await page.reload();
+    await page.locator('#customerName').waitFor();
+    assert.equal(await button(page, '重试提交').count(), 0);
+    assert.equal(model.requests.length, 1);
   } finally { await closeTestContext(context); }
 });
 

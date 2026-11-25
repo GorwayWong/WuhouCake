@@ -37,6 +37,8 @@ public interface IdentityFacade {
     void logout(String refreshCredential, String requestId);
     AccountView authenticate(UUID accountId, UUID sessionId, long credentialVersion);
     AccountView me();
+    /** Returns the current account under its row lock in the caller's transaction. */
+    AccountView lockCurrentEmployee();
     AccountView rename(String nickname);
     void changePassword(String currentPassword, String newPassword);
     Provisioned create(Create command);

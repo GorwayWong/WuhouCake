@@ -27,7 +27,7 @@ class OrderServiceTest {
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final IdGenerator ids = mock(IdGenerator.class);
     private final org.xaspire.WuhouCake.identity.api.facade.IdentityFacade identity = mock(org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.class);
-    private final OrderService service = new OrderService(orders, activities, ids, Clock.fixed(NOW.plusSeconds(1), ZoneOffset.UTC), events, identity, new org.xaspire.WuhouCake.shared.json.JsonCodec(new com.fasterxml.jackson.databind.ObjectMapper()));
+    private final OrderService service = new OrderService(orders, activities, ids, Clock.fixed(NOW.plusSeconds(1), ZoneOffset.UTC), events, identity, new org.xaspire.WuhouCake.shared.json.JsonCodec(new com.fasterxml.jackson.databind.ObjectMapper()), mock(org.xaspire.WuhouCake.order.domain.port.CustomerSubmissions.class));
     private final OrderCommands.Operator operator = new OrderCommands.Operator(UUID.randomUUID(), "员工");
     @BeforeEach void lockLoadsTheOrder() {
         when(orders.lock(any())).thenAnswer(invocation -> orders.find(invocation.getArgument(0)));
@@ -80,12 +80,11 @@ class OrderServiceTest {
     }
     @Test void customerSubmissionCreationKeepsReviewedEmployeeInsteadOfConfirmingEmployee() {
         var reviewedEmployee = UUID.randomUUID(); var submissionId = UUID.randomUUID();
-        when(identity.selectEmployee(reviewedEmployee)).thenReturn(new org.xaspire.WuhouCake.identity.api.facade.IdentityFacade.EmployeeOption(reviewedEmployee, "0003", "归属员工", "ACTIVE"));
         when(ids.nextId()).thenAnswer(invocation -> UUID.randomUUID()); when(orders.nextNumber()).thenReturn("0000001");
         var command = new OrderCommands.Create(new OrderCommands.Customer("客户", "13800000000", null, null),
                 new OrderCommands.Fulfillment("PICKUP", null, LocalDate.of(2026, 10, 16), NOW.plusSeconds(3600), null),
                 List.of(new OrderCommands.Item("蛋糕", null, 1, null, null, Map.of())), null, reviewedEmployee);
-        var result = service.createCustomer(command, operator, submissionId);
+        var result = service.createCustomer(command, operator, submissionId, new Attribution(command.creditedEmployeeId(), "0002", "归属员工"));
         assertEquals(reviewedEmployee, result.creditedEmployee().accountId());
         assertEquals(operator.accountId(), result.createdBy());
         var logged = ArgumentCaptor.forClass(OrderActivity.class); verify(activities).append(logged.capture());

@@ -5,6 +5,7 @@ import static org.xaspire.WuhouCake.order.infrastructure.persistence.mapper.Orde
 import java.time.*;
 import java.util.List;
 import org.apache.ibatis.annotations.*;
+import org.xaspire.WuhouCake.order.domain.port.CustomerSubmissions.OrderCandidate;
 
 public interface CustomerSubmissionMapper {
     String COLUMNS = "id::text,entry_id::text,owner_id::text,owner_name,version,status,original::text,reviewed::text,order_id::text,created_at,updated_at";
@@ -13,11 +14,15 @@ public interface CustomerSubmissionMapper {
             String original, String reviewed, String orderId, Instant createdAt, Instant updatedAt) { }
     record ActivityRow(long id, String type, String actorType, String actorId, String actorName, String details, Instant createdAt) { }
     record Claim(String id, String fingerprint, int fingerprintVersion) { }
+    record DuplicateKey(String id, String phone, LocalDate date) { }
     record DuplicateRow(String kind, String id, long version, String status, String orderNo, String phone,
             LocalDate requestedReceiveDate, Instant requestedReceiveAt, String items, Long totalAmountCents,
-            String handledBy, Instant createdAt) { }
+            String handledBy, Instant createdAt, String fulfillmentType) { }
     String CONTENT = "COALESCE(s.reviewed->'content',s.original)";
     String CONTENT_PICKUP_AT = "COALESCE((s.reviewed->>'plannedHandoffAt')::timestamptz,(" + CONTENT + "->>'requestedReceiveAt')::timestamptz)";
+    String SUBMISSION_PHONE = "regexp_replace(" + CONTENT + "->>'phone','[ ()-]','','g')";
+    String SUBMISSION_PICKUP_DATE = "(" + CONTENT_PICKUP_AT + " AT TIME ZONE 'Asia/Shanghai')::date";
+    String ORDER_PHONE = "regexp_replace(o.customer_phone,'[ ()-]','','g')";
     @Select("SELECT id::text,owner_id::text,owner_name,token,enabled FROM customer_order_entry WHERE owner_id=CAST(#{owner} AS uuid)")
     EntryRow entryForOwner(String owner);
     @Select("SELECT id::text,owner_id::text,owner_name,token,enabled FROM customer_order_entry WHERE token=#{token}")
@@ -51,22 +56,37 @@ public interface CustomerSubmissionMapper {
     @Select("SELECT 1 FROM pg_advisory_xact_lock(hashtextextended('customer-submission:' || #{phone} || ':' || #{date}, 0))")
     int lockDuplicateGroup(@Param("phone") String phone, @Param("date") String date);
 
+    @Select("SELECT o.id::text, o.order_no FROM cake_order o WHERE o.deleted_at IS NULL AND o.status<>'CANCELLED'"
+            + " AND " + ORDER_PHONE + "=#{phone} AND " + ORDER_PICKUP_DATE + "=#{date}"
+            + " ORDER BY o.created_at DESC, o.id DESC")
+    List<OrderCandidate> activeOrders(@Param("phone") String phone, @Param("date") LocalDate date);
+
     @Select("SELECT 'SUBMISSION' AS kind,s.id::text,s.version,s.status,NULL::text AS order_no," + CONTENT + "->>'phone' AS phone,"
             + " (" + CONTENT_PICKUP_AT + " AT TIME ZONE 'Asia/Shanghai')::date AS requested_receive_date,"
             + " " + CONTENT_PICKUP_AT + " AS requested_receive_at,"
             + " (SELECT jsonb_agg(jsonb_build_object('name',item->>'name','quantity',(item->>'quantity')::int) ORDER BY position)::text"
             + " FROM jsonb_array_elements(" + CONTENT + "->'items') WITH ORDINALITY AS products(item,position)) AS items,"
             + " (s.reviewed->>'totalAmountCents')::bigint AS total_amount_cents,"
-            + " COALESCE((SELECT actor_name FROM customer_submission_activity WHERE submission_id=s.id AND type='REVIEWED' ORDER BY id DESC LIMIT 1),s.owner_name) AS handled_by,s.created_at"
+            + " COALESCE((SELECT actor_name FROM customer_submission_activity WHERE submission_id=s.id AND type='REVIEWED' ORDER BY id DESC LIMIT 1),s.owner_name) AS handled_by,s.created_at,NULL::text AS fulfillment_type"
             + " FROM customer_order_submission s WHERE s.status='PENDING' AND s.id!=CAST(#{id} AS uuid)"
-            + " AND regexp_replace(" + CONTENT + "->>'phone','[ ()-]','','g')=#{phone}"
-            + " AND (" + CONTENT_PICKUP_AT + " AT TIME ZONE 'Asia/Shanghai')::date=#{date}"
+            + " AND " + SUBMISSION_PHONE + "=#{phone} AND " + SUBMISSION_PICKUP_DATE + "=#{date}"
             + " UNION ALL SELECT 'ORDER',o.id::text,o.version,o.status,o.order_no,o.customer_phone," + ORDER_PICKUP_DATE + "," + ORDER_PICKUP_AT + ","
             + " COALESCE((SELECT jsonb_agg(jsonb_build_object('name',name,'quantity',quantity) ORDER BY position NULLS LAST,created_at,id)::text FROM cake_order_item WHERE order_id=o.id AND NOT is_removed),'[]'),"
-            + " o.total_amount_cents,COALESCE((SELECT actor_name_snapshot FROM cake_order_activity WHERE order_id=o.id AND type='CREATED' ORDER BY id LIMIT 1),'未记录'),o.created_at"
-            + " FROM cake_order o WHERE o.deleted_at IS NULL AND regexp_replace(o.customer_phone,'[ ()-]','','g')=#{phone} AND " + ORDER_PICKUP_DATE + "=#{date}"
+            + " o.total_amount_cents,COALESCE((SELECT actor_name_snapshot FROM cake_order_activity WHERE order_id=o.id AND type='CREATED' ORDER BY id LIMIT 1),'未记录'),o.created_at,o.fulfillment_type"
+            + " FROM cake_order o WHERE o.deleted_at IS NULL AND " + ORDER_PHONE + "=#{phone} AND " + ORDER_PICKUP_DATE + "=#{date}"
             + " ORDER BY created_at DESC,kind,id")
     List<DuplicateRow> duplicates(@Param("id") String id, @Param("phone") String phone, @Param("date") LocalDate date);
+    @Select("<script>"
+            + " SELECT keys.id::text FROM (VALUES"
+            + " <foreach collection='keys' item='key' separator=','>"
+            + " (CAST(#{key.id} AS uuid),#{key.phone},CAST(#{key.date} AS date))"
+            + " </foreach>) AS keys(id,phone,pickup_date)"
+            + " WHERE EXISTS (SELECT 1 FROM customer_order_submission s WHERE s.status='PENDING' AND s.id!=keys.id"
+            + " AND " + SUBMISSION_PHONE + "=keys.phone AND " + SUBMISSION_PICKUP_DATE + "=keys.pickup_date)"
+            + " OR EXISTS (SELECT 1 FROM cake_order o WHERE o.deleted_at IS NULL AND o.status!='CANCELLED'"
+            + " AND " + ORDER_PHONE + "=keys.phone AND " + ORDER_PICKUP_DATE + "=keys.pickup_date)"
+            + " </script>")
+    List<String> requiringDuplicateAcknowledgement(@Param("keys") List<DuplicateKey> keys);
     @Update("UPDATE customer_order_submission SET reviewed=CAST(#{review} AS jsonb),status=#{status},order_id=CAST(#{orderId} AS uuid),version=version+1,updated_at=#{now}"
             + " WHERE id=CAST(#{id} AS uuid) AND version=#{version} AND status='PENDING'")
     int update(@Param("id") String id, @Param("version") long version, @Param("review") String review, @Param("status") String status, @Param("orderId") String orderId, @Param("now") Instant now);

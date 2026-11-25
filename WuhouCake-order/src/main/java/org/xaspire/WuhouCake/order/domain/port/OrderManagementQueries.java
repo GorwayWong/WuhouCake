@@ -52,7 +52,7 @@ public interface OrderManagementQueries {
             return value;
         }
     }
-    record Row(String orderId, String orderNo, LocalDate receiveDate, String status, String paymentStatus,
+    record Row(String orderId, String orderNo, LocalDate receiveDate, String status, String paymentStatus, String fulfillmentType,
             String phone, String customerName, String employeeNumber, String employeeName, String createdBy,
             Long totalAmountCents, long matchingQuantity, long cakeQuantity, String products, String productTypes) { }
     record Totals(long orderCount, long matchingQuantity, long cakeQuantity, long unclassifiedCakeQuantity, String totalAmountCents,

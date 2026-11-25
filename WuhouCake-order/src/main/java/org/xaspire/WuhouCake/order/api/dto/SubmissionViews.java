@@ -7,7 +7,7 @@ import org.xaspire.WuhouCake.order.api.command.SubmissionCommands;
 
 public final class SubmissionViews {
     private SubmissionViews() { }
-    public record Entry(UUID ownerId, String ownerName, String url, boolean enabled) { }
+    public record Entry(UUID ownerId, String ownerName, String url, boolean enabled, boolean ownerEligible) { }
     public record ImageContent(String contentType, byte[] bytes) { }
     public record PublicEntry(String ownerName) { }
     public record Receipt(UUID submissionId, String submissionNo) { }
@@ -17,7 +17,8 @@ public final class SubmissionViews {
     public record DuplicateItem(String name, int quantity) { }
     public record Duplicate(String kind, UUID id, long version, String status, String orderNo, String phone,
             LocalDate requestedReceiveDate, Instant requestedReceiveAt, List<DuplicateItem> items, Long totalAmountCents,
-            String handledBy, Instant createdAt, boolean requiresAcknowledgement) { }
+            String handledBy, Instant createdAt, boolean requiresAcknowledgement, String fulfillmentType) { }
+    public record Summary(Submission submission, boolean requiresAcknowledgement) { }
     public record Detail(Submission submission, List<Duplicate> duplicates, String duplicateCheckToken, List<Activity> activities) { }
     public record Origin(UUID submissionId, String source, UUID entryOwnerId, String entryOwnerName, Instant submittedAt, Instant requestedReceiveAt) { }
 }

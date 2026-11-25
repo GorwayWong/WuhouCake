@@ -47,7 +47,13 @@ docker compose exec -T -u postgres postgres psql -XAt -U wuhou -d wuhou \
 ./backup-ip-pitr.sh check
 ```
 
-正式发布前，将候选镜像加载到本机，把候选静态产物放在新的绝对发布目录下的 `dist/`。保留当前运行版的 `.env`、镜像和发布目录。脚本先核对当前容器及数据库，探测当前 HTTPS 产物，再生成已验证的发布前备份。随后只切换应用、图片端和网关，验证 readiness 及 HTTPS 首页、入口脚本和样式的内容。检查使用公网 IP 的 HTTPS 证书和宿主机信任链。通过后原子登记候选镜像 ID 和目录，结果写入 `maintenance/release-last.json`。
+正式发布前，将候选镜像加载到本机，把候选静态产物放在新的绝对发布目录下的 `dist/`。保留当前运行版的 `.env`、镜像和发布目录。脚本先核对当前容器及数据库，探测当前 HTTPS 产物，再生成已验证的发布前备份。随后先切换应用和图片端并验证应用 readiness，再切换网关，验证 HTTPS 首页、入口脚本和样式的内容。检查使用公网 IP 的 HTTPS 证书和宿主机信任链。通过后原子登记候选镜像 ID 和目录，结果写入 `maintenance/release-last.json`。
+
+### 员工建单协议升级
+
+员工手工建单 `POST /api/orders` 需要 `X-Wuhou-Order-Submission: 3`。旧页面的有效建单请求返回 `503 ORDER_CREATE_CLIENT_UPDATE_REQUIRED`，此前的待确认记录可刷新后按原幂等键恢复。直接调用接口的脚本也需发送该请求头。
+
+发布及通过脚本启动服务前，脚本会比较前端入口和应用镜像声明的建单协议。首次发布使用配套产物。已在隔离环境验证旧版能读取候选版写入的数据时，可用 `--rollback-safe`。若上一版两项产物均未声明协议，且迁移文件、数据库历史及旧版配置校验通过，只在网关切换开始前允许自动回退。发布记录会在执行网关切换前写入 `gatewaySwitchStarted: true`。首次升级记录为 true 或阶段未知时，前滚到保留协议门禁的版本。
 
 ### V39 历史填单迁移
 

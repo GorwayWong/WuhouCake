@@ -16,7 +16,7 @@ public final class OrderViewAccess {
                         access.allows(ORDER_BUSINESS_DETAILS_READ) ? row.createdAt() : null, row.calendarDate(),
                         access.allows(ORDER_AMOUNT_READ) ? row.paidAt() : null,
                         access.allows(ORDER_AMOUNT_READ) ? row.amountCents() : null,
-                        access.allows(ORDER_AMOUNT_READ) ? row.paymentStatus() : null, row.status(), row.currentStageCode())).toList());
+                        access.allows(ORDER_AMOUNT_READ) ? row.paymentStatus() : null, row.status(), row.currentStageCode(), row.fulfillmentType())).toList());
     }
 
     public static OrderViews.Detail detail(OrderViews.Detail source, EmployeeAccess access) {

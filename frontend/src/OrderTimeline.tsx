@@ -5,6 +5,7 @@ import { businessDate, businessTime, calendarCardTime } from './dates';
 import { groupOrdersByTime, timelinePartitions, latestOrderNote } from './calendarView';
 import type { CalendarView } from './calendarView';
 import { deliveryCalendarFilter } from './calendarFilters';
+import { orderStatusTone } from './orderStates';
 import type { Account, PendingOrder, WorkbenchCard } from './types';
 import { calendarOrderHref } from './routes';
 import { Empty, Payment, Status } from './ui';
@@ -28,7 +29,7 @@ export function OrderSummaryCard({ order, view, account, newlyCreated = false, s
   const calendarCard = 'firstItem' in order;
   const showAddress = calendarCard && access.customer && order.fulfillmentType === 'DELIVERY';
   const pickup = calendarCard ? order.plannedHandoffAt : pickupInstant(order);
-  return <a ref={card} data-order-id={order.orderId} className={`order-summary-card compact-order-card ${access.productionView ? 'production-card' : ''}${newlyCreated ? ' is-new-order' : ''}${readyForDelivery ? ' is-ready-for-delivery' : ''}`} href={calendarOrderHref(view, order.orderId)}>
+  return <a ref={card} data-order-id={order.orderId} className={`order-summary-card compact-order-card ${access.productionView ? 'production-card' : ''}${newlyCreated ? ' is-new-order' : ''}${readyForDelivery ? ' is-ready-for-delivery' : ''}`} data-order-tone={readyForDelivery ? orderStatusTone(order.status, order.fulfillmentType) : undefined} href={calendarOrderHref(view, order.orderId)}>
     {newlyCreated && <span className="created-order-badge">刚刚创建</span>}
     <div className="order-summary-title">{access.productionView && <ProductionThumbnail orderId={order.orderId} itemId={first?.itemId} />}<div className="order-summary-caption"><div className="order-summary-heading"><h3>{first?.name || `订单 #${order.orderNo}`}{!access.productionView && itemCount > 1 && <span className="order-summary-more"> · 另有 {itemCount - 1} 项</span>}</h3>{phone && <span className="order-summary-phone" aria-label={`联系电话 ${phone}`}>{phone}</span>}</div>{access.productionView && <span>{itemCount} 项 · {quantity} 件{itemCount > 1 ? ` · 另有 ${itemCount - 1} 项` : ''}</span>}</div><CaretRight aria-hidden="true" /></div>
     {showAddress && <p className="calendar-address-preview">{order.deliveryAddressPreview?.trim()
@@ -42,7 +43,7 @@ export function OrderSummaryCard({ order, view, account, newlyCreated = false, s
       <div><dt>{pickupTimeLabel(order.fulfillmentType)}</dt><dd>{calendarCard ? calendarCardTime(pickup, view.date) : pickup ? businessTime(pickup) : `${businessDate(order.calendarDate)} · 时刻待定`}</dd></div>
       <div><dt>出品时间</dt><dd>{calendarCard ? calendarCardTime(order.plannedFinishAt, view.date) : order.plannedFinishAt ? businessTime(order.plannedFinishAt) : '待定'}</dd></div>
     </dl>}
-    <div className="badges"><Status order={{ ...order, currentStageCode: null }} />{access.amounts && <Payment status={order.paymentStatus} />}</div>
+    <div className="badges"><Status order={order} />{access.amounts && <Payment status={order.paymentStatus} />}</div>
     {note?.trim() && <p className="order-summary-note-preview"><span>备注：</span>{note}</p>}
   </a>;
 }
@@ -92,13 +93,13 @@ export function OrderTimeline({ orders, counts, view, account, status = '', crea
       if (deliveryView) {
         if (!partition.orders.length) return null;
         return <section className="order-partition" key={partition.id}>
-          {partition.id === 'completed' && <h3 className="timeline-delivered-separator">已送达</h3>}
+          {partition.id === 'completed' && <h3 className="timeline-delivered-separator" data-order-tone={orderStatusTone('COMPLETED')}>已送达</h3>}
           {renderTimeGroups()}
         </section>;
       }
       return <section className="order-partition" key={partition.id}>
         <h3><button type="button" className="timeline-partition-toggle" ref={element => { headings.current[partition.id] = element; }} aria-expanded={expanded} aria-controls={contentId} onClick={() => toggle(partition.id, !expanded)}>
-          <span>{partition.label} <span>{counts[partition.id] ?? partition.orders.length} 单</span></span><span>{expanded ? <CaretUp /> : <CaretDown />}{expanded ? '收起' : '展开'}</span>
+          <span data-order-tone={partition.id === 'completed' ? 'success' : partition.id === 'cancelled' || partition.id === 'unknown' ? partition.id : undefined}>{partition.label} <span>{counts[partition.id] ?? partition.orders.length} 单</span></span><span>{expanded ? <CaretUp /> : <CaretDown />}{expanded ? '收起' : '展开'}</span>
         </button></h3>
         <div id={contentId} hidden={!expanded}>{partition.id === 'unknown' && <p className="notice">页面可能已更新，请保存当前内容后刷新；以下订单仍可查看。</p>}{expanded && <>{renderTimeGroups()}{partition.orders.length > 3 && <button type="button" className="text-button timeline-collapse-bottom" onClick={() => toggle(partition.id, false)}><CaretUp />收起{partition.label}订单</button>}</>}</div>
       </section>;

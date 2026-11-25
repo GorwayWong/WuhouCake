@@ -1,9 +1,14 @@
 package org.xaspire.WuhouCake.order.adapter.web;
 
 import jakarta.validation.Valid;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -21,6 +26,18 @@ import static org.xaspire.WuhouCake.identity.api.facade.EmployeeAccess.Permissio
 @RestController
 @RequestMapping("/api/orders")
 public class OrderController {
+    private static final String SUBMISSION_PROTOCOL = submissionProtocol();
+
+    private static String submissionProtocol() {
+        try (var input = new ClassPathResource("order/submission-protocol.txt", OrderController.class.getClassLoader()).getInputStream()) {
+            var protocol = new String(input.readAllBytes(), StandardCharsets.US_ASCII).strip();
+            if (!protocol.matches("[2-9]|[1-9][0-9]{1,8}")) throw new IllegalStateException("Invalid order submission protocol");
+            return protocol;
+        } catch (IOException failure) {
+            throw new IllegalStateException("Missing order submission protocol", failure);
+        }
+    }
+
     private static final Set<String> ORDER_PRICES = Set.of("totalAmountCents", "originalAmountCents", "memberAmountCents");
     private static final Set<String> ITEM_PRICES = Set.of("unitPriceCents", "memberPriceCents", "referenceUnitPriceCents", "referenceMemberPriceCents");
 
@@ -28,9 +45,15 @@ public class OrderController {
     private final OrderCreationService creations;
     public OrderController(OrderService orders, OrderCreationService creations) { this.orders = orders; this.creations = creations; }
 
-    @PostMapping @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<OrderViews.Detail> create(@Valid @RequestBody OrderCommands.Create command, Authentication authentication,
-            @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId) {
+    @PostMapping
+    public ResponseEntity<ApiResponse<?>> create(@Valid @RequestBody OrderCommands.Create command, Authentication authentication,
+            @RequestHeader(value = "Idempotency-Key", required = false) UUID requestId,
+            @RequestHeader(value = "X-Wuhou-Order-Submission", required = false) String submissionProtocol,
+            @RequestHeader(value = "X-Wuhou-Duplicate-Check", required = false) String duplicateCheckToken) {
+        if (!SUBMISSION_PROTOCOL.equals(submissionProtocol)) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).cacheControl(CacheControl.noStore())
+                    .body(ApiResponse.failure("ORDER_CREATE_CLIENT_UPDATE_REQUIRED", "录单页面需要更新，请刷新后继续核对原单"));
+        }
         var account = (IdentityFacade.AccountView) authentication.getDetails();
         boolean recordsPayment = command.paymentMethod() != null && !"UNPAID".equals(command.paymentMethod());
         requireAmountAccess(authentication, recordsPayment || command.totalAmountCents() != null
@@ -39,7 +62,13 @@ public class OrderController {
         if (recordsPayment && !account.access().allows(ORDER_PAYMENT_UPDATE)) {
             throw new AccessDeniedException("ORDER_PAYMENT_UPDATE required");
         }
-        return visible(orders.detail(creations.create(command, operator(authentication), requestId)), authentication);
+        try {
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(visible(orders.detail(creations.create(command, operator(authentication), requestId, duplicateCheckToken)), authentication));
+        } catch (OrderCreationService.DuplicateReviewRequired failure) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).cacheControl(CacheControl.noStore())
+                    .body(new ApiResponse<>(false, failure.review(), "DUPLICATE_REVIEW_REQUIRED", "请核对同电话、同取货日的订单"));
+        }
     }
     @GetMapping("/{id}")
     public ApiResponse<OrderViews.Detail> detail(@PathVariable UUID id, Authentication authentication) { return visible(orders.detail(id), authentication); }

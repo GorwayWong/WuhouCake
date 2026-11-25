@@ -5,14 +5,15 @@ import { paymentMethods } from './orderPayment';
 import { ProductFieldLabel, ProductFormFields } from './ProductFormFields';
 import { firstProductFormError, productFormRows } from './productFormLayout';
 import { DraftItemImages } from './DraftItemImages';
-import { localImageError, requireDraftImages } from './draftImages';
+import { DraftImageReceiptError, localImageError, requireDraftImages } from './draftImages';
 import type { ImageScope } from './draftImages';
 import { changePickupTime, changeFinishTime, pickupTimeLabel } from './orderTimes';
 import { FinishTimeHelp } from './FinishTimeHelp';
 import { createContext, useContext, useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowLeft, ArrowRight, Cake, Plus, Trash, Receipt, CurrencyCny } from '@phosphor-icons/react';
-import { creationResultUnknown, errorText } from './api';
+import { ApiError, creationResultUnknown, errorText } from './api';
+import type { DuplicateOrderMatch } from './orderDraftStorage';
 import { changeItemDraft, createOrderRequest, newItem } from './orderForm';
 import { OrderRecognition } from './OrderRecognition';
 import { foldOtherRecognitionFeedback, formFeedback, retainRecognitionFeedback } from './recognition';
@@ -39,8 +40,9 @@ function Field({ label, name, error, children, wide = false, className = '' }: {
     {mark?.hint && <span className="form-help" id={`${name}-recognition-hint`}>{mark.hint}</span>}
   </label>;
 }
-export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, error, submitted, editor, onEditorChange, blocked, imageScope, canUploadImages = false, canRecordPayment = false, onImageWritingChange, createdOrderId }: {
+export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, error, submitted, duplicateReview, editor, onEditorChange, blocked, imageScope, canUploadImages = false, canRecordPayment = false, onImageWritingChange, createdOrderId }: {
   draft: OrderDraft; onChange: (draft: OrderDraft, editor?: Partial<DraftEditor>, retainRemovedImages?: boolean, requireSaved?: boolean) => boolean; onSubmit: (request: CreateOrderRequest) => void; busy: boolean; error: unknown; submitted?: CreateOrderRequest;
+  duplicateReview?: DuplicateOrderMatch;
   imageScope: ImageScope; canUploadImages?: boolean; canRecordPayment?: boolean; onImageWritingChange: (busy: boolean) => void; createdOrderId?: string;
   blocked: boolean; editor: DraftEditor; onEditorChange: (editor: Partial<DraftEditor>) => void;
   initialDraft: OrderDraft;
@@ -133,6 +135,7 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
   ].filter(Boolean).join(' ') || undefined });
   const customerFields = [['customerName', '客户姓名', 80], ['phone', '联系电话 *', 32], ['memberPhone', '会员手机', 32]] as const;
   const unknownResult = creationResultUnknown(error);
+  const updateRequired = error instanceof ApiError && error.code === 'ORDER_CREATE_CLIENT_UPDATE_REQUIRED';
   const editBlocked = busy || imageBusy || unknownResult || blocked || Boolean(createdOrderId);
   return <div className="create-page">
     <OrderRecognition initialDraft={initialDraft} getDraft={getDraft} getFeedback={getFeedback} manualFields={manualFields.current} onChange={recognitionChange} busy={editBlocked} text={editor.text} open={editor.open} onEditorChange={onEditorChange} />
@@ -228,10 +231,13 @@ export function OrderCreate({ draft, initialDraft, onChange, onSubmit, busy, err
         </section>
       </fieldset>
       {Object.keys(errors).length > 0 && <div className="notice error" role="alert">{errors.images || '请检查标出的内容后再创建订单。'}</div>}
-      {createdOrderId ? <div className="notice error" role="alert">订单已创建，部分图片未上传。<a href={`#/orders/${createdOrderId}`}>查看订单详情</a></div>
-        : unknownResult ? <div className="notice error" role="alert">提交结果待确认，可以重试。</div>
-        : error ? <div className="notice error" role="alert">{errorText(error)}</div> : null}
-      <div className="create-submit"><button className="primary" disabled={busy || imageBusy || blocked}>{busy ? '正在创建订单…' : createdOrderId ? '重试上传图片' : unknownResult ? '重试提交' : '创建订单'}<ArrowRight /></button></div>
+      {createdOrderId ? <div className="notice error" role="alert">{error instanceof DraftImageReceiptError ? error.message : '订单已创建，部分图片未上传。'}<a href={`#/orders/${createdOrderId}`}>查看订单详情</a></div>
+        : unknownResult ? <div className="notice error" role="alert">{updateRequired ? errorText(error) : '提交结果待确认，可以重试。'}</div>
+        : duplicateReview ? <div className="notice" role="status">
+          同一联系电话、同一取货日已有 {duplicateReview.count} 笔订单
+          {duplicateReview.orderNos.length > 0 ? `（${duplicateReview.orderNos.map(no => `#${no}`).join('、')}）` : ''}。请核对是否为另一笔订单。
+        </div> : error ? <div className="notice error" role="alert">{errorText(error)}</div> : null}
+      <div className="create-submit"><button className="primary" disabled={busy || imageBusy || blocked}>{busy ? '正在创建订单…' : createdOrderId ? '重试上传图片' : unknownResult ? '重试提交' : duplicateReview ? '按独立订单保存' : '创建订单'}<ArrowRight /></button></div>
     </form></RecognitionFields.Provider>
   </div>;
 }

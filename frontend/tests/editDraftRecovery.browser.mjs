@@ -454,7 +454,10 @@ test('同页后台刷新被拒时隐藏已缓存的订单资料和编辑器', as
     await context.route(`**/api/orders/${orderId}`, route => route.fulfill({
       status: 403, json: { success: false, code: 'ORDER_DELETED_FORBIDDEN' },
     }));
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('offline'));
+      window.dispatchEvent(new Event('online'));
+    });
     await page.getByText(/当前岗位|权限/).first().waitFor();
     assert.equal(await title.count(), 0);
     assert.equal(await page.locator('#edit-customerName').count(), 0);

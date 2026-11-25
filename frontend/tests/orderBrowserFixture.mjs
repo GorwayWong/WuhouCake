@@ -28,8 +28,20 @@ export function workbenchCards(request, rows, { nextCursor = null, counts = rows
       waitingDeliveryOrderCount: counted.filter(row => row.status === 'WAITING_DELIVERY' && row.fulfillmentType === 'DELIVERY').length } };
 }
 
-export const pendingOrderDraft = (page, account = 'alice') => page.evaluate(
-  account => JSON.parse(localStorage.getItem(`wuhou:order-draft:v1:${account}`)), account);
+export const pendingOrderDraft = (page, account = 'alice') => page.evaluate(async account => {
+  const { readPendingOrderDraft } = await import('/src/orderDraftStorage.ts');
+  return readPendingOrderDraft(account);
+}, account);
+
+export async function movePendingOrderDraftToLegacy(page, account = 'alice') {
+  await page.evaluate(async account => {
+    const key = `order-pending:${account}`;
+    const { readCreationDraft, removeCreationDraft } = await import('/src/creationDraftStorage.ts');
+    const saved = await readCreationDraft(key);
+    localStorage.setItem(`wuhou:order-draft:v1:${account}`, JSON.stringify(saved.value.record));
+    await removeCreationDraft(key, saved.revision);
+  }, account);
+}
 
 export const savedOrderDraft = (page, account = 'alice') => page.evaluate(async account => {
   const { readCreationDraft } = await import('/src/creationDraftStorage.ts');
@@ -90,6 +102,7 @@ export async function createOrderFixture(browser, base) {
     if (path === '/api/employees/options') return ok([]);
     if (path === '/api/orders/recognition/parse') return ok(model.recognitionDraft);
     if (path === '/api/orders' && request.method() === 'POST') {
+      assert.equal(request.headers()['x-wuhou-order-submission'], '3');
       const input = request.postDataJSON(), key = request.headers()['idempotency-key']; model.createCalls.push({ key, input });
       if (!model.orders.has(key)) model.orders.set(key, { ...input, orderId, orderNo: 'TEST-IMAGE', status: 'CAKE_BASE', currentStageCode: null, paymentStatus: 'UNPAID', version: 0,
         createdAt: '2026-11-04T08:00:00Z', updatedAt: '2026-11-04T08:00:00Z', createdBy: 'alice', items: input.items.map(({ referenceUnitPriceCents, referenceMemberPriceCents, ...item }) => ({ ...item, unitPriceCents: referenceUnitPriceCents ?? item.unitPriceCents, memberPriceCents: referenceMemberPriceCents ?? item.memberPriceCents, recentNotes: [], productionStatus: 'NOT_STARTED' })) });

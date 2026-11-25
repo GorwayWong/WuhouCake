@@ -10,11 +10,15 @@ export interface StoredImage extends DraftImage {
 }
 export type QueuedImage = Omit<StoredImage, 'file'>;
 class LocalImageError extends Error {}
+export class DraftImageReceiptError extends LocalImageError {}
 export function localImageError(error: unknown): string {
   if (error instanceof LocalImageError) return error.message;
   if (error instanceof DOMException && error.name === 'QuotaExceededError') return '本机存储空间不足，图片尚未保存。请释放空间后重试。';
   return '本机图片无法保存或读取，请检查浏览器存储权限后重试。';
 }
+// The old client skips files with an orderId. This reservation is outside the UUID order namespace.
+const migratedPendingOrderId = 'migrated-pending';
+const isDraftFile = (row: StoredImage) => !row.orderId || row.orderId === migratedPendingOrderId;
 const workingFiles = new Map<string, StoredImage>();
 const key = (scope: ImageScope, itemId: string, id: string) => JSON.stringify([scope.accountId, scope.requestId, itemId, id]);
 let database: Promise<IDBDatabase> | undefined;
@@ -80,7 +84,21 @@ export async function removeDraftImage(scope: ImageScope, itemId: string, id: st
   workingFiles.delete(key(scope, itemId, id));
   await write(['files'], tx => {
     const store = tx.objectStore('files'), request = store.get(key(scope, itemId, id));
-    request.onsuccess = () => { if (request.result && !request.result.orderId) store.delete(request.result.key); };
+    request.onsuccess = () => { if (request.result && isDraftFile(request.result)) store.delete(request.result.key); };
+  });
+}
+export async function protectMigratedDraftImages(record: OrderDraftRecord) {
+  const referenced = new Set(record.value.items.flatMap(item =>
+    (item.images ?? []).map(image => key(record, item.key, image.id))));
+  if (!referenced.size) return;
+  await write(['files'], tx => {
+    const store = tx.objectStore('files');
+    const request = store.index('draft').getAll([record.accountId, record.requestId]);
+    request.onsuccess = () => {
+      for (const row of request.result as StoredImage[]) {
+        if (!row.orderId && referenced.has(row.key)) store.put({ ...row, orderId: migratedPendingOrderId });
+      }
+    };
   });
 }
 export async function removeDraftImages(scope: ImageScope) {
@@ -89,7 +107,11 @@ export async function removeDraftImages(scope: ImageScope) {
   }
   await write(['files'], tx => {
     const store = tx.objectStore('files'), request = store.index('draft').getAll([scope.accountId, scope.requestId]);
-    request.onsuccess = () => { for (const row of request.result as StoredImage[]) if (!row.orderId) store.delete(row.key); };
+    request.onsuccess = () => {
+      for (const row of request.result as StoredImage[]) {
+        if (isDraftFile(row)) store.delete(row.key);
+      }
+    };
   });
 }
 export async function snapshotDraftImages(record: OrderDraftRecord) {
@@ -121,24 +143,40 @@ export async function requireDraftImages(record: ImageScope & Pick<OrderDraftRec
     if (!await readDraftImage(record, item.key, image.id)) throw new LocalImageError(`商品「${item.name || '未命名商品'}」的图片「${image.name}」在本机缺失，请移除后重新选择。`);
   }
 }
-export async function promoteDraftImages(record: OrderDraftRecord, order: Detail) {
+export async function promoteDraftImages(record: OrderDraftRecord, order: Detail,
+  readReceipts: (requestIds: string[]) => Promise<ReadonlyMap<string, string>>) {
   const items = new Set(order.items.map(item => item.itemId));
-  const referenced = record.value.items.flatMap(item => (item.images || []).map(image => ({ itemId: item.key, image })));
+  const referenced = record.value.items.flatMap(item => (item.images || []).map(image => ({
+    itemId: item.key, id: image.id, key: key(record, item.key, image.id),
+  })));
   if (referenced.some(row => !items.has(row.itemId))) throw new LocalImageError('订单商品标识与图片草稿不一致，草稿已保留，请核对订单。');
-  let missing = false;
-  try {
+  async function promote(receipts: ReadonlyMap<string, string>) {
+    let missing: typeof referenced = [];
     await write(['files', 'transfers'], tx => {
       const store = tx.objectStore('files');
-      for (const { itemId, image } of referenced) {
-        const request = store.get(key(record, itemId, image.id));
-        request.onsuccess = () => {
-          if (!request.result) { missing = true; tx.abort(); return; }
-          store.put({ ...request.result, orderId: order.orderId });
-        };
-      }
-      tx.objectStore('transfers').put({ key: JSON.stringify([record.accountId, record.requestId]), orderId: order.orderId });
+      const request = store.index('draft').getAll([record.accountId, record.requestId]);
+      request.onsuccess = () => {
+        const files = new Map((request.result as StoredImage[]).map(row => [row.key, row]));
+        missing = referenced.filter(row => !files.has(row.key) && receipts.get(row.id) !== row.itemId);
+        if (missing.length) return;
+        try {
+          for (const row of referenced) {
+            const file = files.get(row.key);
+            if (file) store.put({ ...file, orderId: order.orderId });
+          }
+          tx.objectStore('transfers').put({ key: JSON.stringify([record.accountId, record.requestId]), orderId: order.orderId });
+        } catch { tx.abort(); }
+      };
     });
-  } catch (error) { if (missing) throw new LocalImageError('部分图片在本机缺失，订单已创建，草稿已保留，请重新选择图片。'); throw error; }
+    return missing;
+  }
+  const missing = await promote(new Map());
+  if (!missing.length) return;
+  let receipts: ReadonlyMap<string, string>;
+  try { receipts = await readReceipts([...new Set(missing.map(row => row.id))]); }
+  catch { throw new DraftImageReceiptError('暂时无法核对图片上传结果，待确认记录已保留。请重试或查看原订单。'); }
+  if ((await promote(receipts)).length)
+    throw new DraftImageReceiptError('有图片在本机缺失且无法确认已上传，待确认记录已保留。请查看原订单核对图片。');
 }
 export async function transferredOrder(scope: ImageScope): Promise<string | undefined> {
   return (await read<{ orderId: string } | undefined>('transfers', store => store.get(JSON.stringify([scope.accountId, scope.requestId]))))?.orderId;

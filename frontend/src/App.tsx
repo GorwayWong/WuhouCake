@@ -25,6 +25,7 @@ import type { ManagementView } from './management';
 import type { ReactNode } from 'react';
 import { OrderCreate } from './OrderCreate';
 import type { OrderDraft } from './orderForm';
+import { duplicateOrderMatch } from './orderDraftStorage';
 import type { DraftEditor, OrderDraftRecord } from './orderDraftStorage';
 import { useOrderDraft } from './useOrderDraft';
 import { OrderDraftDiscard } from './OrderDraftDiscard';
@@ -39,6 +40,8 @@ import { newPasswordError } from './passwordForm';
 import { CustomerSubmissions, CustomerSubmissionDetail, canHandleSubmissions } from './CustomerSubmissions';
 
 const pendingCreationError = new Error('创建结果尚未确认');
+const duplicateReviewRequired = (error: unknown): error is ApiError =>
+  error instanceof ApiError && error.status === 409 && error.code === 'DUPLICATE_REVIEW_REQUIRED';
 
 function Login({ changePassword = false, onAccount, onLogout }: { changePassword?: boolean; onAccount: (accountId: string) => void; onLogout: () => Promise<boolean> }) {
   const [employee, setEmployee] = useState('');
@@ -188,7 +191,9 @@ function Workspace({ refreshBlocked, token, hash, calendarView, onCalendarChange
   const productionQuery = route.kind === 'production-query'
     ? readProductionQuery(hash) ?? readProductionQuery('#/production-query')!
     : null;
-  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><OrderUpdates currentOrderId={id} updates={updates} clear={() => setUpdates([])} dismiss={id => setUpdates(current => current.filter(update => update.orderId !== id))} /><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating || writing} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><nav className="app-nav" aria-label="工作区导航"><a href={calendarHref(calendarView)} aria-current={['calendar', 'create', 'order', 'history', 'payment-orders'].includes(route.kind) ? 'page' : undefined}>日历工作台</a>{access.productionView && <a href="#/production-query" aria-current={route.kind === 'production-query' ? 'page' : undefined}>待制作查询</a>}{access.management && <a href="#/admin/orders" aria-current={route.kind === 'orders' ? 'page' : undefined}>订单查询与统计</a>}{canManagePackages && <a href="#/admin/order-packages" aria-current={route.kind === 'packages' ? 'page' : undefined}>套餐管理</a>}{submissionsAllowed && !pendingDenied && <a href="#/customer-submissions" aria-current={['submissions', 'submission'].includes(route.kind) ? 'page' : undefined}>客户填单{Boolean(pendingSubmissions.data?.count) && <span className="pending-count" aria-label={`${pendingSubmissions.data!.count} 份待处理填单`} title="全部待处理填单">{pendingSubmissions.data!.count > 99 ? '99+' : pendingSubmissions.data!.count}</span>}</a>}{me.data?.systemRole === 'SUPER_ADMIN' && <a href="#/admin/employees" aria-current={route.kind === 'employees' ? 'page' : undefined}>员工管理</a>}{canSeeServerStatus && <a href="#/admin/server-status" aria-current={route.kind === 'server-status' ? 'page' : undefined}>服务器情况{showServerAlert && <span className="pending-count">有提醒</span>}</a>}</nav><main className={`workspace${hash === '#/orders/new' ? ' workspace-create' : ''}`}><VersionNotice connection={connection} blocked={refreshBlocked || creating || writing} refresh={() => { if (!refreshBlocked && !creating && !writing) window.location.reload(); }} /><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{streamAllowed && !live && showConnectionWarning && <div className="notice" role="status">暂时无法接收新订单动态，当前显示的订单可能不是最新的。</div>}{hash === '#/orders/new' && access.entry && draftAccountId === me.data?.accountId && draftControls}{hash === '#/orders/new' ? !access.entry ? <p className="notice">当前岗位不显示接单信息。</p> : draft && draft.accountId === me.data?.accountId ? <OrderCreate key={draft.requestId} draft={draft.value} initialDraft={draft.initial} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} editor={draft.editor} onEditorChange={onEditorChange} blocked={draftBlocked} imageScope={{ accountId: draft.accountId, requestId: draft.requestId }} canRecordPayment={hasPermissions(me.data, 'ORDER_PAYMENT_UPDATE')} canUploadImages={hasPermissions(me.data, 'ORDER_READ', 'ORDER_IMAGE_UPLOAD')} onImageWritingChange={onWritingChange} createdOrderId={draft.createdOrderId} /> : <Loading /> : route.kind === 'submission' && id ? submissionsAllowed ? <CustomerSubmissionDetail key={id} id={id} account={me.data} onDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : me.data ? <p className="notice">当前账号不能查看客户填单。</p> : <Loading /> : route.kind === 'submissions' && me.data ? submissionsAllowed ? <CustomerSubmissions key={me.data.accountId} account={me.data} onWritingChange={onWritingChange} onDenied={denySubmissions} /> : <p className="notice">当前账号不能查看客户填单。</p> : !streamAllowed && (id || productionQuery || route.kind === 'payment-orders') ? me.data ? <p className="notice">当前账号不能查看订单。</p> : <Loading /> : route.kind === 'history' && id ? !access.history && route.type !== 'NOTE' ? <p className="notice">当前岗位不显示完整操作记录。</p> : <OrderHistory account={me.data} key={id + (route.type || 'all')} id={id} initialType={route.type} returnToCalendar={route.returnToCalendar} /> : id ? <OrderDetail account={me.data} key={`${me.data?.accountId ?? ''}:${id}`} id={id} returnToCalendar={route.returnToCalendar} returnToOrders={queryOrderId === id} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : productionQuery ? access.productionView
+  const showDraftControls = hash === '#/orders/new' && access.entry && draftAccountId === me.data?.accountId;
+  const submissionsLink = submissionsAllowed && !pendingDenied && <a href="#/customer-submissions" aria-current={['submissions', 'submission'].includes(route.kind) ? 'page' : undefined}>客户填单{Boolean(pendingSubmissions.data?.count) && <span className="pending-count" aria-label={`${pendingSubmissions.data!.count} 份待处理填单`} title="全部待处理填单">{pendingSubmissions.data!.count > 99 ? '99+' : pendingSubmissions.data!.count}</span>}</a>;
+  return <><header className="app-header"><div className="header-inner"><Brand /><span className="header-divider" /><span className="header-title">门店工作台</span><div className="header-right"><OrderUpdates currentOrderId={id} updates={updates} clear={() => setUpdates([])} dismiss={id => setUpdates(current => current.filter(update => update.orderId !== id))} /><span className="account"><UserCircle size={23} />{me.data?.nickname || '员工'}</span><button className="icon-button" aria-label="退出登录" disabled={loggingOut || creating || writing} onClick={async () => { setLoggingOut(true); try { await onLogout(); } catch (error) { setLogoutError(error); } finally { setLoggingOut(false); } }}><SignOut size={21} /></button></div></div></header><nav className={`app-nav${showDraftControls ? ' order-entry-nav' : ''}`} aria-label="工作区导航"><a href={calendarHref(calendarView)} aria-current={['calendar', 'create', 'order', 'history', 'payment-orders'].includes(route.kind) ? 'page' : undefined}>日历工作台</a>{access.productionView && <a href="#/production-query" aria-current={route.kind === 'production-query' ? 'page' : undefined}>待制作查询</a>}{access.management && <a href="#/admin/orders" aria-current={route.kind === 'orders' ? 'page' : undefined}>订单查询与统计</a>}{canManagePackages && <a href="#/admin/order-packages" aria-current={route.kind === 'packages' ? 'page' : undefined}>套餐管理</a>}{showDraftControls ? <div className="order-entry-nav-actions">{submissionsLink}<a className="secondary exit-order-link" href={calendarHref(calendarView)}>退出下单</a></div> : submissionsLink}{me.data?.systemRole === 'SUPER_ADMIN' && <a href="#/admin/employees" aria-current={route.kind === 'employees' ? 'page' : undefined}>员工管理</a>}{canSeeServerStatus && <a href="#/admin/server-status" aria-current={route.kind === 'server-status' ? 'page' : undefined}>服务器情况{showServerAlert && <span className="pending-count">有提醒</span>}</a>}</nav><main className={`workspace${hash === '#/orders/new' ? ' workspace-create' : ''}`}><VersionNotice connection={connection} blocked={refreshBlocked || creating || writing} refresh={() => { if (!refreshBlocked && !creating && !writing) window.location.reload(); }} /><ErrorNotice error={logoutError} /><ErrorNotice error={me.error} retry={() => void me.refetch()} />{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={dismissNotice}>关闭</button></div>}{streamAllowed && !live && showConnectionWarning && <div className="notice" role="status">暂时无法接收新订单动态，当前显示的订单可能不是最新的。</div>}{showDraftControls && draftControls}{hash === '#/orders/new' ? !access.entry ? <p className="notice">当前岗位不显示接单信息。</p> : draft && draft.accountId === me.data?.accountId ? <OrderCreate key={draft.requestId} draft={draft.value} initialDraft={draft.initial} onChange={onDraftChange} onSubmit={onSubmit} busy={creating} error={createError} submitted={submitted} duplicateReview={draft.duplicateReview?.state === 'REQUIRED' ? draft.duplicateReview.match : undefined} editor={draft.editor} onEditorChange={onEditorChange} blocked={draftBlocked} imageScope={{ accountId: draft.accountId, requestId: draft.requestId }} canRecordPayment={hasPermissions(me.data, 'ORDER_PAYMENT_UPDATE')} canUploadImages={hasPermissions(me.data, 'ORDER_READ', 'ORDER_IMAGE_UPLOAD')} onImageWritingChange={onWritingChange} createdOrderId={draft.createdOrderId} /> : <Loading /> : route.kind === 'submission' && id ? submissionsAllowed ? <CustomerSubmissionDetail key={id} id={id} account={me.data} onDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : me.data ? <p className="notice">当前账号不能查看客户填单。</p> : <Loading /> : route.kind === 'submissions' && me.data ? submissionsAllowed ? <CustomerSubmissions key={me.data.accountId} account={me.data} onWritingChange={onWritingChange} onDenied={denySubmissions} /> : <p className="notice">当前账号不能查看客户填单。</p> : !streamAllowed && (id || productionQuery || route.kind === 'payment-orders') ? me.data ? <p className="notice">当前账号不能查看订单。</p> : <Loading /> : route.kind === 'history' && id ? !access.history && route.type !== 'NOTE' ? <p className="notice">当前岗位不显示完整操作记录。</p> : <OrderHistory account={me.data} key={id + (route.type || 'all')} id={id} initialType={route.type} returnToCalendar={route.returnToCalendar} /> : id ? <OrderDetail account={me.data} key={`${me.data?.accountId ?? ''}:${id}`} id={id} returnToCalendar={route.returnToCalendar} returnToOrders={queryOrderId === id} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} /> : productionQuery ? access.productionView
     ? <ProductionQuery key={JSON.stringify([productionQuery.from, productionQuery.through, productionQuery.stage])} route={productionQuery} />
     : <p className="notice">当前岗位不显示待制作查询。</p> : route.kind === 'payment-orders' ? !access.amounts ? <p className="notice">当前岗位不显示付款明细。</p> : <PaymentOrders route={readPaymentList(hash)!} /> : route.kind === 'orders' ? !access.management ? <p className="notice">当前岗位不显示订单财务查询。</p> : me.data ? <AdminOrders initialView={managementView.current} onViewChange={saveManagementView} onOpenOrder={setQueryOrderId} onWritingChange={onWritingChange} /> : <Loading /> : route.kind === 'packages' ? !me.data ? <Loading /> : canManagePackages ? <OrderPackageAdmin key={me.data.accountId} accountId={me.data.accountId} onWritingChange={onWritingChange} onDirtyChange={onEditDirtyChange} onDraftLeaveChange={onDraftLeaveChange} /> : <p className="notice">仅店长可以管理套餐。</p> : route.kind === 'server-status' ? !me.data && me.isPending ? <Loading />
       : canSeeServerStatus ? <ServerStatus query={serverStatus} /> : <p className="notice">仅管理员可以查看服务器情况。</p>
@@ -237,28 +242,41 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
     if (!pending) setNotice(current => current === '操作尚未完成，请稍候再离开。' ? '' : current);
   }, []);
   const creation = useMutation({
-    mutationFn: async (request: CreateOrderRequest) => {
-      const record = draftRef.current;
-      if (!record) throw new Error('录单草稿已失效，请重新打开录单页面。');
+    mutationFn: async (record: OrderDraftRecord) => {
+      const request = record.pending;
+      if (!request) throw new Error('录单草稿已失效，请重新打开录单页面。');
       const withImages = record.value.items.some(item => item.images?.length);
       const transferred = withImages ? await transferredOrder(record) : undefined;
       const existingId = record.createdOrderId || transferred;
       const signal = new AbortController().signal;
+      const protocol = document.querySelector<HTMLMetaElement>('meta[name="wuhou-order-submission-protocol"]')?.content ?? '';
       const order = existingId ? await readQuery<Detail>(`/orders/${existingId}`, signal)
-        : await writeRequest<Detail>('/orders', { method: 'POST', body: request, signal, headers: { 'Idempotency-Key': record.idempotencyKey || record.requestId } });
+        : await writeRequest<Detail>('/orders', { method: 'POST', body: request, signal, headers: {
+          'Idempotency-Key': record.idempotencyKey || record.requestId, 'X-Wuhou-Order-Submission': protocol,
+          ...(record.pendingDuplicateCheck ? { 'X-Wuhou-Duplicate-Check': record.pendingDuplicateCheck } : {}),
+        } });
       if (withImages) {
-        if (!await drafts.created(order.orderId)) throw new Error('订单已创建，本机保存未完成，草稿已保留。');
-        if (transferred !== order.orderId) await promoteDraftImages(record, order);
+        if (!await drafts.created(record, order.orderId)) throw new Error('订单已创建，本机保存未完成，草稿已保留。');
+        if (transferred !== order.orderId) await promoteDraftImages(record, order, async requestIds => {
+          const receipts = new Map<string, string>();
+          for (let start = 0; start < requestIds.length; start += 40) {
+            const params = new URLSearchParams();
+            for (const requestId of requestIds.slice(start, start + 40)) params.append('requestId', requestId);
+            const batch = await readQuery<Record<string, string>>(`/orders/${order.orderId}/image-upload-receipts?${params}`, signal);
+            for (const [requestId, itemId] of Object.entries(batch)) receipts.set(requestId, itemId);
+          }
+          return receipts;
+        });
       }
       return order;
     },
-    onSuccess: async order => {
+    onSuccess: async (order, attempt) => {
       if (session.snapshot().token) {
         synchronize(client, order.orderId);
         client.setQueryData(['order', order.orderId, 'detail'], order);
       }
       const record = draftRef.current;
-      if (!record || record.accountId !== accountRef.current) return;
+      if (!record || record.requestId !== attempt.requestId || record.accountId !== accountRef.current) return;
       const date = order.fulfillment.requestedReceiveDate;
       const withImages = record.value.items.some(item => item.images?.length);
       const cleared = await clearDraft();
@@ -272,10 +290,14 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
       window.history.replaceState(window.history.state, '', next);
       hashRef.current = next; setHash(next); window.scrollTo(0, 0);
     },
-    onError: async error => {
+    onError: async (error, attempt) => {
       // Session loss can discard a successful response. Keep the original request for an idempotent retry.
       if (error instanceof ApiError && error.status === 401) return;
-      if (!draftRef.current?.createdOrderId && !creationResultUnknown(error)) await rejectDraft();
+      if (duplicateReviewRequired(error)) {
+        await drafts.requireDuplicateReview(attempt, duplicateOrderMatch(error.data));
+      } else if (!attempt.createdOrderId && !creationResultUnknown(error)) {
+        await rejectDraft(attempt);
+      }
     },
     onSettled: () => { creatingRef.current = false; setCreating(false); },
   });
@@ -368,16 +390,16 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
   const cleanupNotice = drafts.cleanupFailed && <p className="notice error" role="alert">本机临时图片未能清理，可能仍占用浏览器存储空间。</p>;
   const draftControls = <>
     {cleanupNotice}
-    <div className="draft-toolbar"><a className="text-button back-link" href={calendarHref(calendarView)}>退出下单</a></div>
     {draftError && !orderExit && !saved && <p className="notice error" role="alert">{draftError}</p>}
     {drafts.restored && <p className="draft-save-status" role="status">已恢复上次填写</p>}
-    {draft && (draft.pending || draft.createdOrderId) && <OrderDraftDiscard compact key={draft.requestId} label="放弃待确认记录"
-      blocked={creating || writing} conflict={false} warning discard={discard} />}
+    {draft && (draft.pending || draft.createdOrderId || draft.duplicateReview) && <OrderDraftDiscard compact key={draft.requestId}
+      label={draft.duplicateReview ? '放弃草稿' : '放弃待确认记录'} blocked={creating || writing} conflict={false}
+      warning={!draft.duplicateReview} discard={discard} />}
     {candidate && <OrderDraftRecovery candidate={candidate} blocked={false} accept={drafts.acceptLegacy} discard={discard}
       dismiss={() => { window.location.hash = calendarHref(calendarView); }} />}
     {saved && <RestoreCreationDraft busy={draftBusy} error={draftError} restore={() => void drafts.accept()} startFresh={drafts.start}
       cancel={() => { window.location.hash = calendarHref(calendarView); }} />}
-    {orderExit && <SaveCreationDraft hasSaved={drafts.hasSaved} busy={draftBusy} error={orderExitError && draftError}
+    {orderExit && <SaveCreationDraft hasSaved={Boolean(draft?.duplicateReview) || drafts.hasSaved} busy={draftBusy} error={orderExitError && draftError}
       stay={() => { setOrderExit(null); setOrderExitError(''); orderExit.stay(); }}
       discard={() => { setOrderExit(null); setOrderExitError(''); orderExit.leave(); }}
       save={async () => {
@@ -390,16 +412,23 @@ export function App({ onPublicNavigation }: { onPublicNavigation: (hash: string)
         setOrderExit(null); setNotice('草稿已保存。'); orderExit.leave();
       }} />}
   </>;
+  const createError = duplicateReviewRequired(creation.error) && draft?.pending
+    ? pendingCreationError : creation.error || (!creating && draft?.pending ? pendingCreationError : null);
   if (state.loading) return <Loading />;
   if (!state.token || state.token.passwordChangeRequired) return <>{cleanupNotice}{notice && <p className="notice" role="status">{notice}</p>}{dirty && <div className="draft-session-notice notice" role="status">登录已失效，未提交草稿已保留。请用原账号重新登录。</div>}{state.error && <div className="session-error"><ErrorNotice error={state.error} retry={state.error instanceof ApiError && state.error.code === 'SESSION_CHANGED' ? undefined : () => void refresh().catch(() => {})} /></div>}<Login changePassword={Boolean(state.token?.passwordChangeRequired)} onAccount={onAccount} onLogout={logout} /></>;
-  return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && (dirty || draftBusy)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftBusy || Boolean(orderExit)} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={creation.error || (!creating && draft?.pending ? pendingCreationError : null)} submitted={draft?.pending || creation.variables} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftLeaveChange={onDraftLeaveChange} onDraftChange={(value, editor, retainRemovedImages) => {
+  return <Workspace refreshBlocked={editDirty || hash === '#/orders/new' && (dirty || draftBusy)} createdOrder={createdOrder} onCreatedOrderLocated={onCreatedOrderLocated} draftAccountId={accountRef.current} draftControls={draftControls} onEditorChange={changeEditor} draftBlocked={draftBusy || Boolean(orderExit)} token={state.token.accessToken} hash={hash} calendarView={calendarView} onCalendarChange={onCalendarChange} draft={draft} onAccount={onAccount} creating={creating} writing={writing} createError={createError} submitted={draft?.pending || creation.variables?.pending} notice={notice} dismissNotice={() => setNotice('')} onEditDirtyChange={onEditDirtyChange} onWritingChange={onWritingChange} onDraftLeaveChange={onDraftLeaveChange} onDraftChange={(value, editor, retainRemovedImages) => {
     const saved = changeDraft(value, editor, retainRemovedImages);
     if (!draftRef.current?.pending) creation.reset();
     return saved;
   }} onSubmit={async request => {
     if (creatingRef.current || exitSaving.current) return;
     creatingRef.current = true; setCreating(true); setNotice('');
-    if (await prepareDraft(request) && draftRef.current?.pending) creation.mutate(draftRef.current.pending);
+    if (duplicateReviewRequired(creation.error) && creation.variables === draftRef.current) {
+      try { await drafts.requireDuplicateReview(creation.variables, duplicateOrderMatch(creation.error.data)); }
+      finally { creatingRef.current = false; setCreating(false); }
+      return;
+    }
+    if (await prepareDraft(request) && draftRef.current?.pending) creation.mutate(draftRef.current);
     else { creatingRef.current = false; setCreating(false); }
   }} onLogout={logout} />;
 }

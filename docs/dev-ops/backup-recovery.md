@@ -6,7 +6,7 @@
 
 部署目录为 `/home/tago-deploy/wuhou`。将 [脚本入口](compose/backup-ip-database.sh) 和 [实现](compose/backup-ip-database.py) 放在 `compose.yml` 同目录。部署账号应能运行 Docker、Python 3.11 或更新版本及 `logger`。状态目录由部署账号创建和读写。IP 部署的 app 使用同一 UID，只读挂载该目录，管理员登录后在「服务器情况」查看。
 
-首次上线先执行 `./backup-ip-database.sh daily`。核对 `maintenance/server-status/status.json` 存在，目录权限为 `0700`。以部署账号将以下两行写入 crontab，替换旧的 `wuhou-ip-backup` 项，保留证书续期和其他任务。服务器时区使用 Asia/Shanghai。脚本内部统一加锁，cron 直接调用。
+状态文件的 alerts 保留原有告警，integrityAlerts 提供新版完整性告警；应用回退后仍可读取磁盘和原有备份状态。执行 `./backup-ip-database.sh verify` 复核现有归档。首次部署也可执行 `./backup-ip-database.sh daily` 创建首份日常备份。核对 `maintenance/server-status/status.json` 存在，目录权限为 `0700`。以部署账号将以下两行写入 crontab，替换旧的 `wuhou-ip-backup` 项，保留证书续期和其他任务。服务器时区使用 Asia/Shanghai。脚本内部统一加锁，cron 直接调用。
 
 ```cron
 35 3 * * * /home/tago-deploy/wuhou/backup-ip-database.sh daily >> /home/tago-deploy/wuhou/maintenance/backup.log 2>&1 # wuhou-ip-backup
@@ -14,7 +14,9 @@
 ```
 
 - 手动补跑执行 `./backup-ip-database.sh daily`。发布使用 `./deploy-ip.sh --release "$candidate_image" "$candidate_release_dir"`，在切换前完成一次发布前备份。候选发布失败时按[发布恢复流程](ip-deployment.md#失败发布的恢复)处理。
-- 每份备份目录包含 `database.dump` 和 `manifest.json`。导出、完整验读和校验清单写入完成后才发布，失败时旧备份保留。日常备份在 `backups/daily/` 保留最近 14 份。发布前备份在 `backups/predeploy/` 保留最近 30 天内最多 5 份，并始终保留最新一份。成功后在同类目录轮换，失败时不清理旧备份。
+- 每份备份目录包含 `database.dump` 和 `manifest.json`。导出、完整验读和校验清单写入完成后才发布。每天的日常任务对两类已发布归档复算 SHA-256，即使新备份失败也做复核。手动执行 `./backup-ip-database.sh verify` 可立即复核两类归档并更新状态。有归档损坏、不可读或扫描未完成时返回 `1`。空目录输出 `backup_verify_empty`，现有归档全部通过时返回 `0`。
+- 轮换只以本轮通过校验的副本计算保留份数。日常备份保留最近 14 份有效副本。发布前备份保留最近 30 天内最多 5 份有效副本，并至少保留最新一份。出现损坏或无法确认的副本时，发布前备份至少保留最近两份已校验副本（如果存在）。损坏和不可读归档留供排查。本次最终归档回读校验失败时命令返回非零，发布停止。新备份失败或整轮复核未完成时，跳过对应轮换。
+- 「服务器情况」每五分钟读取复核结果。发现损坏或复核结果缺失、超过 26 小时、文件已变更或读取失败时，按备份类型告警。最近校验成功显示最新好副本的备份时间。可查看 `maintenance/backup-integrity-daily.json` 和 `maintenance/backup-integrity-predeploy.json`，按归档目录名定位 `CORRUPT` 或 `UNREADABLE` 条目。
 - 首次切换前用 `find backups releases -type f -name '*.dump' -printf '%s %p\n'` 盘点旧文件。旧目录中的发布回执和转储由运维保管。新备份策略覆盖统一目录。
 - 备份失败、04:35 后缺当天有效备份、磁盘低于 4 GiB 或 15% 时查看「服务器情况」。部署账号可查 `maintenance/backup.log`，具备主机日志权限时也可用 `journalctl -t wuhou-backup --since today` 核对告警和恢复。空余不足 2 GiB 时中止备份，先从日志、发布文件和磁盘使用量定位来源。页面显示状态不可确认时检查采集 cron 及挂载权限，手动运行 `./backup-ip-database.sh status`。全部定时任务停摆时，页面会在状态摘要过期后提示。
 - 恢复前使用清单核对大小及 SHA-256，再完整验读。检查输出仅显示校验结果。

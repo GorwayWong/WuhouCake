@@ -8,6 +8,13 @@ export const historicalStatusNames: Record<string, string> = {
   LAYER_DONE: '已夹层', FROSTING_DONE: '已抹面', OTHER_DONE: '其他已确认', COMPLETED: '已完成',
 };
 export const statusNames: Record<string, string> = { ...orderStatusNames, DELETED: '已删除' };
+const statusTones = new Map([
+  ['CAKE_BASE', 'base'], ['LAYER', 'layer'], ['FROSTING', 'frosting'], ['DECORATING', 'decorating'],
+  ['WAITING_DELIVERY', 'handoff'], ['COMPLETED', 'success'], ['CANCELLED', 'cancelled'], ['DELETED', 'deleted'],
+]);
+export function orderStatusTone(status: string, type?: string): string {
+  return status === 'WAITING_DELIVERY' && type === 'DELIVERY' ? 'delivery' : statusTones.get(status) ?? 'unknown';
+}
 export function fulfillmentStatusName(status: string, type?: string) {
   if (type === 'PICKUP') {
     if (status === 'WAITING_DELIVERY') return '待自提';
@@ -17,7 +24,7 @@ export function fulfillmentStatusName(status: string, type?: string) {
     if (status === 'WAITING_DELIVERY') return '待配送';
     if (status === 'COMPLETED') return '已送达';
   }
-  return statusNames[status] || '状态待更新';
+  return Object.hasOwn(statusNames, status) ? statusNames[status] : '状态待更新';
 }
 export function displayedStatusCode(order: { status: string; deletion?: unknown; deleted?: boolean }): string {
   return order.deletion || order.deleted ? 'DELETED' : order.status;

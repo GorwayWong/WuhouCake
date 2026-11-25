@@ -6,9 +6,14 @@ Order 聚合管理多个商品、客户和交付安排、整单制作、付款�
 
 ## HTTP 接口
 
-付款分页明细：`GET /api/orders/workbench/payment-orders`，参数 date、kind（RECEIPT / SHIPPING_PAID / SHIPPING_UNPAID）、page（默认 1），每页 10 条。返回 date、kind、page、total、orders；订单摘要包含 orderId、orderNo、createdAt、calendarDate、paidAt、amountCents、paymentStatus、status、currentStageCode。金额为分字符串或 null，createdAt 按业务资料权限裁剪。要求 ORDER_READ 和 ORDER_AMOUNT_READ。统计、排序与返回规则见[周历付款说明](../docs/shipping-payment-summary.md)。
+付款分页明细：`GET /api/orders/workbench/payment-orders`，参数 date、kind（RECEIPT / SHIPPING_PAID / SHIPPING_UNPAID）、page（默认 1），每页 10 条。返回 date、kind、page、total、orders；订单摘要包含 orderId、orderNo、createdAt、calendarDate、paidAt、amountCents、paymentStatus、status、currentStageCode、fulfillmentType。金额为分字符串或 null，createdAt 按业务资料权限裁剪。要求 ORDER_READ 和 ORDER_AMOUNT_READ。统计、排序与返回规则见[周历付款说明](../docs/shipping-payment-summary.md)。
 
 JSON 使用 ApiResponse。创建订单、追加商品、备注和图片返回 201，其余成功 JSON 操作返回 200。SSE、图片二进制、XLSX/ZIP 直接返回内容；未开始输出的错误仍使用 JSON 包。
+
+员工建单 `POST /api/orders` 要求 `X-Wuhou-Order-Submission: 3`。有效请求缺少该头或协议不匹配时返回 `503 ORDER_CREATE_CLIENT_UPDATE_REQUIRED`，不执行建单。更新客户端后用原幂等键重试。
+具有订单及电话读取权限的员工手工录单时，若存在同联系电话、同北京时间取货日的正式订单（已取消和已删除除外），接口返回 `409 DUPLICATE_REVIEW_REQUIRED` 和 `data` 中的 `count`、最多三个 `orderNos`、`token`。核实为独立订单后使用原请求和幂等键，通过 `X-Wuhou-Duplicate-Check` 请求头传递该 token 后重试。
+
+订单图片恢复通过 `GET /api/orders/{id}/image-upload-receipts?requestId=...` 核对上传结果。可重复传入最多 40 个请求标识，返回该订单中未移除图片的上传请求标识到商品 ID 的映射，要求 `ORDER_READ`。
 
 正式订单按录单或确认时的商品顺序展示及导出，追加商品排在末尾，编辑和移除保留其余商品的相对顺序。V32 按既有的创建时间和商品 ID 顺序回填位置。部署 V32 时先短暂停写，完成迁移并切换应用后恢复接单。
 
@@ -224,7 +229,7 @@ DASHSCOPE_API_KEY 仅通过服务端受限配置注入；普通 .env 文件不�
 
 ### 整单双报价与支付登记
 
-`POST /api/orders` 新增可选 `originalAmountCents`、`memberAmountCents`、`paymentMethod`。金额为整数分，会员价非 null 时优先（包括 0），否则采用原价，成交金额继续通过 `totalAmountCents` 返回并用于汇总；同时传入不一致的成交金额会被拒绝。旧客户端仅传 `totalAmountCents` 仍可创建订单。
+`POST /api/orders` 新增可选 `originalAmountCents`、`memberAmountCents`、`paymentMethod`。金额为整数分，会员价非 null 时优先（包括 0），否则采用原价，成交金额继续通过 `totalAmountCents` 返回并用于汇总；同时传入不一致的成交金额会被拒绝。带有效建单协议头的请求可继续只传旧金额字段 `totalAmountCents`。
 
 方式为 `UNIONPAY`、`MEMBER_CARD`、`BANK_TRANSFER`、`SERVICE_WECHAT`、`CASH`、`DOUYIN_GROUP_BUY`（抖音团购）、`MEITUAN_GROUP_BUY`（美团团购）、`UNPAID`。省略时沿用未付默认值；指定非未付方式需付款操作权限，创建事务内同时保存已付款和服务器时间。未对接实际支付通道。
 

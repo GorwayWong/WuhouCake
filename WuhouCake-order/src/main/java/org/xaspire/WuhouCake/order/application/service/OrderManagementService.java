@@ -68,7 +68,7 @@ public class OrderManagementService {
         return rows(rows, false);
     }
     private List<Row> rows(List<OrderManagementQueries.Row> rows, boolean deleted) {
-        return rows.stream().map(r -> new Row(r.orderId(), r.orderNo(), r.receiveDate(), r.status(), r.paymentStatus(), r.phone(),
+        return rows.stream().map(r -> new Row(r.orderId(), r.orderNo(), r.receiveDate(), r.status(), r.paymentStatus(), r.fulfillmentType(), r.phone(),
                 r.customerName(), r.employeeNumber(), r.employeeName(), r.createdBy(), r.totalAmountCents() == null ? null : r.totalAmountCents().toString(), r.matchingQuantity(), r.cakeQuantity(), r.products(),
                 List.of(json.read(r.productTypes(), String[].class)), deleted)).toList();
     }

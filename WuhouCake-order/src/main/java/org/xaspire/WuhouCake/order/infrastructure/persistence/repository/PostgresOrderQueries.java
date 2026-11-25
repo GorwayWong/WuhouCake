@@ -27,7 +27,7 @@ public final class PostgresOrderQueries implements OrderQueries {
     @Override public List<PaymentOrder> paymentOrders(LocalDate date, String kind, Instant from, Instant to, long offset) {
         return mapper.paymentOrders(date, kind, from, to, offset).stream().map(row -> new PaymentOrder(
                 UUID.fromString(row.orderId()), row.orderNo(), row.createdAt(), row.calendarDate(), row.paidAt(),
-                row.amountCents(), row.paymentStatus(), row.status(), row.currentStageCode())).toList();
+                row.amountCents(), row.paymentStatus(), row.status(), row.currentStageCode(), row.fulfillmentType())).toList();
     }
     private final OrderQueryMapper mapper;
     private final JsonCodec json;

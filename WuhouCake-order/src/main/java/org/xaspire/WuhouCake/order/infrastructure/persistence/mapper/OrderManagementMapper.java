@@ -32,7 +32,7 @@ public interface OrderManagementMapper {
             + "<if test='filter.unassigned'> AND o.credited_employee_id IS NULL</if>"
             + "<if test='filter.size != null or filter.productName != null'> AND p.quantity&gt;0</if>"
             + "<if test='filter.keyword != null'> AND (position(#{filter.keyword} IN o.order_no)&gt;0 OR position(#{filter.keyword} IN o.customer_phone)&gt;0 OR position(#{filter.keyword} IN COALESCE(o.customer_name,''))&gt;0)</if>";
-    @Select("<script>SELECT o.id::text AS order_id,o.order_no," + ORDER_PICKUP_DATE + " AS receive_date,o.status,o.payment_status,"
+    @Select("<script>SELECT o.id::text AS order_id,o.order_no," + ORDER_PICKUP_DATE + " AS receive_date,o.status,o.payment_status,o.fulfillment_type,"
             + " o.customer_phone AS phone,o.customer_name,o.credited_employee_number AS employee_number,o.credited_employee_name AS employee_name,"
             + " o.created_by::text,o.total_amount_cents,p.quantity AS matching_quantity,p.cakes AS cake_quantity,p.products,"
             + " (SELECT COALESCE(jsonb_agg(DISTINCT upper(COALESCE(category.product_type,'')) ORDER BY upper(COALESCE(category.product_type,''))),'[]'::jsonb)::text"

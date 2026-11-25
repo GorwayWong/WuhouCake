@@ -38,11 +38,16 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
     }
     @Override public long count(UUID owner, String status, String keyword) { return mapper.count(string(owner), status, keyword); }
     @Override public void lockDuplicateGroup(CustomerSubmission submission) {
-        var key = duplicateGroup(submission);
-        mapper.lockDuplicateGroup(key.phone(), key.date().toString());
+        lockOrderDuplicateGroup(duplicateGroup(submission));
     }
 
-    private record DuplicateGroup(String phone, java.time.LocalDate date) { }
+    @Override public void lockOrderDuplicateGroup(DuplicateGroup group) {
+        mapper.lockDuplicateGroup(group.phone(), group.date().toString());
+    }
+
+    @Override public List<OrderCandidate> activeOrders(DuplicateGroup group) {
+        return mapper.activeOrders(group.phone(), group.date());
+    }
 
     private static DuplicateGroup duplicateGroup(CustomerSubmission submission) {
         var review = submission.reviewed();
@@ -50,15 +55,25 @@ public final class PostgresCustomerSubmissions implements CustomerSubmissions {
         var date = review != null && review.plannedHandoffAt() != null
                 ? review.plannedHandoffAt().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate()
                 : content.requestedDate();
-        return new DuplicateGroup(content.phone().replaceAll("[ ()-]", ""), date);
+        return new DuplicateGroup(content.phone(), date);
     }
 
-    @Override public List<Duplicate> duplicates(CustomerSubmission submission) {
+    @Override public Set<UUID> requiringDuplicateAcknowledgement(List<CustomerSubmission> pending) {
+        var keys = pending.stream().map(submission -> {
+            var group = duplicateGroup(submission);
+            return new CustomerSubmissionMapper.DuplicateKey(submission.id().toString(), group.phone(), group.date());
+        }).toList();
+        var matches = new HashSet<UUID>();
+        for (var id : mapper.requiringDuplicateAcknowledgement(keys)) matches.add(uuid(id));
+        return matches;
+    }
+
+    @Override public List<DuplicateMatch> duplicates(CustomerSubmission submission) {
         var key = duplicateGroup(submission);
         return mapper.duplicates(submission.id().toString(), key.phone(), key.date()).stream()
-                .map(row -> new Duplicate(row.kind(), uuid(row.id()), row.version(), row.status(), row.orderNo(), row.phone(),
+                .map(row -> new DuplicateMatch(new Duplicate(row.kind(), uuid(row.id()), row.version(), row.status(), row.orderNo(), row.phone(),
                         row.requestedReceiveDate(), row.requestedReceiveAt(), List.of(json.read(row.items(), DuplicateItem[].class)),
-                        row.totalAmountCents(), row.handledBy(), row.createdAt(), !"CANCELLED".equals(row.status()))).toList();
+                        row.totalAmountCents(), row.handledBy(), row.createdAt(), !"CANCELLED".equals(row.status())), row.fulfillmentType())).toList();
     }
     @Override public void update(CustomerSubmission submission, CustomerSubmission.Review review, String status, UUID orderId, Instant now) {
         if (mapper.update(submission.id().toString(), submission.version(), review == null ? null : json.write(review), status, string(orderId), now) != 1)

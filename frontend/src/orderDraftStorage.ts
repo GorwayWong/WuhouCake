@@ -5,18 +5,35 @@ import type { RecognitionFeedbackMap } from './recognition.ts';
 import type { CreateOrderRequest } from './types.ts';
 import { randomUUID } from './uuid.ts';
 import { validDraftImages } from './draftImageMetadata.ts';
+import { protectMigratedDraftImages } from './draftImages.ts';
+import { readCreationDraft, updateCreationDraft } from './creationDraftStorage.ts';
+import type { SavedCreationDraft } from './creationDraftStorage.ts';
 
 export interface DraftEditor {
   text: string; open: boolean; selectedItemKey: string; scrollY: number;
   feedback: RecognitionFeedbackMap; manualFields: string[];
 }
+export interface DuplicateOrderMatch {
+  count: number;
+  orderNos: string[];
+  token: string;
+}
+type DuplicateOrderDraft = { state: 'REQUIRED'; request: CreateOrderRequest; match: DuplicateOrderMatch } | { state: 'EDITING' };
+
 export interface OrderDraftRecord {
   version: 1; accountId: string; requestId: string; revision: string; updatedAt: string;
   initial: OrderDraft; value: OrderDraft; editor: DraftEditor; pending?: CreateOrderRequest;
+  pendingDuplicateCheck?: string;
+  duplicateReview?: DuplicateOrderDraft;
   createdOrderId?: string;
   imageStorageUsed?: boolean;
   savedRevision?: string;
   idempotencyKey?: string;
+}
+export interface DraftCandidate {
+  record: OrderDraftRecord | null;
+  invalid: boolean;
+  migrationDeferred?: boolean;
 }
 export const draftStorageKey = (accountId: string) => `wuhou:order-draft:v1:${accountId}`;
 export function freshOrderDraft(accountId: string, date: string): OrderDraftRecord {
@@ -51,6 +68,17 @@ function form(value: unknown): value is OrderDraft {
     keys.add(String(item.key)); return true;
   });
 }
+function duplicateCheckToken(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 2500 && /^[#,0-9a-f]+\.[0-9a-f]{64}$/.test(value);
+}
+
+export function duplicateOrderMatch(value: unknown): DuplicateOrderMatch | undefined {
+  if (!object(value) || typeof value.count !== 'number' || !Number.isSafeInteger(value.count) || value.count <= 0
+    || !Array.isArray(value.orderNos) || !value.orderNos.every(no => typeof no === 'string')
+    || !duplicateCheckToken(value.token)) return undefined;
+  return { count: value.count, orderNos: value.orderNos, token: value.token };
+}
+
 function request(value: unknown): value is CreateOrderRequest {
   const nullableString = (v: unknown) => v === null || typeof v === 'string';
   const money = (v: unknown) => v === null || typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
@@ -83,6 +111,11 @@ export function decodeOrderDraft(raw: string, accountId: string): OrderDraftReco
         && (mark.itemKey === undefined || typeof mark.itemKey === 'string') && (mark.error === undefined || typeof mark.error === 'string')
         && [null, 'RULE', 'MODEL', 'DEFAULT'].includes(mark.source as string | null) && typeof mark.needsReview === 'boolean')
       || value.pending !== undefined && !request(value.pending)
+      || value.pendingDuplicateCheck !== undefined && (!value.pending || !duplicateCheckToken(value.pendingDuplicateCheck))
+      || value.duplicateReview !== undefined && (value.pending !== undefined || value.createdOrderId !== undefined
+        || !object(value.duplicateReview) || value.duplicateReview.state !== 'EDITING'
+          && (value.duplicateReview.state !== 'REQUIRED' || !request(value.duplicateReview.request)
+            || !duplicateOrderMatch(value.duplicateReview.match)))
       || value.createdOrderId !== undefined && (typeof value.createdOrderId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.createdOrderId))
       || value.savedRevision !== undefined && typeof value.savedRevision !== 'string'
       || value.idempotencyKey !== undefined && (typeof value.idempotencyKey !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.idempotencyKey))
@@ -110,8 +143,7 @@ export class OrderDraftSlot {
   }
   read() {
     this.expected = this.storage().getItem(draftStorageKey(this.accountId));
-    const record = this.expected === null ? null : decodeOrderDraft(this.expected, this.accountId);
-    return { record, invalid: this.expected !== null && !record };
+    return decodeSnapshot(this.expected, this.accountId);
   }
   check() {
     if (this.storage().getItem(draftStorageKey(this.accountId)) !== this.expected) throw new DraftConflict();
@@ -127,5 +159,117 @@ export class OrderDraftSlot {
   }
   remove() {
     this.check(); this.storage().removeItem(draftStorageKey(this.accountId)); this.expected = null;
+  }
+}
+
+type PendingDraft = { record: OrderDraftRecord; legacyRaw?: string };
+const pendingKey = (accountId: string) => `order-pending:${accountId}`;
+const isPending = (record: OrderDraftRecord | null) => Boolean(record?.pending || record?.createdOrderId || record?.duplicateReview);
+const decodeSnapshot = (raw: string | null, accountId: string) => {
+  const record = raw === null ? null : decodeOrderDraft(raw, accountId);
+  return { record, invalid: raw !== null && !record };
+};
+
+export async function readPendingOrderDraft(accountId: string) {
+  return (await readCreationDraft<PendingDraft>(pendingKey(accountId)))?.value.record ?? null;
+}
+
+export class OrderSubmissionSlot {
+  readonly legacy: OrderDraftSlot;
+  readonly accountId: string;
+  constructor(accountId: string) {
+    this.accountId = accountId;
+    this.legacy = new OrderDraftSlot(accountId);
+  }
+
+  private legacyRaw() {
+    return localStorage.getItem(draftStorageKey(this.accountId));
+  }
+
+  private removeLegacy(raw: string | undefined) {
+    if (raw !== undefined && this.legacyRaw() === raw) localStorage.removeItem(draftStorageKey(this.accountId));
+  }
+
+  private async finishMigration(stored: SavedCreationDraft<PendingDraft>, protectedRequestId?: string) {
+    const { record, legacyRaw } = stored.value;
+    if (legacyRaw !== undefined && record.requestId !== protectedRequestId) {
+      const legacy = decodeOrderDraft(legacyRaw, this.accountId);
+      if (legacy?.requestId === record.requestId && isPending(legacy)) await protectMigratedDraftImages(record);
+    }
+    try { this.removeLegacy(legacyRaw); }
+    catch { /* The committed copy stays available. Cleanup is retried before releasing the slot. */ }
+  }
+
+  private async recovered(stored: SavedCreationDraft<PendingDraft>, protectedRequestId?: string) {
+    const candidate = decodeSnapshot(JSON.stringify(stored.value.record), this.accountId);
+    if (candidate.invalid) return candidate;
+    try { await this.finishMigration(stored, protectedRequestId); }
+    catch { return { ...candidate, migrationDeferred: true }; }
+    return candidate;
+  }
+
+  async read(): Promise<DraftCandidate> {
+    const key = pendingKey(this.accountId);
+    let stored: SavedCreationDraft<PendingDraft> | null;
+    try {
+      stored = await readCreationDraft<PendingDraft>(key);
+    } catch (failure) {
+      const legacy = this.legacy.read();
+      if (isPending(legacy.record)) return { ...legacy, migrationDeferred: true };
+      throw failure;
+    }
+    if (stored) return this.recovered(stored);
+    const legacy = this.legacy.read();
+    if (!legacy.record || !isPending(legacy.record)) return legacy;
+    try {
+      await protectMigratedDraftImages(legacy.record);
+      const migrated = await updateCreationDraft<PendingDraft>(key, current => {
+        if (current) return current;
+        const raw = this.legacyRaw();
+        const { record } = decodeSnapshot(raw, this.accountId);
+        return raw !== null && record && isPending(record)
+          ? { revision: record.revision, value: { record, legacyRaw: raw } } : null;
+      });
+      return migrated ? this.recovered(migrated, legacy.record.requestId) : this.legacy.read();
+    } catch {
+      const committed = await readCreationDraft<PendingDraft>(key).catch(() => null);
+      if (committed) return this.recovered(committed);
+      const latest = this.legacy.read();
+      return { ...latest, migrationDeferred: isPending(latest.record) };
+    }
+  }
+
+  async write(record: OrderDraftRecord, expectedRevision?: string) {
+    if (record.accountId !== this.accountId) throw new DraftConflict();
+    const saved = await updateCreationDraft<PendingDraft>(pendingKey(this.accountId), current => {
+      const legacyRaw = current ? current.value.legacyRaw : this.legacyRaw() ?? undefined;
+      const previous = decodeSnapshot(current ? JSON.stringify(current.value.record) : legacyRaw ?? null, this.accountId);
+      if (previous.invalid || isPending(previous.record) && previous.record?.requestId !== record.requestId) throw new DraftConflict();
+      const matching = previous.record?.requestId === record.requestId ? previous.record : null;
+      if (expectedRevision !== undefined ? matching?.revision !== expectedRevision : Boolean(matching?.duplicateReview))
+        throw new DraftConflict();
+      const pending = expectedRevision === undefined ? matching?.pending : undefined;
+      const next = { ...record, pending: pending ?? record.pending,
+        pendingDuplicateCheck: pending ? matching?.pendingDuplicateCheck : record.pendingDuplicateCheck, createdOrderId: matching?.createdOrderId ?? record.createdOrderId,
+        revision: randomUUID(), updatedAt: new Date().toISOString() };
+      return { revision: next.revision, value: { record: next, legacyRaw } };
+    });
+    await this.finishMigration(saved!);
+    return saved!.value.record;
+  }
+
+  async remove(record: OrderDraftRecord | null, discard: boolean) {
+    let legacyToRemove: string | undefined;
+    await updateCreationDraft<PendingDraft>(pendingKey(this.accountId), current => {
+      const raw = current ? JSON.stringify(current.value.record) : this.legacyRaw();
+      const stored = decodeSnapshot(raw, this.accountId);
+      if (stored.invalid && !(discard && !record) || stored.record &&
+          (record?.requestId !== stored.record.requestId || discard && record.revision !== stored.record.revision)) throw new DraftConflict();
+      // Remove the migration backup while the durable copy still exists.
+      if (current) this.removeLegacy(current.value.legacyRaw);
+      else legacyToRemove = raw ?? undefined;
+      return null;
+    });
+    this.removeLegacy(legacyToRemove);
   }
 }

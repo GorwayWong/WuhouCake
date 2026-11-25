@@ -39,11 +39,12 @@ class CustomerSubmissionServiceTest {
         var submission = new CustomerSubmission(id, UUID.randomUUID(), owner, "客服", 1, "PENDING", content,
                 new CustomerSubmission.Review(content, null, 100L, owner, NOW), null, NOW, NOW);
         when(store.find(eq(id), anyBoolean())).thenReturn(submission);
-        when(store.duplicates(submission)).thenReturn(List.of(record(0, "CAKE_BASE")));
+        when(store.duplicates(submission)).thenReturn(List.of(match(0, "CAKE_BASE", "PICKUP")));
     }
-    private CustomerSubmissions.Duplicate record(long version, String status) {
-        return new CustomerSubmissions.Duplicate("ORDER", candidate, version, status, "001", "13800000000", LocalDate.of(2026, 11, 2), NOW,
-                List.of(new CustomerSubmissions.DuplicateItem("蛋糕", 1)), 100L, "客服", NOW, !"CANCELLED".equals(status));
+    private CustomerSubmissions.DuplicateMatch match(long version, String status, String fulfillmentType) {
+        return new CustomerSubmissions.DuplicateMatch(new CustomerSubmissions.Duplicate("ORDER", candidate, version, status, "001",
+                "13800000000", LocalDate.of(2026, 11, 2), NOW, List.of(new CustomerSubmissions.DuplicateItem("蛋糕", 1)),
+                100L, "客服", NOW, !"CANCELLED".equals(status)), fulfillmentType);
     }
     @Test void searchNormalizesReceiptsAndPhonesAndUsesTheSameScopeForCount() {
         when(store.count(null, "ALL", id.toString())).thenReturn(21L);
@@ -68,21 +69,25 @@ class CustomerSubmissionServiceTest {
     }
     @Test void allCandidateVersionsAndStatusesContributeToTheAcknowledgement() {
         String original = service.detail(id).duplicateCheckToken();
-        assertEquals(original, service.detail(id).duplicateCheckToken());
         var submission = store.find(id, false);
-        when(store.duplicates(submission)).thenReturn(List.of(record(1, "CAKE_BASE")));
+        assertEquals("PICKUP", service.detail(id).duplicates().getFirst().fulfillmentType());
+        when(store.duplicates(submission)).thenReturn(List.of(match(0, "CAKE_BASE", "DELIVERY")));
+        var changedDisplay = service.detail(id);
+        assertEquals("DELIVERY", changedDisplay.duplicates().getFirst().fulfillmentType());
+        assertEquals(original, changedDisplay.duplicateCheckToken());
+        when(store.duplicates(submission)).thenReturn(List.of(match(1, "CAKE_BASE", "DELIVERY")));
         assertNotEquals(original, service.detail(id).duplicateCheckToken());
         assertRejected(new SubmissionCommands.Confirm(1, original, null));
-        when(store.duplicates(submission)).thenReturn(List.of(record(1, "CANCELLED")));
+        when(store.duplicates(submission)).thenReturn(List.of(match(1, "CANCELLED", "DELIVERY")));
         assertRejected(new SubmissionCommands.Confirm(1, original, null));
         when(store.duplicates(submission)).thenReturn(List.of());
         assertRejected(new SubmissionCommands.Confirm(1, original, null));
-        verifyNoInteractions(orders);
+        verify(orders, never()).createCustomer(any(), any(), any(), any());
     }
     @Test void oldSingleIdAndMissingAcknowledgementsCannotCreateAnOrder() {
         assertRejected(new SubmissionCommands.Confirm(1, null, candidate));
         assertRejected(new SubmissionCommands.Confirm(1, null, null));
-        verifyNoInteractions(orders);
+        verify(orders, never()).createCustomer(any(), any(), any(), any());
         verify(store, never()).update(any(), any(), anyString(), any(), any());
     }
     private void assertRejected(SubmissionCommands.Confirm command) {

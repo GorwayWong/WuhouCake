@@ -136,20 +136,27 @@ export async function discardOrderReads(client: QueryClient) {
 export type Connection = 'connecting' | 'live' | 'reconnecting' | 'denied';
 export function connectOrders(client: QueryClient, status: (value: Connection) => void, notify?: (change: OrderUpdate) => void, onDenied?: () => void): () => void {
   let stopped = false;
+  let offline = false;
+  let resume = false;
   let active: AbortController | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let attempts = 0;
+  function cancelRetry() {
+    clearTimeout(retry);
+    retry = undefined;
+  }
   async function connect() {
-    if (stopped) return;
-    active = new AbortController();
+    if (stopped || offline || active) return;
+    const controller = new AbortController();
+    active = controller;
     status(attempts ? 'reconnecting' : 'connecting');
     let openedAt = 0;
-    const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => active?.abort(), 45000); };
+    const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => controller.abort(), 45000); };
     touch();
     try {
-      const response = await authenticatedFetch('/orders/stream', { signal: active.signal, headers: { Accept: 'text/event-stream' } });
-      if (stopped || active.signal.aborted) return;
+      const response = await authenticatedFetch('/orders/stream', { signal: controller.signal, headers: { Accept: 'text/event-stream' } });
+      if (stopped || controller.signal.aborted) return;
       if (response.status === 403) {
         close();
         status('denied');
@@ -159,40 +166,62 @@ export function connectOrders(client: QueryClient, status: (value: Connection) =
       if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) throw new Error('Stream unavailable');
       openedAt = Date.now();
       const parser = createParser({ onEvent: event => {
-        if (stopped) return;
+        if (stopped || controller.signal.aborted) return;
         if (event.event === 'ready') status('live');
         receiveEvent(client, event, notify);
       } });
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       try {
-        while (!stopped) {
+        while (!stopped && !controller.signal.aborted) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || controller.signal.aborted) break;
           touch(); parser.feed(decoder.decode(value, { stream: true }));
         }
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     } catch { /* 网络恢复后通过 ready 补齐未重放的消息。 */ }
     finally {
       clearTimeout(watchdog);
-      if (!stopped) {
+      active = undefined;
+      if (resume && !stopped && !offline) {
+        resume = false;
+        void connect();
+      } else if (!stopped && !offline) {
         // 短暂 ready 不代表网络稳定，至少跨过两次心跳再重置退避。
         if (openedAt && Date.now() - openedAt >= 30000) attempts = 0;
         status('reconnecting'); attempts++;
-        retry = setTimeout(() => { void connect(); }, Math.min(30000, 1000 * 2 ** Math.min(attempts - 1, 5)) + Math.random() * 400);
+        retry = setTimeout(() => {
+          retry = undefined;
+          void connect();
+        }, Math.min(30000, 1000 * 2 ** Math.min(attempts - 1, 5)) + Math.random() * 400);
       }
     }
   }
-  function resume() {
-    if (document.visibilityState !== 'hidden') { synchronize(client); active?.abort(); }
+  function onOffline() {
+    if (offline) return;
+    offline = true;
+    resume = false;
+    cancelRetry();
+    active?.abort();
+    status('reconnecting');
   }
-  window.addEventListener('online', resume);
-  document.addEventListener('visibilitychange', resume);
+  function onOnline() {
+    if (!offline && retry === undefined) return;
+    offline = false;
+    attempts = 1;
+    cancelRetry();
+    // The previous reader may still be unwinding after abort.
+    if (active) resume = true;
+    else void connect();
+  }
+  window.addEventListener('offline', onOffline);
+  window.addEventListener('online', onOnline);
   void connect();
   return close;
 
   function close() {
-    stopped = true; clearTimeout(retry); clearTimeout(watchdog); active?.abort();
-    window.removeEventListener('online', resume); document.removeEventListener('visibilitychange', resume);
+    stopped = true; cancelRetry(); clearTimeout(watchdog); active?.abort();
+    window.removeEventListener('offline', onOffline);
+    window.removeEventListener('online', onOnline);
   }
 }

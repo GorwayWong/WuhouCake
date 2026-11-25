@@ -110,6 +110,18 @@ public class OrderImageService {
         return images.list(orderId).stream().map(OrderImageService::view).toList();
     }
     @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public Map<UUID, UUID> uploadReceipts(UUID orderId, List<UUID> requestIds) {
+        if (requestIds.isEmpty() || requestIds.size() > IMAGES_PER_ORDER || requestIds.stream().anyMatch(Objects::isNull))
+            throw new OrderFailure("VALIDATION_FAILED");
+        requireReadable(orderId);
+        var receipts = new LinkedHashMap<UUID, UUID>();
+        for (UUID requestId : new LinkedHashSet<>(requestIds)) {
+            images.findUpload(orderId, requestId).flatMap(upload -> images.find(orderId, upload.imageId()))
+                    .map(OrderImage::itemId).ifPresent(itemId -> receipts.put(requestId, itemId));
+        }
+        return receipts;
+    }
+    @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Content content(UUID orderId, UUID imageId) {
         requireReadable(orderId);
         var image = images.find(orderId, imageId).orElseThrow(() -> new OrderFailure("IMAGE_NOT_FOUND"));

@@ -38,7 +38,7 @@ public interface OrderQueryMapper {
             @Param("stages") Set<String> stages, @Param("limit") int limit, @Param("offset") long offset);
 
     record PaymentOrderRow(String orderId, String orderNo, Instant createdAt, LocalDate calendarDate,
-            Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode) { }
+            Instant paidAt, String amountCents, String paymentStatus, String status, String currentStageCode, String fulfillmentType) { }
     String PAYMENT_WHERE = " FROM cake_order WHERE deleted_at IS NULL AND <choose><when test=\"kind == 'RECEIPT'\">"
             + "payment_status='PAID' AND paid_at &gt;= #{from} AND paid_at &lt; #{to}"
             + "</when><otherwise>" + PICKUP_DATE + "=#{date} AND status&lt;&gt;'CANCELLED'"
@@ -48,7 +48,7 @@ public interface OrderQueryMapper {
     @Select("<script>SELECT count(*)" + PAYMENT_WHERE + "</script>")
     long paymentOrderCount(@Param("date") LocalDate date, @Param("kind") String kind, @Param("from") Instant from, @Param("to") Instant to);
     @Select("<script>SELECT id::text AS order_id, order_no, created_at, " + PICKUP_DATE + " AS calendar_date,"
-            + " paid_at, total_amount_cents::text AS amount_cents, payment_status, status, current_stage_code" + PAYMENT_WHERE
+            + " paid_at, total_amount_cents::text AS amount_cents, payment_status, status, current_stage_code, fulfillment_type" + PAYMENT_WHERE
             + " ORDER BY <choose><when test=\"kind == 'RECEIPT'\">paid_at DESC, order_no</when>"
             + "<otherwise>" + PICKUP_AT + " NULLS LAST, order_no</otherwise></choose> LIMIT 10 OFFSET #{offset}</script>")
     List<PaymentOrderRow> paymentOrders(@Param("date") LocalDate date, @Param("kind") String kind,

@@ -286,6 +286,10 @@ class OrderExportIT {
         }
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_image_upload", Integer.class));
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM cake_order_activity WHERE type='IMAGE_ADDED'", Integer.class));
+        String receipt = "/api/orders/" + id + "/image-upload-receipts?requestId=" + uploadId + "&requestId=" + UUID.randomUUID();
+        var receipts = data(staff.request("GET", receipt, null));
+        assertEquals(1, receipts.size());
+        assertEquals(first, receipts.path(uploadId.toString()).asText());
         assertEquals(409, staff.upload(id, second, png, "same.png", uploadId).statusCode());
         assertEquals(409, staff.upload(id, first, png, "different.png", uploadId).statusCode());
         assertEquals(409, staff.upload(id, first, picture("jpeg"), "same.png", uploadId).statusCode());
@@ -295,7 +299,10 @@ class OrderExportIT {
         assertEquals(imageId, data(staff.upload(id, first, png, "same.png", uploadId)).path("imageId").asText());
         assertEquals(409, staff.upload(id, second, png, "sixth.png").statusCode());
         assertEquals(200, manager.request("POST", "/api/orders/" + id + "/exports/xlsx", null).statusCode());
+        String otherOrder = data(staff.request("POST", "/api/orders", create("2026-10-16"))).path("orderId").asText();
+        assertEquals(0, data(staff.request("GET", "/api/orders/" + otherOrder + "/image-upload-receipts?requestId=" + uploadId, null)).size());
         assertEquals(200, staff.request("DELETE", "/api/orders/" + id + "/images/" + imageId, null).statusCode());
+        assertEquals(0, data(staff.request("GET", receipt, null)).size());
         assertEquals(409, staff.upload(id, first, png, "same.png", uploadId).statusCode());
         assertEquals(201, staff.upload(id, first, png, "replacement.png").statusCode());
     }
@@ -1225,9 +1232,20 @@ class OrderExportIT {
         }
         void changePassword(String current) throws Exception { assertEquals(200, request("POST", "/api/me/password", Map.of("currentPassword", current, "newPassword", PASSWORD)).statusCode()); }
         HttpResponse<byte[]> request(String method, String path, Object body) throws Exception {
+            var response = send(method, path, body, null);
+            if (method.equals("POST") && path.equals("/api/orders") && response.statusCode() == 409) {
+                var result = json.readTree(response.body());
+                // Bulk export fixtures intentionally seed many independent orders for one sample contact.
+                if ("DUPLICATE_REVIEW_REQUIRED".equals(result.path("code").asText()))
+                    return send(method, path, body, result.at("/data/token").asText());
+            }
+            return response;
+        }
+        HttpResponse<byte[]> send(String method, String path, Object body, String duplicateToken) throws Exception {
             boolean auth = path.startsWith("/api/auth/");
             if (auth && !method.equals("GET")) request("GET", "/api/auth/csrf", null);
             var builder = builder(path, auth).header("Content-Type", "application/json");
+            if (duplicateToken != null) builder.header("X-Wuhou-Duplicate-Check", duplicateToken);
             if (auth && !method.equals("GET")) cookies.getCookieStore().getCookies().stream().filter(cookie -> cookie.getName().equals("XSRF-TOKEN"))
                     .findFirst().ifPresent(cookie -> builder.header("X-XSRF-TOKEN", cookie.getValue()));
             builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(body)));
@@ -1252,6 +1270,7 @@ class OrderExportIT {
         }
         HttpRequest.Builder builder(String path, boolean auth) {
             var result = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).timeout(Duration.ofSeconds(30));
+            if (path.equals("/api/orders")) result.header("X-Wuhou-Order-Submission", "3");
             if (token != null && !auth) result.header("Authorization", "Bearer " + token); return result;
         }
     }

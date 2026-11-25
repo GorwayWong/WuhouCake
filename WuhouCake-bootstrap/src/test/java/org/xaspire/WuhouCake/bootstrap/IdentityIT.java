@@ -521,7 +521,7 @@ class IdentityIT {
         String snapshot = """
                 {"schema":1,"observedAt":"%s","disk":{"totalBytes":4000,"availableBytes":1200},
                  "daily":{"latestAttempt":null,"lastSuccess":null},"predeploy":{"latestAttempt":null,"lastSuccess":null},
-                 "alerts":["DISK_LOW","DAILY_OVERDUE"],"hostname":"internal-host"}
+                 "alerts":["DISK_LOW","DAILY_OVERDUE"],"integrityAlerts":["DAILY_BACKUP_CORRUPT","PREDEPLOY_INTEGRITY_UNCONFIRMED"],"hostname":"internal-host"}
                 """;
         try {
             java.nio.file.Files.writeString(SERVER_STATUS, snapshot.formatted(java.time.Instant.now().minusSeconds(5)));
@@ -531,6 +531,8 @@ class IdentityIT {
             assertEquals("AVAILABLE", response.body.at("/data/state").asText());
             assertEquals(1200, response.body.at("/data/disk/availableBytes").asLong());
             assertEquals("DAILY_OVERDUE", response.body.at("/data/alerts/1").asText());
+            assertEquals("DAILY_BACKUP_CORRUPT", response.body.at("/data/alerts/2").asText());
+            assertEquals("PREDEPLOY_INTEGRITY_UNCONFIRMED", response.body.at("/data/alerts/3").asText());
             assertTrue(response.body.at("/data/hostname").isMissingNode());
             assertEquals(403, staff.request("GET", path, null).status);
             for (String invalid : List.of(snapshot.formatted(java.time.Instant.now().minusSeconds(901)),
@@ -627,6 +629,7 @@ class IdentityIT {
         }
         Result raw(String method, String path, Object body, boolean useCsrf) throws Exception {
             var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).header("Content-Type", "application/json");
+            if (method.equals("POST") && path.equals("/api/orders")) builder.header("X-Wuhou-Order-Submission", "3");
             if (token != null && !path.startsWith("/api/auth/")) builder.header("Authorization", "Bearer " + token);
             if (useCsrf && path.startsWith("/api/auth/") && cookie("XSRF-TOKEN") != null) builder.header("X-XSRF-TOKEN", cookie("XSRF-TOKEN"));
             builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));

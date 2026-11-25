@@ -52,8 +52,8 @@ test('月历收到首单删除通知后即使刷新失败也隐藏旧预览，�
   } finally { release(); await context.close(); }
 });
 
-test('按详情状态切换筛选后，列表只显示同名状态的订单', async () => {
-  const { context, page } = await createOrderFixture(browser, base);
+test('日历、订单详情、付款明细及查询明细使用相同的交接状态和颜色', async () => {
+  const { context, page, model } = await createOrderFixture(browser, base);
   const date = '2026-11-20';
   const states = [
     ['WAITING_DELIVERY', 'DELIVERY', '待配送'], ['WAITING_DELIVERY', 'PICKUP', '待自提'],
@@ -63,17 +63,69 @@ test('按详情状态切换筛选后，列表只显示同名状态的订单', as
     orderId: `10000000-0000-4000-8000-00000000000${index}`, orderNo: String(index),
     status, fulfillmentType, paymentStatus: 'UNPAID', calendarDate: date, items: [{ name, quantity: 1 }],
   }));
+  const readColors = badge => badge.evaluate(element => {
+    const style = getComputedStyle(element);
+    const colors = [style.color, style.backgroundColor];
+    const luminance = value => value.match(/\d+/g).slice(0, 3).map(Number).reduce((result, channel, i) => {
+      const scaled = channel / 255;
+      return result + [0.2126, 0.7152, 0.0722][i] * (scaled <= 0.04045 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4);
+    }, 0);
+    const brightness = colors.map(luminance).sort((a, b) => a - b);
+    return { colors, contrast: (brightness[1] + 0.05) / (brightness[0] + 0.05) };
+  });
   try {
+    model.permissions.push('ORDER_MANAGEMENT_READ');
+    await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     await context.route('**/api/orders/workbench/cards?**', route =>
       route.fulfill({ json: { success: true, data: workbenchCards(route.request(), rows) } }));
+    const colors = new Map();
     await page.goto(`${base}/#/?date=${date}`);
+    await page.reload();
     for (const [, , label] of states) {
       await page.locator('[data-control-label="订单状态"] .choice-trigger').click();
       await page.getByRole('option', { name: label, exact: true }).click();
-      await page.locator('.order-summary-card:visible .badges').getByText(label, { exact: true }).waitFor();
+      const badge = page.locator('.order-summary-card:visible .badges').getByText(label, { exact: true });
+      await badge.waitFor();
+      const sample = await readColors(badge);
+      assert.ok(sample.contrast >= 4.5);
+      colors.set(label, sample.colors);
       assert.equal(await page.locator('.order-summary-card').count(), 1);
       assert.match(await page.locator('.timeline-partition-toggle').innerText(), /1 单/);
     }
+    assert.notDeepEqual(colors.get('待配送'), colors.get('待自提'));
+    assert.deepEqual(colors.get('已送达'), colors.get('已自提'));
+
+    const target = rows[1];
+    model.order = { ...target, orderId, version: 1, fulfillment: { type: target.fulfillmentType, requestedReceiveDate: date },
+      items: [{ ...target.items[0], itemId: crypto.randomUUID(), attributes: {}, recentNotes: [] }] };
+    await page.goto(`${base}/#/orders/${orderId}`);
+    assert.deepEqual((await readColors(page.locator('.page-heading .badge').getByText('待自提', { exact: true }))).colors, colors.get('待自提'));
+    assert.equal(await page.locator('[aria-current="step"] .progress-label').textContent(), '待自提');
+
+    await context.route('**/api/orders/workbench/payment-orders?**', route => route.fulfill({ json: { success: true,
+      data: { page: 1, total: rows.length, orders: rows.map(row => ({ ...row, amountCents: null })) } } }));
+    await page.goto(`${base}/#/payment-orders?date=${date}&kind=SHIPPING_UNPAID`);
+    for (const [label, expected] of colors) {
+      assert.deepEqual((await readColors(page.getByRole('table').getByText(label, { exact: true }))).colors, expected);
+    }
+
+    const extraStates = ['CAKE_BASE', 'LAYER', 'FROSTING', 'DECORATING', 'CANCELLED', 'FUTURE_STATE', 'CAKE_BASE'];
+    const reportRows = [...rows, ...extraStates.map((status, index) => ({ ...rows[0], status, orderNo: `extra-${index}`,
+      orderId: crypto.randomUUID(), paymentStatus: 'PAID', deleted: index === 6 }))];
+    await context.route('**/api/admin/orders?**', route => route.fulfill({ json: { success: true,
+      data: { page: 1, size: 20, totals: { orderCount: reportRows.length, totalAmountCents: '0', paidAmountCents: '0', unpaidAmountCents: '0' },
+        items: reportRows.map(row => ({ ...row, receiveDate: date, totalAmountCents: null, productTypes: ['CAKE'] })), sizes: [], employees: [] } } }));
+    await page.goto(`${base}/#/admin/orders`);
+    for (const [label, expected] of colors) {
+      assert.deepEqual((await readColors(page.locator('.state-badge:visible').getByText(label, { exact: true }))).colors, expected);
+    }
+    const fabrication = new Set();
+    for (const label of ['出胚', '夹层', '抹面', '装饰', '已取消', '状态待更新', '已删除', '已付款', '未付款']) {
+      const sample = await readColors(page.locator('.state-badge:visible').getByText(label, { exact: true }).first());
+      assert.ok(sample.contrast >= 4.5, label);
+      if (['出胚', '夹层', '抹面', '装饰'].includes(label)) fabrication.add(sample.colors.join('|'));
+    }
+    assert.equal(fabrication.size, 4);
   } finally { await context.close(); }
 });
 
@@ -88,12 +140,16 @@ test('前台卡片精简、时间两列、创建高亮、筛选与详情往返�
     await context.route('**/api/orders/workbench/cards?**', route => route.fulfill({ json: { success: true, data: workbenchCards(route.request(), pending()) } }));
     await context.route(`**/api/orders/${orderId}/customer-origin`, route => route.fulfill({ json: { success: true, data: null } }));
     await page.evaluate(() => {
-      const request = navigator.locks.request.bind(navigator.locks);
-      navigator.locks.request = (name, callback) => name === 'wuhou:order-submit:alice' && localStorage.getItem('wuhou:order-draft:v1:alice')
-        ? request(name, async lock => {
-          await new Promise(resolve => { window.finishDraftCleanup = resolve; });
-          return callback(lock);
-        }) : request(name, callback);
+      const remove = IDBObjectStore.prototype.delete;
+      IDBObjectStore.prototype.delete = function (key) {
+        const request = remove.call(this, key);
+        if (key === 'order-pending:alice') {
+          const tx = this.transaction;
+          const complete = tx.oncomplete;
+          tx.oncomplete = event => { window.finishDraftCleanup = () => complete.call(tx, event); };
+        }
+        return request;
+      };
       const scroll = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = function (options) {
         if (this.classList.contains('is-new-order')) window.scrolledToNewOrder = this.dataset.orderId;

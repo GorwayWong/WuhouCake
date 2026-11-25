@@ -6,11 +6,13 @@ export class ApiError extends Error {
   status: number;
   code: string;
   readonly retryAfter?: string;
-  constructor(status: number, code: string, retryAfter?: string) {
+  readonly data?: unknown;
+  constructor(status: number, code: string, retryAfter?: string, data?: unknown) {
     super(code);
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
+    this.data = data;
   }
 }
 export function rejectedBeforeWrite(error: unknown): boolean {
@@ -25,6 +27,7 @@ export function errorText(error: unknown): string {
   return ({
     READ_TIMEOUT: '读取超时，当前资料可能不是最新的，请重试',
     AUTH_TIMEOUT: '连接登录服务超时，请稍后重试。当前填写内容请先保留。',
+    ORDER_CREATE_CLIENT_UPDATE_REQUIRED: '录单页面需要更新。原提交已保留，请刷新后继续核对。',
     WRITE_TIMEOUT: '保存结果尚未确认，当前输入已保留，请核对结果后重试。',
     IMAGE_PROCESSING_BUSY: '图片正在处理中，请稍后重试。',
     IMAGE_PROCESSING_TIMEOUT: '图片处理超时，请换用较小图片后重试。',
@@ -114,7 +117,8 @@ export function errorText(error: unknown): string {
 async function decode<T>(response: Response, started?: number, retryAfter?: string): Promise<T> {
   const body = await response.json().catch(() => null);
   if (started !== undefined && started !== generation) throw new ApiError(401, 'AUTHENTICATION_FAILED');
-  if (!response.ok || !body?.success) throw new ApiError(response.status, body?.code || `HTTP_${response.status}`, retryAfter);
+  if (!response.ok || !body?.success) throw new ApiError(response.status, body?.code || `HTTP_${response.status}`, retryAfter,
+    response.status === 409 && body?.code === 'DUPLICATE_REVIEW_REQUIRED' ? body.data : undefined);
   if (hasUnsafeMoneyNumber(body.data)) throw new ApiError(502, 'UNSAFE_MONEY_AMOUNT');
   return body.data;
 }

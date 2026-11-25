@@ -25,7 +25,7 @@ class PoiOrderReportFilesTest {
                 product("超长", overCellLimit, 1230L));
         var specs = List.of("", shortSpec, atBoundary, withPair, thirtyTwoK, overCellLimit + "\n原商品单价：12.30 元（仅供参考）");
         var totals = new Totals(1, 12, 0, 0, "8800", "8800", "0", 0);
-        var order = new Row("id", "00001", FILTER.from(), "CAKE_BASE", "PAID", "PICKUP",
+        var order = new Row("id", "00001", FILTER.from(), "CAKE_BASE", "PAID", "PICKUP", "13800000000",
                 null, null, null, null, 8800L, 12, 0, "6 项", "其他");
         var employee = new EmployeeSummary("employee", "0001", "客服", 1, 12, 0, "8800", "8800", "0", 0);
         byte[] bytes = new PoiOrderReportFiles().generate(FILTER, List.of(order), totals, List.of(), List.of(employee), products);

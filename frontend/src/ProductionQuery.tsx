@@ -8,7 +8,7 @@ import { productionPreset, productionQueryHref, validProductionRange } from './p
 import type { ProductionQueryRoute } from './productionQueryRoute';
 import { orderHref } from './routes';
 import { Select } from './Select';
-import { Empty, ErrorNotice, Loading } from './ui';
+import { Empty, ErrorNotice, Loading, Status } from './ui';
 
 interface ProductionSummary {
   total: number;
@@ -112,7 +112,7 @@ export function ProductionQuery({ route }: { route: ProductionQueryRoute }) {
         <p>共 {result.total} 笔订单</p>
         <ul className="production-query-orders">{result.orders.map(order => <li key={order.orderId}>
           <a href={orderHref(order.orderId, productionQueryHref({ ...route, page: result.page }))}>
-            <strong>{order.itemName || '未填写商品名称'}</strong><span>#{order.orderNo} · {orderStatusNames[order.status]}</span>
+            <strong>{order.itemName || '未填写商品名称'}</strong><span>#{order.orderNo} <Status order={order} /></span>
           </a>
           <dl>
             <div><dt>出品</dt><dd>{order.plannedFinishAt ? businessTime(order.plannedFinishAt) : '待定'}</dd></div>

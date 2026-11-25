@@ -12,6 +12,18 @@ public interface CustomerSubmissions {
     record Duplicate(String kind, UUID id, long version, String status, String orderNo, String phone,
             LocalDate requestedReceiveDate, Instant requestedReceiveAt, List<DuplicateItem> items, Long totalAmountCents,
             String handledBy, Instant createdAt, boolean requiresAcknowledgement) { }
+    record DuplicateGroup(String phone, LocalDate date) implements Comparable<DuplicateGroup> {
+        public DuplicateGroup {
+            phone = phone.replaceAll("[ ()-]", "");
+        }
+
+        @Override public int compareTo(DuplicateGroup other) {
+            int byPhone = phone.compareTo(other.phone);
+            return byPhone != 0 ? byPhone : date.compareTo(other.date);
+        }
+    }
+    record OrderCandidate(String id, String orderNo) { }
+    record DuplicateMatch(Duplicate record, String fulfillmentType) { }
     Entry entryForOwner(UUID ownerId);
     Entry entryByToken(String token);
     Entry lockEntry(String token);
@@ -22,7 +34,10 @@ public interface CustomerSubmissions {
     List<CustomerSubmission> search(UUID ownerId, String status, String keyword, int limit, long offset);
     long count(UUID ownerId, String status, String keyword);
     void lockDuplicateGroup(CustomerSubmission submission);
-    List<Duplicate> duplicates(CustomerSubmission submission);
+    void lockOrderDuplicateGroup(DuplicateGroup group);
+    List<OrderCandidate> activeOrders(DuplicateGroup group);
+    Set<UUID> requiringDuplicateAcknowledgement(List<CustomerSubmission> pending);
+    List<DuplicateMatch> duplicates(CustomerSubmission submission);
     void update(CustomerSubmission submission, CustomerSubmission.Review review, String status, UUID orderId, Instant now);
     void append(UUID submissionId, String type, UUID actorId, String actorName, Map<String, Object> details, Instant now);
     List<Activity> activities(UUID submissionId);
