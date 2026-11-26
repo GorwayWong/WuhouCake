@@ -18,11 +18,11 @@ npm run dev
 
 生产通过 HTTPS 同一站点提供静态文件和 /api 反向代理，保留 Cookie/Authorization，不缓冲 SSE。vite preview 仅预览静态产物。现有 Compose 运行后端和依赖，不自动构建或发布前端。当前仅支持单业务实例；代理超时、Secure Cookie 和真实手机需在部署站点验证。
 
-## iPhone 主屏幕图标
+## 网站和快捷方式图标
 
-Safari「添加到主屏幕」使用 `public/apple-touch-icon.png`（180 × 180 PNG），图案为白底煎蛋，默认名称为「午逅 Story」。图标链接和名称在 `index.html` 中声明，构建时图标复制到 `dist/` 根目录，须随前端静态文件一起发布；图标地址无需登录即可访问。
+浏览器标签页和收藏使用 `favicon.ico`（内含 16、32、48 像素图标）及 192 像素 PNG。iPhone 和 iPad 的 Safari「添加到主屏幕」使用 180 像素 `apple-touch-icon.png`。`site-manifest.json` 为支持 Web App 的浏览器提供 192、512 像素图标，以及供 Android 启动器和 macOS Safari Dock 裁切的 1024 像素图标。各尺寸均取自 `public/brand.jpg` 的原版煎蛋图案，快捷方式品牌名为「午逅 Story」。
 
-图标更新后，已有主屏幕入口可能继续使用 iOS 缓存。请删除旧入口，再用 Safari 打开站点并重新「添加到主屏幕」，核对预览图标和名称后添加。最终效果须在真实 iPhone 上验证。
+清单沿用当前页面作为默认打开地址，让客户保存填单链接时保留 `#/fill/` 路由。`index.html` 声明的图标和清单从 `public/` 复制到 `dist/`，随前端静态文件发布，无需登录即可访问。上线后可从工作台及客户填单页分别创建快捷方式，核对图标和打开地址。已有快捷方式若继续显示旧图标，可移除后从更新后的页面重新添加。
 
 ## 录单与可选识别
 
